@@ -27,13 +27,15 @@
 > *Not to command, but to focus and guide—*
 > *Persona, the circle where insights reside.*
 
+---
+
 # Persona Framework — Domain-specific AI chat agents for WrenchML (and friends)
 
 *A lightweight, domain-oriented chat-agent framework for Spring Boot apps.*
 
 Persona lets you define **domain personas** (Technician, Service Writer, Inventory, Sales, Accounting, Marketing, Management) with their own prompt stacks and policies, then plug in AI providers (starting with **AWS Bedrock**, **SageMaker**, **S3**) via clean ports/adapters. An optional **NL→SQL** module adds governed database querying to any persona.
 
----
+
 
 ## What’s New
 
