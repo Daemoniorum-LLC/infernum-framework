@@ -10,10 +10,13 @@ Persona lets you define **domain personas** (Technician, Service Writer, Invento
 
 * **PostgreSQL-first schema & seed**: `V001__persona_schema.sql` and `V002__persona_seed.sql` (timestamptz/jsonb, `BIGSERIAL`, `updated_at` triggers).
 * **AI Catalog & Routing**: `ai_provider`, `ai_credential`, `ai_integration`, `ai_routing_policy`, and persona bindings in `persona_integration_binding` (with `fallback_integration_ids` CSV).
-* **Safety pipeline**: **Supervisor Agent + Guardrails + Deterministic Verifier** enforcing “no action without evidence” for mission-critical personas.
+* **Safety pipeline**: **Supervisor Agent + Guardrails + Deterministic Verifier** enforcing "no action without evidence" for mission-critical personas.
 * **Admin UI starter**: optional React UI bundle served by Spring Boot to manage personas, prompts, and integrations.
 * **Seeded prompts**: WrenchML diagnostic JSON template, data normalization template, and an assistant system voice for all personas.
 * **AWS adapters**: Bedrock (Converse), Titan embeddings, SageMaker predict, S3 blob ops (GET/PUT).
+* **Knowledge base management**: `research_source`, `research_citation`, `research_official_domain` tables with URL validation, S3 integration hooks, and Research Assistant bindings.
+* **RAG source catalog**: `persona_rag_source` table linking personas to S3/URL/DB/VECTOR retrieval sources.
+* **Usage analytics ready**: `ai_usage_log` with persona/provider/integration tracking, cost attribution, and append-only audit trail.
 
 ---
 
@@ -203,6 +206,35 @@ Default path: `/persona-admin`.
 
 ---
 
+## REST API Endpoints
+
+### Chat
+- `POST /api/public/chat/{personaCode}` – Chat with a persona
+
+### Embeddings
+- `POST /api/public/embed` – Generate embeddings for texts
+
+### Natural Language to SQL
+- `POST /api/public/nl2sql/{personaCode}` – Generate SQL from natural language
+
+### Usage Analytics (NEW)
+- `GET /api/usage/logs` – List usage logs with filters (persona, provider, operation, date range)
+- `GET /api/usage/summary` – Aggregated cost/token statistics
+- `GET /api/usage/export` – Export usage logs as CSV
+
+### Knowledge Base (NEW)
+- `GET /api/knowledge/sources` – List research sources
+- `POST /api/knowledge/sources` – Store a new research source
+- `GET /api/knowledge/citations/{sourceId}` – Get citations for a source
+- `POST /api/knowledge/sources/{id}/attach-s3` – Attach S3 object to source
+- `GET /api/personas/{code}/rag-sources` – List RAG sources bound to persona
+
+### Admin
+- `GET /api/personas` – List all personas
+- OpenAPI docs available at `/swagger-ui.html`
+
+---
+
 ## Using Personas in Code
 
 ### Chat with a Persona
@@ -274,14 +306,23 @@ spring:
 
 ## Roadmap
 
-* Vector search helpers & S3 ingestion workers
-* Streaming interfaces (server-sent tokens) across adapters
+### High Priority
+* **Usage analytics endpoints** – expose ai_usage_log via REST API with cost dashboards
+* **S3 adapter completion** – implement presigned URLs and research_source attachment workflows
+* **RAG retrieval service** – build vector search + knowledge base query orchestration
+* **Knowledge base UI** – admin panel for research_source, research_citation, persona_rag_source management
+
+### Medium Priority
+* Streaming interfaces (server-sent tokens) across all adapters
+* SageMaker adapter completion (endpoint invocation + batch transform)
 * Tool/Function calling DSL + validation schema
 * Prompt bundle versioning via S3 manifests & A/B testing
+
+### Future
 * Multi-tenant partitioning (workspace/org)
-* OpenTelemetry tracing + cost attribution
+* OpenTelemetry tracing + distributed cost attribution
 * Expanded guardrails (regex + semantic + policy graph)
-* **High priority**: deeper WrenchML integration using Supervisor + evidence verification for technician workflows
+* Deeper WrenchML integration using Supervisor + evidence verification for technician workflows
 
 ---
 
@@ -318,3 +359,27 @@ spring:
 
 [ admin-ui ] (React) -> [ admin-ui-resources ] -> [ admin-ui-starter ] -> Spring Boot static route
 ```
+
+
+
+## WSL Smoke Tests
+
+To run backend smoke tests from Windows using WSL (no PowerShell tooling), use:
+
+- Ensure the backend is running (e.g., `./gradlew :persona-demo:bootRun` inside WSL or another terminal).
+- From a Windows prompt, invoke WSL and run the Linux script:
+
+```
+wsl bash -lc "./scripts/smoke.sh"
+```
+
+Environment variables supported:
+- PERSONA_SERVER_URL: base server URL (default http://localhost:8989). A trailing `/api` will be normalized away.
+- PERSONA_API_TOKEN: optional bearer token to include in requests.
+- PERSONA_CODE: persona code for chat/NL2SQL tests (default SR_SOFTWARE_ENGINEER).
+
+The script requires `curl` and `jq` inside WSL. It verifies:
+- GET /api/personas (200, JSON array)
+- POST /api/public/chat/{personaCode} (returns text)
+- POST /api/nl2sql/{personaCode} (returns expected fields)
+- POST /api/embed (returns embeddings)
