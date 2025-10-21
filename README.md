@@ -1,22 +1,29 @@
-# Persona Framework — Domain-specific AI chat agents for WrenchML (and friends)
+# Persona Framework — Autonomous AI Agent Platform with Domain-Specific Expertise
 
-*A lightweight, domain-oriented chat-agent framework for Spring Boot apps.*
+*A comprehensive, production-ready AI agent framework for Spring Boot applications with autonomous execution capabilities, IntelliJ IDE integration, and domain-oriented personas.*
 
-Persona lets you define **domain personas** (Technician, Service Writer, Inventory, Sales, Accounting, Marketing, Management) with their own prompt stacks and policies, then plug in AI providers (starting with **AWS Bedrock**, **SageMaker**, **S3**) via clean ports/adapters. An optional **NL→SQL** module adds governed database querying to any persona.
+Persona Framework is a multi-module platform that combines **domain-specific AI chat agents** (Technician, Service Writer, Software Engineer, etc.) with **autonomous agent capabilities**, **IntelliJ IDEA integration**, and pluggable AI providers (**AWS Bedrock**, **SageMaker**, **S3**). The framework features a sophisticated tool system, RAG retrieval, knowledge base management, and a hybrid human-AI workflow for complex development tasks.
 
 
 
-## What’s New
+## What's New
 
-* **PostgreSQL-first schema & seed**: `V001__persona_schema.sql` and `V002__persona_seed.sql` (timestamptz/jsonb, `BIGSERIAL`, `updated_at` triggers).
-* **AI Catalog & Routing**: `ai_provider`, `ai_credential`, `ai_integration`, `ai_routing_policy`, and persona bindings in `persona_integration_binding` (with `fallback_integration_ids` CSV).
-* **Safety pipeline**: **Supervisor Agent + Guardrails + Deterministic Verifier** enforcing "no action without evidence" for mission-critical personas.
-* **Admin UI starter**: optional React UI bundle served by Spring Boot to manage personas, prompts, and integrations.
-* **Seeded prompts**: WrenchML diagnostic JSON template, data normalization template, and an assistant system voice for all personas.
-* **AWS adapters**: Bedrock (Converse), Titan embeddings, SageMaker predict, S3 blob ops (GET/PUT).
-* **Knowledge base management**: `research_source`, `research_citation`, `research_official_domain` tables with URL validation, S3 integration hooks, and Research Assistant bindings.
-* **RAG source catalog**: `persona_rag_source` table linking personas to S3/URL/DB/VECTOR retrieval sources.
-* **Usage analytics ready**: `ai_usage_log` with persona/provider/integration tracking, cost attribution, and append-only audit trail.
+### Latest Features (Phase 16+)
+* 🆕 **Autonomous Agent System** (`persona-agent`) - Complete tool-based agent framework with web fetch, file operations, and code generation
+* 🆕 **IntelliJ IDEA Plugin** (`persona-intellij-plugin`) - Native IDE integration with tool windows, context panels, and agent task submission
+* 🆕 **Hydra Application** - Production-ready Spring Boot app integrating all modules with Docker/Jib support
+* 🆕 **Agent REST API** - Submit tasks, stream execution events (SSE), monitor progress
+* 🆕 **Hybrid Workflows** - Combine Claude Code and Persona agents for complex multi-step development
+* 🆕 **Tool Registry** - Extensible tool system (WebFetch, FileRead, FileWrite, CodeGen, etc.)
+
+### Core Features
+* **PostgreSQL-first schema & seed**: `V001__persona_schema.sql` and `V002__persona_seed.sql` (timestamptz/jsonb, `BIGSERIAL`, `updated_at` triggers)
+* **AI Catalog & Routing**: `ai_provider`, `ai_credential`, `ai_integration`, `ai_routing_policy`, and persona bindings in `persona_integration_binding` (with `fallback_integration_ids` CSV)
+* **Safety pipeline**: **Supervisor Agent + Guardrails + Deterministic Verifier** enforcing "no action without evidence" for mission-critical personas
+* **AWS adapters**: Bedrock (Converse), Titan embeddings, SageMaker predict, S3 blob ops (GET/PUT)
+* **Knowledge base management**: `research_source`, `research_citation`, `research_official_domain` tables with URL validation, S3 integration hooks
+* **RAG source catalog**: `persona_rag_source` table linking personas to S3/URL/DB/VECTOR retrieval sources
+* **Usage analytics**: `ai_usage_log` with persona/provider/integration tracking, cost attribution, and append-only audit trail
 
 ---
 
@@ -25,30 +32,90 @@ Persona lets you define **domain personas** (Technician, Service Writer, Invento
 ```
 persona-framework/
 ├─ settings.gradle.kts
-├─ build.gradle.kts                 # root (conventions + BOMs)
-├─ persona-core/                    # domain model + ports (no Spring)
-├─ persona-persistence/             # Spring Data JPA adapters (PostgreSQL)
-├─ persona-ai-api/                  # AI orchestration ports + DTOs
-├─ persona-ai-aws/                  # AWS adapters (Bedrock, SageMaker, S3)
-├─ persona-nl2sql/                  # optional natural language → SQL
-├─ persona-autoconfigure/           # Spring Boot autoconfiguration
-├─ admin-ui/                        # React app (source)
-├─ admin-ui-resources/              # built static assets
-└─ admin-ui-starter/                # tiny starter to mount the UI routes
+├─ build.gradle.kts                      # root (conventions + BOMs)
+│
+├─ persona-core/                         # domain model + ports (no Spring, pure Kotlin)
+├─ persona-persistence/                  # Spring Data JPA adapters (PostgreSQL)
+├─ persona-api/                          # AI orchestration ports + DTOs
+├─ persona-aws/                          # AWS adapters (Bedrock, SageMaker, S3, Titan embeddings)
+├─ persona-autoconfigure/                # Spring Boot autoconfiguration & dependency injection
+├─ persona-rest/                         # REST controllers + OpenAPI docs
+│
+├─ persona-agent/                        # 🆕 Autonomous agent framework (tools, web fetch, code gen)
+├─ persona-intellij-plugin/              # 🆕 IntelliJ IDEA plugin for IDE integration
+│
+├─ hydra/                                # 🎯 Main Spring Boot application (demo & production)
+│
+├─ persona-nl2sql/                       # [DISABLED] Natural language → SQL (optional)
+├─ persona-admin-ui/                     # [DISABLED] React app (source)
+├─ persona-admin-ui-resources/           # [DISABLED] Built static assets
+└─ persona-admin-ui-starter/             # [DISABLED] Tiny starter to mount UI routes
 ```
 
-**Dependency rule**
+### Active Modules (Currently Enabled)
+
+| Module | Purpose | Dependencies |
+|--------|---------|--------------|
+| **persona-core** | Domain model, ports, DTOs (framework-agnostic) | None (pure Kotlin) |
+| **persona-persistence** | JPA entities, repositories, Flyway migrations | `core` |
+| **persona-api** | AI ports, configuration properties | `core` |
+| **persona-aws** | AWS Bedrock, SageMaker, S3, Titan implementations | `core`, `api` |
+| **persona-autoconfigure** | Spring Boot auto-configuration | `core`, `api` |
+| **persona-rest** | REST API endpoints, OpenAPI specs | `core`, `api`, `persistence`, `agent` |
+| **persona-agent** | Autonomous tool execution, web fetch, file ops | `core`, `api`, `aws` |
+| **persona-intellij-plugin** | IntelliJ IDEA integration (tool windows, actions) | `core`, `api`, `persistence` |
+| **hydra** | Main application (all integrations) | All above |
+
+### Module Dependency Graph
 
 ```
-core  <-- persistence
-core  <-- ai-api
-ai-api <-- ai-aws
-core  <-- nl2sql   (optional)
-autoconfigure depends on: core, persistence, ai-api (+ ai-aws / nl2sql if present)
-admin-ui(-resources/-starter) are optional at runtime
+┌─────────────┐
+│ persona-core│◄─────┐
+└──────┬──────┘      │
+       │             │
+       ▼             │
+┌──────────────────┐ │
+│persona-persistence│ │
+└──────────────────┘ │
+                     │
+┌──────────────┐     │
+│ persona-api  │◄────┤
+└──────┬───────┘     │
+       │             │
+       ▼             │
+┌──────────────┐     │
+│ persona-aws  │     │
+└──────────────┘     │
+                     │
+┌──────────────┐     │
+│persona-agent │◄────┘
+└──────────────┘
+       │
+       ▼
+┌──────────────────┐
+│ persona-rest     │
+└──────────────────┘
+       │
+       ▼
+┌──────────────────────┐
+│persona-autoconfigure │
+└──────────────────────┘
+       │
+       ▼
+┌──────────────┐
+│    hydra     │ (main application)
+└──────────────┘
+
+┌────────────────────────┐
+│persona-intellij-plugin │ (standalone IDE plugin)
+└────────────────────────┘
 ```
 
-No module may introduce `core → persistence` (avoid build cycles).
+**Dependency Rules:**
+- No module may introduce `core → persistence` (avoid build cycles)
+- `persona-intellij-plugin` is standalone (uses core, api, persistence but doesn't affect main app)
+- `persona-agent` can use web tools, file operations, and code generation
+- All Spring dependencies isolated in `autoconfigure`, `rest`, `persistence`
 
 ---
 
@@ -144,12 +211,246 @@ Standard AWS envs (`AWS_REGION`, `AWS_PROFILE`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET
 
 ---
 
+## Module Deep Dive
+
+### persona-core
+**Purpose:** Framework-agnostic domain model, ports, and DTOs.
+
+**Key Components:**
+- Domain entities (`Persona`, `PersonaPrompt`, `ContextSession`, etc.)
+- Port interfaces (no implementations)
+- DTOs for API contracts
+- Validation annotations
+
+**No Dependencies:** Pure Kotlin, no Spring, no external frameworks.
+
+### persona-persistence
+**Purpose:** PostgreSQL persistence layer using Spring Data JPA.
+
+**Key Components:**
+- JPA entities (`PersonaEntity`, `PersonaPromptEntity`, etc.)
+- Spring Data repositories
+- Flyway migrations (`V001__persona_schema.sql`, `V002__persona_seed.sql`)
+- Database triggers for `updated_at` timestamps
+
+**Schema Highlights:**
+- `persona` - Domain personas (Technician, Service Writer, etc.)
+- `persona_prompt` - Versioned prompt templates
+- `ai_provider` - Provider catalog (AWS, OpenAI, etc.)
+- `ai_integration` - Model/endpoint configurations
+- `persona_integration_binding` - Persona→Integration routing with fallbacks
+- `ai_usage_log` - Append-only usage tracking for cost attribution
+- `research_source` - Knowledge base sources
+- `persona_rag_source` - RAG retrieval bindings
+
+### persona-api
+**Purpose:** AI orchestration contracts and configuration.
+
+**Key Components:**
+- `ChatClient` interface - AI chat operations
+- `EmbeddingClient` interface - Text embedding generation
+- `ContextManager` interface - Conversation history
+- Configuration properties (`PersonaAiProperties`)
+- DTOs for chat, embeddings, context sessions
+
+### persona-aws
+**Purpose:** AWS service integrations (Bedrock, SageMaker, S3).
+
+**Implementations:**
+- **Bedrock Converse API** - `BedrockChatClient` (Claude, Titan, Llama models)
+- **Titan Embeddings** - `TitanEmbeddingClient` (amazon.titan-embed-text-v2:0)
+- **SageMaker** - `SageMakerPredictClient` (custom model endpoints)
+- **S3** - `S3BlobClient` (GET/PUT operations, presigned URLs)
+
+**Stub Implementations:**
+- `StubChatClient` - Local development without AWS
+- `StubS3ContentFetcher` - Filesystem-based S3 simulation (`build/stub-s3/`)
+
+### persona-autoconfigure
+**Purpose:** Spring Boot auto-configuration and dependency wiring.
+
+**What It Does:**
+- Auto-detects AWS credentials (profile, environment, IAM role)
+- Configures chat, embedding, SageMaker, S3 clients
+- Enables RAG retrieval services
+- Registers repositories and services
+- Stub/production mode switching
+
+### persona-rest
+**Purpose:** REST API endpoints with OpenAPI documentation.
+
+**Endpoints:**
+- `POST /api/public/chat/{personaCode}` - Chat with persona (streaming/non-streaming)
+- `POST /api/public/embed` - Generate embeddings
+- `GET /api/personas` - List all personas
+- `GET /api/usage/logs` - Usage analytics
+- `GET /api/usage/export` - CSV export
+- `GET /api/knowledge/personas/{code}/rag-sources` - RAG source management
+- `POST /api/agent/tasks` - 🆕 Submit autonomous agent tasks
+- `GET /api/agent/tasks/{id}` - 🆕 Get agent task status
+- `GET /api/agent/tasks/{id}/events` - 🆕 Stream agent execution events (SSE)
+
+**OpenAPI Docs:** Available at `/swagger-ui.html`
+
+### persona-agent 🆕
+**Purpose:** Autonomous agent framework with tool execution capabilities.
+
+**Architecture:**
+```
+User Request → AgentOrchestrator → LLM Reasoning → Tool Execution → Result
+                     ↓                                    ↑
+                Task Planner ←──────── Memory ←──────────┘
+```
+
+**Tool System:**
+- **Web Tools** - `WebFetchTool` (HTTP GET, HTML→Markdown conversion)
+- **File Tools** - Read, Write, Edit, Glob, Grep operations
+- **Code Tools** - Generate classes, interfaces, tests
+- **Database Tools** - SQL execution, migrations
+- **Build Tools** - Gradle, Maven, npm execution (future)
+
+**Execution Loop:**
+1. **Observe** - Gather context (project files, previous results)
+2. **Think** - LLM reasons about next action
+3. **Act** - Execute tool(s) based on LLM decision
+4. **Update** - Store results in memory
+5. **Repeat** - Continue until task complete or max iterations
+
+**Example Tools:**
+```kotlin
+class WebFetchTool : AgentTool {
+    override val name = "web_fetch"
+    override val description = "Fetch and convert web page to markdown"
+
+    override suspend fun execute(params: Map<String, Any>): ToolResult {
+        val url = params["url"] as String
+        val html = httpClient.get(url)
+        val markdown = htmlToMarkdown(html)
+        return ToolResult.success(markdown)
+    }
+}
+```
+
+**Use Cases:**
+- Autonomous code generation
+- Multi-step refactoring
+- Research and documentation
+- Test creation and debugging
+- Dependency updates
+
+**API Integration:**
+```bash
+# Submit task
+curl -X POST http://localhost:8989/api/agent/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "description": "Add authentication to API",
+    "goal": "Implement JWT authentication for REST endpoints",
+    "projectPath": "/home/user/project",
+    "personaCode": "SR_SOFTWARE_ENGINEER",
+    "maxIterations": 50,
+    "requiresApproval": false
+  }'
+
+# Stream events (Server-Sent Events)
+curl -N http://localhost:8989/api/agent/tasks/{taskId}/events
+```
+
+**Safety Features:**
+- Max iteration limits
+- Tool execution sandboxing
+- Human approval gates (optional)
+- Audit logging
+- Token budget tracking
+
+### persona-intellij-plugin 🆕
+**Purpose:** IntelliJ IDEA integration for Persona agent workflows.
+
+**Features:**
+- **Tool Window** - Chat interface with persona selection
+- **Context Panel** - Automatic project context gathering
+- **Actions** - Right-click context menus for file/code operations
+- **Agent Integration** - Submit autonomous tasks from IDE
+- **Real-time Updates** - SSE event streaming to UI
+
+**UI Components:**
+- `PersonaToolWindowFactory` - Main tool window
+- `ChatPanel` - Message display and input
+- `ContextPanel` - Project context visualization
+- `PersonaApiService` - Backend API client
+- `ProjectContextService` - IDE project introspection
+
+**Usage:**
+1. Open IntelliJ IDEA
+2. View → Tool Windows → Persona
+3. Select persona (e.g., "Software Engineer")
+4. Enable project context
+5. Chat or submit autonomous task
+
+**Testing:**
+```bash
+# Run plugin in test IDE
+./gradlew :persona-intellij-plugin:runIde
+
+# Run tests
+./gradlew :persona-intellij-plugin:test
+
+# Build plugin distribution
+./gradlew :persona-intellij-plugin:buildPlugin
+```
+
+**Installation:**
+1. Build plugin: `./gradlew :persona-intellij-plugin:buildPlugin`
+2. Distribution: `persona-intellij-plugin/build/distributions/persona-intellij-plugin-0.1.0.zip`
+3. Install in IDE: Settings → Plugins → ⚙️ → Install Plugin from Disk
+
+### hydra 🎯
+**Purpose:** Main Spring Boot application integrating all modules.
+
+**What It Includes:**
+- All persona modules (core, persistence, api, aws, rest, agent)
+- Flyway database migrations
+- Security configuration
+- Docker support (Jib)
+- Health checks and actuators
+- Usage analytics endpoints
+- RAG retrieval
+- Agent task management
+
+**Configuration:**
+- Database: PostgreSQL (Docker or remote)
+- AI Provider: AWS Bedrock (Haiku, Sonnet, Opus)
+- Embeddings: Titan v2
+- Storage: S3 or local stub
+- Profiles: `local`, `dev`, `prod`
+
+**Deployment:**
+```bash
+# Build Docker image
+./gradlew :hydra:jibDockerBuild
+
+# Run container
+cd hydra
+docker run -d \
+  --name hydra \
+  --network host \
+  --env-file .env \
+  -v ~/.aws:/root/.aws:ro \
+  hydra:0.1.0
+```
+
+---
+
 ## Running the Application
 
 ### Local Development (bootRun)
 
 ```bash
-./gradlew :persona-demo:bootRun
+# Run Hydra (main application)
+./gradlew :hydra:bootRun
+
+# Or use convenience task
+./gradlew :hydra:devUp
 ```
 
 ### Docker Deployment (Jib)
@@ -159,12 +460,12 @@ The project uses [Jib](https://github.com/GoogleContainerTools/jib) for containe
 **1. Build Docker image:**
 
 ```bash
-./gradlew :persona-demo:jibDockerBuild
+./gradlew :hydra:jibDockerBuild
 ```
 
-This creates `persona-demo:0.1.0` in your local Docker daemon.
+This creates `hydra:0.1.0` in your local Docker daemon.
 
-**2. Create environment file** (`persona-demo/.env`):
+**2. Create environment file** (`hydra/.env`):
 
 ```env
 SPRING_DATASOURCE_URL=jdbc:postgresql://172.17.0.1:5432/persona
@@ -177,19 +478,29 @@ AWS_PROFILE=dev
 **3. Run container:**
 
 ```bash
-cd persona-demo
+cd hydra
 docker run -d \
-  --name persona-demo \
+  --name hydra \
   --network host \
   --env-file .env \
   -v ~/.aws:/root/.aws:ro \
-  persona-demo:0.1.0
+  hydra:0.1.0
+```
+
+**Or use convenience Gradle tasks:**
+
+```bash
+# Build image + create/start container in one step
+./gradlew :hydra:devUp
+
+# Stop and remove container
+./gradlew :hydra:devDown
 ```
 
 **4. Check logs:**
 
 ```bash
-docker logs -f persona-demo
+docker logs -f hydra
 ```
 
 **5. Test endpoints:**
@@ -408,27 +719,58 @@ Default path: `/persona-admin`.
 
 ### Chat
 - `POST /api/public/chat/{personaCode}` – Chat with a persona
+  - Query params: `useRag=true` (enable RAG retrieval)
+  - Request body: `{"messages": [{"role": "user", "content": "..."}], "stream": false}`
+  - Response: `{"text": "...", "usage": {...}}`
 
 ### Embeddings
 - `POST /api/public/embed` – Generate embeddings for texts
+  - Request body: `{"texts": ["text1", "text2"]}`
+  - Response: `{"embeddings": [[0.1, 0.2, ...], ...]}`
 
-### Natural Language to SQL
-- `POST /api/public/nl2sql/{personaCode}` – Generate SQL from natural language
+### Natural Language to SQL (DISABLED)
+- `POST /api/public/nl2sql/{personaCode}` – Generate SQL from natural language (module currently disabled)
 
-### Usage Analytics (NEW)
+### Agent Tasks 🆕
+- `POST /api/agent/tasks` – Submit autonomous agent task
+  - Request body:
+    ```json
+    {
+      "description": "Add authentication to API",
+      "goal": "Implement JWT authentication",
+      "projectPath": "/path/to/project",
+      "personaCode": "SR_SOFTWARE_ENGINEER",
+      "maxIterations": 50,
+      "requiresApproval": false
+    }
+    ```
+  - Response: `{"taskId": "uuid", "status": "PENDING"}`
+
+- `GET /api/agent/tasks/{taskId}` – Get task status and result
+  - Response: `{"taskId": "...", "status": "COMPLETED", "result": {...}}`
+
+- `GET /api/agent/tasks/{taskId}/events` – Stream execution events (SSE)
+  - Server-Sent Events stream
+  - Events: `STARTED`, `TOOL_EXECUTION`, `LLM_RESPONSE`, `COMPLETED`, `FAILED`
+
+- `GET /api/agent/tasks` – List all tasks (with filters)
+  - Query params: `status`, `personaCode`, `limit`
+
+### Usage Analytics
 - `GET /api/usage/logs` – List usage logs with filters (persona, provider, operation, date range)
 - `GET /api/usage/summary` – Aggregated cost/token statistics
 - `GET /api/usage/export` – Export usage logs as CSV
 
-### Knowledge Base (NEW)
+### Knowledge Base
 - `GET /api/knowledge/sources` – List research sources
 - `POST /api/knowledge/sources` – Store a new research source
 - `GET /api/knowledge/citations/{sourceId}` – Get citations for a source
 - `POST /api/knowledge/sources/{id}/attach-s3` – Attach S3 object to source
-- `GET /api/personas/{code}/rag-sources` – List RAG sources bound to persona
+- `GET /api/knowledge/personas/{code}/rag-sources` – List RAG sources bound to persona
 
 ### Admin
 - `GET /api/personas` – List all personas
+- `GET /actuator/health` – Health check
 - OpenAPI docs available at `/swagger-ui.html`
 
 ---
@@ -504,23 +846,155 @@ spring:
 
 ## Roadmap
 
-### High Priority
-* **Usage analytics endpoints** – expose ai_usage_log via REST API with cost dashboards
-* **S3 adapter completion** – implement presigned URLs and research_source attachment workflows
-* **RAG retrieval service** – build vector search + knowledge base query orchestration
-* **Knowledge base UI** – admin panel for research_source, research_citation, persona_rag_source management
+### Completed ✅
+* ✅ **Autonomous Agent System** - Full tool-based execution framework
+* ✅ **IntelliJ IDEA Plugin** - IDE integration with UI and API client
+* ✅ **Usage Analytics Endpoints** - Full REST API for ai_usage_log with CSV export
+* ✅ **RAG Retrieval Service** - S3/URL/DB/VECTOR retrieval with stub implementations
+* ✅ **Agent Task Management** - Submit, monitor, stream events via REST
+* ✅ **Hybrid Workflow Scripts** - `scripts/hybrid-test.sh` for autonomous execution
+* ✅ **Docker/Jib Deployment** - Production-ready containerization
 
-### Medium Priority
-* Streaming interfaces (server-sent tokens) across all adapters
-* SageMaker adapter completion (endpoint invocation + batch transform)
-* Tool/Function calling DSL + validation schema
-* Prompt bundle versioning via S3 manifests & A/B testing
+### High Priority (Q1 2025)
+* **IntelliJ Plugin Marketplace** – Publish to JetBrains marketplace
+* **Agent Tool Expansion** – Add Gradle, Maven, Git, Test execution tools
+* **Vector Database Integration** – Implement real vector search (Pinecone/Weaviate/pgvector)
+* **Knowledge Base UI** – Admin panel for research_source, research_citation, persona_rag_source management
+* **Multi-persona Coordination** – Multiple agents working together on complex tasks
+* **Cost Optimization** – Smart model routing (Haiku → Sonnet → Opus based on complexity)
 
-### Future
-* Multi-tenant partitioning (workspace/org)
-* OpenTelemetry tracing + distributed cost attribution
-* Expanded guardrails (regex + semantic + policy graph)
-* Deeper WrenchML integration using Supervisor + evidence verification for technician workflows
+### Medium Priority (Q2 2025)
+* **Streaming Chat** – Server-sent events for real-time token streaming
+* **SageMaker Adapter** – Complete endpoint invocation + batch transform
+* **Tool Sandboxing** – Enhanced security for agent file/shell operations
+* **Prompt Versioning** – S3-based prompt bundles with A/B testing
+* **Agent Memory** – Persistent working memory across sessions
+* **Human-in-the-Loop** – Approval gates for critical operations
+
+### Future (Q3-Q4 2025)
+* **Multi-tenant Partitioning** – Workspace/organization isolation
+* **OpenTelemetry Tracing** – Distributed cost attribution and performance monitoring
+* **Expanded Guardrails** – Regex + semantic + policy graph validation
+* **WrenchML Integration** – Supervisor + evidence verification for automotive workflows
+* **Function Calling DSL** – Declarative tool/function schemas with validation
+* **Agent Swarms** – Coordinated multi-agent problem solving
+
+---
+
+## Hybrid Workflow: Claude Code + Persona Agent
+
+The Persona Framework enables a powerful hybrid workflow combining human-guided AI (Claude Code) with autonomous execution (Persona Agent).
+
+### Workflow Patterns
+
+#### Pattern 1: Research → Autonomous Implementation
+```
+1. Claude Code: Research codebase, design solution, create plan
+2. Handoff: Document instructions in markdown
+3. Persona Agent: Autonomous implementation of the plan
+4. Review: Human validates and merges
+```
+
+**Example:**
+```bash
+# 1. Claude Code researches and creates IMPLEMENTATION-PLAN.md
+
+# 2. Submit to Persona for autonomous execution
+curl -X POST http://localhost:8989/api/agent/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "description": "Implement user authentication",
+    "goal": "Read IMPLEMENTATION-PLAN.md and execute all steps",
+    "projectPath": "/home/user/project",
+    "personaCode": "SR_SOFTWARE_ENGINEER",
+    "maxIterations": 100,
+    "requiresApproval": false
+  }'
+
+# 3. Monitor progress
+curl -N http://localhost:8989/api/agent/tasks/{taskId}/events
+```
+
+#### Pattern 2: Test-Driven Development
+```
+1. Claude Code: Write failing tests
+2. Persona Agent: Implement code to make tests pass
+3. Claude Code: Review and refactor
+```
+
+**Example:**
+```bash
+# Automated via script
+./scripts/hybrid-test.sh
+```
+
+#### Pattern 3: Iterative Refinement
+```
+1. Persona Agent: Generate initial implementation
+2. Claude Code: Review, provide feedback
+3. Persona Agent: Apply feedback autonomously
+4. Repeat until satisfied
+```
+
+### Scripts
+
+#### `scripts/hybrid-test.sh`
+Automated test execution with agent-driven fixes:
+```bash
+#!/bin/bash
+# 1. Run tests
+# 2. If failures, submit agent task to fix
+# 3. Stream progress
+# 4. Re-run tests
+# 5. Report results
+```
+
+**Usage:**
+```bash
+./scripts/hybrid-test.sh
+```
+
+**Environment Variables:**
+- `PERSONA_SERVER_URL` - Backend URL (default: http://localhost:8989)
+- `PERSONA_API_TOKEN` - Optional bearer token
+- `PERSONA_CODE` - Persona to use (default: SR_SOFTWARE_ENGINEER)
+
+### Best Practices
+
+**When to use Claude Code:**
+- Research and understanding codebases
+- High-level planning and architecture
+- Complex decision-making
+- Code review and quality assessment
+- Documentation writing
+
+**When to use Persona Agent:**
+- Repetitive implementation tasks
+- Test creation from specifications
+- Multi-file refactoring
+- Dependency updates
+- Documentation from code
+
+**When to use Hybrid:**
+- Large features requiring planning + implementation
+- Test-driven development workflows
+- Legacy code modernization
+- Performance optimization (profile → fix → validate)
+- Security audits (scan → fix → verify)
+
+### Success Metrics
+
+Track your hybrid workflow effectiveness:
+```bash
+# Agent task success rate
+curl http://localhost:8989/api/agent/tasks?status=COMPLETED
+
+# Usage analytics
+curl http://localhost:8989/api/usage/summary
+
+# Export for analysis
+curl http://localhost:8989/api/usage/export?format=csv > usage.csv
+```
 
 ---
 
@@ -539,23 +1013,145 @@ spring:
 
 ---
 
-## Appendix: ASCII Package/Dependency Diagram
+## Appendix: Architecture Diagrams
+
+### System Architecture
 
 ```
-[ persona-core ]  <-- domain, ports
-      ^
-      |
-[ persona-persistence ] -- Spring Data JPA (PostgreSQL)
-      ^
-      |
-[ persona-autoconfigure ] -- Boot configs/wiring
-      ^
-      |
-[ persona-ai-api ] <---[ persona-ai-aws ] (Bedrock, SageMaker, S3)
+┌────────────────────────────────────────────────────────────┐
+│                      Client Layer                          │
+│  ┌─────────────┐  ┌────────────┐  ┌──────────────────┐   │
+│  │ IntelliJ    │  │  HTTP      │  │  CLI Scripts     │   │
+│  │  Plugin     │  │  Client    │  │  (curl/hybrid)   │   │
+│  └─────────────┘  └────────────┘  └──────────────────┘   │
+└────────────────────────────────────────────────────────────┘
+                          ↓ REST API
+┌────────────────────────────────────────────────────────────┐
+│                   Hydra (Spring Boot)                      │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────────┐  │
+│  │ REST         │  │ Agent        │  │ Chat           │  │
+│  │ Controllers  │  │ Orchestrator │  │ Service        │  │
+│  └──────────────┘  └──────────────┘  └────────────────┘  │
+└────────────────────────────────────────────────────────────┘
+          ↓                    ↓                   ↓
+┌────────────────────────────────────────────────────────────┐
+│                    Service Layer                           │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────────┐  │
+│  │ Persistence  │  │ AI Services  │  │ RAG Retrieval  │  │
+│  │ (JPA/JDBC)   │  │ (AWS/Stub)   │  │ (S3/URL/DB)    │  │
+│  └──────────────┘  └──────────────┘  └────────────────┘  │
+└────────────────────────────────────────────────────────────┘
+          ↓                    ↓                   ↓
+┌────────────────────────────────────────────────────────────┐
+│                  External Systems                          │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────────┐  │
+│  │ PostgreSQL   │  │ AWS Bedrock  │  │ AWS S3         │  │
+│  │ Database     │  │ (Claude,etc) │  │ (RAG docs)     │  │
+│  └──────────────┘  └──────────────┘  └────────────────┘  │
+└────────────────────────────────────────────────────────────┘
+```
 
-[ persona-nl2sql ] (optional) --> plugs into ai-api + core ports
+### Module Dependency Graph
 
-[ admin-ui ] (React) -> [ admin-ui-resources ] -> [ admin-ui-starter ] -> Spring Boot static route
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        Core Layer                           │
+│                     (No Dependencies)                       │
+│                    ┌─────────────┐                          │
+│                    │persona-core │                          │
+│                    └──────┬──────┘                          │
+└───────────────────────────┼──────────────────────────────────┘
+                            │
+        ┌───────────────────┼───────────────────┐
+        │                   │                   │
+        ▼                   ▼                   ▼
+┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+│persona-      │    │persona-      │    │persona-      │
+│persistence   │    │api           │    │agent         │
+│              │    │              │    │              │
+│(JPA/Flyway)  │    │(Interfaces)  │    │(Tools)       │
+└──────────────┘    └──────┬───────┘    └──────────────┘
+                            │
+                            ▼
+                    ┌──────────────┐
+                    │persona-      │
+                    │aws           │
+                    │              │
+                    │(Bedrock/S3)  │
+                    └──────────────┘
+                            │
+        ┌───────────────────┼───────────────────┐
+        │                   │                   │
+        ▼                   ▼                   ▼
+┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+│persona-      │    │persona-      │    │persona-      │
+│autoconfigure │    │rest          │    │intellij-     │
+│              │    │              │    │plugin        │
+│(Spring Boot) │    │(Controllers) │    │(IDE UI)      │
+└──────┬───────┘    └──────┬───────┘    └──────────────┘
+       │                   │
+       └───────────┬───────┘
+                   │
+                   ▼
+           ┌──────────────┐
+           │   hydra      │
+           │              │
+           │(Main App)    │
+           └──────────────┘
+```
+
+### Agent Execution Flow
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ 1. Task Submission                                          │
+│    POST /api/agent/tasks                                    │
+│    { "description": "...", "goal": "...", ... }             │
+└────────────────────────┬────────────────────────────────────┘
+                         ↓
+┌─────────────────────────────────────────────────────────────┐
+│ 2. Agent Orchestrator                                       │
+│    - Parse task                                             │
+│    - Create execution plan                                  │
+│    - Initialize context                                     │
+└────────────────────────┬────────────────────────────────────┘
+                         ↓
+         ┌───────────────┴───────────────┐
+         ↓                               ↓
+┌──────────────────┐            ┌──────────────────┐
+│ 3a. Observe      │            │ 3b. LLM Reasoning│
+│ - Read files     │            │ - Analyze context│
+│ - Check status   │───────────▶│ - Plan next step │
+│ - Review history │            │ - Select tool(s) │
+└──────────────────┘            └────────┬─────────┘
+                                         ↓
+                              ┌──────────────────┐
+                              │ 4. Tool Execution│
+                              │ - WebFetch       │
+                              │ - FileRead/Write │
+                              │ - CodeGen        │
+                              │ - SQL            │
+                              └────────┬─────────┘
+                                       ↓
+                              ┌──────────────────┐
+                              │ 5. Update Memory │
+                              │ - Store results  │
+                              │ - Update context │
+                              └────────┬─────────┘
+                                       ↓
+                              ┌──────────────────┐
+                              │ 6. Check Status  │
+                              │ - Goal achieved? │
+                              │ - Max iterations?│
+                              │ - Error?         │
+                              └────────┬─────────┘
+                                       ↓
+                         ┌─────────────┴─────────────┐
+                         ↓                           ↓
+              ┌──────────────────┐       ┌──────────────────┐
+              │ 7a. Continue     │       │ 7b. Complete     │
+              │ Loop to step 3   │       │ Return result    │
+              └──────────────────┘       └──────────────────┘
 ```
 
 
