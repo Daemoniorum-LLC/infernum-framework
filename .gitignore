@@ -30,3 +30,10 @@ logs/
 /spring-persona
 /build/
 persona-demo/.env
+
+# Environment variables with secrets  
+.env
+.env.local
+.env.*.local
+hydra/.env
+*/.env

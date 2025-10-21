@@ -129,6 +129,37 @@ persona-framework/
 ---
 
 ## Getting Started
+### 0) Local Development Setup
+
+**Environment Configuration:**
+
+Copy the environment template and configure for your setup:
+
+```bash
+cp .env.example .env
+# OR for Hydra specifically:
+cp .env.example hydra/.env
+```
+
+Edit `.env` with your configuration:
+
+```bash
+# Required: Database connection
+SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/persona
+SPRING_DATASOURCE_PASSWORD=your_actual_password
+
+# Required: AWS Bedrock access
+AWS_PROFILE=your_aws_profile
+AWS_REGION=us-west-2
+```
+
+**Prerequisites:**
+
+- **PostgreSQL 14+**: Running locally or via Docker
+- **AWS Credentials**: Configured with Bedrock access
+- **Java 17+** and **Gradle** installed
+
+See `.env.example` for all available configuration options.
 
 ### 1) Add dependencies to your Spring Boot app
 
