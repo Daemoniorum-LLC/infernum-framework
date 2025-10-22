@@ -9,6 +9,7 @@ Persona Framework is a multi-module platform that combines **domain-specific AI 
 ## What's New
 
 ### Latest Features (Phase 16+)
+* 🆕 **OverseerAgent** - Planning and coordination agent for complex multi-step tasks (like Claude Code in hybrid development)
 * 🆕 **Autonomous Agent System** (`persona-agent`) - Complete tool-based agent framework with web fetch, file operations, and code generation
 * 🆕 **IntelliJ IDEA Plugin** (`persona-intellij-plugin`) - Native IDE integration with tool windows, context panels, and agent task submission
 * 🆕 **Hydra Application** - Production-ready Spring Boot app integrating all modules with Docker/Jib support
@@ -328,6 +329,13 @@ Standard AWS envs (`AWS_REGION`, `AWS_PROFILE`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET
 
 **Architecture:**
 ```
+                   ┌─────────────────────┐
+                   │   OverseerAgent     │ (Planning & Coordination)
+                   │  - Break down tasks │
+                   │  - Create subtasks  │
+                   │  - Validate results │
+                   └──────────┬──────────┘
+                              ↓
 User Request → AgentOrchestrator → LLM Reasoning → Tool Execution → Result
                      ↓                                    ↑
                 Task Planner ←──────── Memory ←──────────┘
@@ -362,29 +370,58 @@ class WebFetchTool : AgentTool {
 }
 ```
 
+**Agent Types:**
+
+1. **OverseerAgent** (Planning & Coordination)
+   - Analyzes complex tasks and creates execution plans
+   - Breaks work into 3-7 subtasks with dependencies
+   - Delegates to execution agents
+   - Validates results against criteria
+   - Handles retries and error recovery
+
+2. **AgentOrchestrator** (Execution)
+   - Executes individual subtasks
+   - Multi-turn reasoning loop
+   - Tool selection and invocation
+   - Memory management
+
 **Use Cases:**
 - Autonomous code generation
 - Multi-step refactoring
 - Research and documentation
 - Test creation and debugging
 - Dependency updates
+- Complex features spanning multiple layers
 
 **API Integration:**
+
+**Simple tasks** (single agent execution):
 ```bash
-# Submit task
 curl -X POST http://localhost:8989/api/agent/tasks \
   -H 'Content-Type: application/json' \
   -d '{
-    "description": "Add authentication to API",
-    "goal": "Implement JWT authentication for REST endpoints",
+    "description": "Add logging to UserService",
+    "goal": "Add SLF4J logging to all public methods",
     "projectPath": "/home/user/project",
     "personaCode": "SR_SOFTWARE_ENGINEER",
-    "maxIterations": 50,
-    "requiresApproval": false
+    "maxIterations": 25
+  }'
+```
+
+**Complex tasks** (OverseerAgent with planning):
+```bash
+curl -X POST http://localhost:8989/api/overseer/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "goal": "Add user authentication feature",
+    "description": "Create entity, repository, service, and tests",
+    "projectPath": "/home/user/project",
+    "constraints": ["Use PostgreSQL", "Follow existing patterns"],
+    "maxIterations": 25
   }'
 
-# Stream events (Server-Sent Events)
-curl -N http://localhost:8989/api/agent/tasks/{taskId}/events
+# Check task status
+curl http://localhost:8989/api/overseer/tasks/{taskId}
 ```
 
 **Safety Features:**
@@ -763,29 +800,47 @@ Default path: `/persona-admin`.
 - `POST /api/public/nl2sql/{personaCode}` – Generate SQL from natural language (module currently disabled)
 
 ### Agent Tasks 🆕
-- `POST /api/agent/tasks` – Submit autonomous agent task
+
+**Simple Agent Execution** (`/api/agent/tasks`):
+- `POST /api/agent/tasks` – Submit single-agent task
   - Request body:
     ```json
     {
-      "description": "Add authentication to API",
-      "goal": "Implement JWT authentication",
+      "description": "Add logging to UserService",
+      "goal": "Add SLF4J logging to all public methods",
       "projectPath": "/path/to/project",
       "personaCode": "SR_SOFTWARE_ENGINEER",
-      "maxIterations": 50,
-      "requiresApproval": false
+      "maxIterations": 25
     }
     ```
   - Response: `{"taskId": "uuid", "status": "PENDING"}`
 
 - `GET /api/agent/tasks/{taskId}` – Get task status and result
-  - Response: `{"taskId": "...", "status": "COMPLETED", "result": {...}}`
-
 - `GET /api/agent/tasks/{taskId}/events` – Stream execution events (SSE)
-  - Server-Sent Events stream
-  - Events: `STARTED`, `TOOL_EXECUTION`, `LLM_RESPONSE`, `COMPLETED`, `FAILED`
-
 - `GET /api/agent/tasks` – List all tasks (with filters)
-  - Query params: `status`, `personaCode`, `limit`
+
+**Overseer Agent** (`/api/overseer/tasks`) - Complex Task Planning:
+- `POST /api/overseer/tasks` – Submit complex task requiring planning
+  - Request body:
+    ```json
+    {
+      "goal": "Add user authentication feature",
+      "description": "Create entity, repository, service, and tests",
+      "projectPath": "/path/to/project",
+      "constraints": ["Use PostgreSQL", "Follow existing patterns"],
+      "maxIterations": 25
+    }
+    ```
+  - Response: `{"taskId": "uuid", "status": "PLANNING"}`
+
+- `GET /api/overseer/tasks/{taskId}` – Get task status, execution plan, and results
+- `GET /api/overseer/tasks` – List overseer tasks (with filters)
+
+**When to use which:**
+- **Simple Agent** (`/api/agent/tasks`): Single-file changes, focused refactoring, quick fixes
+- **Overseer Agent** (`/api/overseer/tasks`): Multi-file features, layered changes, complex refactoring
+
+See [OVERSEER-API-GUIDE.md](docs/OVERSEER-API-GUIDE.md) for detailed documentation.
 
 ### Usage Analytics
 - `GET /api/usage/logs` – List usage logs with filters (persona, provider, operation, date range)
@@ -914,36 +969,68 @@ spring:
 
 ## Hybrid Workflow: Claude Code + Persona Agent
 
-The Persona Framework enables a powerful hybrid workflow combining human-guided AI (Claude Code) with autonomous execution (Persona Agent).
+The Persona Framework enables a powerful hybrid workflow combining human-guided AI (Claude Code) with autonomous execution (Persona Agent and OverseerAgent).
+
+### Three-Tier Development Model
+
+```
+┌────────────────────────────────────────────────────────┐
+│  Claude Code (Human-guided AI)                         │
+│  - Research and understand codebases                   │
+│  - Make architectural decisions                        │
+│  - Review and validate work                            │
+│  - Handle ambiguity and complex reasoning              │
+└───────────────────┬────────────────────────────────────┘
+                    │ Delegates complex tasks
+                    ↓
+┌────────────────────────────────────────────────────────┐
+│  OverseerAgent (AI Planning & Coordination)            │
+│  - Break down complex tasks into subtasks              │
+│  - Create execution plans with dependencies            │
+│  - Validate results against criteria                   │
+│  - Coordinate multi-step execution                     │
+└───────────────────┬────────────────────────────────────┘
+                    │ Delegates subtasks
+                    ↓
+┌────────────────────────────────────────────────────────┐
+│  AgentOrchestrator (AI Execution)                      │
+│  - Execute focused subtasks                            │
+│  - Use tools (read, write, edit files)                 │
+│  - Multi-turn reasoning                                │
+│  - Report results back to overseer                     │
+└────────────────────────────────────────────────────────┘
+```
 
 ### Workflow Patterns
 
-#### Pattern 1: Research → Autonomous Implementation
+#### Pattern 1: Research → Planning → Autonomous Implementation
 ```
-1. Claude Code: Research codebase, design solution, create plan
-2. Handoff: Document instructions in markdown
-3. Persona Agent: Autonomous implementation of the plan
-4. Review: Human validates and merges
+1. Claude Code: Research codebase, design solution
+2. OverseerAgent: Break down into execution plan
+3. AgentOrchestrator: Execute each subtask
+4. OverseerAgent: Validate results
+5. Claude Code: Review and merge
 ```
 
 **Example:**
 ```bash
-# 1. Claude Code researches and creates IMPLEMENTATION-PLAN.md
-
-# 2. Submit to Persona for autonomous execution
-curl -X POST http://localhost:8989/api/agent/tasks \
+# Submit complex task to OverseerAgent
+curl -X POST http://localhost:8989/api/overseer/tasks \
   -H 'Content-Type: application/json' \
   -d '{
-    "description": "Implement user authentication",
-    "goal": "Read IMPLEMENTATION-PLAN.md and execute all steps",
+    "goal": "Add user authentication feature",
+    "description": "Create entity, repository, service layer, and tests",
     "projectPath": "/home/user/project",
-    "personaCode": "SR_SOFTWARE_ENGINEER",
-    "maxIterations": 100,
-    "requiresApproval": false
+    "constraints": [
+      "Use PostgreSQL for persistence",
+      "Follow existing project patterns",
+      "Include comprehensive unit tests"
+    ],
+    "maxIterations": 25
   }'
 
-# 3. Monitor progress
-curl -N http://localhost:8989/api/agent/tasks/{taskId}/events
+# Monitor execution plan and results
+curl http://localhost:8989/api/overseer/tasks/{taskId}
 ```
 
 #### Pattern 2: Test-Driven Development
@@ -995,23 +1082,30 @@ Automated test execution with agent-driven fixes:
 **When to use Claude Code:**
 - Research and understanding codebases
 - High-level planning and architecture
-- Complex decision-making
+- Complex decision-making requiring judgment
 - Code review and quality assessment
-- Documentation writing
+- Writing documentation and specifications
 
-**When to use Persona Agent:**
-- Repetitive implementation tasks
-- Test creation from specifications
-- Multi-file refactoring
-- Dependency updates
-- Documentation from code
+**When to use OverseerAgent:**
+- Complex features spanning multiple layers
+- Multi-file coordinated changes
+- Tasks requiring planning and validation
+- Features with clear validation criteria
+- Work that benefits from subtask breakdown
 
-**When to use Hybrid:**
-- Large features requiring planning + implementation
+**When to use Simple Agent:**
+- Single-file modifications
+- Focused refactoring tasks
+- Quick fixes and improvements
+- Test generation from specifications
+- Simple documentation updates
+
+**When to use Hybrid (All Three):**
+- Large features requiring architecture + planning + implementation
 - Test-driven development workflows
-- Legacy code modernization
-- Performance optimization (profile → fix → validate)
-- Security audits (scan → fix → verify)
+- Legacy code modernization projects
+- Performance optimization (analyze → plan → fix → validate)
+- Security enhancements (audit → plan → remediate → verify)
 
 ### Success Metrics
 
