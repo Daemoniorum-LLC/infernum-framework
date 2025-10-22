@@ -819,6 +819,32 @@ Default path: `/persona-admin`.
 - `GET /api/agent/tasks/{taskId}/events` – Stream execution events (SSE)
 - `GET /api/agent/tasks` – List all tasks (with filters)
 
+**Delegation API** (`/api/delegation`) - Multi-Persona Task Routing:
+- `POST /api/delegation/analyze` – Analyze task and create delegation plan
+  - Request body:
+    ```json
+    {
+      "goal": "Optimize database queries",
+      "description": "Review and optimize slow queries in UserService",
+      "projectPath": "/path/to/project",
+      "fileContexts": [
+        {
+          "relativePath": "src/main/kotlin/UserService.kt",
+          "content": "...",
+          "language": "kotlin",
+          "lineCount": 150,
+          "sizeBytes": 4500
+        }
+      ]
+    }
+    ```
+  - Response: Delegation plan with persona assignment, confidence, reasoning, subtasks
+
+- `POST /api/delegation/execute` – Execute task with delegation
+  - Analyzes task, routes to appropriate persona(s), coordinates execution
+  - Supports file context transmission (filesystem-agnostic)
+  - Returns consolidated results with execution metrics
+
 **Overseer Agent** (`/api/overseer/tasks`) - Complex Task Planning:
 - `POST /api/overseer/tasks` – Submit complex task requiring planning
   - Request body:
