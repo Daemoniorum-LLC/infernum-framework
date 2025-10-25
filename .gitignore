@@ -49,5 +49,6 @@ persona-admin-ui/dist/
 persona-admin-ui/.vite/
 persona-admin-ui/.eslintcache
 
-src/
-test/
+# Ignore root-level test directories created accidentally
+/src/
+/test/
