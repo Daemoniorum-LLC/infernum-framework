@@ -17,6 +17,24 @@ bael-test        # cd bael && playwright headed mode
 Prompts MUST be loaded from `/home/lilith/development/projects/grimoire/personas/` at runtime.
 PromptLoader configured to read from filesystem, NOT packaged JARs.
 
+# Git Workflow
+
+**CRITICAL**: Never work directly on main or development branches.
+
+For each roadmap/goal:
+1. Create feature branch: `git checkout -b feature/goal-name`
+2. Commit regularly as you make progress
+3. When complete, create PR for review
+
+Example:
+```bash
+git checkout -b feature/streaming-chat
+# make changes
+git add -A && git commit -m "feat: streaming implementation"
+# continue work...
+git push origin feature/streaming-chat
+```
+
 # Common Workflows
 
 Build + Run Leviathan:
