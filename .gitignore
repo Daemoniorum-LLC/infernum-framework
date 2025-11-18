@@ -39,12 +39,18 @@ logs/
 /build/
 persona-demo/.env
 
-# Environment variables with secrets  
+# Environment variables and secrets - NEVER commit these files
 .env
 .env.local
 .env.*.local
 hydra/.env
 */.env
+credentials.json
+**/credentials.json
+secrets.yaml
+**/secrets.yaml
+*.credentials
+**/*.credentials
 
 # Ignore root-level test directories created accidentally
 /src/
