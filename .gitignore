@@ -45,6 +45,7 @@ out/
 logs/
 !**/src/**/logs/
 *.log
+*.out
 /persona-admin-ui/node_modules/*
 /temp-ui
 /temp
