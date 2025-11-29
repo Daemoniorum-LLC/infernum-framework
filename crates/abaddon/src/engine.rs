@@ -11,6 +11,7 @@ use infernum_core::{
     TokenStream,
 };
 use parking_lot::Mutex;
+use tokio::sync::mpsc;
 
 use crate::config::EngineConfig;
 use crate::loader::{ModelConfig, ModelFiles, ModelLoader, WeightFiles};
@@ -37,7 +38,7 @@ pub trait InferenceEngine: Send + Sync {
     fn is_ready(&self) -> bool;
 }
 
-/// Loaded model state.
+/// Loaded model state (wrapped in Arc for streaming support).
 struct LoadedModel {
     model: Mutex<Llama>,
     tokenizer: Tokenizer,
@@ -48,7 +49,7 @@ struct LoadedModel {
 pub struct Engine {
     config: EngineConfig,
     metadata: ModelMetadata,
-    loaded: Option<LoadedModel>,
+    loaded: Option<Arc<LoadedModel>>,
     device: Device,
     dtype: DType,
 }
@@ -93,7 +94,7 @@ impl Engine {
         Ok(Self {
             config,
             metadata,
-            loaded: Some(loaded),
+            loaded: Some(Arc::new(loaded)),
             device,
             dtype,
         })
@@ -465,27 +466,222 @@ impl InferenceEngine for Engine {
     }
 
     async fn generate_stream(&self, request: GenerateRequest) -> Result<TokenStream> {
-        tracing::debug!(request_id = %request.request_id, "Starting streaming generation");
-
-        // For now, fall back to non-streaming and emit as single chunk
-        // TODO: Implement true streaming
-        let response = self.generate(request.clone()).await?;
-
         use futures::stream;
         use infernum_core::streaming::{StreamChunk, StreamChoice, StreamDelta};
+        use infernum_core::{FinishReason, Usage};
 
-        let chunks = vec![StreamChunk {
-            request_id: request.request_id,
-            model: self.metadata.id.clone(),
-            choices: vec![StreamChoice {
-                index: 0,
-                delta: StreamDelta::text(&response.choices[0].text),
-                finish_reason: response.choices[0].finish_reason,
-            }],
-            usage: Some(response.usage),
-        }];
+        tracing::debug!(request_id = %request.request_id, "Starting streaming generation");
 
-        Ok(TokenStream::new(stream::iter(chunks.into_iter().map(Ok))))
+        let loaded = Arc::clone(self.loaded.as_ref().ok_or_else(|| {
+            infernum_core::Error::Internal {
+                message: "Model not loaded".to_string(),
+            }
+        })?);
+
+        // Encode prompt before moving into the task
+        let prompt_text = match &request.prompt {
+            infernum_core::request::PromptInput::Text(s) => s.clone(),
+            infernum_core::request::PromptInput::Messages(msgs) => {
+                loaded.tokenizer.apply_chat_template(msgs, true)?
+            }
+            infernum_core::request::PromptInput::Tokens(_) => {
+                return Err(infernum_core::Error::Internal {
+                    message: "Pre-tokenized input not yet supported".to_string(),
+                });
+            }
+        };
+
+        let prompt_tokens = loaded.tokenizer.encode(&prompt_text, true)?;
+        let prompt_token_count = prompt_tokens.len() as u32;
+
+        // Create channel for streaming tokens
+        let (tx, rx) = mpsc::channel::<Result<StreamChunk>>(32);
+
+        let request_id = request.request_id.clone();
+        let model_id = self.metadata.id.clone();
+        let device = self.device.clone();
+        let max_tokens = request.sampling.max_tokens;
+        let sampling_params = request.sampling.clone();
+        let eos_token = loaded.config.eos_token_id.unwrap_or(2);
+
+        // Spawn token generation task - uses Arc<LoadedModel> to share state
+        tokio::task::spawn_blocking(move || {
+            let mut sampler = Sampler::new(sampling_params);
+            let mut model_guard = loaded.model.lock();
+            model_guard.clear_cache();
+
+            // Convert prompt to tensor
+            let input_ids = match Tensor::new(prompt_tokens.as_slice(), &device) {
+                Ok(t) => t,
+                Err(e) => {
+                    let _ = tx.blocking_send(Err(infernum_core::Error::Internal {
+                        message: format!("Failed to create input tensor: {}", e),
+                    }));
+                    return;
+                }
+            };
+
+            let input_ids = match input_ids.unsqueeze(0) {
+                Ok(t) => t,
+                Err(e) => {
+                    let _ = tx.blocking_send(Err(infernum_core::Error::Internal {
+                        message: format!("Failed to unsqueeze: {}", e),
+                    }));
+                    return;
+                }
+            };
+
+            // Prefill
+            let logits = match model_guard.forward(&input_ids, 0) {
+                Ok(l) => l,
+                Err(e) => {
+                    let _ = tx.blocking_send(Err(infernum_core::Error::Internal {
+                        message: format!("Forward pass failed: {}", e),
+                    }));
+                    return;
+                }
+            };
+
+            let seq_len = prompt_tokens.len();
+            let last_logits = match logits.i((0, seq_len - 1, ..)) {
+                Ok(l) => l,
+                Err(e) => {
+                    let _ = tx.blocking_send(Err(infernum_core::Error::Internal {
+                        message: format!("Failed to index logits: {}", e),
+                    }));
+                    return;
+                }
+            };
+
+            let logits_vec: Vec<f32> = match last_logits.to_vec1() {
+                Ok(v) => v,
+                Err(e) => {
+                    let _ = tx.blocking_send(Err(infernum_core::Error::Internal {
+                        message: format!("Failed to convert logits: {}", e),
+                    }));
+                    return;
+                }
+            };
+
+            let mut next_token = sampler.sample(&logits_vec);
+            let mut generated_count: u32 = 0;
+            let mut full_text = String::new();
+
+            for _ in 0..max_tokens {
+                if next_token == eos_token {
+                    break;
+                }
+
+                generated_count += 1;
+
+                // Decode token
+                let token_text = match loaded.tokenizer.decode_token(next_token) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        let _ = tx.blocking_send(Err(e));
+                        return;
+                    }
+                };
+
+                full_text.push_str(&token_text);
+
+                // Send streaming chunk
+                let chunk = StreamChunk {
+                    request_id: request_id.clone(),
+                    model: model_id.clone(),
+                    choices: vec![StreamChoice {
+                        index: 0,
+                        delta: StreamDelta::text(&token_text),
+                        finish_reason: None,
+                    }],
+                    usage: None,
+                };
+
+                if tx.blocking_send(Ok(chunk)).is_err() {
+                    // Receiver dropped, stop generation
+                    return;
+                }
+
+                // Check stop sequences
+                if sampler.is_stop_token(&full_text) {
+                    break;
+                }
+
+                // Generate next token
+                let next_input = match Tensor::new(&[next_token], &device) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        let _ = tx.blocking_send(Err(infernum_core::Error::Internal {
+                            message: format!("Failed to create next input: {}", e),
+                        }));
+                        return;
+                    }
+                };
+
+                let next_input = match next_input.unsqueeze(0) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        let _ = tx.blocking_send(Err(infernum_core::Error::Internal {
+                            message: format!("Failed to unsqueeze: {}", e),
+                        }));
+                        return;
+                    }
+                };
+
+                let logits = match model_guard.forward(&next_input, seq_len + generated_count as usize - 1) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        let _ = tx.blocking_send(Err(infernum_core::Error::Internal {
+                            message: format!("Forward pass failed: {}", e),
+                        }));
+                        return;
+                    }
+                };
+
+                let last_logits = match logits.i((0, 0, ..)) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        let _ = tx.blocking_send(Err(infernum_core::Error::Internal {
+                            message: format!("Failed to index logits: {}", e),
+                        }));
+                        return;
+                    }
+                };
+
+                let logits_vec: Vec<f32> = match last_logits.to_vec1() {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let _ = tx.blocking_send(Err(infernum_core::Error::Internal {
+                            message: format!("Failed to convert logits: {}", e),
+                        }));
+                        return;
+                    }
+                };
+
+                next_token = sampler.sample(&logits_vec);
+            }
+
+            // Send final chunk with usage info
+            let final_chunk = StreamChunk {
+                request_id: request_id.clone(),
+                model: model_id.clone(),
+                choices: vec![StreamChoice {
+                    index: 0,
+                    delta: StreamDelta::empty(),
+                    finish_reason: Some(FinishReason::Stop),
+                }],
+                usage: Some(Usage::new(prompt_token_count, generated_count)),
+            };
+
+            let _ = tx.blocking_send(Ok(final_chunk));
+        });
+
+        // Convert receiver to stream
+        let stream = stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|item| (item, rx))
+        });
+
+        Ok(TokenStream::new(stream))
     }
 
     async fn embed(&self, request: EmbedRequest) -> Result<EmbedResponse> {

@@ -48,6 +48,7 @@
 pub mod backend;
 pub mod config;
 pub mod engine;
+pub mod gguf;
 pub mod kv_cache;
 pub mod loader;
 pub mod models;
@@ -56,6 +57,7 @@ pub mod tokenizer;
 
 pub use config::{EngineConfig, EngineConfigBuilder, MemoryConfig};
 pub use engine::{Engine, InferenceEngine};
+pub use gguf::{GgufLoader, GgufMetadata, QuantizedModelConfig};
 pub use kv_cache::KVCache;
 pub use loader::ModelLoader;
 pub use sampler::Sampler;

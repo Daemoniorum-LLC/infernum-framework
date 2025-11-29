@@ -21,7 +21,7 @@ pub mod scheduler;
 
 pub use registry::{ModelRegistry, RegisteredModel};
 pub use router::{RequestRouter, RoutingStrategy};
-pub use scheduler::BatchScheduler;
+pub use scheduler::{BatchScheduler, Priority, SchedulerConfig, SchedulerStats};
 
 use std::sync::Arc;
 

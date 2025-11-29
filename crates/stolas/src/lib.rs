@@ -20,7 +20,7 @@ pub mod embedding;
 pub mod rag;
 pub mod store;
 
-pub use chunker::{Chunker, ChunkingStrategy};
-pub use embedding::Embedder;
-pub use rag::{RagPipeline, RetrievalConfig};
-pub use store::{VectorStore, VectorRecord, SearchResult};
+pub use chunker::{Chunk, Chunker, ChunkingStrategy};
+pub use embedding::{Embedder, MockEmbedder};
+pub use rag::{ContextItem, Document, RagPipeline, RetrievalConfig};
+pub use store::{InMemoryStore, SearchParams, SearchResult, VectorRecord, VectorStore};
