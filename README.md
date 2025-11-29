@@ -1,6 +1,6 @@
 # Persona Framework
 
-Autonomous agent platform built with Kotlin/Spring Boot, React, and IntelliJ tooling. The repo hosts the core runtime, REST API, admin UI, IDE plugin, and a collection of verticalized services (art generation and CNC ERP microservices).
+Autonomous agent platform built with Kotlin/Spring Boot, React, and IntelliJ tooling. The repo hosts the core runtime, REST API, admin UI, IDE plugin, and a collection of verticalized services (art generation and Vulcan microservices).
 
 ## What’s in the repo
 ### Core applications
@@ -66,7 +66,7 @@ Autonomous agent platform built with Kotlin/Spring Boot, React, and IntelliJ too
 - Paimon (IntelliJ plugin dev): `./gradlew :paimon:runIde`
 - Art Service: `./gradlew :art-service:bootRun`
 - Nexus Standalone: `./gradlew :nexus-standalone:bootRun`
-- CNC ERP microservices (one at a time, choose a free port): `./gradlew :cnc-customer-service:bootRun` (repeat for other `cnc-*` services)
+- Vulcan microservices (one at a time, choose a free port): `./gradlew :cnc-customer-service:bootRun` (repeat for other `cnc-*` services)
 
 ## Testing
 - Backend/agents/services: `./gradlew test`
