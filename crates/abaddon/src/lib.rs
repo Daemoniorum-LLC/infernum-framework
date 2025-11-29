@@ -50,6 +50,7 @@ pub mod config;
 pub mod engine;
 pub mod kv_cache;
 pub mod loader;
+pub mod models;
 pub mod sampler;
 pub mod tokenizer;
 
