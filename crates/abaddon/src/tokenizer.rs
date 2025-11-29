@@ -32,41 +32,40 @@ impl Tokenizer {
 
     /// Creates a tokenizer from a pre-trained model name.
     ///
+    /// Note: This requires the tokenizer.json to be downloaded from HuggingFace Hub first.
+    /// Use `ModelLoader::download` to fetch model files including the tokenizer.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the tokenizer cannot be loaded.
-    pub fn from_pretrained(name: &str) -> Result<Self> {
-        let inner = tokenizers::Tokenizer::from_pretrained(name, None)
-            .map_err(|e| infernum_core::Error::Tokenization {
-                message: e.to_string(),
-            })?;
-
-        Ok(Self::from_tokenizer(inner))
+    /// Returns an error if the tokenizer file cannot be found or loaded.
+    pub fn from_pretrained(_name: &str) -> Result<Self> {
+        // The tokenizers crate's from_pretrained feature requires additional dependencies.
+        // For now, users should download tokenizer.json via ModelLoader and use from_file.
+        Err(infernum_core::Error::Tokenization {
+            message: "from_pretrained not available; use from_file with downloaded tokenizer.json"
+                .to_string(),
+        })
     }
 
     /// Creates a wrapper from an existing tokenizer.
     fn from_tokenizer(inner: tokenizers::Tokenizer) -> Self {
-        // Try to extract special token IDs
-        let bos_token_id = inner
-            .get_added_vocabulary()
-            .get_vocab(true)
+        // Try to extract special token IDs from added vocabulary
+        let added_vocab = inner.get_added_vocabulary().get_vocab();
+
+        let bos_token_id = added_vocab
             .get("<s>")
-            .or_else(|| inner.get_added_vocabulary().get_vocab(true).get("<|begin_of_text|>"))
+            .or_else(|| added_vocab.get("<|begin_of_text|>"))
             .copied();
 
-        let eos_token_id = inner
-            .get_added_vocabulary()
-            .get_vocab(true)
+        let eos_token_id = added_vocab
             .get("</s>")
-            .or_else(|| inner.get_added_vocabulary().get_vocab(true).get("<|end_of_text|>"))
-            .or_else(|| inner.get_added_vocabulary().get_vocab(true).get("<|eot_id|>"))
+            .or_else(|| added_vocab.get("<|end_of_text|>"))
+            .or_else(|| added_vocab.get("<|eot_id|>"))
             .copied();
 
-        let pad_token_id = inner
-            .get_added_vocabulary()
-            .get_vocab(true)
+        let pad_token_id = added_vocab
             .get("<pad>")
-            .or_else(|| inner.get_added_vocabulary().get_vocab(true).get("[PAD]"))
+            .or_else(|| added_vocab.get("[PAD]"))
             .copied();
 
         Self {

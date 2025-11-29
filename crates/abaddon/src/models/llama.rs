@@ -2,8 +2,6 @@
 //!
 //! Supports Llama 2, Llama 3, Llama 3.1, and Llama 3.2 variants.
 
-use std::sync::Arc;
-
 use candle_core::{DType, Device, IndexOp, Module, Result as CandleResult, Tensor, D};
 use candle_nn::{embedding, linear_no_bias, Embedding, Linear, VarBuilder};
 use serde::Deserialize;
@@ -410,7 +408,7 @@ impl Llama {
     /// # Returns
     /// Logits tensor of shape (batch_size, seq_len, vocab_size)
     pub fn forward(&mut self, input_ids: &Tensor, start_pos: usize) -> CandleResult<Tensor> {
-        let (batch_size, seq_len) = input_ids.dims2()?;
+        let (_batch_size, seq_len) = input_ids.dims2()?;
 
         // Embed tokens
         let mut hidden_states = self.embed_tokens.forward(input_ids)?;

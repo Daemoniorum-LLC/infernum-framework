@@ -4,14 +4,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
-use candle_core::{DType, Device, Tensor};
+use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use infernum_core::{
     EmbedRequest, EmbedResponse, GenerateRequest, GenerateResponse, ModelMetadata, Result,
     TokenStream,
 };
 use parking_lot::Mutex;
-use safetensors::SafeTensors;
 
 use crate::config::EngineConfig;
 use crate::loader::{ModelConfig, ModelFiles, ModelLoader, WeightFiles};
@@ -106,10 +105,10 @@ impl Engine {
 
         match &config.device {
             DeviceType::Cpu => Ok(Device::Cpu),
-            DeviceType::Cuda { device_id } => {
+            DeviceType::Cuda { device_id: _device_id } => {
                 #[cfg(feature = "cuda")]
                 {
-                    Device::new_cuda(*device_id).map_err(|e| infernum_core::Error::Backend {
+                    Device::new_cuda(_device_id).map_err(|e| infernum_core::Error::Backend {
                         backend: "cuda".to_string(),
                         message: e.to_string(),
                     })
@@ -204,29 +203,26 @@ impl Engine {
                     message: format!("Failed to read weights: {}", e),
                 })?;
 
-                let tensors = SafeTensors::deserialize(&data).map_err(|e| {
+                let vb = VarBuilder::from_buffered_safetensors(data, dtype, device).map_err(|e| {
                     infernum_core::Error::ModelLoad {
-                        message: format!("Failed to parse safetensors: {}", e),
+                        message: format!("Failed to create VarBuilder: {}", e),
                     }
                 })?;
-
-                // For single file, we need to use unsafe_read since the data is on the stack
-                let vb = VarBuilder::from_safetensors(vec![data], dtype, device);
                 Ok(vb)
             }
             WeightFiles::ShardedSafetensors { shards, .. } => {
-                let mut all_data = Vec::new();
-                for shard in shards {
-                    let data = std::fs::read(shard).map_err(|e| infernum_core::Error::ModelLoad {
-                        message: format!("Failed to read shard {}: {}", shard.display(), e),
-                    })?;
-                    all_data.push(data);
-                }
-
-                let vb = VarBuilder::from_safetensors(all_data, dtype, device);
+                // Use memory-mapped loading for sharded files for better memory efficiency
+                // SAFETY: The files are read-only and we control the paths
+                let vb = unsafe {
+                    VarBuilder::from_mmaped_safetensors(shards, dtype, device).map_err(|e| {
+                        infernum_core::Error::ModelLoad {
+                            message: format!("Failed to mmap shards: {}", e),
+                        }
+                    })?
+                };
                 Ok(vb)
             }
-            WeightFiles::Gguf(path) => {
+            WeightFiles::Gguf(_path) => {
                 Err(infernum_core::Error::ModelLoad {
                     message: "GGUF loading not yet implemented".to_string(),
                 })
@@ -241,7 +237,8 @@ impl Engine {
 
     /// Builds model metadata from config.
     fn build_metadata(config: &EngineConfig, model_config: &ModelConfig) -> Result<ModelMetadata> {
-        use infernum_core::{LlamaVersion, ModelArchitecture, ModelId};
+        use infernum_core::model::LlamaVersion;
+        use infernum_core::{ModelArchitecture, ModelId};
 
         let id = match &config.model {
             infernum_core::ModelSource::HuggingFace { repo_id, .. } => repo_id.clone(),

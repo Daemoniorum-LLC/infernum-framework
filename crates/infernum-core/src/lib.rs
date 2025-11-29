@@ -21,7 +21,7 @@ pub mod streaming;
 pub mod types;
 
 pub use error::{Error, Result};
-pub use model::{ModelArchitecture, ModelId, ModelMetadata, ModelSource};
+pub use model::{ModelArchitecture, ModelMetadata, ModelSource};
 pub use request::{EmbedRequest, GenerateRequest, PromptInput};
 pub use response::{EmbedResponse, GenerateResponse, TokenInfo};
 pub use sampling::SamplingParams;
