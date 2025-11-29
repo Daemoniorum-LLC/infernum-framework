@@ -1,0 +1,48 @@
+[package]
+name = "beleth"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Autonomous agent framework - The King commands legions"
+
+[dependencies]
+infernum-core = { path = "../infernum-core" }
+abaddon = { path = "../abaddon" }
+malphas = { path = "../malphas" }
+stolas = { path = "../stolas" }
+dantalion = { path = "../dantalion" }
+grimoire-loader = { path = "../grimoire-loader" }
+
+# Async
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+# HTTP (for tools)
+reqwest = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Observability
+tracing = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+chrono = { workspace = true }
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+mockall = { workspace = true }
+wiremock = { workspace = true }

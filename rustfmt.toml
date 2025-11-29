@@ -1,0 +1,30 @@
+# Infernum Rust formatting configuration
+edition = "2021"
+max_width = 100
+tab_spaces = 4
+use_small_heuristics = "Default"
+newline_style = "Unix"
+
+# Imports
+imports_granularity = "Crate"
+group_imports = "StdExternalCrate"
+reorder_imports = true
+reorder_modules = true
+
+# Comments
+wrap_comments = false
+normalize_comments = false
+normalize_doc_attributes = true
+
+# Functions
+fn_single_line = false
+fn_args_layout = "Tall"
+
+# Structs
+struct_lit_single_line = true
+
+# Control flow
+control_brace_style = "AlwaysSameLine"
+
+# Match
+match_block_trailing_comma = true

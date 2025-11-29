@@ -1,0 +1,61 @@
+[package]
+name = "infernum"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Infernum CLI - From the depths, intelligence rises"
+
+[[bin]]
+name = "infernum"
+path = "src/main.rs"
+
+[features]
+default = ["server"]
+server = ["infernum-server"]
+cuda = ["abaddon/cuda", "asmodeus/cuda"]
+metal = ["abaddon/metal"]
+
+[dependencies]
+infernum-core = { path = "../infernum-core" }
+abaddon = { path = "../abaddon" }
+malphas = { path = "../malphas" }
+stolas = { path = "../stolas" }
+beleth = { path = "../beleth" }
+asmodeus = { path = "../asmodeus" }
+dantalion = { path = "../dantalion" }
+grimoire-loader = { path = "../grimoire-loader" }
+infernum-server = { path = "../infernum-server", optional = true }
+
+# Async
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# CLI
+clap = { workspace = true }
+dialoguer = { workspace = true }
+indicatif = { workspace = true }
+console = { workspace = true }
+
+# Configuration
+figment = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+
+# Error handling
+color-eyre = { workspace = true }
+anyhow = { workspace = true }
+
+# Observability
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+assert_cmd = "2.0"
+predicates = "3.1"

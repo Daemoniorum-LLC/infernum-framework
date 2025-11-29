@@ -1,0 +1,49 @@
+[package]
+name = "asmodeus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Model fine-tuning and adaptation layer - The King of Demons shapes minds"
+
+[features]
+default = []
+cuda = ["abaddon/cuda"]
+
+[dependencies]
+infernum-core = { path = "../infernum-core" }
+abaddon = { path = "../abaddon" }
+dantalion = { path = "../dantalion" }
+
+# Async
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+# ML
+candle-core = { workspace = true }
+candle-nn = { workspace = true }
+safetensors = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Observability
+tracing = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+chrono = { workspace = true }
+indicatif = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+tempfile = "3.14"

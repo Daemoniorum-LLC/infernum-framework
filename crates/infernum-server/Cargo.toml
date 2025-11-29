@@ -1,0 +1,48 @@
+[package]
+name = "infernum-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "HTTP API server with OpenAI-compatible endpoints"
+
+[dependencies]
+infernum-core = { path = "../infernum-core" }
+abaddon = { path = "../abaddon" }
+malphas = { path = "../malphas" }
+stolas = { path = "../stolas" }
+beleth = { path = "../beleth" }
+dantalion = { path = "../dantalion" }
+
+# Async
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+# HTTP
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+hyper = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Observability
+tracing = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+axum-test = "16.4"

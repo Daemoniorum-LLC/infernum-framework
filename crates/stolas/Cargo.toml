@@ -1,0 +1,51 @@
+[package]
+name = "stolas"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Knowledge and RAG engine - The Prince reveals hidden knowledge"
+
+[features]
+default = ["lance"]
+lance = ["dep:lance", "dep:lancedb"]
+postgres = []
+qdrant = []
+
+[dependencies]
+infernum-core = { path = "../infernum-core" }
+abaddon = { path = "../abaddon" }
+dantalion = { path = "../dantalion" }
+
+# Async
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+# Vector storage
+lance = { workspace = true, optional = true }
+lancedb = { workspace = true, optional = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Observability
+tracing = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+dashmap = { workspace = true }
+bytes = { workspace = true }
+regex = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+tempfile = "3.14"

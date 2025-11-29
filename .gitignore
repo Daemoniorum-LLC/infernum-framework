@@ -1,102 +1,42 @@
-# Project Files
-persona-admin-ui/node_modules/
-persona-admin-ui/node_modules/*
-/kotlin-persona
-/generators
-/spring-persona/
-/temp/
-/temp-ui/
-.intellijPlatform/
+# Rust build artifacts
+/target/
+**/*.rs.bk
+Cargo.lock
 
-# Node.js
-/node_modules/
-**/node_modules/
-/package-lock.json
-**/dist/
-**/.next/
-**/.output/
-**/.turbo/
-**/.vite/
-**/coverage/
-
-# PDF generation (keep HTML, ignore PDF)
-BUSINESS_PLAN.pdf
-
-# Gradle and build outputs
-.gradle/
-**/.gradle/
-build/
-**/build/
-out/
-**/out/
-.kotlin/
-
-# IDEs
+# IDE
 .idea/
-**/.idea/
-*.iml
 .vscode/
-**/.vscode/
+*.swp
+*.swo
+*~
 
 # OS
-**/.DS_Store
+.DS_Store
+Thumbs.db
+
+# Model cache
+/models/
+*.gguf
+*.safetensors
+*.bin
+*.pt
+*.pth
 
 # Logs
-logs/
-!**/src/**/logs/
 *.log
-*.out
-/persona-admin-ui/node_modules/*
-/temp-ui
-/temp
-/spring-persona
-/build/
-persona-demo/.env
+logs/
 
-# Environment variables and secrets - NEVER commit these files
+# Environment
 .env
 .env.local
-.env.*.local
-hydra/.env
-*/.env
-credentials.json
-**/credentials.json
-secrets.yaml
-**/secrets.yaml
-*.credentials
-**/*.credentials
 
-# Ignore root-level test directories created accidentally
-/src/
-/test/
+# Benchmarks
+/criterion/
 
-# Autonomous development logs and artifacts
-autonomous-logs/
-*.pid
-keepalive.log
-hydra-keepalive.log
+# Coverage
+/coverage/
+*.profraw
+*.profdata
 
-# Separate project directories (have own repos)
-# These modules now live as sibling directories in /development/projects/
-# They are referenced in settings.gradle.kts as external projects
-# No need to ignore them here since they're no longer subdirectories
-
-# Grimoire IDE Starter variants (developer workspace)
-# Keep these tracked for now but ignore build artifacts
-docs/developer/lilith/grimoire*/target/
-docs/developer/lilith/grimoire*/Cargo.lock
-docs/developer/lilith/ide-starter*/target/
-docs/developer/lilith/ide-starter*/Cargo.lock
-
-# Test artifacts
-test-results/
-test-file.txt
-tmp/hsperfdata_root/
-hydra-0.1.0.jar
-BOOT-INF/
-*.jar
-workspace/
-.gradle-local/**
-leviathan/leviathan.out
-*.out
-*/*.out
+# Documentation build
+/doc/
