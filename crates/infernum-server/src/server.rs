@@ -163,7 +163,8 @@ impl Server {
             .route("/v1/models", get(list_models))
             .route("/v1/chat/completions", post(chat_completions))
             .route("/v1/completions", post(completions))
-            .route("/v1/embeddings", post(embeddings))
+            // NOTE: /v1/embeddings disabled until embedding models are supported
+            // .route("/v1/embeddings", post(embeddings))
             // Internal management endpoints
             .route("/api/models/load", post(load_model))
             .route("/api/models/unload", post(unload_model))
@@ -206,6 +207,16 @@ impl Server {
         // Load model if specified
         if let Some(model) = &self.config.model {
             self.load_model(model).await?;
+            tracing::info!(model = %model, "Model loaded and ready for inference");
+        } else {
+            tracing::warn!("=======================================================");
+            tracing::warn!("  SERVER STARTED WITHOUT A MODEL");
+            tracing::warn!("  All inference requests will fail until a model is loaded.");
+            tracing::warn!("  ");
+            tracing::warn!("  To load a model, either:");
+            tracing::warn!("    1. Restart with: infernum serve --model <model>");
+            tracing::warn!("    2. POST to /api/models/load with {{\"model\": \"<model>\"}}");
+            tracing::warn!("=======================================================");
         }
 
         let router = self.router();
@@ -628,6 +639,8 @@ async fn completions(
     }
 }
 
+// TODO: Re-enable when embedding models are supported
+#[allow(dead_code)]
 async fn embeddings(
     State(state): State<Arc<AppState>>,
     Json(req): Json<EmbeddingRequest>,

@@ -8,6 +8,7 @@ use clap::{Parser, Subcommand};
 use color_eyre::eyre::Result;
 
 mod commands;
+mod config;
 
 #[derive(Parser)]
 #[command(name = "infernum")]
@@ -71,15 +72,16 @@ enum Commands {
         stream: bool,
     },
 
-    /// Generate embeddings
-    Embed {
-        /// Text to embed
-        text: String,
-
-        /// Model to use
-        #[arg(short, long)]
-        model: Option<String>,
-    },
+    // TODO: Re-enable when embedding models are supported
+    // /// Generate embeddings
+    // Embed {
+    //     /// Text to embed
+    //     text: String,
+    //
+    //     /// Model to use
+    //     #[arg(short, long)]
+    //     model: Option<String>,
+    // },
 
     /// Manage models
     Model {
@@ -100,6 +102,30 @@ enum Commands {
 
     /// Display version and build info
     Version,
+
+    /// Manage configuration
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigAction {
+    /// Show current configuration
+    Show,
+
+    /// Set default model
+    SetModel {
+        /// Model identifier (HuggingFace repo ID or local path)
+        model: String,
+    },
+
+    /// Clear default model
+    ClearModel,
+
+    /// Show config file path
+    Path,
 }
 
 #[derive(Subcommand)]
@@ -148,14 +174,19 @@ async fn main() -> Result<()> {
 
     dantalion::init_logging(&telemetry_config);
 
+    // Load configuration for default values
+    let cfg = config::Config::load();
+
     match cli.command {
         Commands::Serve {
             host,
             port,
             model,
-            config,
+            config: config_file,
         } => {
-            commands::serve(host, port, model, config).await?;
+            // Use config default model if not specified on command line
+            let model = model.or(cfg.default_model.clone());
+            commands::serve(host, port, model, config_file).await?;
         }
 
         Commands::Generate {
@@ -165,12 +196,15 @@ async fn main() -> Result<()> {
             temperature,
             stream,
         } => {
+            // Use config default model if not specified on command line
+            let model = model.or(cfg.default_model.clone());
             commands::generate(prompt, model, max_tokens, temperature, stream).await?;
         }
 
-        Commands::Embed { text, model } => {
-            commands::embed(text, model).await?;
-        }
+        // TODO: Re-enable when embedding models are supported
+        // Commands::Embed { text, model } => {
+        //     commands::embed(text, model).await?;
+        // }
 
         Commands::Model { action } => match action {
             ModelAction::List => commands::model_list().await?,
@@ -180,12 +214,46 @@ async fn main() -> Result<()> {
         },
 
         Commands::Chat { model, system } => {
+            // Use config default model if not specified on command line
+            let model = model.or(cfg.default_model.clone());
             commands::chat(model, system).await?;
         }
 
         Commands::Version => {
             commands::version();
         }
+
+        Commands::Config { action } => match action {
+            ConfigAction::Show => {
+                config::show_config();
+            }
+            ConfigAction::SetModel { model } => {
+                let mut cfg = config::Config::load();
+                match cfg.set_default_model(&model) {
+                    Ok(()) => {
+                        println!("Default model set to: {}", model);
+                        println!("Config saved to: {}", config::Config::config_path().display());
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to save config: {}", e);
+                    }
+                }
+            }
+            ConfigAction::ClearModel => {
+                let mut cfg = config::Config::load();
+                match cfg.clear_default_model() {
+                    Ok(()) => {
+                        println!("Default model cleared.");
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to save config: {}", e);
+                    }
+                }
+            }
+            ConfigAction::Path => {
+                println!("{}", config::Config::config_path().display());
+            }
+        },
     }
 
     Ok(())

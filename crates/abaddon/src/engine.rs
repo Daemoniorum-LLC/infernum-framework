@@ -65,8 +65,11 @@ impl Engine {
         tracing::debug!(?config, "Engine configuration");
 
         // Determine device
-        let device = Self::select_device(&config)?;
+        let (device, device_info) = Self::select_device(&config)?;
         tracing::info!(device = ?device, "Using compute device");
+
+        // Print device info prominently for user visibility
+        eprintln!("\x1b[1mCompute Backend:\x1b[0m {}", device_info);
 
         // Determine dtype
         let dtype = DType::F16; // Default to F16 for efficiency
@@ -101,42 +104,50 @@ impl Engine {
     }
 
     /// Selects the compute device based on configuration and availability.
-    fn select_device(config: &EngineConfig) -> Result<Device> {
+    /// Returns both the device and a human-readable description.
+    fn select_device(config: &EngineConfig) -> Result<(Device, String)> {
         use infernum_core::DeviceType;
 
         match &config.device {
-            DeviceType::Cpu => Ok(Device::Cpu),
-            DeviceType::Cuda { device_id: _device_id } => {
+            DeviceType::Cpu => Ok((Device::Cpu, "CPU".to_string())),
+            DeviceType::Cuda { device_id } => {
                 #[cfg(feature = "cuda")]
                 {
-                    Device::new_cuda(_device_id).map_err(|e| infernum_core::Error::Backend {
+                    let device = Device::new_cuda(*device_id).map_err(|e| infernum_core::Error::Backend {
                         backend: "cuda".to_string(),
                         message: e.to_string(),
-                    })
+                    })?;
+                    Ok((device, format!("CUDA (GPU {})", device_id)))
                 }
                 #[cfg(not(feature = "cuda"))]
                 {
+                    eprintln!("\x1b[33mWarning:\x1b[0m CUDA requested but not compiled in, falling back to CPU");
+                    eprintln!("         Rebuild with: cargo build --features cuda");
                     tracing::warn!("CUDA requested but not compiled in, falling back to CPU");
-                    Ok(Device::Cpu)
+                    Ok((Device::Cpu, "CPU (CUDA unavailable)".to_string()))
                 }
             }
-            DeviceType::Metal { device_id: _ } => {
+            DeviceType::Metal { device_id } => {
                 #[cfg(feature = "metal")]
                 {
-                    Device::new_metal(0).map_err(|e| infernum_core::Error::Backend {
+                    let device = Device::new_metal(*device_id).map_err(|e| infernum_core::Error::Backend {
                         backend: "metal".to_string(),
                         message: e.to_string(),
-                    })
+                    })?;
+                    Ok((device, "Metal (Apple GPU)".to_string()))
                 }
                 #[cfg(not(feature = "metal"))]
                 {
+                    eprintln!("\x1b[33mWarning:\x1b[0m Metal requested but not compiled in, falling back to CPU");
+                    eprintln!("         Rebuild with: cargo build --features metal");
                     tracing::warn!("Metal requested but not compiled in, falling back to CPU");
-                    Ok(Device::Cpu)
+                    Ok((Device::Cpu, "CPU (Metal unavailable)".to_string()))
                 }
             }
             DeviceType::WebGpu => {
+                eprintln!("\x1b[33mWarning:\x1b[0m WebGPU not yet supported, falling back to CPU");
                 tracing::warn!("WebGPU not yet supported, falling back to CPU");
-                Ok(Device::Cpu)
+                Ok((Device::Cpu, "CPU (WebGPU not yet supported)".to_string()))
             }
         }
     }
