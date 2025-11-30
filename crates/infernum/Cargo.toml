@@ -32,6 +32,11 @@ infernum-server = { path = "../infernum-server", optional = true }
 # Async
 tokio = { workspace = true }
 async-trait = { workspace = true }
+futures = { workspace = true }
+
+# Model management
+hf-hub = { workspace = true }
+dirs = "5.0"
 
 # CLI
 clap = { workspace = true }
