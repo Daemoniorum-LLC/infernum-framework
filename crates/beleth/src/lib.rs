@@ -20,7 +20,7 @@ pub mod memory;
 pub mod planner;
 pub mod tool;
 
-pub use agent::{Agent, AgentBuilder, Persona, PersonaSource};
+pub use agent::{Agent, AgentAction, AgentBuilder, Persona, PersonaSource, StepResult, StepUsage};
 pub use memory::AgentMemory;
 pub use planner::{DefaultPlanner, Plan, PlanStep, Planner, PlanningStrategy};
 pub use tool::{
