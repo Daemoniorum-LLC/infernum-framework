@@ -24,7 +24,10 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 
 pub use logging::init_logging;
-pub use metrics::{InferenceMetrics, MetricsCollector};
+pub use metrics::{InferenceMetrics, MetricsCollector, Timer};
+pub use tracing_config::{
+    create_tracer, init_tracing, LLMSpan, LLMSpanBuilder, TracingConfig, TracingGuard,
+};
 
 /// Global telemetry state.
 static TELEMETRY: RwLock<Option<Arc<Telemetry>>> = RwLock::new(None);

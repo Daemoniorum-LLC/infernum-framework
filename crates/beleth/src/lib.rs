@@ -21,8 +21,8 @@ pub mod planner;
 pub mod tool;
 
 pub use agent::{Agent, AgentAction, AgentBuilder, Persona, PersonaSource, StepResult, StepUsage};
-pub use memory::AgentMemory;
-pub use planner::{DefaultPlanner, Plan, PlanStep, Planner, PlanningStrategy};
+pub use memory::{AgentMemory, ConversationSummary, SummarizationStrategy};
+pub use planner::{DefaultPlanner, LLMPlanner, Plan, PlanStep, Planner, PlanningStrategy};
 pub use tool::{
     CalculatorTool, DateTimeTool, JsonTool, RiskLevel, Tool, ToolCall, ToolContext, ToolRegistry,
     ToolResult,

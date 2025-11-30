@@ -37,15 +37,36 @@ pub struct EngineEmbedder {
 
 impl EngineEmbedder {
     /// Creates a new engine-based embedder.
+    ///
+    /// The embedding dimension is automatically determined from the model's
+    /// hidden size. For most embedding models, the output dimension equals
+    /// the hidden size.
     pub fn new(engine: Arc<Engine>) -> Self {
-        // Get dimension from model info if available, default to 4096
-        let dimension = 4096; // TODO: Get from model config
+        // Get dimension from model info - hidden_size is the embedding dimension
+        let model_info = engine.model_info();
+        let dimension = model_info.hidden_size as usize;
+
+        tracing::debug!(
+            model_id = %model_info.id.0,
+            dimension = dimension,
+            "Created engine embedder"
+        );
+
         Self { engine, dimension }
     }
 
     /// Creates a new embedder with a specified dimension.
+    ///
+    /// Use this when you need to override the model's default dimension,
+    /// for example when using a projection head or pooler.
     pub fn with_dimension(engine: Arc<Engine>, dimension: usize) -> Self {
         Self { engine, dimension }
+    }
+
+    /// Returns the underlying engine.
+    #[must_use]
+    pub fn engine(&self) -> &Arc<Engine> {
+        &self.engine
     }
 }
 

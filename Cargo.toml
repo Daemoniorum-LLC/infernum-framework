@@ -53,9 +53,9 @@ safetensors = "0.4"
 tokenizers = "0.20"
 hf-hub = "0.3"
 
-# Vector storage
-lance = "0.18"
-lancedb = "0.13"
+# Vector storage (pinned for Rust 1.83 compatibility)
+lance = "=0.12.2"
+lancedb = "=0.4.20"
 
 # Observability
 tracing = "0.1"
@@ -83,7 +83,7 @@ config = "0.14"
 
 # Utilities
 uuid = { version = "1.11", features = ["v4", "serde"] }
-chrono = { version = "0.4", features = ["serde"] }
+chrono = { version = "=0.4.38", features = ["serde"] }
 dashmap = "6.1"
 parking_lot = "0.12"
 bytes = "1.8"
@@ -100,6 +100,9 @@ proptest = "1.5"
 test-log = "0.2"
 mockall = "0.13"
 wiremock = "0.6"
+
+# Pin versions to avoid newer Rust requirements
+comfy-table = "=7.1.1"
 
 [workspace.lints.rust]
 unsafe_code = "warn"

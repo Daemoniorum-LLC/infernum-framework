@@ -19,7 +19,7 @@ pub mod registry;
 pub mod router;
 pub mod scheduler;
 
-pub use registry::{ModelRegistry, RegisteredModel};
+pub use registry::{LatencyStats, ModelCost, ModelRegistry, RegisteredModel};
 pub use router::{RequestRouter, RoutingStrategy};
 pub use scheduler::{BatchScheduler, Priority, SchedulerConfig, SchedulerStats};
 
