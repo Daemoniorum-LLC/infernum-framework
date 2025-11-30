@@ -13,15 +13,12 @@ pub async fn serve(
 
     tracing::info!("Starting Infernum server...");
 
-    if let Some(model) = &model {
-        tracing::info!(model = %model, "Loading model");
-        // TODO: Load the model
-    }
-
     let addr = format!("{}:{}", host, port).parse()?;
     let config = ServerConfig {
         addr,
         cors: true,
+        model,
+        max_concurrent_requests: 64,
     };
 
     let server = Server::new(config);

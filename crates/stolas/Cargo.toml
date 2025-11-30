@@ -45,6 +45,7 @@ uuid = { workspace = true }
 dashmap = { workspace = true }
 bytes = { workspace = true }
 regex = { workspace = true }
+parking_lot = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

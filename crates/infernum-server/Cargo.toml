@@ -12,7 +12,7 @@ description = "HTTP API server with OpenAI-compatible endpoints"
 infernum-core = { path = "../infernum-core" }
 abaddon = { path = "../abaddon" }
 malphas = { path = "../malphas" }
-stolas = { path = "../stolas" }
+stolas = { path = "../stolas", default-features = false }
 beleth = { path = "../beleth" }
 dantalion = { path = "../dantalion" }
 

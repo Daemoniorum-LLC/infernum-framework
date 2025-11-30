@@ -81,9 +81,6 @@ console = "0.15"
 figment = { version = "0.10", features = ["toml", "env", "yaml"] }
 config = "0.14"
 
-# Pin comfy-table to avoid edition2024 requirement
-comfy-table = "=7.1.1"
-
 # Utilities
 uuid = { version = "1.11", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }

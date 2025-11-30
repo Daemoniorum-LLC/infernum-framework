@@ -25,7 +25,7 @@ pub use scheduler::{BatchScheduler, Priority, SchedulerConfig, SchedulerStats};
 
 use std::sync::Arc;
 
-use abaddon::Engine;
+use abaddon::{Engine, InferenceEngine};
 use infernum_core::{GenerateRequest, GenerateResponse, Result};
 
 /// The main orchestration service.

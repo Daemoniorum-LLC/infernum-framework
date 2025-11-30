@@ -22,7 +22,7 @@ metal = ["abaddon/metal"]
 infernum-core = { path = "../infernum-core" }
 abaddon = { path = "../abaddon" }
 malphas = { path = "../malphas" }
-stolas = { path = "../stolas" }
+stolas = { path = "../stolas", default-features = false }
 beleth = { path = "../beleth" }
 asmodeus = { path = "../asmodeus" }
 dantalion = { path = "../dantalion" }
