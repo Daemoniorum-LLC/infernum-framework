@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use opentelemetry::{global, KeyValue};
 use opentelemetry_sdk::{
-    trace::{RandomIdGenerator, Sampler, TracerProvider},
+    trace::{RandomIdGenerator, Sampler, SdkTracerProvider},
     Resource,
 };
 
@@ -12,12 +12,16 @@ use crate::TelemetryConfig;
 
 /// Guard for the tracing provider that shuts down on drop.
 pub struct TracingGuard {
-    _provider: Option<TracerProvider>,
+    provider: Option<SdkTracerProvider>,
 }
 
 impl Drop for TracingGuard {
     fn drop(&mut self) {
-        global::shutdown_tracer_provider();
+        if let Some(provider) = self.provider.take() {
+            if let Err(e) = provider.shutdown() {
+                tracing::warn!("Error shutting down tracer provider: {:?}", e);
+            }
+        }
     }
 }
 
@@ -33,24 +37,26 @@ pub fn init_tracing(config: &TelemetryConfig) -> Result<TracingGuard, Box<dyn st
         #[cfg(feature = "otlp")]
         {
             use opentelemetry_otlp::{SpanExporter, WithExportConfig};
-            use opentelemetry_sdk::trace::BatchConfig;
 
-            // Build OTLP exporter
+            // Build OTLP exporter with tonic
             let exporter = SpanExporter::builder()
                 .with_tonic()
                 .with_endpoint(endpoint)
                 .with_timeout(Duration::from_secs(10))
                 .build()?;
 
+            // Build resource with service info
+            let resource = Resource::builder()
+                .with_service_name(config.service_name.clone())
+                .with_attribute(KeyValue::new("service.version", env!("CARGO_PKG_VERSION")))
+                .build();
+
             // Build the provider
-            let provider = TracerProvider::builder()
-                .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
+            let provider = SdkTracerProvider::builder()
+                .with_batch_exporter(exporter)
                 .with_sampler(Sampler::AlwaysOn)
                 .with_id_generator(RandomIdGenerator::default())
-                .with_resource(Resource::new(vec![
-                    KeyValue::new("service.name", config.service_name.clone()),
-                    KeyValue::new("service.version", env!("CARGO_PKG_VERSION")),
-                ]))
+                .with_resource(resource)
                 .build();
 
             // Set global tracer provider
@@ -75,7 +81,7 @@ pub fn init_tracing(config: &TelemetryConfig) -> Result<TracingGuard, Box<dyn st
         None
     };
 
-    Ok(TracingGuard { _provider: provider })
+    Ok(TracingGuard { provider })
 }
 
 /// Creates a tracer for a specific component.
