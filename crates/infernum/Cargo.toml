@@ -22,7 +22,7 @@ metal = ["abaddon/metal"]
 infernum-core = { path = "../infernum-core" }
 abaddon = { path = "../abaddon" }
 malphas = { path = "../malphas" }
-stolas = { path = "../stolas" }
+stolas = { path = "../stolas", default-features = false }
 beleth = { path = "../beleth" }
 asmodeus = { path = "../asmodeus" }
 dantalion = { path = "../dantalion" }
@@ -32,6 +32,11 @@ infernum-server = { path = "../infernum-server", optional = true }
 # Async
 tokio = { workspace = true }
 async-trait = { workspace = true }
+futures = { workspace = true }
+
+# Model management
+hf-hub = { workspace = true }
+dirs = "5.0"
 
 # CLI
 clap = { workspace = true }

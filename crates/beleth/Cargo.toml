@@ -12,7 +12,7 @@ description = "Autonomous agent framework - The King commands legions"
 infernum-core = { path = "../infernum-core" }
 abaddon = { path = "../abaddon" }
 malphas = { path = "../malphas" }
-stolas = { path = "../stolas" }
+stolas = { path = "../stolas", default-features = false }
 dantalion = { path = "../dantalion" }
 grimoire-loader = { path = "../grimoire-loader" }
 

@@ -21,6 +21,9 @@ pub mod rag;
 pub mod store;
 
 pub use chunker::{Chunk, Chunker, ChunkingStrategy};
-pub use embedding::{Embedder, MockEmbedder};
+pub use embedding::{
+    BatchEmbedder, Embedder, EngineEmbedder, MockEmbedder, PoolingStrategy, SentenceEmbedder,
+    cosine_similarity, dot_product, euclidean_distance,
+};
 pub use rag::{ContextItem, Document, RagPipeline, RetrievalConfig};
 pub use store::{InMemoryStore, SearchParams, SearchResult, VectorRecord, VectorStore};

@@ -57,6 +57,7 @@ num_cpus = { workspace = true }
 humansize = { workspace = true }
 dirs = "5.0"
 fastrand = "2.2"
+sysinfo = "0.31"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
