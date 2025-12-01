@@ -262,6 +262,7 @@ pub async fn model_pull(model: String, revision: Option<String>) -> Result<()> {
     ];
 
     // Weight files - try single file first, then sharded
+    #[allow(unused)]
     let weight_files = [
         "model.safetensors",
         "model.safetensors.index.json",

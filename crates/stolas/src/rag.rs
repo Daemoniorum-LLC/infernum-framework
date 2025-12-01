@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use infernum_core::Result;
 
-use crate::chunker::{Chunk, Chunker, ChunkingStrategy};
+use crate::chunker::Chunker;
 use crate::embedding::Embedder;
-use crate::store::{SearchParams, SearchResult, VectorRecord, VectorStore};
+use crate::store::{SearchParams, VectorRecord, VectorStore};
 
 /// Configuration for retrieval.
 #[derive(Debug, Clone)]

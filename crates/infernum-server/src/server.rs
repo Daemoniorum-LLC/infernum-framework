@@ -263,6 +263,7 @@ impl ErrorResponse {
         }
     }
 
+    #[allow(dead_code)] // Reserved for future use with specific error codes
     fn with_code(mut self, code: impl Into<String>) -> Self {
         self.error.code = Some(code.into());
         self

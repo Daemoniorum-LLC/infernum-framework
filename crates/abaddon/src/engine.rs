@@ -51,6 +51,7 @@ pub struct Engine {
     metadata: ModelMetadata,
     loaded: Option<Arc<LoadedModel>>,
     device: Device,
+    #[allow(dead_code)] // Used for model quantization in future
     dtype: DType,
 }
 
@@ -121,6 +122,7 @@ impl Engine {
                 }
                 #[cfg(not(feature = "cuda"))]
                 {
+                    let _ = device_id; // Silence unused warning when cuda feature disabled
                     eprintln!("\x1b[33mWarning:\x1b[0m CUDA requested but not compiled in, falling back to CPU");
                     eprintln!("         Rebuild with: cargo build --features cuda");
                     tracing::warn!("CUDA requested but not compiled in, falling back to CPU");
@@ -138,6 +140,7 @@ impl Engine {
                 }
                 #[cfg(not(feature = "metal"))]
                 {
+                    let _ = device_id; // Silence unused warning when metal feature disabled
                     eprintln!("\x1b[33mWarning:\x1b[0m Metal requested but not compiled in, falling back to CPU");
                     eprintln!("         Rebuild with: cargo build --features metal");
                     tracing::warn!("Metal requested but not compiled in, falling back to CPU");
