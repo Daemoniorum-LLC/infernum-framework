@@ -34,6 +34,7 @@ notify = "7.0"
 # Utilities
 dashmap = { workspace = true }
 regex = { workspace = true }
+dirs = "5.0"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

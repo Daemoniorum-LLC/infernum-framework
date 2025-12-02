@@ -4,6 +4,13 @@
 //!
 //! This crate provides utilities for loading personas and prompts
 //! from the Grimoire filesystem structure.
+//!
+//! # Configuration
+//!
+//! The Grimoire path can be configured via:
+//! 1. Environment variable: `INFERNUM_GRIMOIRE_PATH`
+//! 2. Programmatic: `GrimoireLoader::with_path(path)`
+//! 3. Default: `~/.local/share/infernum/personas/`
 
 #![warn(missing_docs)]
 #![warn(clippy::all)]
@@ -14,8 +21,31 @@ use std::path::{Path, PathBuf};
 use infernum_core::Result;
 use serde::{Deserialize, Serialize};
 
-/// Default Grimoire personas path.
-pub const DEFAULT_GRIMOIRE_PATH: &str = "/home/lilith/development/projects/grimoire/personas/";
+/// Environment variable for customizing Grimoire path.
+pub const GRIMOIRE_PATH_ENV: &str = "INFERNUM_GRIMOIRE_PATH";
+
+/// Returns the default Grimoire personas path.
+///
+/// Checks in order:
+/// 1. `INFERNUM_GRIMOIRE_PATH` environment variable
+/// 2. `~/.local/share/infernum/personas/` (XDG data directory)
+#[must_use]
+pub fn default_grimoire_path() -> PathBuf {
+    // Check environment variable first
+    if let Ok(path) = std::env::var(GRIMOIRE_PATH_ENV) {
+        return PathBuf::from(path);
+    }
+
+    // Fall back to XDG data directory
+    dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("infernum")
+        .join("personas")
+}
+
+/// Legacy constant for backwards compatibility.
+#[deprecated(since = "0.2.0", note = "Use default_grimoire_path() instead")]
+pub const DEFAULT_GRIMOIRE_PATH: &str = "~/.local/share/infernum/personas/";
 
 /// A loaded Grimoire persona.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,9 +70,12 @@ pub struct GrimoireLoader {
 
 impl GrimoireLoader {
     /// Creates a new loader with the default path.
+    ///
+    /// Uses `default_grimoire_path()` which checks `INFERNUM_GRIMOIRE_PATH`
+    /// environment variable first, then falls back to XDG data directory.
     #[must_use]
     pub fn new() -> Self {
-        Self::with_path(DEFAULT_GRIMOIRE_PATH)
+        Self::with_path(default_grimoire_path())
     }
 
     /// Creates a new loader with a custom path.
