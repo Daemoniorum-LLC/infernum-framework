@@ -103,6 +103,31 @@ enum Commands {
     /// Display version and build info
     Version,
 
+    /// Check system configuration and dependencies
+    Doctor,
+
+    /// Run an autonomous agent with tools
+    Agent {
+        /// Objective or task for the agent
+        objective: String,
+
+        /// Model to use
+        #[arg(short, long)]
+        model: Option<String>,
+
+        /// System prompt / persona
+        #[arg(short, long)]
+        system: Option<String>,
+
+        /// Maximum reasoning iterations
+        #[arg(long, default_value = "10")]
+        max_iterations: u32,
+
+        /// Enable verbose output (show reasoning)
+        #[arg(short, long)]
+        verbose: bool,
+    },
+
     /// Manage configuration
     Config {
         #[command(subcommand)]
@@ -221,6 +246,21 @@ async fn main() -> Result<()> {
 
         Commands::Version => {
             commands::version();
+        }
+
+        Commands::Doctor => {
+            commands::doctor();
+        }
+
+        Commands::Agent {
+            objective,
+            model,
+            system,
+            max_iterations,
+            verbose,
+        } => {
+            let model = model.or(cfg.default_model.clone());
+            commands::agent(objective, model, system, max_iterations, verbose).await?;
         }
 
         Commands::Config { action } => match action {

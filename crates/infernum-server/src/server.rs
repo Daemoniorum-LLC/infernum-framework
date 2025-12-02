@@ -222,16 +222,51 @@ impl Server {
         let router = self.router();
 
         tracing::info!(addr = %self.config.addr, "Starting Infernum server");
+        eprintln!("\n\x1b[32m✓\x1b[0m Server listening on http://{}", self.config.addr);
+        eprintln!("  Press Ctrl+C to stop\n");
 
         let listener = tokio::net::TcpListener::bind(self.config.addr)
             .await
             .map_err(infernum_core::Error::Io)?;
 
+        // Set up graceful shutdown
+        let shutdown_signal = async {
+            let ctrl_c = async {
+                tokio::signal::ctrl_c()
+                    .await
+                    .expect("Failed to install Ctrl+C handler");
+            };
+
+            #[cfg(unix)]
+            let terminate = async {
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("Failed to install signal handler")
+                    .recv()
+                    .await;
+            };
+
+            #[cfg(not(unix))]
+            let terminate = std::future::pending::<()>();
+
+            tokio::select! {
+                () = ctrl_c => {
+                    eprintln!("\n\x1b[33m⚡\x1b[0m Received Ctrl+C, shutting down gracefully...");
+                },
+                () = terminate => {
+                    eprintln!("\n\x1b[33m⚡\x1b[0m Received SIGTERM, shutting down gracefully...");
+                },
+            }
+        };
+
         axum::serve(listener, router)
+            .with_graceful_shutdown(shutdown_signal)
             .await
             .map_err(|e| infernum_core::Error::Internal {
                 message: e.to_string(),
             })?;
+
+        tracing::info!("Server shutdown complete");
+        eprintln!("\x1b[32m✓\x1b[0m Server stopped");
 
         Ok(())
     }

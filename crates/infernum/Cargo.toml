@@ -56,6 +56,9 @@ toml = { workspace = true }
 color-eyre = { workspace = true }
 anyhow = { workspace = true }
 
+# System info
+num_cpus = { workspace = true }
+
 # Observability
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

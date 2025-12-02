@@ -77,8 +77,8 @@ impl Agent {
         match &self.persona.system {
             PersonaSource::Inline(s) => s.clone(),
             PersonaSource::Grimoire { persona_id, variant } => {
-                // Try to load from Grimoire filesystem
-                let base_path = std::path::PathBuf::from(grimoire_loader::DEFAULT_GRIMOIRE_PATH);
+                // Try to load from Grimoire filesystem (uses INFERNUM_GRIMOIRE_PATH env or default)
+                let base_path = grimoire_loader::default_grimoire_path();
                 let prompt_path = if let Some(var) = variant {
                     base_path.join(persona_id).join(format!("{}.md", var))
                 } else {
@@ -92,7 +92,15 @@ impl Agent {
 
                 match std::fs::read_to_string(&prompt_path) {
                     Ok(content) => content,
-                    Err(_) => format!("You are {} - an AI assistant.", persona_id),
+                    Err(_) => {
+                        // Provide a helpful fallback with guidance
+                        tracing::debug!(
+                            persona_id,
+                            path = %prompt_path.display(),
+                            "Grimoire persona not found, using default prompt"
+                        );
+                        format!("You are {} - an AI assistant.", persona_id)
+                    }
                 }
             }
         }

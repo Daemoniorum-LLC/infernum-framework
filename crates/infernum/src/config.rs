@@ -68,6 +68,8 @@ impl Default for Config {
 
 impl Config {
     /// Loads configuration from all sources.
+    ///
+    /// Reports warnings for configuration errors but falls back to defaults.
     pub fn load() -> Self {
         let config_path = Self::config_path();
 
@@ -76,7 +78,20 @@ impl Config {
             .merge(Toml::file(&config_path))
             .merge(Env::prefixed("INFERNUM_"));
 
-        figment.extract().unwrap_or_default()
+        match figment.extract::<Config>() {
+            Ok(config) => config,
+            Err(e) => {
+                // Report the error clearly to the user
+                eprintln!("\x1b[33mWarning:\x1b[0m Configuration error, using defaults");
+                eprintln!("  Config file: {}", config_path.display());
+                eprintln!("  Error: {}", e);
+                eprintln!();
+                eprintln!("  To fix, edit or delete the config file:");
+                eprintln!("    rm {}", config_path.display());
+                eprintln!();
+                Config::default()
+            }
+        }
     }
 
     /// Returns the path to the config file.
