@@ -340,10 +340,12 @@ cargo clippy --workspace
 
 Dual-licensed under MIT and Apache 2.0. See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).
 
+Copyright (c) 2024-2025 Daemoniorum, LLC
+
 ---
 
 ## Acknowledgments
 
-Part of the [Persona Framework](https://github.com/Daemoniorum-LLC/persona-framework) ecosystem by Daemoniorum LLC.
+Part of the [Persona Framework](https://github.com/Daemoniorum-LLC/persona-framework) ecosystem by Daemoniorum, LLC.
 
 Built with [Candle](https://github.com/huggingface/candle), [Axum](https://github.com/tokio-rs/axum), and the incredible Rust ecosystem.
