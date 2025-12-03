@@ -1,0 +1,106 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Publish crates
+        run: |
+          # Publish in dependency order
+          cargo publish -p infernum-core --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          sleep 30
+          cargo publish -p dantalion --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          sleep 30
+          cargo publish -p grimoire-loader --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          sleep 30
+          cargo publish -p abaddon --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          sleep 30
+          cargo publish -p stolas --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          sleep 30
+          cargo publish -p malphas --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          sleep 30
+          cargo publish -p beleth --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          sleep 30
+          cargo publish -p asmodeus --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          sleep 30
+          cargo publish -p infernum-server --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          sleep 30
+          cargo publish -p infernum --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  github-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: publish
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref, '-alpha') || contains(github.ref, '-beta') || contains(github.ref, '-rc') }}
+
+  build-binaries:
+    name: Build Binaries (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    needs: publish
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact: infernum
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            artifact: infernum
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            artifact: infernum
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            artifact: infernum.exe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }} -p infernum
+
+      - name: Package binary (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czvf ../../../infernum-${{ github.ref_name }}-${{ matrix.target }}.tar.gz ${{ matrix.artifact }}
+
+      - name: Package binary (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          cd target/${{ matrix.target }}/release
+          7z a ../../../infernum-${{ github.ref_name }}-${{ matrix.target }}.zip ${{ matrix.artifact }}
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            infernum-${{ github.ref_name }}-${{ matrix.target }}.*
