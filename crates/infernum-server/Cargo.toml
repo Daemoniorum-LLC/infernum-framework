@@ -9,12 +9,12 @@ repository.workspace = true
 description = "HTTP API server with OpenAI-compatible endpoints"
 
 [dependencies]
-infernum-core = { path = "../infernum-core" }
-abaddon = { path = "../abaddon" }
-malphas = { path = "../malphas" }
-stolas = { path = "../stolas", default-features = false }
-beleth = { path = "../beleth" }
-dantalion = { path = "../dantalion" }
+infernum-core = { path = "../infernum-core", version = "0.1.0" }
+abaddon = { path = "../abaddon", version = "0.1.0" }
+malphas = { path = "../malphas", version = "0.1.0" }
+stolas = { path = "../stolas", version = "0.1.0", default-features = false }
+beleth = { path = "../beleth", version = "0.1.0" }
+dantalion = { path = "../dantalion", version = "0.1.0" }
 
 # Async
 tokio = { workspace = true }

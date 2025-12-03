@@ -9,9 +9,9 @@ repository.workspace = true
 description = "Model orchestration and routing layer - The Builder constructs order from chaos"
 
 [dependencies]
-infernum-core = { path = "../infernum-core" }
-abaddon = { path = "../abaddon" }
-dantalion = { path = "../dantalion" }
+infernum-core = { path = "../infernum-core", version = "0.1.0" }
+abaddon = { path = "../abaddon", version = "0.1.0" }
+dantalion = { path = "../dantalion", version = "0.1.0" }
 
 # Async
 tokio = { workspace = true }
