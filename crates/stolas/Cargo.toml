@@ -15,9 +15,9 @@ postgres = []
 qdrant = []
 
 [dependencies]
-infernum-core = { path = "../infernum-core" }
-abaddon = { path = "../abaddon" }
-dantalion = { path = "../dantalion" }
+infernum-core = { path = "../infernum-core", version = "0.1.0" }
+abaddon = { path = "../abaddon", version = "0.1.0" }
+dantalion = { path = "../dantalion", version = "0.1.0" }
 
 # Async
 tokio = { workspace = true }

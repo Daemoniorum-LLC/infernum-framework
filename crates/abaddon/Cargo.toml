@@ -18,8 +18,8 @@ mkl = ["candle-core/mkl"]
 accelerate = ["candle-core/accelerate"]
 
 [dependencies]
-infernum-core = { path = "../infernum-core" }
-dantalion = { path = "../dantalion" }
+infernum-core = { path = "../infernum-core", version = "0.1.0" }
+dantalion = { path = "../dantalion", version = "0.1.0" }
 
 # Async
 tokio = { workspace = true }
