@@ -7,6 +7,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Infernum CLI - From the depths, intelligence rises"
+readme = "README.md"
 
 [[bin]]
 name = "infernum"

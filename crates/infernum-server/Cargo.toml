@@ -7,6 +7,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "HTTP API server with OpenAI-compatible endpoints"
+readme = "README.md"
 
 [dependencies]
 infernum-core = { path = "../infernum-core", version = "0.1.0" }
