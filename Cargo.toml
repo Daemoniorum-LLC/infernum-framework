@@ -37,7 +37,7 @@ async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 bincode = "1.3"
-toml = "0.8"
+toml = "0.9"
 
 # HTTP/API
 axum = { version = "0.8", features = ["macros", "ws"] }
@@ -50,7 +50,7 @@ hyper = { version = "1.6", features = ["full"] }
 candle-core = "0.9"
 candle-nn = "0.9"
 candle-transformers = "0.9"
-safetensors = "0.5"
+safetensors = "0.7"
 tokenizers = "0.22"
 hf-hub = "0.4"
 
@@ -65,7 +65,7 @@ opentelemetry = "0.31"
 opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic"] }
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
 metrics = "0.24"
-metrics-exporter-prometheus = "0.17"
+metrics-exporter-prometheus = "0.18"
 
 # Error handling
 thiserror = "2.0"
@@ -74,9 +74,9 @@ color-eyre = "0.6"
 
 # CLI
 clap = { version = "4.5", features = ["derive", "env"] }
-dialoguer = "0.11"
-indicatif = "0.17"
-console = "0.15"
+dialoguer = "0.12"
+indicatif = "0.18"
+console = "0.16"
 
 # Configuration
 figment = { version = "0.10", features = ["toml", "env", "yaml"] }
@@ -96,10 +96,10 @@ humansize = "2.1"
 regex = "1.11"
 
 # Testing
-criterion = "0.5"
+criterion = "0.8"
 proptest = "1.6"
 test-log = "0.2"
-mockall = "0.13"
+mockall = "0.14"
 wiremock = "0.6"
 
 # Table formatting

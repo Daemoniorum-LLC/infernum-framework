@@ -38,7 +38,7 @@ futures = { workspace = true }
 
 # Model management
 hf-hub = { workspace = true }
-dirs = "5.0"
+dirs = "6.0"
 
 # CLI
 clap = { workspace = true }
