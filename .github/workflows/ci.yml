@@ -9,6 +9,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Workaround for aws-lc-sys compiler bug check
+  AWS_LC_SYS_PREBUILT_NASM: 1
 
 jobs:
   check:
