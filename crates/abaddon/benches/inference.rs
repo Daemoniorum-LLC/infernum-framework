@@ -2,9 +2,7 @@
 //!
 //! These benchmarks verify the performance claims made in the documentation.
 
-use criterion::{
-    black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
-};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
 // ============================================================================
 // SAMPLING BENCHMARKS
@@ -66,33 +64,25 @@ fn vocabulary_scaling_benchmark(c: &mut Criterion) {
 
     // Test different vocabulary sizes (common in real models)
     let vocab_sizes = [
-        (4096, "4k"),      // Small models
-        (32000, "32k"),    // Llama-style
-        (50257, "50k"),    // GPT-2 style
-        (128256, "128k"),  // Llama 3 style
+        (4096, "4k"),     // Small models
+        (32000, "32k"),   // Llama-style
+        (50257, "50k"),   // GPT-2 style
+        (128256, "128k"), // Llama 3 style
     ];
 
     for (size, label) in vocab_sizes {
         let logits: Vec<f32> = (0..size).map(|i| (i as f32).sin()).collect();
         group.throughput(Throughput::Elements(size as u64));
 
-        group.bench_with_input(
-            BenchmarkId::new("greedy", label),
-            &logits,
-            |b, logits| {
-                let mut sampler = Sampler::new(SamplingParams::greedy());
-                b.iter(|| sampler.sample(black_box(logits)))
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("greedy", label), &logits, |b, logits| {
+            let mut sampler = Sampler::new(SamplingParams::greedy());
+            b.iter(|| sampler.sample(black_box(logits)))
+        });
 
-        group.bench_with_input(
-            BenchmarkId::new("top_p", label),
-            &logits,
-            |b, logits| {
-                let mut sampler = Sampler::new(SamplingParams::balanced());
-                b.iter(|| sampler.sample(black_box(logits)))
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("top_p", label), &logits, |b, logits| {
+            let mut sampler = Sampler::new(SamplingParams::balanced());
+            b.iter(|| sampler.sample(black_box(logits)))
+        });
     }
 
     group.finish();
@@ -294,7 +284,9 @@ fn numerical_benchmark(c: &mut Criterion) {
     let logits_32k: Vec<f32> = (0..32000).map(|i| (i as f32).sin()).collect();
 
     group.bench_function("softmax_32k_via_top_p", |b| {
-        let params = SamplingParams::default().with_top_p(0.9).with_temperature(1.0);
+        let params = SamplingParams::default()
+            .with_top_p(0.9)
+            .with_temperature(1.0);
         let mut sampler = Sampler::new(params);
         b.iter(|| sampler.sample(black_box(&logits_32k)))
     });
@@ -305,7 +297,9 @@ fn numerical_benchmark(c: &mut Criterion) {
         .collect();
 
     group.bench_function("softmax_extreme_values", |b| {
-        let params = SamplingParams::default().with_top_p(0.9).with_temperature(1.0);
+        let params = SamplingParams::default()
+            .with_top_p(0.9)
+            .with_temperature(1.0);
         let mut sampler = Sampler::new(params);
         b.iter(|| sampler.sample(black_box(&extreme_logits)))
     });

@@ -22,10 +22,9 @@ use abaddon::{Engine, EngineConfig, InferenceEngine};
 use infernum_core::{GenerateRequest, Result, SamplingParams};
 
 use crate::openai::{
-    ChatCompletionRequest, ChatCompletionResponse, ChatChoice, ChatMessage,
-    CompletionRequest, CompletionResponse, CompletionChoice,
-    EmbeddingInput, EmbeddingRequest, EmbeddingResponse, EmbeddingData, EmbeddingUsage,
-    ModelObject, ModelsResponse, Usage,
+    ChatChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage, CompletionChoice,
+    CompletionRequest, CompletionResponse, EmbeddingData, EmbeddingInput, EmbeddingRequest,
+    EmbeddingResponse, EmbeddingUsage, ModelObject, ModelsResponse, Usage,
 };
 
 /// Server configuration.
@@ -222,7 +221,10 @@ impl Server {
         let router = self.router();
 
         tracing::info!(addr = %self.config.addr, "Starting Infernum server");
-        eprintln!("\n\x1b[32m✓\x1b[0m Server listening on http://{}", self.config.addr);
+        eprintln!(
+            "\n\x1b[32m✓\x1b[0m Server listening on http://{}",
+            self.config.addr
+        );
         eprintln!("  Press Ctrl+C to stop\n");
 
         let listener = tokio::net::TcpListener::bind(self.config.addr)
@@ -366,7 +368,7 @@ async fn load_model(
                 &format!("Invalid model configuration: {}", e),
                 "invalid_request_error",
             );
-        }
+        },
     };
 
     let engine = match Engine::new(engine_config).await {
@@ -377,20 +379,28 @@ async fn load_model(
                 &format!("Failed to load model: {}", e),
                 "model_load_error",
             );
-        }
+        },
     };
 
     let mut engine_guard = state.engine.write().await;
     *engine_guard = Some(Arc::new(engine));
 
-    (StatusCode::OK, Json(serde_json::json!({"status": "loaded", "model": req.model}))).into_response()
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"status": "loaded", "model": req.model})),
+    )
+        .into_response()
 }
 
 async fn unload_model(State(state): State<Arc<AppState>>) -> Response {
     let mut engine_guard = state.engine.write().await;
     *engine_guard = None;
     tracing::info!("Model unloaded");
-    (StatusCode::OK, Json(serde_json::json!({"status": "unloaded"}))).into_response()
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"status": "unloaded"})),
+    )
+        .into_response()
 }
 
 // === OpenAI-Compatible Endpoints ===
@@ -407,7 +417,7 @@ async fn list_models(State(state): State<Arc<AppState>>) -> Json<ModelsResponse>
                 created: chrono::Utc::now().timestamp(),
                 owned_by: "infernum".to_string(),
             }]
-        }
+        },
         None => vec![],
     };
 
@@ -436,7 +446,7 @@ async fn chat_completions(
                 "No model loaded",
                 "model_not_loaded",
             );
-        }
+        },
     };
     drop(engine_guard); // Release lock early
 
@@ -522,14 +532,12 @@ async fn chat_completions(
                 Sse::new(sse_stream)
                     .keep_alive(axum::response::sse::KeepAlive::default())
                     .into_response()
-            }
-            Err(e) => {
-                error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    &e.to_string(),
-                    "generation_error",
-                )
-            }
+            },
+            Err(e) => error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &e.to_string(),
+                "generation_error",
+            ),
         }
     } else {
         // Non-streaming response
@@ -572,14 +580,12 @@ async fn chat_completions(
                 );
 
                 Json(chat_response).into_response()
-            }
-            Err(e) => {
-                error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    &e.to_string(),
-                    "generation_error",
-                )
-            }
+            },
+            Err(e) => error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &e.to_string(),
+                "generation_error",
+            ),
         }
     }
 }
@@ -603,7 +609,7 @@ async fn completions(
                 "No model loaded",
                 "model_not_loaded",
             );
-        }
+        },
     };
     drop(engine_guard);
 
@@ -664,14 +670,12 @@ async fn completions(
             );
 
             Json(completion_response).into_response()
-        }
-        Err(e) => {
-            error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &e.to_string(),
-                "generation_error",
-            )
-        }
+        },
+        Err(e) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &e.to_string(),
+            "generation_error",
+        ),
     }
 }
 
@@ -695,7 +699,7 @@ async fn embeddings(
                 "No model loaded",
                 "model_not_loaded",
             );
-        }
+        },
     };
     drop(engine_guard);
 
@@ -715,7 +719,9 @@ async fn embeddings(
         match engine.embed(embed_request).await {
             Ok(response) => {
                 // Extract embedding vector from the response
-                let embedding_vec = response.data.first()
+                let embedding_vec = response
+                    .data
+                    .first()
                     .and_then(|e| e.embedding.as_floats().ok())
                     .unwrap_or_default();
 
@@ -725,14 +731,14 @@ async fn embeddings(
                     embedding: embedding_vec,
                 });
                 total_tokens += response.usage.total_tokens;
-            }
+            },
             Err(e) => {
                 return error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     &e.to_string(),
                     "embedding_error",
                 );
-            }
+            },
         }
     }
 
@@ -770,8 +776,7 @@ mod tests {
 
     #[test]
     fn test_error_response() {
-        let err = ErrorResponse::new("Test error", "test_error")
-            .with_code("TEST_CODE");
+        let err = ErrorResponse::new("Test error", "test_error").with_code("TEST_CODE");
 
         assert_eq!(err.error.message, "Test error");
         assert_eq!(err.error.error_type, "test_error");

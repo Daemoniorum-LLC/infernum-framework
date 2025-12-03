@@ -90,7 +90,7 @@ impl Config {
                 eprintln!("    rm {}", config_path.display());
                 eprintln!();
                 Config::default()
-            }
+            },
         }
     }
 
@@ -151,7 +151,10 @@ pub fn show_config() {
     }
 
     println!("Current settings:");
-    println!("  default_model: {}", config.default_model.as_deref().unwrap_or("(not set)"));
+    println!(
+        "  default_model: {}",
+        config.default_model.as_deref().unwrap_or("(not set)")
+    );
     println!("  temperature: {}", config.temperature);
     println!("  max_tokens: {}", config.max_tokens);
     println!("  server_host: {}", config.server_host);

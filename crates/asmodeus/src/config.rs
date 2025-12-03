@@ -21,10 +21,7 @@ impl Default for LoraConfig {
             r: 8,
             alpha: 16.0,
             dropout: 0.05,
-            target_modules: vec![
-                "q_proj".to_string(),
-                "v_proj".to_string(),
-            ],
+            target_modules: vec!["q_proj".to_string(), "v_proj".to_string()],
         }
     }
 }

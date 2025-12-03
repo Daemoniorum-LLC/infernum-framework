@@ -66,14 +66,14 @@ impl Chunker {
         match &self.strategy {
             ChunkingStrategy::FixedTokens { size, overlap } => {
                 self.chunk_fixed(text, *size, *overlap)
-            }
+            },
             ChunkingStrategy::Recursive {
                 separators,
                 chunk_size,
             } => self.chunk_recursive(text, separators, *chunk_size),
             ChunkingStrategy::Sentence { min_size, max_size } => {
                 self.chunk_sentence(text, *min_size, *max_size)
-            }
+            },
         }
     }
 
@@ -155,7 +155,8 @@ impl Chunker {
 
     /// Sentence-based chunking.
     fn chunk_sentence(&self, text: &str, min_size: usize, max_size: usize) -> Vec<Chunk> {
-        let sentences: Vec<&str> = text.split_terminator(|c| c == '.' || c == '!' || c == '?')
+        let sentences: Vec<&str> = text
+            .split_terminator(|c| c == '.' || c == '!' || c == '?')
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .collect();

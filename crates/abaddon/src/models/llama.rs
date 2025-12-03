@@ -216,7 +216,7 @@ impl Attention {
                 let k = Tensor::cat(&[prev_k, &k], 2)?;
                 let v = Tensor::cat(&[prev_v, &v], 2)?;
                 (k, v)
-            }
+            },
             None => (k, v),
         };
 
@@ -240,9 +240,11 @@ impl Attention {
         let attn_output = attn_weights.matmul(&v)?;
 
         // Reshape back
-        let attn_output = attn_output
-            .transpose(1, 2)?
-            .reshape((batch_size, seq_len, self.num_heads * self.head_dim))?;
+        let attn_output = attn_output.transpose(1, 2)?.reshape((
+            batch_size,
+            seq_len,
+            self.num_heads * self.head_dim,
+        ))?;
 
         self.o_proj.forward(&attn_output)
     }
@@ -310,8 +312,11 @@ impl DecoderLayer {
     fn load(config: &LlamaConfig, vb: VarBuilder) -> CandleResult<Self> {
         let self_attn = Attention::load(config, vb.pp("self_attn"))?;
         let mlp = Mlp::load(config, vb.pp("mlp"))?;
-        let input_layernorm =
-            RmsNorm::load(config.hidden_size, config.rms_norm_eps, vb.pp("input_layernorm"))?;
+        let input_layernorm = RmsNorm::load(
+            config.hidden_size,
+            config.rms_norm_eps,
+            vb.pp("input_layernorm"),
+        )?;
         let post_attention_layernorm = RmsNorm::load(
             config.hidden_size,
             config.rms_norm_eps,
@@ -369,7 +374,11 @@ impl Llama {
         let device = vb.device().clone();
         let dtype = vb.dtype();
 
-        let embed_tokens = embedding(config.vocab_size, config.hidden_size, vb.pp("model.embed_tokens"))?;
+        let embed_tokens = embedding(
+            config.vocab_size,
+            config.hidden_size,
+            vb.pp("model.embed_tokens"),
+        )?;
 
         let mut layers = Vec::with_capacity(config.num_hidden_layers);
         for i in 0..config.num_hidden_layers {
@@ -415,14 +424,20 @@ impl Llama {
 
         // Create causal mask
         let mask = if seq_len > 1 {
-            Some(Self::create_causal_mask(seq_len, start_pos, &self.device, self.dtype)?)
+            Some(Self::create_causal_mask(
+                seq_len,
+                start_pos,
+                &self.device,
+                self.dtype,
+            )?)
         } else {
             None
         };
 
         // Forward through layers
         for layer in &mut self.layers {
-            hidden_states = layer.forward(&hidden_states, &self.rotary, mask.as_ref(), start_pos)?;
+            hidden_states =
+                layer.forward(&hidden_states, &self.rotary, mask.as_ref(), start_pos)?;
         }
 
         // Final layer norm

@@ -63,11 +63,12 @@ impl GgufLoader {
             message: format!("Failed to open GGUF file: {}", e),
         })?;
 
-        let content = gguf_file::Content::read(&mut std::io::BufReader::new(file)).map_err(
-            |e| infernum_core::Error::ModelLoad {
-                message: format!("Failed to parse GGUF file: {}", e),
-            },
-        )?;
+        let content =
+            gguf_file::Content::read(&mut std::io::BufReader::new(file)).map_err(|e| {
+                infernum_core::Error::ModelLoad {
+                    message: format!("Failed to parse GGUF file: {}", e),
+                }
+            })?;
 
         let metadata = Self::extract_metadata(&content)?;
 
@@ -129,11 +130,10 @@ impl GgufLoader {
         };
 
         // Extract architecture (required)
-        let architecture = get_str("general.architecture").ok_or_else(|| {
-            infernum_core::Error::ModelLoad {
+        let architecture =
+            get_str("general.architecture").ok_or_else(|| infernum_core::Error::ModelLoad {
                 message: "Missing general.architecture in GGUF metadata".to_string(),
-            }
-        })?;
+            })?;
 
         let arch_prefix = format!("{}.", architecture);
 
@@ -233,33 +233,40 @@ impl GgufLoader {
     /// Lists all tensor names in the GGUF file.
     #[must_use]
     pub fn tensor_names(&self) -> Vec<&str> {
-        self.content.tensor_infos.keys().map(String::as_str).collect()
+        self.content
+            .tensor_infos
+            .keys()
+            .map(String::as_str)
+            .collect()
     }
 
     /// Extracts vocabulary tokens if available.
     #[must_use]
     pub fn vocabulary(&self) -> Option<Vec<String>> {
-        self.content.metadata.get("tokenizer.ggml.tokens").and_then(|v| {
-            if let gguf_file::Value::Array(arr) = v {
-                let tokens: Vec<String> = arr
-                    .iter()
-                    .filter_map(|item| {
-                        if let gguf_file::Value::String(s) = item {
-                            Some(s.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                if !tokens.is_empty() {
-                    Some(tokens)
+        self.content
+            .metadata
+            .get("tokenizer.ggml.tokens")
+            .and_then(|v| {
+                if let gguf_file::Value::Array(arr) = v {
+                    let tokens: Vec<String> = arr
+                        .iter()
+                        .filter_map(|item| {
+                            if let gguf_file::Value::String(s) = item {
+                                Some(s.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    if !tokens.is_empty() {
+                        Some(tokens)
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
-            } else {
-                None
-            }
-        })
+            })
     }
 
     /// Returns the number of tensors in the GGUF file.

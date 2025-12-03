@@ -114,9 +114,11 @@ impl Engine {
             DeviceType::Cuda { device_id } => {
                 #[cfg(feature = "cuda")]
                 {
-                    let device = Device::new_cuda(*device_id).map_err(|e| infernum_core::Error::Backend {
-                        backend: "cuda".to_string(),
-                        message: e.to_string(),
+                    let device = Device::new_cuda(*device_id).map_err(|e| {
+                        infernum_core::Error::Backend {
+                            backend: "cuda".to_string(),
+                            message: e.to_string(),
+                        }
                     })?;
                     Ok((device, format!("CUDA (GPU {})", device_id)))
                 }
@@ -128,13 +130,15 @@ impl Engine {
                     tracing::warn!("CUDA requested but not compiled in, falling back to CPU");
                     Ok((Device::Cpu, "CPU (CUDA unavailable)".to_string()))
                 }
-            }
+            },
             DeviceType::Metal { device_id } => {
                 #[cfg(feature = "metal")]
                 {
-                    let device = Device::new_metal(*device_id).map_err(|e| infernum_core::Error::Backend {
-                        backend: "metal".to_string(),
-                        message: e.to_string(),
+                    let device = Device::new_metal(*device_id).map_err(|e| {
+                        infernum_core::Error::Backend {
+                            backend: "metal".to_string(),
+                            message: e.to_string(),
+                        }
                     })?;
                     Ok((device, "Metal (Apple GPU)".to_string()))
                 }
@@ -146,12 +150,12 @@ impl Engine {
                     tracing::warn!("Metal requested but not compiled in, falling back to CPU");
                     Ok((Device::Cpu, "CPU (Metal unavailable)".to_string()))
                 }
-            }
+            },
             DeviceType::WebGpu => {
                 eprintln!("\x1b[33mWarning:\x1b[0m WebGPU not yet supported, falling back to CPU");
                 tracing::warn!("WebGPU not yet supported, falling back to CPU");
                 Ok((Device::Cpu, "CPU (WebGPU not yet supported)".to_string()))
-            }
+            },
         }
     }
 
@@ -185,11 +189,10 @@ impl Engine {
         let vb = Self::load_weights(&files.weights, device, dtype)?;
 
         // Build model
-        let model = Llama::load(llama_config.clone(), vb).map_err(|e| {
-            infernum_core::Error::ModelLoad {
+        let model =
+            Llama::load(llama_config.clone(), vb).map_err(|e| infernum_core::Error::ModelLoad {
                 message: format!("Failed to load Llama model: {}", e),
-            }
-        })?;
+            })?;
 
         // Load tokenizer
         let tokenizer = if let Some(tokenizer_path) = &files.tokenizer {
@@ -201,7 +204,10 @@ impl Engine {
         };
 
         let elapsed = start.elapsed();
-        tracing::info!(elapsed_ms = elapsed.as_millis(), "Model loaded successfully");
+        tracing::info!(
+            elapsed_ms = elapsed.as_millis(),
+            "Model loaded successfully"
+        );
 
         Ok(LoadedModel {
             model: Mutex::new(model),
@@ -211,20 +217,25 @@ impl Engine {
     }
 
     /// Loads weights from files into a VarBuilder.
-    fn load_weights(weights: &WeightFiles, device: &Device, dtype: DType) -> Result<VarBuilder<'static>> {
+    fn load_weights(
+        weights: &WeightFiles,
+        device: &Device,
+        dtype: DType,
+    ) -> Result<VarBuilder<'static>> {
         match weights {
             WeightFiles::SingleSafetensors(path) => {
                 let data = std::fs::read(path).map_err(|e| infernum_core::Error::ModelLoad {
                     message: format!("Failed to read weights: {}", e),
                 })?;
 
-                let vb = VarBuilder::from_buffered_safetensors(data, dtype, device).map_err(|e| {
-                    infernum_core::Error::ModelLoad {
-                        message: format!("Failed to create VarBuilder: {}", e),
-                    }
-                })?;
+                let vb =
+                    VarBuilder::from_buffered_safetensors(data, dtype, device).map_err(|e| {
+                        infernum_core::Error::ModelLoad {
+                            message: format!("Failed to create VarBuilder: {}", e),
+                        }
+                    })?;
                 Ok(vb)
-            }
+            },
             WeightFiles::ShardedSafetensors { shards, .. } => {
                 // Use memory-mapped loading for sharded files for better memory efficiency
                 // SAFETY: The files are read-only and we control the paths
@@ -236,17 +247,15 @@ impl Engine {
                     })?
                 };
                 Ok(vb)
-            }
-            WeightFiles::Gguf(_path) => {
-                Err(infernum_core::Error::ModelLoad {
-                    message: "GGUF loading not yet implemented".to_string(),
-                })
-            }
+            },
+            WeightFiles::Gguf(_path) => Err(infernum_core::Error::ModelLoad {
+                message: "GGUF loading not yet implemented".to_string(),
+            }),
             WeightFiles::PyTorch(_) | WeightFiles::ShardedPyTorch { .. } => {
                 Err(infernum_core::Error::ModelLoad {
                     message: "PyTorch format not supported, please use safetensors".to_string(),
                 })
-            }
+            },
         }
     }
 
@@ -257,19 +266,17 @@ impl Engine {
 
         let id = match &config.model {
             infernum_core::ModelSource::HuggingFace { repo_id, .. } => repo_id.clone(),
-            infernum_core::ModelSource::LocalPath { path } => {
-                path.file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("local-model")
-                    .to_string()
-            }
+            infernum_core::ModelSource::LocalPath { path } => path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("local-model")
+                .to_string(),
             infernum_core::ModelSource::S3 { key, .. } => key.clone(),
-            infernum_core::ModelSource::Gguf { path } => {
-                path.file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("gguf-model")
-                    .to_string()
-            }
+            infernum_core::ModelSource::Gguf { path } => path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("gguf-model")
+                .to_string(),
         };
 
         // Detect Llama version from config
@@ -278,17 +285,16 @@ impl Engine {
             _ => LlamaVersion::V3_2, // Default to latest
         };
 
-        Ok(ModelMetadata::builder(
-            ModelId::new(&id),
-            ModelArchitecture::Llama { version },
+        Ok(
+            ModelMetadata::builder(ModelId::new(&id), ModelArchitecture::Llama { version })
+                .source(config.model.clone())
+                .context_length(model_config.max_position_embeddings.unwrap_or(4096) as u32)
+                .vocab_size(model_config.vocab_size.unwrap_or(32000) as u32)
+                .hidden_size(model_config.hidden_size.unwrap_or(4096) as u32)
+                .num_layers(model_config.num_hidden_layers.unwrap_or(32) as u32)
+                .num_attention_heads(model_config.num_attention_heads.unwrap_or(32) as u32)
+                .build(),
         )
-        .source(config.model.clone())
-        .context_length(model_config.max_position_embeddings.unwrap_or(4096) as u32)
-        .vocab_size(model_config.vocab_size.unwrap_or(32000) as u32)
-        .hidden_size(model_config.hidden_size.unwrap_or(4096) as u32)
-        .num_layers(model_config.num_hidden_layers.unwrap_or(32) as u32)
-        .num_attention_heads(model_config.num_attention_heads.unwrap_or(32) as u32)
-        .build())
     }
 
     /// Returns the engine configuration.
@@ -310,11 +316,12 @@ impl Engine {
         max_tokens: u32,
         sampler: &mut Sampler,
     ) -> Result<(Vec<u32>, Vec<String>)> {
-        let loaded = self.loaded.as_ref().ok_or_else(|| {
-            infernum_core::Error::Internal {
+        let loaded = self
+            .loaded
+            .as_ref()
+            .ok_or_else(|| infernum_core::Error::Internal {
                 message: "Model not loaded".to_string(),
-            }
-        })?;
+            })?;
 
         let mut model = loaded.model.lock();
         model.clear_cache();
@@ -325,32 +332,34 @@ impl Engine {
                 message: format!("Failed to create input tensor: {}", e),
             }
         })?;
-        let input_ids = input_ids.unsqueeze(0).map_err(|e| {
-            infernum_core::Error::Internal {
+        let input_ids = input_ids
+            .unsqueeze(0)
+            .map_err(|e| infernum_core::Error::Internal {
                 message: format!("Failed to unsqueeze: {}", e),
-            }
-        })?;
+            })?;
 
         // Prefill: process the entire prompt
-        let logits = model.forward(&input_ids, 0).map_err(|e| {
-            infernum_core::Error::Internal {
+        let logits = model
+            .forward(&input_ids, 0)
+            .map_err(|e| infernum_core::Error::Internal {
                 message: format!("Forward pass failed: {}", e),
-            }
-        })?;
+            })?;
 
         // Get logits for last position
         let seq_len = prompt_tokens.len();
-        let last_logits = logits.i((0, seq_len - 1, ..)).map_err(|e| {
-            infernum_core::Error::Internal {
-                message: format!("Failed to index logits: {}", e),
-            }
-        })?;
+        let last_logits =
+            logits
+                .i((0, seq_len - 1, ..))
+                .map_err(|e| infernum_core::Error::Internal {
+                    message: format!("Failed to index logits: {}", e),
+                })?;
 
-        let logits_vec: Vec<f32> = last_logits.to_vec1().map_err(|e| {
-            infernum_core::Error::Internal {
-                message: format!("Failed to convert logits: {}", e),
-            }
-        })?;
+        let logits_vec: Vec<f32> =
+            last_logits
+                .to_vec1()
+                .map_err(|e| infernum_core::Error::Internal {
+                    message: format!("Failed to convert logits: {}", e),
+                })?;
 
         // Sample first token
         let mut generated_tokens = Vec::new();
@@ -383,29 +392,31 @@ impl Engine {
                     message: format!("Failed to create next input: {}", e),
                 }
             })?;
-            let next_input = next_input.unsqueeze(0).map_err(|e| {
-                infernum_core::Error::Internal {
-                    message: format!("Failed to unsqueeze: {}", e),
-                }
-            })?;
+            let next_input =
+                next_input
+                    .unsqueeze(0)
+                    .map_err(|e| infernum_core::Error::Internal {
+                        message: format!("Failed to unsqueeze: {}", e),
+                    })?;
 
-            let logits = model.forward(&next_input, seq_len + generated_tokens.len() - 1).map_err(|e| {
-                infernum_core::Error::Internal {
+            let logits = model
+                .forward(&next_input, seq_len + generated_tokens.len() - 1)
+                .map_err(|e| infernum_core::Error::Internal {
                     message: format!("Forward pass failed: {}", e),
-                }
-            })?;
+                })?;
 
-            let last_logits = logits.i((0, 0, ..)).map_err(|e| {
-                infernum_core::Error::Internal {
+            let last_logits = logits
+                .i((0, 0, ..))
+                .map_err(|e| infernum_core::Error::Internal {
                     message: format!("Failed to index logits: {}", e),
-                }
-            })?;
+                })?;
 
-            let logits_vec: Vec<f32> = last_logits.to_vec1().map_err(|e| {
-                infernum_core::Error::Internal {
-                    message: format!("Failed to convert logits: {}", e),
-                }
-            })?;
+            let logits_vec: Vec<f32> =
+                last_logits
+                    .to_vec1()
+                    .map_err(|e| infernum_core::Error::Internal {
+                        message: format!("Failed to convert logits: {}", e),
+                    })?;
 
             next_token = sampler.sample(&logits_vec);
         }
@@ -420,23 +431,24 @@ impl InferenceEngine for Engine {
         let start = Instant::now();
         tracing::debug!(request_id = %request.request_id, "Starting generation");
 
-        let loaded = self.loaded.as_ref().ok_or_else(|| {
-            infernum_core::Error::Internal {
+        let loaded = self
+            .loaded
+            .as_ref()
+            .ok_or_else(|| infernum_core::Error::Internal {
                 message: "Model not loaded".to_string(),
-            }
-        })?;
+            })?;
 
         // Encode prompt
         let prompt_text = match &request.prompt {
             infernum_core::request::PromptInput::Text(s) => s.clone(),
             infernum_core::request::PromptInput::Messages(msgs) => {
                 loaded.tokenizer.apply_chat_template(msgs, true)?
-            }
+            },
             infernum_core::request::PromptInput::Tokens(_) => {
                 return Err(infernum_core::Error::Internal {
                     message: "Pre-tokenized input not yet supported".to_string(),
                 });
-            }
+            },
         };
 
         let prompt_tokens = loaded.tokenizer.encode(&prompt_text, true)?;
@@ -481,28 +493,31 @@ impl InferenceEngine for Engine {
 
     async fn generate_stream(&self, request: GenerateRequest) -> Result<TokenStream> {
         use futures::stream;
-        use infernum_core::streaming::{StreamChunk, StreamChoice, StreamDelta};
+        use infernum_core::streaming::{StreamChoice, StreamChunk, StreamDelta};
         use infernum_core::{FinishReason, Usage};
 
         tracing::debug!(request_id = %request.request_id, "Starting streaming generation");
 
-        let loaded = Arc::clone(self.loaded.as_ref().ok_or_else(|| {
-            infernum_core::Error::Internal {
-                message: "Model not loaded".to_string(),
-            }
-        })?);
+        let loaded =
+            Arc::clone(
+                self.loaded
+                    .as_ref()
+                    .ok_or_else(|| infernum_core::Error::Internal {
+                        message: "Model not loaded".to_string(),
+                    })?,
+            );
 
         // Encode prompt before moving into the task
         let prompt_text = match &request.prompt {
             infernum_core::request::PromptInput::Text(s) => s.clone(),
             infernum_core::request::PromptInput::Messages(msgs) => {
                 loaded.tokenizer.apply_chat_template(msgs, true)?
-            }
+            },
             infernum_core::request::PromptInput::Tokens(_) => {
                 return Err(infernum_core::Error::Internal {
                     message: "Pre-tokenized input not yet supported".to_string(),
                 });
-            }
+            },
         };
 
         let prompt_tokens = loaded.tokenizer.encode(&prompt_text, true)?;
@@ -532,7 +547,7 @@ impl InferenceEngine for Engine {
                         message: format!("Failed to create input tensor: {}", e),
                     }));
                     return;
-                }
+                },
             };
 
             let input_ids = match input_ids.unsqueeze(0) {
@@ -542,7 +557,7 @@ impl InferenceEngine for Engine {
                         message: format!("Failed to unsqueeze: {}", e),
                     }));
                     return;
-                }
+                },
             };
 
             // Prefill
@@ -553,7 +568,7 @@ impl InferenceEngine for Engine {
                         message: format!("Forward pass failed: {}", e),
                     }));
                     return;
-                }
+                },
             };
 
             let seq_len = prompt_tokens.len();
@@ -564,7 +579,7 @@ impl InferenceEngine for Engine {
                         message: format!("Failed to index logits: {}", e),
                     }));
                     return;
-                }
+                },
             };
 
             let logits_vec: Vec<f32> = match last_logits.to_vec1() {
@@ -574,7 +589,7 @@ impl InferenceEngine for Engine {
                         message: format!("Failed to convert logits: {}", e),
                     }));
                     return;
-                }
+                },
             };
 
             let mut next_token = sampler.sample(&logits_vec);
@@ -594,7 +609,7 @@ impl InferenceEngine for Engine {
                     Err(e) => {
                         let _ = tx.blocking_send(Err(e));
                         return;
-                    }
+                    },
                 };
 
                 full_text.push_str(&token_text);
@@ -629,7 +644,7 @@ impl InferenceEngine for Engine {
                             message: format!("Failed to create next input: {}", e),
                         }));
                         return;
-                    }
+                    },
                 };
 
                 let next_input = match next_input.unsqueeze(0) {
@@ -639,17 +654,19 @@ impl InferenceEngine for Engine {
                             message: format!("Failed to unsqueeze: {}", e),
                         }));
                         return;
-                    }
+                    },
                 };
 
-                let logits = match model_guard.forward(&next_input, seq_len + generated_count as usize - 1) {
+                let logits = match model_guard
+                    .forward(&next_input, seq_len + generated_count as usize - 1)
+                {
                     Ok(l) => l,
                     Err(e) => {
                         let _ = tx.blocking_send(Err(infernum_core::Error::Internal {
                             message: format!("Forward pass failed: {}", e),
                         }));
                         return;
-                    }
+                    },
                 };
 
                 let last_logits = match logits.i((0, 0, ..)) {
@@ -659,7 +676,7 @@ impl InferenceEngine for Engine {
                             message: format!("Failed to index logits: {}", e),
                         }));
                         return;
-                    }
+                    },
                 };
 
                 let logits_vec: Vec<f32> = match last_logits.to_vec1() {
@@ -669,7 +686,7 @@ impl InferenceEngine for Engine {
                             message: format!("Failed to convert logits: {}", e),
                         }));
                         return;
-                    }
+                    },
                 };
 
                 next_token = sampler.sample(&logits_vec);

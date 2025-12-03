@@ -5,8 +5,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use infernum_core::{GenerateRequest, Message, Result, Role, SamplingParams};
 
-use abaddon::{Engine, InferenceEngine};
 use crate::tool::ToolRegistry;
+use abaddon::{Engine, InferenceEngine};
 
 /// Strategy for planning.
 #[derive(Debug, Clone)]
@@ -171,7 +171,10 @@ impl Planner for DefaultPlanner {
 
         // Fallback: Return a simple single-step plan
         let mut plan = Plan::new(objective);
-        plan.add_step(PlanStep::new("1", format!("Execute objective: {}", objective)));
+        plan.add_step(PlanStep::new(
+            "1",
+            format!("Execute objective: {}", objective),
+        ));
         Ok(plan)
     }
 
@@ -231,7 +234,7 @@ Respond with a JSON array of steps:
 
 Generate the plan now:"#
                 )
-            }
+            },
             PlanningStrategy::ReAct { max_iterations } => {
                 format!(
                     r#"You are a ReAct-style planning assistant. Create a plan that interleaves reasoning and action.
@@ -264,7 +267,7 @@ Respond with a JSON array of steps:
 
 Generate the plan now:"#
                 )
-            }
+            },
             PlanningStrategy::Hierarchical { max_depth } => {
                 format!(
                     r#"You are a hierarchical task decomposition planner. Break down the objective into subtasks.
@@ -304,7 +307,7 @@ Respond with a JSON array of steps (use dependencies to show hierarchy):
 
 Generate the plan now:"#
                 )
-            }
+            },
             PlanningStrategy::TreeOfThoughts { breadth, depth } => {
                 format!(
                     r#"You are a Tree of Thoughts planner. Explore multiple reasoning paths.
@@ -335,23 +338,22 @@ First show your thought tree, then output the selected plan:
 
 Generate the plan now:"#
                 )
-            }
+            },
         }
     }
 
     /// Builds the replanning prompt.
-    fn build_replan_prompt(
-        &self,
-        plan: &Plan,
-        feedback: &str,
-        tools: &ToolRegistry,
-    ) -> String {
+    fn build_replan_prompt(&self, plan: &Plan, feedback: &str, tools: &ToolRegistry) -> String {
         let tools_desc = tools.to_prompt_description();
-        let completed_steps: Vec<_> = plan.steps.iter()
+        let completed_steps: Vec<_> = plan
+            .steps
+            .iter()
             .take(plan.current_step)
             .map(|s| format!("- [DONE] {}: {}", s.id, s.description))
             .collect();
-        let remaining_steps: Vec<_> = plan.steps.iter()
+        let remaining_steps: Vec<_> = plan
+            .steps
+            .iter()
             .skip(plan.current_step)
             .map(|s| format!("- [TODO] {}: {}", s.id, s.description))
             .collect();
@@ -398,8 +400,16 @@ Respond with a JSON array of the revised remaining steps:
 
 Generate the revised plan now:"#,
             objective = plan.objective,
-            completed = if completed_steps.is_empty() { "None".to_string() } else { completed_steps.join("\n") },
-            remaining = if remaining_steps.is_empty() { "None".to_string() } else { remaining_steps.join("\n") },
+            completed = if completed_steps.is_empty() {
+                "None".to_string()
+            } else {
+                completed_steps.join("\n")
+            },
+            remaining = if remaining_steps.is_empty() {
+                "None".to_string()
+            } else {
+                remaining_steps.join("\n")
+            },
             feedback = feedback,
             tools_desc = tools_desc,
         )
@@ -446,8 +456,8 @@ Generate the revised plan now:"#,
                             end = start + i + 1;
                             break;
                         }
-                    }
-                    _ => {}
+                    },
+                    _ => {},
                 }
             }
             if depth == 0 {
@@ -500,13 +510,15 @@ Generate the revised plan now:"#,
             let line = line.trim();
 
             // Match patterns like "1.", "Step 1:", "- Step 1:"
-            if line.starts_with(|c: char| c.is_ascii_digit()) ||
-               line.starts_with("- ") ||
-               line.to_lowercase().starts_with("step ") {
-
+            if line.starts_with(|c: char| c.is_ascii_digit())
+                || line.starts_with("- ")
+                || line.to_lowercase().starts_with("step ")
+            {
                 // Extract description
                 let description = line
-                    .trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == '-' || c == ':' || c == ' ')
+                    .trim_start_matches(|c: char| {
+                        c.is_ascii_digit() || c == '.' || c == '-' || c == ':' || c == ' '
+                    })
                     .trim_start_matches("step ")
                     .trim_start_matches(|c: char| c.is_ascii_digit())
                     .trim_start_matches(|c: char| c == '.' || c == ':' || c == ' ')
@@ -550,7 +562,8 @@ impl Planner for LLMPlanner {
         let messages = vec![
             Message {
                 role: Role::System,
-                content: "You are an expert task planner. Create detailed, actionable plans.".to_string(),
+                content: "You are an expert task planner. Create detailed, actionable plans."
+                    .to_string(),
                 name: None,
                 tool_call_id: None,
             },
@@ -562,13 +575,16 @@ impl Planner for LLMPlanner {
             },
         ];
 
-        let request = GenerateRequest::chat(messages)
-            .with_sampling(SamplingParams::default()
+        let request = GenerateRequest::chat(messages).with_sampling(
+            SamplingParams::default()
                 .with_max_tokens(2048)
-                .with_temperature(0.3)); // Lower temperature for more consistent planning
+                .with_temperature(0.3),
+        ); // Lower temperature for more consistent planning
 
         let response = self.engine.generate(request).await?;
-        let response_text = response.choices.first()
+        let response_text = response
+            .choices
+            .first()
             .map(|c| c.text.clone())
             .unwrap_or_default();
 
@@ -607,7 +623,8 @@ impl Planner for LLMPlanner {
         let messages = vec![
             Message {
                 role: Role::System,
-                content: "You are an expert task planner. Revise plans based on feedback.".to_string(),
+                content: "You are an expert task planner. Revise plans based on feedback."
+                    .to_string(),
                 name: None,
                 tool_call_id: None,
             },
@@ -619,13 +636,16 @@ impl Planner for LLMPlanner {
             },
         ];
 
-        let request = GenerateRequest::chat(messages)
-            .with_sampling(SamplingParams::default()
+        let request = GenerateRequest::chat(messages).with_sampling(
+            SamplingParams::default()
                 .with_max_tokens(2048)
-                .with_temperature(0.3));
+                .with_temperature(0.3),
+        );
 
         let response = self.engine.generate(request).await?;
-        let response_text = response.choices.first()
+        let response_text = response
+            .choices
+            .first()
             .map(|c| c.text.clone())
             .unwrap_or_default();
 

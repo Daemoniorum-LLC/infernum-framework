@@ -136,7 +136,11 @@ impl VectorStore for InMemoryStore {
             .filter(|r| params.min_score.map_or(true, |min| r.score >= min))
             .collect();
 
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         results.truncate(params.top_k);
 
         Ok(results)
@@ -155,7 +159,10 @@ impl VectorStore for InMemoryStore {
 
     async fn get(&self, ids: Vec<String>) -> Result<Vec<VectorRecord>> {
         let store = self.records.read();
-        Ok(ids.into_iter().filter_map(|id| store.get(&id).cloned()).collect())
+        Ok(ids
+            .into_iter()
+            .filter_map(|id| store.get(&id).cloned())
+            .collect())
     }
 
     async fn count(&self) -> Result<usize> {

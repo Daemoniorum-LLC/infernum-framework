@@ -1,7 +1,7 @@
 //! Request batch scheduling with priority queues and continuous batching.
 
-use std::collections::{BinaryHeap, HashMap};
 use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap};
 use std::time::{Duration, Instant};
 
 use infernum_core::{GenerateRequest, RequestId};
@@ -181,7 +181,7 @@ impl BatchScheduler {
             infernum_core::request::PromptInput::Text(s) => s.len() / 4, // Rough estimate
             infernum_core::request::PromptInput::Messages(msgs) => {
                 msgs.iter().map(|m| m.content.len() / 4).sum()
-            }
+            },
             infernum_core::request::PromptInput::Tokens(tokens) => tokens.len(),
         }
     }
@@ -269,8 +269,7 @@ impl BatchScheduler {
             let wait_time = active.started_at.elapsed().as_millis() as f64;
             let mut stats = self.stats.lock();
             let total = stats.total_requests as f64;
-            stats.avg_wait_time_ms =
-                (stats.avg_wait_time_ms * (total - 1.0) + wait_time) / total;
+            stats.avg_wait_time_ms = (stats.avg_wait_time_ms * (total - 1.0) + wait_time) / total;
         }
     }
 

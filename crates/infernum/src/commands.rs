@@ -22,9 +22,7 @@ pub async fn serve(
     // Require a model - either from args or prompt interactively
     let model = match model {
         Some(m) => m,
-        None => {
-            prompt_for_model()?
-        }
+        None => prompt_for_model()?,
     };
 
     println!();
@@ -49,7 +47,7 @@ pub async fn serve(
 
 /// Prompt user to select a model interactively.
 fn prompt_for_model() -> Result<String> {
-    use dialoguer::{theme::ColorfulTheme, Select, Input};
+    use dialoguer::{theme::ColorfulTheme, Input, Select};
     use std::path::PathBuf;
 
     println!("\x1b[1m🤖 No model specified\x1b[0m\n");
@@ -121,11 +119,7 @@ fn prompt_for_model() -> Result<String> {
         Ok(model)
     } else {
         // Extract model name (remove status suffix)
-        let model = selected
-            .split(" (")
-            .next()
-            .unwrap_or(selected)
-            .to_string();
+        let model = selected.split(" (").next().unwrap_or(selected).to_string();
         Ok(model)
     }
 }
@@ -138,8 +132,9 @@ pub async fn generate(
     temperature: f32,
     stream: bool,
 ) -> Result<()> {
-    let model_id = model.ok_or_else(|| eyre!(
-        "Model is required.\n\n\
+    let model_id = model.ok_or_else(|| {
+        eyre!(
+            "Model is required.\n\n\
          Options:\n  \
          1. Specify on command line: --model <model>\n  \
          2. Set a default: infernum config set-model <model>\n  \
@@ -147,7 +142,8 @@ pub async fn generate(
          Example models:\n  \
          - TinyLlama/TinyLlama-1.1B-Chat-v1.0 (small, fast)\n  \
          - meta-llama/Llama-3.2-3B-Instruct (requires HuggingFace login)"
-    ))?;
+        )
+    })?;
 
     // Show loading indicator
     let spinner = ProgressBar::new_spinner();
@@ -178,8 +174,7 @@ pub async fn generate(
         .with_temperature(temperature);
 
     // Create request
-    let request = GenerateRequest::new(prompt.clone())
-        .with_sampling(sampling);
+    let request = GenerateRequest::new(prompt.clone()).with_sampling(sampling);
 
     if stream {
         // Streaming generation
@@ -198,11 +193,11 @@ pub async fn generate(
                             io::stdout().flush()?;
                         }
                     }
-                }
+                },
                 Err(e) => {
                     eprintln!("\nError during generation: {}", e);
                     break;
-                }
+                },
             }
         }
         println!();
@@ -258,12 +253,19 @@ pub async fn embed(text: String, model: Option<String>) -> Result<()> {
     let response = engine.embed(request).await?;
 
     println!("Text: \"{}\"", text);
-    println!("Dimensions: {}", response.data.first().map(|e| {
-        match &e.embedding {
-            infernum_core::response::EmbeddingData::Float(v) => v.len(),
-            infernum_core::response::EmbeddingData::Base64(_) => 0,
-        }
-    }).unwrap_or(0));
+    println!(
+        "Dimensions: {}",
+        response
+            .data
+            .first()
+            .map(|e| {
+                match &e.embedding {
+                    infernum_core::response::EmbeddingData::Float(v) => v.len(),
+                    infernum_core::response::EmbeddingData::Base64(_) => 0,
+                }
+            })
+            .unwrap_or(0)
+    );
 
     // Show first few dimensions
     if let Some(embedding) = response.data.first() {
@@ -323,7 +325,12 @@ pub async fn model_list() -> Result<()> {
             models.sort_by(|a, b| a.name.cmp(&b.name));
 
             // Calculate column widths
-            let max_name_len = models.iter().map(|m| m.name.len()).max().unwrap_or(30).min(50);
+            let max_name_len = models
+                .iter()
+                .map(|m| m.name.len())
+                .max()
+                .unwrap_or(30)
+                .min(50);
 
             // Print header
             println!(
@@ -423,8 +430,7 @@ fn get_model_cache_info(name: &str, cache_path: &std::path::Path) -> ModelCacheI
                                 .and_then(|a| a.as_str())
                                 .map(|s| {
                                     // Simplify architecture name
-                                    s.replace("ForCausalLM", "")
-                                        .replace("Model", "")
+                                    s.replace("ForCausalLM", "").replace("Model", "")
                                 })
                                 .unwrap_or_else(|| "-".to_string());
 
@@ -487,10 +493,7 @@ pub async fn model_pull(model: String, revision: Option<String>) -> Result<()> {
 
     // Weight files - try single file first, then sharded
     #[allow(unused)]
-    let weight_files = [
-        "model.safetensors",
-        "model.safetensors.index.json",
-    ];
+    let weight_files = ["model.safetensors", "model.safetensors.index.json"];
 
     let mut downloaded: Vec<String> = Vec::new();
     let mut failed: Vec<String> = Vec::new();
@@ -505,11 +508,11 @@ pub async fn model_pull(model: String, revision: Option<String>) -> Result<()> {
             Ok(_) => {
                 println!("\x1b[32m✓\x1b[0m");
                 downloaded.push(file.to_string());
-            }
+            },
             Err(e) => {
                 println!("\x1b[31m✗\x1b[0m ({})", e);
                 failed.push(file.to_string());
-            }
+            },
         }
     }
 
@@ -522,10 +525,10 @@ pub async fn model_pull(model: String, revision: Option<String>) -> Result<()> {
             Ok(_) => {
                 println!("\x1b[32m✓\x1b[0m");
                 downloaded.push(file.to_string());
-            }
+            },
             Err(_) => {
                 println!("\x1b[33m-\x1b[0m (optional, skipped)");
-            }
+            },
         }
     }
 
@@ -540,7 +543,7 @@ pub async fn model_pull(model: String, revision: Option<String>) -> Result<()> {
             println!("\x1b[32m✓\x1b[0m");
             downloaded.push("model.safetensors".to_string());
             has_weights = true;
-        }
+        },
         Err(_) => {
             println!("\x1b[33m-\x1b[0m (checking for sharded weights...)");
 
@@ -554,8 +557,12 @@ pub async fn model_pull(model: String, revision: Option<String>) -> Result<()> {
 
                     // Parse index to find shard files
                     if let Ok(index_content) = std::fs::read_to_string(&index_path) {
-                        if let Ok(index_json) = serde_json::from_str::<serde_json::Value>(&index_content) {
-                            if let Some(weight_map) = index_json.get("weight_map").and_then(|w| w.as_object()) {
+                        if let Ok(index_json) =
+                            serde_json::from_str::<serde_json::Value>(&index_content)
+                        {
+                            if let Some(weight_map) =
+                                index_json.get("weight_map").and_then(|w| w.as_object())
+                            {
                                 // Get unique shard files
                                 let mut shard_files: Vec<String> = weight_map
                                     .values()
@@ -564,7 +571,10 @@ pub async fn model_pull(model: String, revision: Option<String>) -> Result<()> {
                                 shard_files.sort();
                                 shard_files.dedup();
 
-                                println!("\n  Found {} weight shards to download:", shard_files.len());
+                                println!(
+                                    "\n  Found {} weight shards to download:",
+                                    shard_files.len()
+                                );
                                 let shard_progress = ProgressBar::new(shard_files.len() as u64);
                                 shard_progress.set_style(
                                     ProgressStyle::default_bar()
@@ -579,31 +589,38 @@ pub async fn model_pull(model: String, revision: Option<String>) -> Result<()> {
                                     match repo.get(shard) {
                                         Ok(_) => {
                                             downloaded.push(shard.clone());
-                                        }
+                                        },
                                         Err(_) => {
                                             shard_errors += 1;
-                                        }
+                                        },
                                     }
                                     shard_progress.inc(1);
                                 }
                                 shard_progress.finish_and_clear();
 
                                 if shard_errors == 0 {
-                                    println!("  \x1b[32mAll {} shards downloaded successfully.\x1b[0m", shard_files.len());
+                                    println!(
+                                        "  \x1b[32mAll {} shards downloaded successfully.\x1b[0m",
+                                        shard_files.len()
+                                    );
                                     has_weights = true;
                                 } else {
-                                    println!("  \x1b[31m{} of {} shards failed to download.\x1b[0m", shard_errors, shard_files.len());
+                                    println!(
+                                        "  \x1b[31m{} of {} shards failed to download.\x1b[0m",
+                                        shard_errors,
+                                        shard_files.len()
+                                    );
                                 }
                             }
                         }
                     }
-                }
+                },
                 Err(_) => {
                     println!("\x1b[31m✗\x1b[0m");
                     failed.push("model weights".to_string());
-                }
+                },
             }
-        }
+        },
     }
 
     // Summary
@@ -623,8 +640,15 @@ pub async fn model_pull(model: String, revision: Option<String>) -> Result<()> {
     }
 
     println!("\x1b[32mDownload complete!\x1b[0m");
-    println!("Downloaded {} files for model '{}'", downloaded.len(), model);
-    println!("\nUse 'infernum generate --model {}' to run inference.", model);
+    println!(
+        "Downloaded {} files for model '{}'",
+        downloaded.len(),
+        model
+    );
+    println!(
+        "\nUse 'infernum generate --model {}' to run inference.",
+        model
+    );
 
     Ok(())
 }
@@ -647,9 +671,7 @@ pub async fn model_info(model: String) -> Result<()> {
             if let Some(arch) = config.get("architectures").and_then(|a| a.as_array()) {
                 println!(
                     "Architecture: {}",
-                    arch.first()
-                        .and_then(|a| a.as_str())
-                        .unwrap_or("Unknown")
+                    arch.first().and_then(|a| a.as_str()).unwrap_or("Unknown")
                 );
             }
             if let Some(hidden) = config.get("hidden_size").and_then(|h| h.as_u64()) {
@@ -664,17 +686,20 @@ pub async fn model_info(model: String) -> Result<()> {
             if let Some(vocab) = config.get("vocab_size").and_then(|v| v.as_u64()) {
                 println!("Vocabulary size: {}", vocab);
             }
-            if let Some(ctx) = config.get("max_position_embeddings").and_then(|c| c.as_u64()) {
+            if let Some(ctx) = config
+                .get("max_position_embeddings")
+                .and_then(|c| c.as_u64())
+            {
                 println!("Max context length: {}", ctx);
             }
 
             println!("\nCache location: {:?}", path.parent().unwrap_or(&path));
-        }
+        },
         Err(e) => {
             println!("Could not fetch model info: {}", e);
             println!("The model may need to be downloaded first.");
             println!("Use: infernum model pull {}", model);
-        }
+        },
     }
 
     Ok(())
@@ -707,8 +732,9 @@ pub async fn model_remove(model: String) -> Result<()> {
 
 /// Start an interactive chat session.
 pub async fn chat(model: Option<String>, system: Option<String>) -> Result<()> {
-    let model_id = model.ok_or_else(|| eyre!(
-        "Model is required.\n\n\
+    let model_id = model.ok_or_else(|| {
+        eyre!(
+            "Model is required.\n\n\
          Options:\n  \
          1. Specify on command line: --model <model>\n  \
          2. Set a default: infernum config set-model <model>\n  \
@@ -716,7 +742,8 @@ pub async fn chat(model: Option<String>, system: Option<String>) -> Result<()> {
          Example models:\n  \
          - TinyLlama/TinyLlama-1.1B-Chat-v1.0 (small, fast)\n  \
          - meta-llama/Llama-3.2-3B-Instruct (requires HuggingFace login)"
-    ))?;
+        )
+    })?;
 
     // Show loading indicator
     let spinner = ProgressBar::new_spinner();
@@ -800,7 +827,7 @@ pub async fn chat(model: Option<String>, system: Option<String>) -> Result<()> {
                     println!("  /load <file> - Load conversation from file");
                     println!("  exit/quit    - End the session\n");
                     continue;
-                }
+                },
                 "/clear" => {
                     messages.clear();
                     if let Some(system_prompt) = &system {
@@ -813,7 +840,7 @@ pub async fn chat(model: Option<String>, system: Option<String>) -> Result<()> {
                     }
                     println!("\nConversation cleared.\n");
                     continue;
-                }
+                },
                 "/history" => {
                     println!("\n--- Conversation History ---");
                     for (i, msg) in messages.iter().enumerate() {
@@ -834,11 +861,17 @@ pub async fn chat(model: Option<String>, system: Option<String>) -> Result<()> {
                         } else {
                             msg.content.clone()
                         };
-                        println!("{}[{}] {}:\x1b[0m {}", role_color, i + 1, role_name, preview);
+                        println!(
+                            "{}[{}] {}:\x1b[0m {}",
+                            role_color,
+                            i + 1,
+                            role_name,
+                            preview
+                        );
                     }
                     println!("--- {} messages ---\n", messages.len());
                     continue;
-                }
+                },
                 "/save" => {
                     if let Some(filename) = arg {
                         match save_chat_history(&messages, filename) {
@@ -849,25 +882,32 @@ pub async fn chat(model: Option<String>, system: Option<String>) -> Result<()> {
                         eprintln!("\nUsage: /save <filename>\n");
                     }
                     continue;
-                }
+                },
                 "/load" => {
                     if let Some(filename) = arg {
                         match load_chat_history(filename) {
                             Ok(loaded_messages) => {
                                 messages = loaded_messages;
-                                println!("\nLoaded {} messages from '{}'\n", messages.len(), filename);
-                            }
+                                println!(
+                                    "\nLoaded {} messages from '{}'\n",
+                                    messages.len(),
+                                    filename
+                                );
+                            },
                             Err(e) => eprintln!("\nFailed to load: {}\n", e),
                         }
                     } else {
                         eprintln!("\nUsage: /load <filename>\n");
                     }
                     continue;
-                }
+                },
                 _ => {
-                    eprintln!("\nUnknown command: {}\nType /help for available commands.\n", cmd);
+                    eprintln!(
+                        "\nUnknown command: {}\nType /help for available commands.\n",
+                        cmd
+                    );
                     continue;
-                }
+                },
             }
         }
 
@@ -903,20 +943,20 @@ pub async fn chat(model: Option<String>, system: Option<String>) -> Result<()> {
                                     response_text.push_str(&content);
                                 }
                             }
-                        }
+                        },
                         Err(e) => {
                             eprintln!("\nError: {}", e);
                             break;
-                        }
+                        },
                     }
                 }
-            }
+            },
             Err(e) => {
                 eprintln!("Error generating response: {}", e);
                 // Remove the last user message on error
                 messages.pop();
                 continue;
-            }
+            },
         }
 
         println!("\n");
@@ -957,7 +997,7 @@ pub async fn agent(
                  Example:\n  \
                  infernum agent \"Calculate 23 * 47\" --model TinyLlama/TinyLlama-1.1B-Chat-v1.0"
             ));
-        }
+        },
     };
 
     println!("\x1b[1m🤖 Infernum Agent\x1b[0m");
@@ -1011,7 +1051,7 @@ pub async fn agent(
         agent = agent.system_prompt(
             "You are a helpful AI assistant with access to tools. \
              Think step by step and use tools when needed to accomplish tasks. \
-             Always explain your reasoning."
+             Always explain your reasoning.",
         );
     }
 
@@ -1030,12 +1070,12 @@ pub async fn agent(
             println!("\x1b[32m✓ Agent completed\x1b[0m\n");
             println!("\x1b[1mFinal Answer:\x1b[0m");
             println!("{}", answer);
-        }
+        },
         Err(e) => {
             println!("\x1b[31m✗ Agent failed\x1b[0m\n");
             println!("Error: {}", e);
             return Err(eyre!("Agent execution failed: {}", e));
-        }
+        },
     }
 
     Ok(())
@@ -1050,7 +1090,14 @@ pub fn version() {
     // Build information
     println!("\x1b[1mBuild Info:\x1b[0m");
     println!("  Rust Version:  {}", rustc_version());
-    println!("  Profile:       {}", if cfg!(debug_assertions) { "debug" } else { "release" });
+    println!(
+        "  Profile:       {}",
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        }
+    );
     println!("  Target:        {}", std::env::consts::ARCH);
     println!("  OS:            {}", std::env::consts::OS);
     println!();
@@ -1101,7 +1148,14 @@ pub fn doctor() {
     // 1. Check Rust/build info
     println!("\x1b[1m[Build]\x1b[0m");
     println!("  Version:     {}", env!("CARGO_PKG_VERSION"));
-    println!("  Profile:     {}", if cfg!(debug_assertions) { "debug" } else { "release" });
+    println!(
+        "  Profile:     {}",
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        }
+    );
     check_ok("Build info");
     println!();
 
@@ -1154,13 +1208,19 @@ pub fn doctor() {
                     println!("  Syntax:      \x1b[32m✓ valid TOML\x1b[0m");
                 } else {
                     println!("  Syntax:      \x1b[31m✗ invalid TOML\x1b[0m");
-                    issues.push(format!("Config file has invalid TOML syntax: {}", config_path.display()));
+                    issues.push(format!(
+                        "Config file has invalid TOML syntax: {}",
+                        config_path.display()
+                    ));
                 }
-            }
+            },
             Err(_) => {
                 println!("  Syntax:      \x1b[31m✗ unreadable\x1b[0m");
-                issues.push(format!("Cannot read config file: {}", config_path.display()));
-            }
+                issues.push(format!(
+                    "Cannot read config file: {}",
+                    config_path.display()
+                ));
+            },
         }
     } else {
         println!("  Config file: \x1b[90m○ not found (using defaults)\x1b[0m");
@@ -1211,7 +1271,10 @@ pub fn doctor() {
         println!("  Auth token:  \x1b[32m✓ found in environment\x1b[0m");
     } else {
         println!("  Auth token:  \x1b[33m○ not found\x1b[0m");
-        warnings.push("HuggingFace not authenticated. Some models require login: huggingface-cli login".to_string());
+        warnings.push(
+            "HuggingFace not authenticated. Some models require login: huggingface-cli login"
+                .to_string(),
+        );
     }
     println!();
 
@@ -1359,9 +1422,8 @@ fn save_chat_history(messages: &[Message], filename: &str) -> Result<()> {
     let serializable: Vec<SerializableMessage> = messages.iter().map(|m| m.into()).collect();
     let json = serde_json::to_string_pretty(&serializable)?;
 
-    std::fs::write(&filename, &json).map_err(|e| {
-        eyre!("Could not write to '{}': {}", filename, e)
-    })?;
+    std::fs::write(&filename, &json)
+        .map_err(|e| eyre!("Could not write to '{}': {}", filename, e))?;
 
     Ok(())
 }
@@ -1397,9 +1459,8 @@ fn load_chat_history(filename: &str) -> Result<Vec<Message>> {
         ));
     }
 
-    let content = std::fs::read_to_string(&filename).map_err(|e| {
-        eyre!("Could not read '{}': {}", filename, e)
-    })?;
+    let content = std::fs::read_to_string(&filename)
+        .map_err(|e| eyre!("Could not read '{}': {}", filename, e))?;
 
     let serializable: Vec<SerializableMessage> = serde_json::from_str(&content).map_err(|e| {
         eyre!(

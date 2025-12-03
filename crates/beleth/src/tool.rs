@@ -331,24 +331,17 @@ impl Tool for JsonTool {
             .ok_or_else(|| infernum_core::Error::internal("Missing data"))?;
 
         match operation {
-            "parse" => {
-                match serde_json::from_str::<Value>(data) {
-                    Ok(parsed) => Ok(ToolResult::success("JSON parsed successfully")
-                        .with_data(parsed)),
-                    Err(e) => Ok(ToolResult::error(format!("Parse error: {}", e))),
-                }
-            }
-            "format" => {
-                match serde_json::from_str::<Value>(data) {
-                    Ok(parsed) => {
-                        match serde_json::to_string_pretty(&parsed) {
-                            Ok(formatted) => Ok(ToolResult::success(formatted)),
-                            Err(e) => Ok(ToolResult::error(format!("Format error: {}", e))),
-                        }
-                    }
-                    Err(e) => Ok(ToolResult::error(format!("Parse error: {}", e))),
-                }
-            }
+            "parse" => match serde_json::from_str::<Value>(data) {
+                Ok(parsed) => Ok(ToolResult::success("JSON parsed successfully").with_data(parsed)),
+                Err(e) => Ok(ToolResult::error(format!("Parse error: {}", e))),
+            },
+            "format" => match serde_json::from_str::<Value>(data) {
+                Ok(parsed) => match serde_json::to_string_pretty(&parsed) {
+                    Ok(formatted) => Ok(ToolResult::success(formatted)),
+                    Err(e) => Ok(ToolResult::error(format!("Format error: {}", e))),
+                },
+                Err(e) => Ok(ToolResult::error(format!("Parse error: {}", e))),
+            },
             "query" => {
                 // Simple key access (full JSONPath would need a library)
                 let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
@@ -360,11 +353,14 @@ impl Tool for JsonTool {
                             Some(v) => Ok(ToolResult::success(v.to_string()).with_data(v)),
                             None => Ok(ToolResult::error("Query returned no results")),
                         }
-                    }
+                    },
                     Err(e) => Ok(ToolResult::error(format!("Parse error: {}", e))),
                 }
-            }
-            _ => Ok(ToolResult::error(format!("Unknown operation: {}", operation))),
+            },
+            _ => Ok(ToolResult::error(format!(
+                "Unknown operation: {}",
+                operation
+            ))),
         }
     }
 }
@@ -425,13 +421,19 @@ impl Tool for DateTimeTool {
                 // Simple ISO-8601 format
                 let datetime = format_unix_timestamp(secs);
 
-                Ok(ToolResult::success(format!("Current time: {}", datetime))
-                    .with_data(serde_json::json!({
-                        "timestamp": secs,
-                        "iso8601": datetime
-                    })))
-            }
-            _ => Ok(ToolResult::error(format!("Operation '{}' not yet implemented", operation))),
+                Ok(
+                    ToolResult::success(format!("Current time: {}", datetime)).with_data(
+                        serde_json::json!({
+                            "timestamp": secs,
+                            "iso8601": datetime
+                        }),
+                    ),
+                )
+            },
+            _ => Ok(ToolResult::error(format!(
+                "Operation '{}' not yet implemented",
+                operation
+            ))),
         }
     }
 }
@@ -460,7 +462,10 @@ fn evaluate_expression(expr: &str) -> std::result::Result<f64, String> {
             // Check it's not a negative number
             if pos > 0 {
                 let prev = expr.chars().nth(pos - 1);
-                if prev.map(|p| p.is_ascii_digit() || p == ')').unwrap_or(false) {
+                if prev
+                    .map(|p| p.is_ascii_digit() || p == ')')
+                    .unwrap_or(false)
+                {
                     let left = evaluate_expression(&expr[..pos])?;
                     let right = evaluate_expression(&expr[pos + 1..])?;
                     return Ok(left - right);
@@ -512,11 +517,11 @@ fn query_json(value: &Value, query: &str) -> Option<Value> {
         match current {
             Value::Object(map) => {
                 current = map.get(part)?;
-            }
+            },
             Value::Array(arr) => {
                 let idx: usize = part.parse().ok()?;
                 current = arr.get(idx)?;
-            }
+            },
             _ => return None,
         }
     }
@@ -605,10 +610,7 @@ mod tests {
             }
         });
 
-        assert_eq!(
-            query_json(&json, "name"),
-            Some(serde_json::json!("test"))
-        );
+        assert_eq!(query_json(&json, "name"), Some(serde_json::json!("test")));
         assert_eq!(
             query_json(&json, "nested.value"),
             Some(serde_json::json!(42))

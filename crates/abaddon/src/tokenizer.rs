@@ -22,10 +22,11 @@ impl Tokenizer {
     ///
     /// Returns an error if the tokenizer cannot be loaded.
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
-        let inner = tokenizers::Tokenizer::from_file(path)
-            .map_err(|e| infernum_core::Error::Tokenization {
+        let inner = tokenizers::Tokenizer::from_file(path).map_err(|e| {
+            infernum_core::Error::Tokenization {
                 message: e.to_string(),
-            })?;
+            }
+        })?;
 
         Ok(Self::from_tokenizer(inner))
     }
@@ -82,12 +83,11 @@ impl Tokenizer {
     ///
     /// Returns an error if encoding fails.
     pub fn encode(&self, text: &str, add_special_tokens: bool) -> Result<Vec<u32>> {
-        let encoding = self
-            .inner
-            .encode(text, add_special_tokens)
-            .map_err(|e| infernum_core::Error::Tokenization {
+        let encoding = self.inner.encode(text, add_special_tokens).map_err(|e| {
+            infernum_core::Error::Tokenization {
                 message: e.to_string(),
-            })?;
+            }
+        })?;
 
         Ok(encoding.get_ids().to_vec())
     }
@@ -98,11 +98,11 @@ impl Tokenizer {
     ///
     /// Returns an error if decoding fails.
     pub fn decode(&self, ids: &[u32], skip_special_tokens: bool) -> Result<String> {
-        self.inner
-            .decode(ids, skip_special_tokens)
-            .map_err(|e| infernum_core::Error::Tokenization {
+        self.inner.decode(ids, skip_special_tokens).map_err(|e| {
+            infernum_core::Error::Tokenization {
                 message: e.to_string(),
-            })
+            }
+        })
     }
 
     /// Decodes a single token ID to text.

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
-use candle_core::{Device, Tensor, Result as CandleResult};
+use candle_core::{Device, Result as CandleResult, Tensor};
 use indicatif::{ProgressBar, ProgressStyle};
 use infernum_core::Result;
 use tokio::sync::watch;
@@ -89,11 +89,17 @@ impl InMemoryDataset {
     }
 
     /// Creates a dataset from instruction-response pairs.
-    pub fn from_instruction_pairs(pairs: Vec<(String, String)>, tokenize_fn: impl Fn(&str) -> Vec<u32>) -> Self {
+    pub fn from_instruction_pairs(
+        pairs: Vec<(String, String)>,
+        tokenize_fn: impl Fn(&str) -> Vec<u32>,
+    ) -> Self {
         let samples = pairs
             .into_iter()
             .map(|(instruction, response)| {
-                let full_text = format!("### Instruction:\n{}\n\n### Response:\n{}", instruction, response);
+                let full_text = format!(
+                    "### Instruction:\n{}\n\n### Response:\n{}",
+                    instruction, response
+                );
                 let input_ids = tokenize_fn(&full_text);
                 let attention_mask = vec![1u32; input_ids.len()];
 
@@ -250,7 +256,8 @@ impl AdamW {
         if !self.states.contains_key(name) {
             let m = Tensor::zeros(param.shape(), dtype, device)?;
             let v = Tensor::zeros(param.shape(), dtype, device)?;
-            self.states.insert(name.to_string(), AdamWState { m, v, step: 0 });
+            self.states
+                .insert(name.to_string(), AdamWState { m, v, step: 0 });
         }
 
         let state = self.states.get_mut(name).unwrap();
@@ -320,8 +327,8 @@ impl LRScheduler {
             self.base_lr * (step as f64 / self.warmup_steps as f64)
         } else {
             // Cosine decay
-            let progress = (step - self.warmup_steps) as f64
-                / (self.total_steps - self.warmup_steps) as f64;
+            let progress =
+                (step - self.warmup_steps) as f64 / (self.total_steps - self.warmup_steps) as f64;
             let progress = progress.min(1.0);
 
             let cosine_decay = 0.5 * (1.0 + (std::f64::consts::PI * progress).cos());
@@ -431,7 +438,10 @@ impl Trainer {
         let run = Arc::new(run);
 
         // Store the run
-        self.runs.write().unwrap().insert(run_id.clone(), run.clone());
+        self.runs
+            .write()
+            .unwrap()
+            .insert(run_id.clone(), run.clone());
 
         let lora_config = config.lora.clone().unwrap_or_default();
         let output_dir = self.output_dir.clone();
@@ -451,18 +461,19 @@ impl Trainer {
                 base_model,
                 device,
                 &mut stop_rx,
-            ).await;
+            )
+            .await;
 
             match result {
                 Ok(_) => {
                     tracing::info!(run_id = %run_clone.id, "Training completed");
-                }
+                },
                 Err(e) => {
                     run_clone.update_status(TrainingStatus::Failed {
                         error: e.to_string(),
                     });
                     tracing::error!(run_id = %run_clone.id, error = %e, "Training failed");
-                }
+                },
             }
         });
 
@@ -496,7 +507,10 @@ impl Trainer {
                 hidden_size,
                 hidden_size,
                 &device,
-            ).map_err(|e| infernum_core::Error::Internal { message: e.to_string() })?;
+            )
+            .map_err(|e| infernum_core::Error::Internal {
+                message: e.to_string(),
+            })?;
             lora_model.add_layer(layer);
         }
 
@@ -507,7 +521,8 @@ impl Trainer {
         );
 
         // Calculate total steps
-        let steps_per_epoch = (dataset.len() + config.batch_size as usize - 1) / config.batch_size as usize;
+        let steps_per_epoch =
+            (dataset.len() + config.batch_size as usize - 1) / config.batch_size as usize;
         let total_steps = (steps_per_epoch * config.num_epochs as usize) as u64;
 
         // Initialize optimizer and scheduler
@@ -533,7 +548,8 @@ impl Trainer {
 
         // Training loop
         for epoch in 0..config.num_epochs {
-            let mut data_loader = DataLoader::new(dataset.clone(), config.batch_size as usize, true);
+            let mut data_loader =
+                DataLoader::new(dataset.clone(), config.batch_size as usize, true);
 
             for batch in data_loader.by_ref() {
                 // Check for stop signal
@@ -557,7 +573,8 @@ impl Trainer {
                     &mut optimizer,
                     &device,
                     config.max_grad_norm,
-                ).await?;
+                )
+                .await?;
 
                 running_loss += batch_loss;
                 loss_count += 1;
@@ -640,28 +657,45 @@ impl Trainer {
             return Ok(0.0);
         }
 
-        let input_tensor = Tensor::from_vec(input_data, (batch_size, seq_len), device)
-            .map_err(|e| infernum_core::Error::Internal { message: e.to_string() })?;
+        let input_tensor =
+            Tensor::from_vec(input_data, (batch_size, seq_len), device).map_err(|e| {
+                infernum_core::Error::Internal {
+                    message: e.to_string(),
+                }
+            })?;
 
         // Simulate forward pass through LoRA layers
         let mut hidden = input_tensor;
         for (_name, layer) in &lora_model.layers {
             if layer.lora_a.is_some() && layer.lora_b.is_some() {
                 // Apply LoRA transformation (simplified)
-                let lora_out = layer.forward(&hidden)
-                    .map_err(|e| infernum_core::Error::Internal { message: e.to_string() })?;
-                hidden = hidden.add(&lora_out)
-                    .map_err(|e| infernum_core::Error::Internal { message: e.to_string() })?;
+                let lora_out =
+                    layer
+                        .forward(&hidden)
+                        .map_err(|e| infernum_core::Error::Internal {
+                            message: e.to_string(),
+                        })?;
+                hidden = hidden
+                    .add(&lora_out)
+                    .map_err(|e| infernum_core::Error::Internal {
+                        message: e.to_string(),
+                    })?;
             }
         }
 
         // Compute mock loss (sum of squared values, normalized)
-        let loss_tensor = hidden.sqr()
-            .map_err(|e| infernum_core::Error::Internal { message: e.to_string() })?;
-        let loss = loss_tensor.sum_all()
-            .map_err(|e| infernum_core::Error::Internal { message: e.to_string() })?
+        let loss_tensor = hidden.sqr().map_err(|e| infernum_core::Error::Internal {
+            message: e.to_string(),
+        })?;
+        let loss = loss_tensor
+            .sum_all()
+            .map_err(|e| infernum_core::Error::Internal {
+                message: e.to_string(),
+            })?
             .to_scalar::<f32>()
-            .map_err(|e| infernum_core::Error::Internal { message: e.to_string() })? as f64;
+            .map_err(|e| infernum_core::Error::Internal {
+                message: e.to_string(),
+            })? as f64;
         let normalized_loss = loss / (batch_size * seq_len) as f64;
 
         // Simulate gradients (in practice, these come from autograd)
@@ -669,20 +703,34 @@ impl Trainer {
         for (name, layer) in lora_model.layers.iter_mut() {
             if let (Some(lora_a), Some(lora_b)) = (&layer.lora_a, &layer.lora_b) {
                 // Create gradient tensors
-                let grad_a = Tensor::randn(0.0f32, 0.1f32, lora_a.shape(), device)
-                    .map_err(|e| infernum_core::Error::Internal { message: e.to_string() })?;
-                let grad_b = Tensor::randn(0.0f32, 0.1f32, lora_b.shape(), device)
-                    .map_err(|e| infernum_core::Error::Internal { message: e.to_string() })?;
+                let grad_a =
+                    Tensor::randn(0.0f32, 0.1f32, lora_a.shape(), device).map_err(|e| {
+                        infernum_core::Error::Internal {
+                            message: e.to_string(),
+                        }
+                    })?;
+                let grad_b =
+                    Tensor::randn(0.0f32, 0.1f32, lora_b.shape(), device).map_err(|e| {
+                        infernum_core::Error::Internal {
+                            message: e.to_string(),
+                        }
+                    })?;
 
                 // Clip gradients by norm
                 let grad_a = Self::clip_grad_norm(&grad_a, max_grad_norm)?;
                 let grad_b = Self::clip_grad_norm(&grad_b, max_grad_norm)?;
 
                 // Apply optimizer step
-                let new_a = optimizer.step(&format!("{}.lora_a", name), lora_a, &grad_a)
-                    .map_err(|e| infernum_core::Error::Internal { message: e.to_string() })?;
-                let new_b = optimizer.step(&format!("{}.lora_b", name), lora_b, &grad_b)
-                    .map_err(|e| infernum_core::Error::Internal { message: e.to_string() })?;
+                let new_a = optimizer
+                    .step(&format!("{}.lora_a", name), lora_a, &grad_a)
+                    .map_err(|e| infernum_core::Error::Internal {
+                        message: e.to_string(),
+                    })?;
+                let new_b = optimizer
+                    .step(&format!("{}.lora_b", name), lora_b, &grad_b)
+                    .map_err(|e| infernum_core::Error::Internal {
+                        message: e.to_string(),
+                    })?;
 
                 layer.lora_a = Some(new_a);
                 layer.lora_b = Some(new_b);
@@ -694,19 +742,30 @@ impl Trainer {
 
     /// Clips gradient tensor by norm.
     fn clip_grad_norm(grad: &Tensor, max_norm: f64) -> Result<Tensor> {
-        let grad_norm = grad.sqr()
-            .map_err(|e| infernum_core::Error::Internal { message: e.to_string() })?
+        let grad_norm = grad
+            .sqr()
+            .map_err(|e| infernum_core::Error::Internal {
+                message: e.to_string(),
+            })?
             .sum_all()
-            .map_err(|e| infernum_core::Error::Internal { message: e.to_string() })?
+            .map_err(|e| infernum_core::Error::Internal {
+                message: e.to_string(),
+            })?
             .sqrt()
-            .map_err(|e| infernum_core::Error::Internal { message: e.to_string() })?
+            .map_err(|e| infernum_core::Error::Internal {
+                message: e.to_string(),
+            })?
             .to_scalar::<f32>()
-            .map_err(|e| infernum_core::Error::Internal { message: e.to_string() })? as f64;
+            .map_err(|e| infernum_core::Error::Internal {
+                message: e.to_string(),
+            })? as f64;
 
         if grad_norm > max_norm {
             let scale = max_norm / grad_norm;
             grad.affine(scale, 0.0)
-                .map_err(|e| infernum_core::Error::Internal { message: e.to_string() })
+                .map_err(|e| infernum_core::Error::Internal {
+                    message: e.to_string(),
+                })
         } else {
             Ok(grad.clone())
         }
@@ -842,7 +901,13 @@ mod tests {
 
         // New param should be different from original
         let diff = new_param.sub(&param).unwrap();
-        let diff_sum = diff.abs().unwrap().sum_all().unwrap().to_scalar::<f32>().unwrap();
+        let diff_sum = diff
+            .abs()
+            .unwrap()
+            .sum_all()
+            .unwrap()
+            .to_scalar::<f32>()
+            .unwrap();
         assert!(diff_sum > 0.0);
     }
 }

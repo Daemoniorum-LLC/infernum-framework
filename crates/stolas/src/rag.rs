@@ -338,10 +338,7 @@ impl RagPipeline {
             "You are a helpful assistant. Answer questions based on the provided context.",
         );
 
-        let context_msg = format!(
-            "Here is relevant context for the question:\n\n{}",
-            context
-        );
+        let context_msg = format!("Here is relevant context for the question:\n\n{}", context);
 
         Ok(vec![
             infernum_core::Message::system(system),

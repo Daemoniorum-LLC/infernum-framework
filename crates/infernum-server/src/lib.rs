@@ -38,9 +38,8 @@ pub mod openai;
 pub mod server;
 
 pub use openai::{
-    ChatCompletionRequest, ChatCompletionResponse, ChatChoice, ChatMessage,
-    CompletionRequest, CompletionResponse, CompletionChoice,
-    EmbeddingRequest, EmbeddingResponse, EmbeddingData, EmbeddingInput,
-    ModelObject, ModelsResponse, Usage,
+    ChatChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage, CompletionChoice,
+    CompletionRequest, CompletionResponse, EmbeddingData, EmbeddingInput, EmbeddingRequest,
+    EmbeddingResponse, ModelObject, ModelsResponse, Usage,
 };
 pub use server::{AppState, Server, ServerConfig, ServerConfigBuilder};

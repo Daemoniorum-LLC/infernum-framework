@@ -30,7 +30,9 @@ impl Drop for TracingGuard {
 /// # Errors
 ///
 /// Returns an error if tracing cannot be initialized.
-pub fn init_tracing(config: &TelemetryConfig) -> Result<TracingGuard, Box<dyn std::error::Error + Send + Sync>> {
+pub fn init_tracing(
+    config: &TelemetryConfig,
+) -> Result<TracingGuard, Box<dyn std::error::Error + Send + Sync>> {
     let provider = if let Some(endpoint) = &config.otlp_endpoint {
         tracing::info!(endpoint = %endpoint, "Initializing OTLP tracing");
 
@@ -317,7 +319,10 @@ mod tests {
             .with_sampling_ratio(0.5);
 
         assert!(config.enabled);
-        assert_eq!(config.otlp_endpoint, Some("http://localhost:4317".to_string()));
+        assert_eq!(
+            config.otlp_endpoint,
+            Some("http://localhost:4317".to_string())
+        );
         assert_eq!(config.sampling_ratio, 0.5);
     }
 }

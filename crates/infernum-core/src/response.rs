@@ -146,7 +146,7 @@ impl EmbeddingData {
             Self::Base64(s) => {
                 // Each f32 is 4 bytes, base64 encoding is ~4/3 ratio
                 (s.len() * 3) / 16
-            }
+            },
         }
     }
 }

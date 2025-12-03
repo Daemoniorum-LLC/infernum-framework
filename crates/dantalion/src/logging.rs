@@ -11,8 +11,8 @@ use crate::TelemetryConfig;
 
 /// Initializes logging based on configuration.
 pub fn init_logging(config: &TelemetryConfig) {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&config.log_level));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.log_level));
 
     if config.json_logs {
         tracing_subscriber::registry()

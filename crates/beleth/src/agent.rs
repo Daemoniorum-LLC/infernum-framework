@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use futures::StreamExt;
-use infernum_core::{GenerateRequest, Message, Role, ModelId, Result, SamplingParams};
+use infernum_core::{GenerateRequest, Message, ModelId, Result, Role, SamplingParams};
 
 use crate::memory::AgentMemory;
 use crate::planner::{Planner, PlanningStrategy};
@@ -39,9 +39,7 @@ pub struct Persona {
 impl Default for Persona {
     fn default() -> Self {
         Self {
-            system: PersonaSource::Inline(
-                "You are a helpful AI assistant.".to_string(),
-            ),
+            system: PersonaSource::Inline("You are a helpful AI assistant.".to_string()),
             model: None,
             max_iterations: 10,
         }
@@ -76,7 +74,10 @@ impl Agent {
     pub fn system_prompt(&self) -> String {
         match &self.persona.system {
             PersonaSource::Inline(s) => s.clone(),
-            PersonaSource::Grimoire { persona_id, variant } => {
+            PersonaSource::Grimoire {
+                persona_id,
+                variant,
+            } => {
                 // Try to load from Grimoire filesystem (uses INFERNUM_GRIMOIRE_PATH env or default)
                 let base_path = grimoire_loader::default_grimoire_path();
                 let prompt_path = if let Some(var) = variant {
@@ -100,9 +101,9 @@ impl Agent {
                             "Grimoire persona not found, using default prompt"
                         );
                         format!("You are {} - an AI assistant.", persona_id)
-                    }
+                    },
                 }
-            }
+            },
         }
     }
 
@@ -117,9 +118,10 @@ impl Agent {
     ///
     /// Returns an error if execution fails.
     pub async fn run(&mut self, objective: &str) -> Result<String> {
-        let engine = self.engine.as_ref().ok_or_else(|| {
-            infernum_core::Error::internal("No engine configured for agent")
-        })?;
+        let engine = self
+            .engine
+            .as_ref()
+            .ok_or_else(|| infernum_core::Error::internal("No engine configured for agent"))?;
 
         tracing::info!(objective, agent_id = %self.id, "Starting agent execution");
 
@@ -152,13 +154,16 @@ impl Agent {
             tracing::debug!(iteration, "ReAct iteration");
 
             // Generate response
-            let request = GenerateRequest::chat(messages.clone())
-                .with_sampling(SamplingParams::default()
+            let request = GenerateRequest::chat(messages.clone()).with_sampling(
+                SamplingParams::default()
                     .with_max_tokens(1024)
-                    .with_temperature(0.7));
+                    .with_temperature(0.7),
+            );
 
             let response = engine.generate(request).await?;
-            let assistant_response = response.choices.first()
+            let assistant_response = response
+                .choices
+                .first()
                 .map(|c| c.text.clone())
                 .unwrap_or_default();
 
@@ -179,7 +184,7 @@ impl Agent {
                 AgentAction::Thought(thought) => {
                     tracing::debug!(thought, "Agent thinking");
                     // Continue to next iteration
-                }
+                },
                 AgentAction::ToolCall(tool_call) => {
                     tracing::info!(tool = %tool_call.name, "Executing tool");
 
@@ -190,7 +195,10 @@ impl Agent {
                     let observation = if result.success {
                         format!("Observation: {}", result.output)
                     } else {
-                        format!("Observation: Tool error - {}", result.error.unwrap_or_default())
+                        format!(
+                            "Observation: Tool error - {}",
+                            result.error.unwrap_or_default()
+                        )
                     };
 
                     messages.push(Message {
@@ -201,15 +209,15 @@ impl Agent {
                     });
 
                     tracing::debug!(observation = %observation, "Tool result");
-                }
+                },
                 AgentAction::FinalAnswer(answer) => {
                     tracing::info!("Agent reached final answer");
                     final_answer = answer;
                     break;
-                }
+                },
                 AgentAction::Continue => {
                     // No specific action, continue
-                }
+                },
             }
 
             // Update context
@@ -223,7 +231,8 @@ impl Agent {
 
         if final_answer.is_empty() {
             // If no explicit final answer, use the last assistant response
-            final_answer = messages.iter()
+            final_answer = messages
+                .iter()
                 .rev()
                 .find(|m| m.role == Role::Assistant)
                 .map(|m| m.content.clone())
@@ -257,7 +266,8 @@ impl Agent {
 
         // Check for final answer
         if let Some(answer) = response.strip_prefix("Final Answer:").or_else(|| {
-            response.lines()
+            response
+                .lines()
                 .find(|line| line.trim().starts_with("Final Answer:"))
                 .and_then(|line| line.strip_prefix("Final Answer:"))
         }) {
@@ -295,7 +305,8 @@ impl Agent {
 
         // Check for thought
         if let Some(thought) = response.strip_prefix("Thought:").or_else(|| {
-            response.lines()
+            response
+                .lines()
                 .find(|line| line.trim().starts_with("Thought:"))
                 .and_then(|line| line.strip_prefix("Thought:"))
         }) {
@@ -317,9 +328,10 @@ impl Agent {
 
     /// Runs a single step of reasoning (for streaming/interactive use).
     pub async fn step(&mut self, input: &str) -> Result<StepResult> {
-        let engine = self.engine.as_ref().ok_or_else(|| {
-            infernum_core::Error::internal("No engine configured for agent")
-        })?;
+        let engine = self
+            .engine
+            .as_ref()
+            .ok_or_else(|| infernum_core::Error::internal("No engine configured for agent"))?;
 
         // Add user input to memory
         self.memory.add_message(Message::user(input));
@@ -334,18 +346,22 @@ impl Agent {
         messages.extend(self.memory.messages().iter().cloned());
 
         // Generate response
-        let request = GenerateRequest::chat(messages)
-            .with_sampling(SamplingParams::default()
+        let request = GenerateRequest::chat(messages).with_sampling(
+            SamplingParams::default()
                 .with_max_tokens(1024)
-                .with_temperature(0.7));
+                .with_temperature(0.7),
+        );
 
         let response = engine.generate(request).await?;
-        let assistant_response = response.choices.first()
+        let assistant_response = response
+            .choices
+            .first()
             .map(|c| c.text.clone())
             .unwrap_or_default();
 
         // Add to memory
-        self.memory.add_message(Message::assistant(&assistant_response));
+        self.memory
+            .add_message(Message::assistant(&assistant_response));
 
         // Parse action
         let action = self.parse_action(&assistant_response);
@@ -365,9 +381,11 @@ impl Agent {
         &mut self,
         input: &str,
     ) -> Result<impl futures::Stream<Item = Result<String>>> {
-        let engine = self.engine.as_ref().ok_or_else(|| {
-            infernum_core::Error::internal("No engine configured for agent")
-        })?.clone();
+        let engine = self
+            .engine
+            .as_ref()
+            .ok_or_else(|| infernum_core::Error::internal("No engine configured for agent"))?
+            .clone();
 
         // Add user input to memory
         self.memory.add_message(Message::user(input));
@@ -382,16 +400,19 @@ impl Agent {
         messages.extend(self.memory.messages().iter().cloned());
 
         // Generate streaming response
-        let request = GenerateRequest::chat(messages)
-            .with_sampling(SamplingParams::default()
+        let request = GenerateRequest::chat(messages).with_sampling(
+            SamplingParams::default()
                 .with_max_tokens(1024)
-                .with_temperature(0.7));
+                .with_temperature(0.7),
+        );
 
         let token_stream = engine.generate_stream(request).await?;
 
         Ok(token_stream.map(|result| {
             result.map(|chunk| {
-                chunk.choices.first()
+                chunk
+                    .choices
+                    .first()
                     .and_then(|c| c.delta.content.clone())
                     .unwrap_or_default()
             })
@@ -513,9 +534,9 @@ impl AgentBuilder {
     /// Builds the agent.
     #[must_use]
     pub fn build(self) -> Agent {
-        let strategy = self.planning_strategy.unwrap_or(PlanningStrategy::ReAct {
-            max_iterations: 10,
-        });
+        let strategy = self
+            .planning_strategy
+            .unwrap_or(PlanningStrategy::ReAct { max_iterations: 10 });
 
         Agent {
             id: self.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
@@ -540,7 +561,7 @@ mod tests {
         match agent.parse_action(response) {
             AgentAction::FinalAnswer(answer) => {
                 assert_eq!(answer, "The answer is 42.");
-            }
+            },
             _ => panic!("Expected FinalAnswer"),
         }
     }
@@ -554,7 +575,7 @@ mod tests {
             AgentAction::ToolCall(call) => {
                 assert_eq!(call.name, "calculator");
                 assert_eq!(call.params["expression"], "2+2");
-            }
+            },
             _ => panic!("Expected ToolCall"),
         }
     }
@@ -567,7 +588,7 @@ mod tests {
         match agent.parse_action(response) {
             AgentAction::Thought(thought) => {
                 assert_eq!(thought, "Let me think about this problem.");
-            }
+            },
             _ => panic!("Expected Thought"),
         }
     }

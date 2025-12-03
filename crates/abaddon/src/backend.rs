@@ -284,14 +284,14 @@ pub mod cpu {
 
         fn allocate(&self, shape: &[usize], dtype: DType) -> Result<Self::Tensor> {
             let candle_dtype = to_candle_dtype(dtype);
-            let tensor = Tensor::zeros(shape, candle_dtype, &self.candle_device)
-                .map_err(Self::map_err)?;
+            let tensor =
+                Tensor::zeros(shape, candle_dtype, &self.candle_device).map_err(Self::map_err)?;
             Ok(CpuTensor::new(tensor))
         }
 
         fn from_slice(&self, data: &[f32], shape: &[usize]) -> Result<Self::Tensor> {
-            let tensor = Tensor::from_slice(data, shape, &self.candle_device)
-                .map_err(Self::map_err)?;
+            let tensor =
+                Tensor::from_slice(data, shape, &self.candle_device).map_err(Self::map_err)?;
             Ok(CpuTensor::new(tensor))
         }
 
@@ -319,7 +319,10 @@ pub mod cpu {
             let scale = scale.unwrap_or(1.0 / (head_dim as f32).sqrt());
 
             // Compute Q @ K^T
-            let k_t = k.inner.transpose(D::Minus2, D::Minus1).map_err(Self::map_err)?;
+            let k_t = k
+                .inner
+                .transpose(D::Minus2, D::Minus1)
+                .map_err(Self::map_err)?;
             let scores = q.inner.matmul(&k_t).map_err(Self::map_err)?;
 
             // Scale
@@ -340,26 +343,44 @@ pub mod cpu {
             Ok(CpuTensor::new(output))
         }
 
-        fn rms_norm(&self, x: &Self::Tensor, weight: &Self::Tensor, eps: f32) -> Result<Self::Tensor> {
+        fn rms_norm(
+            &self,
+            x: &Self::Tensor,
+            weight: &Self::Tensor,
+            eps: f32,
+        ) -> Result<Self::Tensor> {
             // RMS norm: x * weight / sqrt(mean(x^2) + eps)
             let dtype = x.inner.dtype();
 
             // Convert to f32 for numerical stability
-            let x_f32 = x.inner.to_dtype(candle_core::DType::F32).map_err(Self::map_err)?;
+            let x_f32 = x
+                .inner
+                .to_dtype(candle_core::DType::F32)
+                .map_err(Self::map_err)?;
 
             // Compute variance (mean of squares)
-            let variance = x_f32.sqr().map_err(Self::map_err)?
-                .mean_keepdim(D::Minus1).map_err(Self::map_err)?;
+            let variance = x_f32
+                .sqr()
+                .map_err(Self::map_err)?
+                .mean_keepdim(D::Minus1)
+                .map_err(Self::map_err)?;
 
             // Normalize
             let x_normed = x_f32
-                .broadcast_div(&(variance + eps as f64).map_err(Self::map_err)?.sqrt().map_err(Self::map_err)?)
+                .broadcast_div(
+                    &(variance + eps as f64)
+                        .map_err(Self::map_err)?
+                        .sqrt()
+                        .map_err(Self::map_err)?,
+                )
                 .map_err(Self::map_err)?;
 
             // Convert back to original dtype and apply weight
             let result = x_normed
-                .to_dtype(dtype).map_err(Self::map_err)?
-                .broadcast_mul(&weight.inner).map_err(Self::map_err)?;
+                .to_dtype(dtype)
+                .map_err(Self::map_err)?
+                .broadcast_mul(&weight.inner)
+                .map_err(Self::map_err)?;
 
             Ok(CpuTensor::new(result))
         }
@@ -372,23 +393,36 @@ pub mod cpu {
             eps: f32,
         ) -> Result<Self::Tensor> {
             let dtype = x.inner.dtype();
-            let x_f32 = x.inner.to_dtype(candle_core::DType::F32).map_err(Self::map_err)?;
+            let x_f32 = x
+                .inner
+                .to_dtype(candle_core::DType::F32)
+                .map_err(Self::map_err)?;
 
             // Compute mean and variance
             let mean = x_f32.mean_keepdim(D::Minus1).map_err(Self::map_err)?;
             let x_centered = x_f32.broadcast_sub(&mean).map_err(Self::map_err)?;
-            let variance = x_centered.sqr().map_err(Self::map_err)?
-                .mean_keepdim(D::Minus1).map_err(Self::map_err)?;
+            let variance = x_centered
+                .sqr()
+                .map_err(Self::map_err)?
+                .mean_keepdim(D::Minus1)
+                .map_err(Self::map_err)?;
 
             // Normalize
             let x_normed = x_centered
-                .broadcast_div(&(variance + eps as f64).map_err(Self::map_err)?.sqrt().map_err(Self::map_err)?)
+                .broadcast_div(
+                    &(variance + eps as f64)
+                        .map_err(Self::map_err)?
+                        .sqrt()
+                        .map_err(Self::map_err)?,
+                )
                 .map_err(Self::map_err)?;
 
             // Apply weight
             let mut result = x_normed
-                .to_dtype(dtype).map_err(Self::map_err)?
-                .broadcast_mul(&weight.inner).map_err(Self::map_err)?;
+                .to_dtype(dtype)
+                .map_err(Self::map_err)?
+                .broadcast_mul(&weight.inner)
+                .map_err(Self::map_err)?;
 
             // Apply bias if provided
             if let Some(b) = bias {
@@ -433,7 +467,10 @@ pub mod cpu {
         }
 
         fn transpose(&self, x: &Self::Tensor) -> Result<Self::Tensor> {
-            let result = x.inner.transpose(D::Minus2, D::Minus1).map_err(Self::map_err)?;
+            let result = x
+                .inner
+                .transpose(D::Minus2, D::Minus1)
+                .map_err(Self::map_err)?;
             Ok(CpuTensor::new(result))
         }
 
@@ -450,8 +487,10 @@ pub mod cpu {
         fn to_cpu(&self, tensor: &Self::Tensor) -> Result<Vec<f32>> {
             let flat = tensor.inner.flatten_all().map_err(Self::map_err)?;
             let data: Vec<f32> = flat
-                .to_dtype(candle_core::DType::F32).map_err(Self::map_err)?
-                .to_vec1().map_err(Self::map_err)?;
+                .to_dtype(candle_core::DType::F32)
+                .map_err(Self::map_err)?
+                .to_vec1()
+                .map_err(Self::map_err)?;
             Ok(data)
         }
     }
@@ -506,12 +545,11 @@ pub mod cuda {
     impl CudaDevice {
         /// Creates a new CUDA device.
         pub fn new(device_id: usize) -> Result<Self> {
-            let candle_device = Device::new_cuda(device_id).map_err(|e| {
-                infernum_core::Error::Backend {
+            let candle_device =
+                Device::new_cuda(device_id).map_err(|e| infernum_core::Error::Backend {
                     backend: "cuda".to_string(),
                     message: e.to_string(),
-                }
-            })?;
+                })?;
             Ok(Self {
                 device_id,
                 candle_device,
@@ -581,9 +619,10 @@ pub mod cuda {
         }
 
         fn from_slice(&self, data: &[f32], shape: &[usize]) -> Result<Self::Tensor> {
-            let cpu_tensor = Tensor::from_slice(data, shape, &Device::Cpu)
-                .map_err(Self::map_err)?;
-            let tensor = cpu_tensor.to_device(&self.device.candle_device)
+            let cpu_tensor =
+                Tensor::from_slice(data, shape, &Device::Cpu).map_err(Self::map_err)?;
+            let tensor = cpu_tensor
+                .to_device(&self.device.candle_device)
                 .map_err(Self::map_err)?;
             Ok(CudaTensor::new(tensor))
         }
@@ -609,7 +648,10 @@ pub mod cuda {
             let head_dim = q.inner.dim(D::Minus1).map_err(Self::map_err)?;
             let scale = scale.unwrap_or(1.0 / (head_dim as f32).sqrt());
 
-            let k_t = k.inner.transpose(D::Minus2, D::Minus1).map_err(Self::map_err)?;
+            let k_t = k
+                .inner
+                .transpose(D::Minus2, D::Minus1)
+                .map_err(Self::map_err)?;
             let scores = q.inner.matmul(&k_t).map_err(Self::map_err)?;
             let scores = (scores * scale as f64).map_err(Self::map_err)?;
 
@@ -624,17 +666,35 @@ pub mod cuda {
             Ok(CudaTensor::new(output))
         }
 
-        fn rms_norm(&self, x: &Self::Tensor, weight: &Self::Tensor, eps: f32) -> Result<Self::Tensor> {
+        fn rms_norm(
+            &self,
+            x: &Self::Tensor,
+            weight: &Self::Tensor,
+            eps: f32,
+        ) -> Result<Self::Tensor> {
             let dtype = x.inner.dtype();
-            let x_f32 = x.inner.to_dtype(candle_core::DType::F32).map_err(Self::map_err)?;
-            let variance = x_f32.sqr().map_err(Self::map_err)?
-                .mean_keepdim(D::Minus1).map_err(Self::map_err)?;
+            let x_f32 = x
+                .inner
+                .to_dtype(candle_core::DType::F32)
+                .map_err(Self::map_err)?;
+            let variance = x_f32
+                .sqr()
+                .map_err(Self::map_err)?
+                .mean_keepdim(D::Minus1)
+                .map_err(Self::map_err)?;
             let x_normed = x_f32
-                .broadcast_div(&(variance + eps as f64).map_err(Self::map_err)?.sqrt().map_err(Self::map_err)?)
+                .broadcast_div(
+                    &(variance + eps as f64)
+                        .map_err(Self::map_err)?
+                        .sqrt()
+                        .map_err(Self::map_err)?,
+                )
                 .map_err(Self::map_err)?;
             let result = x_normed
-                .to_dtype(dtype).map_err(Self::map_err)?
-                .broadcast_mul(&weight.inner).map_err(Self::map_err)?;
+                .to_dtype(dtype)
+                .map_err(Self::map_err)?
+                .broadcast_mul(&weight.inner)
+                .map_err(Self::map_err)?;
             Ok(CudaTensor::new(result))
         }
 
@@ -646,17 +706,30 @@ pub mod cuda {
             eps: f32,
         ) -> Result<Self::Tensor> {
             let dtype = x.inner.dtype();
-            let x_f32 = x.inner.to_dtype(candle_core::DType::F32).map_err(Self::map_err)?;
+            let x_f32 = x
+                .inner
+                .to_dtype(candle_core::DType::F32)
+                .map_err(Self::map_err)?;
             let mean = x_f32.mean_keepdim(D::Minus1).map_err(Self::map_err)?;
             let x_centered = x_f32.broadcast_sub(&mean).map_err(Self::map_err)?;
-            let variance = x_centered.sqr().map_err(Self::map_err)?
-                .mean_keepdim(D::Minus1).map_err(Self::map_err)?;
+            let variance = x_centered
+                .sqr()
+                .map_err(Self::map_err)?
+                .mean_keepdim(D::Minus1)
+                .map_err(Self::map_err)?;
             let x_normed = x_centered
-                .broadcast_div(&(variance + eps as f64).map_err(Self::map_err)?.sqrt().map_err(Self::map_err)?)
+                .broadcast_div(
+                    &(variance + eps as f64)
+                        .map_err(Self::map_err)?
+                        .sqrt()
+                        .map_err(Self::map_err)?,
+                )
                 .map_err(Self::map_err)?;
             let mut result = x_normed
-                .to_dtype(dtype).map_err(Self::map_err)?
-                .broadcast_mul(&weight.inner).map_err(Self::map_err)?;
+                .to_dtype(dtype)
+                .map_err(Self::map_err)?
+                .broadcast_mul(&weight.inner)
+                .map_err(Self::map_err)?;
             if let Some(b) = bias {
                 result = result.broadcast_add(&b.inner).map_err(Self::map_err)?;
             }
@@ -698,7 +771,10 @@ pub mod cuda {
         }
 
         fn transpose(&self, x: &Self::Tensor) -> Result<Self::Tensor> {
-            let result = x.inner.transpose(D::Minus2, D::Minus1).map_err(Self::map_err)?;
+            let result = x
+                .inner
+                .transpose(D::Minus2, D::Minus1)
+                .map_err(Self::map_err)?;
             Ok(CudaTensor::new(result))
         }
 
@@ -708,17 +784,24 @@ pub mod cuda {
         }
 
         fn to_device(&self, tensor: &Self::Tensor) -> Result<Self::Tensor> {
-            let result = tensor.inner.to_device(&self.device.candle_device)
+            let result = tensor
+                .inner
+                .to_device(&self.device.candle_device)
                 .map_err(Self::map_err)?;
             Ok(CudaTensor::new(result))
         }
 
         fn to_cpu(&self, tensor: &Self::Tensor) -> Result<Vec<f32>> {
-            let cpu_tensor = tensor.inner.to_device(&Device::Cpu).map_err(Self::map_err)?;
+            let cpu_tensor = tensor
+                .inner
+                .to_device(&Device::Cpu)
+                .map_err(Self::map_err)?;
             let flat = cpu_tensor.flatten_all().map_err(Self::map_err)?;
             let data: Vec<f32> = flat
-                .to_dtype(candle_core::DType::F32).map_err(Self::map_err)?
-                .to_vec1().map_err(Self::map_err)?;
+                .to_dtype(candle_core::DType::F32)
+                .map_err(Self::map_err)?
+                .to_vec1()
+                .map_err(Self::map_err)?;
             Ok(data)
         }
     }
@@ -773,12 +856,11 @@ pub mod metal {
     impl MetalDevice {
         /// Creates a new Metal device.
         pub fn new(device_id: usize) -> Result<Self> {
-            let candle_device = Device::new_metal(device_id).map_err(|e| {
-                infernum_core::Error::Backend {
+            let candle_device =
+                Device::new_metal(device_id).map_err(|e| infernum_core::Error::Backend {
                     backend: "metal".to_string(),
                     message: e.to_string(),
-                }
-            })?;
+                })?;
             Ok(Self {
                 device_id,
                 candle_device,
@@ -845,9 +927,10 @@ pub mod metal {
         }
 
         fn from_slice(&self, data: &[f32], shape: &[usize]) -> Result<Self::Tensor> {
-            let cpu_tensor = Tensor::from_slice(data, shape, &Device::Cpu)
-                .map_err(Self::map_err)?;
-            let tensor = cpu_tensor.to_device(&self.device.candle_device)
+            let cpu_tensor =
+                Tensor::from_slice(data, shape, &Device::Cpu).map_err(Self::map_err)?;
+            let tensor = cpu_tensor
+                .to_device(&self.device.candle_device)
                 .map_err(Self::map_err)?;
             Ok(MetalTensor::new(tensor))
         }
@@ -873,7 +956,10 @@ pub mod metal {
             let head_dim = q.inner.dim(D::Minus1).map_err(Self::map_err)?;
             let scale = scale.unwrap_or(1.0 / (head_dim as f32).sqrt());
 
-            let k_t = k.inner.transpose(D::Minus2, D::Minus1).map_err(Self::map_err)?;
+            let k_t = k
+                .inner
+                .transpose(D::Minus2, D::Minus1)
+                .map_err(Self::map_err)?;
             let scores = q.inner.matmul(&k_t).map_err(Self::map_err)?;
             let scores = (scores * scale as f64).map_err(Self::map_err)?;
 
@@ -888,17 +974,35 @@ pub mod metal {
             Ok(MetalTensor::new(output))
         }
 
-        fn rms_norm(&self, x: &Self::Tensor, weight: &Self::Tensor, eps: f32) -> Result<Self::Tensor> {
+        fn rms_norm(
+            &self,
+            x: &Self::Tensor,
+            weight: &Self::Tensor,
+            eps: f32,
+        ) -> Result<Self::Tensor> {
             let dtype = x.inner.dtype();
-            let x_f32 = x.inner.to_dtype(candle_core::DType::F32).map_err(Self::map_err)?;
-            let variance = x_f32.sqr().map_err(Self::map_err)?
-                .mean_keepdim(D::Minus1).map_err(Self::map_err)?;
+            let x_f32 = x
+                .inner
+                .to_dtype(candle_core::DType::F32)
+                .map_err(Self::map_err)?;
+            let variance = x_f32
+                .sqr()
+                .map_err(Self::map_err)?
+                .mean_keepdim(D::Minus1)
+                .map_err(Self::map_err)?;
             let x_normed = x_f32
-                .broadcast_div(&(variance + eps as f64).map_err(Self::map_err)?.sqrt().map_err(Self::map_err)?)
+                .broadcast_div(
+                    &(variance + eps as f64)
+                        .map_err(Self::map_err)?
+                        .sqrt()
+                        .map_err(Self::map_err)?,
+                )
                 .map_err(Self::map_err)?;
             let result = x_normed
-                .to_dtype(dtype).map_err(Self::map_err)?
-                .broadcast_mul(&weight.inner).map_err(Self::map_err)?;
+                .to_dtype(dtype)
+                .map_err(Self::map_err)?
+                .broadcast_mul(&weight.inner)
+                .map_err(Self::map_err)?;
             Ok(MetalTensor::new(result))
         }
 
@@ -910,17 +1014,30 @@ pub mod metal {
             eps: f32,
         ) -> Result<Self::Tensor> {
             let dtype = x.inner.dtype();
-            let x_f32 = x.inner.to_dtype(candle_core::DType::F32).map_err(Self::map_err)?;
+            let x_f32 = x
+                .inner
+                .to_dtype(candle_core::DType::F32)
+                .map_err(Self::map_err)?;
             let mean = x_f32.mean_keepdim(D::Minus1).map_err(Self::map_err)?;
             let x_centered = x_f32.broadcast_sub(&mean).map_err(Self::map_err)?;
-            let variance = x_centered.sqr().map_err(Self::map_err)?
-                .mean_keepdim(D::Minus1).map_err(Self::map_err)?;
+            let variance = x_centered
+                .sqr()
+                .map_err(Self::map_err)?
+                .mean_keepdim(D::Minus1)
+                .map_err(Self::map_err)?;
             let x_normed = x_centered
-                .broadcast_div(&(variance + eps as f64).map_err(Self::map_err)?.sqrt().map_err(Self::map_err)?)
+                .broadcast_div(
+                    &(variance + eps as f64)
+                        .map_err(Self::map_err)?
+                        .sqrt()
+                        .map_err(Self::map_err)?,
+                )
                 .map_err(Self::map_err)?;
             let mut result = x_normed
-                .to_dtype(dtype).map_err(Self::map_err)?
-                .broadcast_mul(&weight.inner).map_err(Self::map_err)?;
+                .to_dtype(dtype)
+                .map_err(Self::map_err)?
+                .broadcast_mul(&weight.inner)
+                .map_err(Self::map_err)?;
             if let Some(b) = bias {
                 result = result.broadcast_add(&b.inner).map_err(Self::map_err)?;
             }
@@ -962,7 +1079,10 @@ pub mod metal {
         }
 
         fn transpose(&self, x: &Self::Tensor) -> Result<Self::Tensor> {
-            let result = x.inner.transpose(D::Minus2, D::Minus1).map_err(Self::map_err)?;
+            let result = x
+                .inner
+                .transpose(D::Minus2, D::Minus1)
+                .map_err(Self::map_err)?;
             Ok(MetalTensor::new(result))
         }
 
@@ -972,17 +1092,24 @@ pub mod metal {
         }
 
         fn to_device(&self, tensor: &Self::Tensor) -> Result<Self::Tensor> {
-            let result = tensor.inner.to_device(&self.device.candle_device)
+            let result = tensor
+                .inner
+                .to_device(&self.device.candle_device)
                 .map_err(Self::map_err)?;
             Ok(MetalTensor::new(result))
         }
 
         fn to_cpu(&self, tensor: &Self::Tensor) -> Result<Vec<f32>> {
-            let cpu_tensor = tensor.inner.to_device(&Device::Cpu).map_err(Self::map_err)?;
+            let cpu_tensor = tensor
+                .inner
+                .to_device(&Device::Cpu)
+                .map_err(Self::map_err)?;
             let flat = cpu_tensor.flatten_all().map_err(Self::map_err)?;
             let data: Vec<f32> = flat
-                .to_dtype(candle_core::DType::F32).map_err(Self::map_err)?
-                .to_vec1().map_err(Self::map_err)?;
+                .to_dtype(candle_core::DType::F32)
+                .map_err(Self::map_err)?
+                .to_vec1()
+                .map_err(Self::map_err)?;
             Ok(data)
         }
     }
@@ -1068,11 +1195,17 @@ mod tests {
         let backend = CpuBackend::new();
 
         // 2x3 @ 3x4 = 2x4
-        let a = backend.from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]).unwrap();
-        let b = backend.from_slice(
-            &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
-            &[3, 4],
-        ).unwrap();
+        let a = backend
+            .from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3])
+            .unwrap();
+        let b = backend
+            .from_slice(
+                &[
+                    1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+                ],
+                &[3, 4],
+            )
+            .unwrap();
 
         let c = backend.matmul(&a, &b).unwrap();
         assert_eq!(c.shape(), &[2, 4]);
@@ -1080,7 +1213,10 @@ mod tests {
         let result = backend.to_cpu(&c).unwrap();
         // [1,2,3] @ [[1,2,3,4],[5,6,7,8],[9,10,11,12]] = [38,44,50,56]
         // [4,5,6] @ ... = [83,98,113,128]
-        assert_eq!(result, vec![38.0, 44.0, 50.0, 56.0, 83.0, 98.0, 113.0, 128.0]);
+        assert_eq!(
+            result,
+            vec![38.0, 44.0, 50.0, 56.0, 83.0, 98.0, 113.0, 128.0]
+        );
     }
 
     #[test]

@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use infernum_core::{GenerateRequest, Message, Result, Role, SamplingParams};
 use abaddon::{Engine, InferenceEngine};
+use infernum_core::{GenerateRequest, Message, Result, Role, SamplingParams};
 
 /// Memory summarization strategy.
 #[derive(Debug, Clone, Copy, Default)]
@@ -121,7 +121,7 @@ impl AgentMemory {
         match self.strategy {
             SummarizationStrategy::DropOldest => {
                 self.drop_oldest_messages();
-            }
+            },
             SummarizationStrategy::Summarize => {
                 // Fall back to drop oldest if no engine available
                 if self.engine.is_none() {
@@ -130,10 +130,10 @@ impl AgentMemory {
                     // Will be handled by async version
                     self.drop_oldest_messages();
                 }
-            }
+            },
             SummarizationStrategy::SlidingWindow { keep_recent } => {
                 self.apply_sliding_window(keep_recent);
-            }
+            },
         }
     }
 
@@ -142,17 +142,17 @@ impl AgentMemory {
         match self.strategy {
             SummarizationStrategy::DropOldest => {
                 self.drop_oldest_messages();
-            }
+            },
             SummarizationStrategy::Summarize => {
                 if let Some(engine) = &self.engine {
                     self.summarize_messages(engine.clone()).await?;
                 } else {
                     self.drop_oldest_messages();
                 }
-            }
+            },
             SummarizationStrategy::SlidingWindow { keep_recent } => {
                 self.apply_sliding_window(keep_recent);
-            }
+            },
         }
         Ok(())
     }
@@ -185,14 +185,16 @@ impl AgentMemory {
         }
 
         // Separate system messages
-        let system_messages: Vec<_> = self.messages
+        let system_messages: Vec<_> = self
+            .messages
             .iter()
             .filter(|m| matches!(m.role, Role::System))
             .cloned()
             .collect();
 
         // Get recent non-system messages
-        let non_system: Vec<_> = self.messages
+        let non_system: Vec<_> = self
+            .messages
             .iter()
             .filter(|m| !matches!(m.role, Role::System))
             .cloned()
@@ -216,7 +218,8 @@ impl AgentMemory {
     /// Summarizes older messages using LLM.
     async fn summarize_messages(&mut self, engine: Arc<Engine>) -> Result<()> {
         // Find non-system messages to summarize
-        let non_system_indices: Vec<_> = self.messages
+        let non_system_indices: Vec<_> = self
+            .messages
             .iter()
             .enumerate()
             .filter(|(_, m)| !matches!(m.role, Role::System))
@@ -229,7 +232,9 @@ impl AgentMemory {
 
         // Take oldest batch for summarization
         let summarize_count = self.summarize_batch_size.min(
-            non_system_indices.len().saturating_sub(self.max_messages / 2)
+            non_system_indices
+                .len()
+                .saturating_sub(self.max_messages / 2),
         );
 
         if summarize_count == 0 {
@@ -249,7 +254,9 @@ impl AgentMemory {
             .collect();
 
         // Generate summary using LLM
-        let summary_text = self.generate_summary(&engine, &messages_to_summarize).await?;
+        let summary_text = self
+            .generate_summary(&engine, &messages_to_summarize)
+            .await?;
 
         // Store the summary
         let summary = ConversationSummary {
@@ -270,17 +277,21 @@ impl AgentMemory {
         }
 
         // Insert summary as a system message after the original system prompt
-        let insert_pos = self.messages
+        let insert_pos = self
+            .messages
             .iter()
             .position(|m| !matches!(m.role, Role::System))
             .unwrap_or(self.messages.len());
 
-        self.messages.insert(insert_pos, Message {
-            role: Role::System,
-            content: format!("[Previous conversation summary: {}]", summary_text),
-            name: Some("memory_summary".to_string()),
-            tool_call_id: None,
-        });
+        self.messages.insert(
+            insert_pos,
+            Message {
+                role: Role::System,
+                content: format!("[Previous conversation summary: {}]", summary_text),
+                name: Some("memory_summary".to_string()),
+                tool_call_id: None,
+            },
+        );
 
         tracing::debug!(
             summarized_count = messages_to_summarize.len(),
@@ -314,13 +325,16 @@ Summary:"#,
             conversation
         );
 
-        let request = GenerateRequest::new(prompt)
-            .with_sampling(SamplingParams::default()
+        let request = GenerateRequest::new(prompt).with_sampling(
+            SamplingParams::default()
                 .with_max_tokens(256)
-                .with_temperature(0.3));
+                .with_temperature(0.3),
+        );
 
         let response = engine.generate(request).await?;
-        let summary = response.choices.first()
+        let summary = response
+            .choices
+            .first()
             .map(|c| c.text.trim().to_string())
             .unwrap_or_else(|| "Previous conversation context.".to_string());
 
@@ -383,10 +397,7 @@ Summary:"#,
     #[must_use]
     pub fn estimated_tokens(&self) -> usize {
         // Rough estimate: ~4 chars per token
-        self.messages
-            .iter()
-            .map(|m| m.content.len() / 4)
-            .sum()
+        self.messages.iter().map(|m| m.content.len() / 4).sum()
     }
 }
 
@@ -454,7 +465,10 @@ mod tests {
         memory.add_message(Message::user("User 3"));
 
         // System message should be preserved
-        assert!(memory.messages().iter().any(|m| m.content == "System prompt"));
+        assert!(memory
+            .messages()
+            .iter()
+            .any(|m| m.content == "System prompt"));
     }
 
     #[test]
@@ -467,7 +481,8 @@ mod tests {
         }
 
         // Should keep only the most recent 2 non-system messages
-        let non_system: Vec<_> = memory.messages()
+        let non_system: Vec<_> = memory
+            .messages()
             .iter()
             .filter(|m| !matches!(m.role, Role::System))
             .collect();

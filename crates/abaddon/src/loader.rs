@@ -50,21 +50,19 @@ impl ModelLoader {
         match source {
             ModelSource::HuggingFace { repo_id, revision } => {
                 self.resolve_huggingface(repo_id, revision.as_deref())
-            }
+            },
             ModelSource::LocalPath { path } => self.resolve_local(path),
             ModelSource::Gguf { path } => self.resolve_gguf(path),
-            ModelSource::S3 { bucket, key, region } => {
-                self.resolve_s3(bucket, key, region.as_deref())
-            }
+            ModelSource::S3 {
+                bucket,
+                key,
+                region,
+            } => self.resolve_s3(bucket, key, region.as_deref()),
         }
     }
 
     /// Resolves a HuggingFace model, downloading if necessary.
-    fn resolve_huggingface(
-        &self,
-        repo_id: &str,
-        revision: Option<&str>,
-    ) -> Result<ModelFiles> {
+    fn resolve_huggingface(&self, repo_id: &str, revision: Option<&str>) -> Result<ModelFiles> {
         info!(repo_id, revision, "Resolving HuggingFace model");
 
         let repo = self.api.repo(Repo::with_revision(
@@ -74,11 +72,11 @@ impl ModelLoader {
         ));
 
         // Try to get config first to determine model type
-        let config_path = repo.get("config.json").map_err(|e| {
-            infernum_core::Error::ModelLoad {
+        let config_path = repo
+            .get("config.json")
+            .map_err(|e| infernum_core::Error::ModelLoad {
                 message: format!("Failed to download config.json: {}", e),
-            }
-        })?;
+            })?;
 
         debug!(?config_path, "Downloaded config.json");
 
@@ -113,7 +111,10 @@ impl ModelLoader {
         if let Ok(index_path) = repo.get("model.safetensors.index.json") {
             info!("Found sharded safetensors");
             let shards = self.download_shards(repo, &index_path)?;
-            return Ok(WeightFiles::ShardedSafetensors { index: index_path, shards });
+            return Ok(WeightFiles::ShardedSafetensors {
+                index: index_path,
+                shards,
+            });
         }
 
         // Try PyTorch format
@@ -126,7 +127,10 @@ impl ModelLoader {
         if let Ok(index_path) = repo.get("pytorch_model.bin.index.json") {
             warn!("Using sharded PyTorch format");
             let shards = self.download_shards(repo, &index_path)?;
-            return Ok(WeightFiles::ShardedPyTorch { index: index_path, shards });
+            return Ok(WeightFiles::ShardedPyTorch {
+                index: index_path,
+                shards,
+            });
         }
 
         Err(infernum_core::Error::ModelLoad {
@@ -140,24 +144,23 @@ impl ModelLoader {
         repo: &hf_hub::api::sync::ApiRepo,
         index_path: &Path,
     ) -> Result<Vec<PathBuf>> {
-        let index_content = std::fs::read_to_string(index_path).map_err(|e| {
-            infernum_core::Error::ModelLoad {
+        let index_content =
+            std::fs::read_to_string(index_path).map_err(|e| infernum_core::Error::ModelLoad {
                 message: format!("Failed to read index file: {}", e),
-            }
-        })?;
+            })?;
 
-        let index: serde_json::Value = serde_json::from_str(&index_content).map_err(|e| {
-            infernum_core::Error::ModelLoad {
+        let index: serde_json::Value =
+            serde_json::from_str(&index_content).map_err(|e| infernum_core::Error::ModelLoad {
                 message: format!("Failed to parse index file: {}", e),
-            }
-        })?;
+            })?;
 
         // Extract unique shard filenames from weight_map
-        let weight_map = index.get("weight_map").and_then(|w| w.as_object()).ok_or_else(|| {
-            infernum_core::Error::ModelLoad {
+        let weight_map = index
+            .get("weight_map")
+            .and_then(|w| w.as_object())
+            .ok_or_else(|| infernum_core::Error::ModelLoad {
                 message: "Invalid index file: missing weight_map".to_string(),
-            }
-        })?;
+            })?;
 
         let mut shard_names: Vec<String> = weight_map
             .values()
@@ -172,11 +175,11 @@ impl ModelLoader {
         let mut shard_paths = Vec::new();
         for (i, shard_name) in shard_names.iter().enumerate() {
             debug!(shard = %shard_name, progress = format!("{}/{}", i + 1, shard_names.len()), "Downloading shard");
-            let path = repo.get(shard_name).map_err(|e| {
-                infernum_core::Error::ModelLoad {
+            let path = repo
+                .get(shard_name)
+                .map_err(|e| infernum_core::Error::ModelLoad {
                     message: format!("Failed to download shard {}: {}", shard_name, e),
-                }
-            })?;
+                })?;
             shard_paths.push(path);
         }
 
@@ -230,29 +233,28 @@ impl ModelLoader {
 
     /// Finds shards from a local index file.
     fn find_local_shards(&self, index_path: &Path) -> Result<Vec<PathBuf>> {
-        let parent = index_path.parent().ok_or_else(|| {
-            infernum_core::Error::ModelLoad {
+        let parent = index_path
+            .parent()
+            .ok_or_else(|| infernum_core::Error::ModelLoad {
                 message: "Invalid index path".to_string(),
-            }
-        })?;
+            })?;
 
-        let index_content = std::fs::read_to_string(index_path).map_err(|e| {
-            infernum_core::Error::ModelLoad {
+        let index_content =
+            std::fs::read_to_string(index_path).map_err(|e| infernum_core::Error::ModelLoad {
                 message: format!("Failed to read index: {}", e),
-            }
-        })?;
+            })?;
 
-        let index: serde_json::Value = serde_json::from_str(&index_content).map_err(|e| {
-            infernum_core::Error::ModelLoad {
+        let index: serde_json::Value =
+            serde_json::from_str(&index_content).map_err(|e| infernum_core::Error::ModelLoad {
                 message: format!("Failed to parse index: {}", e),
-            }
-        })?;
+            })?;
 
-        let weight_map = index.get("weight_map").and_then(|w| w.as_object()).ok_or_else(|| {
-            infernum_core::Error::ModelLoad {
+        let weight_map = index
+            .get("weight_map")
+            .and_then(|w| w.as_object())
+            .ok_or_else(|| infernum_core::Error::ModelLoad {
                 message: "Invalid index: missing weight_map".to_string(),
-            }
-        })?;
+            })?;
 
         let mut shard_names: Vec<String> = weight_map
             .values()
@@ -285,12 +287,7 @@ impl ModelLoader {
     }
 
     /// Resolves an S3 model.
-    fn resolve_s3(
-        &self,
-        bucket: &str,
-        key: &str,
-        _region: Option<&str>,
-    ) -> Result<ModelFiles> {
+    fn resolve_s3(&self, bucket: &str, key: &str, _region: Option<&str>) -> Result<ModelFiles> {
         info!(bucket, key, "S3 model resolution not yet implemented");
 
         Err(infernum_core::Error::ModelLoad {
@@ -361,7 +358,9 @@ impl WeightFiles {
     pub fn paths(&self) -> Vec<&Path> {
         match self {
             Self::SingleSafetensors(p) => vec![p.as_path()],
-            Self::ShardedSafetensors { shards, .. } => shards.iter().map(PathBuf::as_path).collect(),
+            Self::ShardedSafetensors { shards, .. } => {
+                shards.iter().map(PathBuf::as_path).collect()
+            },
             Self::PyTorch(p) => vec![p.as_path()],
             Self::ShardedPyTorch { shards, .. } => shards.iter().map(PathBuf::as_path).collect(),
             Self::Gguf(p) => vec![p.as_path()],
@@ -371,7 +370,10 @@ impl WeightFiles {
     /// Returns true if this is a safetensors format.
     #[must_use]
     pub fn is_safetensors(&self) -> bool {
-        matches!(self, Self::SingleSafetensors(_) | Self::ShardedSafetensors { .. })
+        matches!(
+            self,
+            Self::SingleSafetensors(_) | Self::ShardedSafetensors { .. }
+        )
     }
 
     /// Returns true if this is a GGUF format.
@@ -486,16 +488,13 @@ impl ModelConfig {
     ///
     /// Returns an error if the file cannot be read or parsed.
     pub fn from_file(path: &Path) -> Result<Self> {
-        let content = std::fs::read_to_string(path).map_err(|e| {
-            infernum_core::Error::ModelLoad {
+        let content =
+            std::fs::read_to_string(path).map_err(|e| infernum_core::Error::ModelLoad {
                 message: format!("Failed to read config: {}", e),
-            }
-        })?;
+            })?;
 
-        serde_json::from_str(&content).map_err(|e| {
-            infernum_core::Error::ModelLoad {
-                message: format!("Failed to parse config: {}", e),
-            }
+        serde_json::from_str(&content).map_err(|e| infernum_core::Error::ModelLoad {
+            message: format!("Failed to parse config: {}", e),
         })
     }
 
@@ -503,7 +502,9 @@ impl ModelConfig {
     #[must_use]
     pub fn architecture(&self) -> Option<&str> {
         self.model_type.as_deref().or_else(|| {
-            self.architectures.as_ref().and_then(|a| a.first().map(String::as_str))
+            self.architectures
+                .as_ref()
+                .and_then(|a| a.first().map(String::as_str))
         })
     }
 
@@ -513,12 +514,11 @@ impl ModelConfig {
         match &self.eos_token_id {
             Some(serde_json::Value::Number(n)) => {
                 n.as_u64().map(|v| vec![v as u32]).unwrap_or_default()
-            }
-            Some(serde_json::Value::Array(arr)) => {
-                arr.iter()
-                    .filter_map(|v| v.as_u64().map(|n| n as u32))
-                    .collect()
-            }
+            },
+            Some(serde_json::Value::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| v.as_u64().map(|n| n as u32))
+                .collect(),
             _ => Vec::new(),
         }
     }

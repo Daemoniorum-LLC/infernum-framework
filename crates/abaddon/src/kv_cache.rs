@@ -85,10 +85,7 @@ impl KVCache {
             ));
         }
 
-        let allocated: Vec<u32> = self
-            .free_blocks
-            .drain(..blocks_needed as usize)
-            .collect();
+        let allocated: Vec<u32> = self.free_blocks.drain(..blocks_needed as usize).collect();
 
         self.sequence_blocks.insert(request_id, allocated);
         Ok(())
@@ -108,7 +105,8 @@ impl KVCache {
         let current_capacity = blocks.len() as u32 * self.config.block_size;
         let current_tokens = current_capacity; // Simplified
         let total_tokens = current_tokens + additional_tokens;
-        let total_blocks_needed = (total_tokens + self.config.block_size - 1) / self.config.block_size;
+        let total_blocks_needed =
+            (total_tokens + self.config.block_size - 1) / self.config.block_size;
         let additional_blocks = total_blocks_needed.saturating_sub(blocks.len() as u32);
 
         if additional_blocks as usize > self.free_blocks.len() {

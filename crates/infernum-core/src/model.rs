@@ -196,10 +196,7 @@ impl ModelArchitecture {
     /// Returns `true` if this architecture supports vision input.
     #[must_use]
     pub fn supports_vision(&self) -> bool {
-        matches!(
-            self,
-            Self::LlavaNext | Self::Qwen2VL | Self::Pixtral
-        )
+        matches!(self, Self::LlavaNext | Self::Qwen2VL | Self::Pixtral)
     }
 
     /// Returns `true` if this is an embedding model.
@@ -250,7 +247,10 @@ pub struct ModelMetadata {
 impl ModelMetadata {
     /// Creates a new `ModelMetadata` builder.
     #[must_use]
-    pub fn builder(id: impl Into<ModelId>, architecture: ModelArchitecture) -> ModelMetadataBuilder {
+    pub fn builder(
+        id: impl Into<ModelId>,
+        architecture: ModelArchitecture,
+    ) -> ModelMetadataBuilder {
         ModelMetadataBuilder::new(id, architecture)
     }
 }

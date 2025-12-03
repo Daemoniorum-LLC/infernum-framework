@@ -19,8 +19,8 @@ pub mod lora;
 pub mod trainer;
 
 pub use config::{LoraConfig, TrainingConfig};
-pub use lora::{LoraLayer, LoraModel, find_target_modules};
+pub use lora::{find_target_modules, LoraLayer, LoraModel};
 pub use trainer::{
-    AdamW, DataLoader, Dataset, InMemoryDataset, LRScheduler,
-    Trainer, TrainerTrait, TrainingRun, TrainingSample, TrainingStatus,
+    AdamW, DataLoader, Dataset, InMemoryDataset, LRScheduler, Trainer, TrainerTrait, TrainingRun,
+    TrainingSample, TrainingStatus,
 };

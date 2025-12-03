@@ -6,7 +6,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use candle_core::{DType, Device, Tensor, Result as CandleResult, safetensors as candle_safetensors};
+use candle_core::{
+    safetensors as candle_safetensors, DType, Device, Result as CandleResult, Tensor,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::config::LoraConfig;
@@ -91,7 +93,11 @@ impl LoraLayer {
     pub fn forward(&self, x: &Tensor) -> CandleResult<Tensor> {
         let (lora_a, lora_b) = match (&self.lora_a, &self.lora_b) {
             (Some(a), Some(b)) => (a, b),
-            _ => return Err(candle_core::Error::Msg("LoRA tensors not initialized".into())),
+            _ => {
+                return Err(candle_core::Error::Msg(
+                    "LoRA tensors not initialized".into(),
+                ))
+            },
         };
 
         // x @ A^T gives (batch, r)
@@ -117,7 +123,11 @@ impl LoraLayer {
     pub fn get_delta(&self) -> CandleResult<Tensor> {
         let (lora_a, lora_b) = match (&self.lora_a, &self.lora_b) {
             (Some(a), Some(b)) => (a, b),
-            _ => return Err(candle_core::Error::Msg("LoRA tensors not initialized".into())),
+            _ => {
+                return Err(candle_core::Error::Msg(
+                    "LoRA tensors not initialized".into(),
+                ))
+            },
         };
 
         // B @ A gives (out_features x in_features)
@@ -187,8 +197,11 @@ impl LoraModel {
         }
 
         if !tensors.is_empty() {
-            candle_safetensors::save(&tensors, &tensors_path)
-                .map_err(|e| infernum_core::Error::Internal { message: e.to_string() })?;
+            candle_safetensors::save(&tensors, &tensors_path).map_err(|e| {
+                infernum_core::Error::Internal {
+                    message: e.to_string(),
+                }
+            })?;
         }
 
         tracing::info!(path = ?path, parameters = self.total_parameters(), "Saved LoRA model");
@@ -205,8 +218,11 @@ impl LoraModel {
         // Load tensors
         let tensors_path = path.join("lora_weights.safetensors");
         let tensors = if tensors_path.exists() {
-            candle_safetensors::load(&tensors_path, device)
-                .map_err(|e| infernum_core::Error::Internal { message: e.to_string() })?
+            candle_safetensors::load(&tensors_path, device).map_err(|e| {
+                infernum_core::Error::Internal {
+                    message: e.to_string(),
+                }
+            })?
         } else {
             HashMap::new()
         };
@@ -243,10 +259,7 @@ struct LoraModelConfig {
 }
 
 /// Identifies target modules in a model for LoRA adaptation.
-pub fn find_target_modules(
-    model_type: &str,
-    target_modules: &[String],
-) -> Vec<String> {
+pub fn find_target_modules(model_type: &str, target_modules: &[String]) -> Vec<String> {
     // Common patterns for different architectures
     let mut modules = Vec::new();
 
@@ -257,17 +270,17 @@ pub fn find_target_modules(
                 for i in 0..32 {
                     modules.push(format!("model.layers.{}.self_attn.{}", i, target));
                 }
-            }
+            },
             "gpt2" | "gpt-neo" => {
                 // GPT-2 style architecture
                 for i in 0..12 {
                     modules.push(format!("h.{}.attn.{}", i, target));
                 }
-            }
+            },
             _ => {
                 // Generic: just use the target name
                 modules.push(target.clone());
-            }
+            },
         }
     }
 
@@ -290,10 +303,11 @@ mod tests {
         let layer = LoraLayer::new(
             "test",
             config,
-            768,  // in_features
-            768,  // out_features
+            768, // in_features
+            768, // out_features
             &Device::Cpu,
-        ).unwrap();
+        )
+        .unwrap();
 
         // A: 8 x 768 = 6144
         // B: 768 x 8 = 6144

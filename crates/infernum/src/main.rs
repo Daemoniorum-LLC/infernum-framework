@@ -82,7 +82,6 @@ enum Commands {
     //     #[arg(short, long)]
     //     model: Option<String>,
     // },
-
     /// Manage models
     Model {
         #[command(subcommand)]
@@ -188,8 +187,8 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Initialize logging
-    let telemetry_config = dantalion::TelemetryConfig::new("infernum")
-        .with_log_level(&cli.log_level);
+    let telemetry_config =
+        dantalion::TelemetryConfig::new("infernum").with_log_level(&cli.log_level);
 
     let telemetry_config = if cli.json_logs {
         telemetry_config.with_json_logs()
@@ -212,7 +211,7 @@ async fn main() -> Result<()> {
             // Use config default model if not specified on command line
             let model = model.or(cfg.default_model.clone());
             commands::serve(host, port, model, config_file).await?;
-        }
+        },
 
         Commands::Generate {
             prompt,
@@ -224,13 +223,12 @@ async fn main() -> Result<()> {
             // Use config default model if not specified on command line
             let model = model.or(cfg.default_model.clone());
             commands::generate(prompt, model, max_tokens, temperature, stream).await?;
-        }
+        },
 
         // TODO: Re-enable when embedding models are supported
         // Commands::Embed { text, model } => {
         //     commands::embed(text, model).await?;
         // }
-
         Commands::Model { action } => match action {
             ModelAction::List => commands::model_list().await?,
             ModelAction::Pull { model, revision } => commands::model_pull(model, revision).await?,
@@ -242,15 +240,15 @@ async fn main() -> Result<()> {
             // Use config default model if not specified on command line
             let model = model.or(cfg.default_model.clone());
             commands::chat(model, system).await?;
-        }
+        },
 
         Commands::Version => {
             commands::version();
-        }
+        },
 
         Commands::Doctor => {
             commands::doctor();
-        }
+        },
 
         Commands::Agent {
             objective,
@@ -261,38 +259,41 @@ async fn main() -> Result<()> {
         } => {
             let model = model.or(cfg.default_model.clone());
             commands::agent(objective, model, system, max_iterations, verbose).await?;
-        }
+        },
 
         Commands::Config { action } => match action {
             ConfigAction::Show => {
                 config::show_config();
-            }
+            },
             ConfigAction::SetModel { model } => {
                 let mut cfg = config::Config::load();
                 match cfg.set_default_model(&model) {
                     Ok(()) => {
                         println!("Default model set to: {}", model);
-                        println!("Config saved to: {}", config::Config::config_path().display());
-                    }
+                        println!(
+                            "Config saved to: {}",
+                            config::Config::config_path().display()
+                        );
+                    },
                     Err(e) => {
                         eprintln!("Failed to save config: {}", e);
-                    }
+                    },
                 }
-            }
+            },
             ConfigAction::ClearModel => {
                 let mut cfg = config::Config::load();
                 match cfg.clear_default_model() {
                     Ok(()) => {
                         println!("Default model cleared.");
-                    }
+                    },
                     Err(e) => {
                         eprintln!("Failed to save config: {}", e);
-                    }
+                    },
                 }
-            }
+            },
             ConfigAction::Path => {
                 println!("{}", config::Config::config_path().display());
-            }
+            },
         },
     }
 

@@ -102,10 +102,10 @@ impl RequestRouter {
             RoutingStrategy::LeastConnections => self.least_connections(registry),
             RoutingStrategy::LatencyOptimized { target_p99_ms } => {
                 self.latency_optimized(registry, *target_p99_ms)
-            }
+            },
             RoutingStrategy::CostOptimized { max_cost_per_token } => {
                 self.cost_optimized(registry, request, *max_cost_per_token)
-            }
+            },
             RoutingStrategy::Weighted {
                 latency_weight,
                 cost_weight,
@@ -128,7 +128,7 @@ impl RequestRouter {
                     // Among capable models, use least connections
                     self.select_least_loaded(&capable)
                 }
-            }
+            },
         }
     }
 
@@ -176,7 +176,11 @@ impl RequestRouter {
     ///
     /// Routes to the model most likely to meet the target P99 latency.
     /// Uses historical latency data to predict performance.
-    fn latency_optimized(&self, registry: &ModelRegistry, target_p99_ms: u32) -> Result<Arc<Engine>> {
+    fn latency_optimized(
+        &self,
+        registry: &ModelRegistry,
+        target_p99_ms: u32,
+    ) -> Result<Arc<Engine>> {
         let models = registry.all();
         let available: Vec<_> = models.iter().filter(|m| m.is_available()).collect();
 
@@ -218,11 +222,11 @@ impl RequestRouter {
             }
         }
 
-        best_model
-            .map(|m| Arc::clone(&m.engine))
-            .ok_or_else(|| infernum_core::Error::ModelNotFound {
+        best_model.map(|m| Arc::clone(&m.engine)).ok_or_else(|| {
+            infernum_core::Error::ModelNotFound {
                 model_id: "no suitable model found".to_string(),
-            })
+            }
+        })
     }
 
     /// Cost-optimized routing.
@@ -277,9 +281,17 @@ impl RequestRouter {
             cheapest_model = available
                 .iter()
                 .min_by(|a, b| {
-                    let cost_a = a.cost.read().calculate(estimated_input_tokens, estimated_output_tokens);
-                    let cost_b = b.cost.read().calculate(estimated_input_tokens, estimated_output_tokens);
-                    cost_a.partial_cmp(&cost_b).unwrap_or(std::cmp::Ordering::Equal)
+                    let cost_a = a
+                        .cost
+                        .read()
+                        .calculate(estimated_input_tokens, estimated_output_tokens);
+                    let cost_b = b
+                        .cost
+                        .read()
+                        .calculate(estimated_input_tokens, estimated_output_tokens);
+                    cost_a
+                        .partial_cmp(&cost_b)
+                        .unwrap_or(std::cmp::Ordering::Equal)
                 })
                 .copied();
         }
@@ -334,7 +346,12 @@ impl RequestRouter {
             .collect();
         let costs: Vec<f64> = available
             .iter()
-            .map(|m| m.cost.read().calculate(estimated_input, estimated_output).max(0.0001))
+            .map(|m| {
+                m.cost
+                    .read()
+                    .calculate(estimated_input, estimated_output)
+                    .max(0.0001)
+            })
             .collect();
         let loads: Vec<f64> = available.iter().map(|m| m.load_factor()).collect();
 
@@ -361,11 +378,11 @@ impl RequestRouter {
             }
         }
 
-        best_model
-            .map(|m| Arc::clone(&m.engine))
-            .ok_or_else(|| infernum_core::Error::ModelNotFound {
+        best_model.map(|m| Arc::clone(&m.engine)).ok_or_else(|| {
+            infernum_core::Error::ModelNotFound {
                 model_id: "no suitable model found".to_string(),
-            })
+            }
+        })
     }
 
     /// Selects the least loaded model from a set.
@@ -391,9 +408,7 @@ impl RequestRouter {
         // Rough estimation: ~4 characters per token
         let content_len: usize = match &request.prompt {
             PromptInput::Text(s) => s.len(),
-            PromptInput::Messages(messages) => {
-                messages.iter().map(|m| m.content.len()).sum()
-            }
+            PromptInput::Messages(messages) => messages.iter().map(|m| m.content.len()).sum(),
             PromptInput::Tokens(tokens) => tokens.len() * 4, // Already tokenized
         };
 
