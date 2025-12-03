@@ -55,9 +55,9 @@ memmap2 = { workspace = true }
 rayon = { workspace = true }
 num_cpus = { workspace = true }
 humansize = { workspace = true }
-dirs = "5.0"
+dirs = "6.0"
 fastrand = "2.2"
-sysinfo = "0.31"
+sysinfo = "0.37"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
