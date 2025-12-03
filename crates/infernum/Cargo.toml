@@ -16,8 +16,9 @@ path = "src/main.rs"
 [features]
 default = ["server"]
 server = ["infernum-server"]
-cuda = ["abaddon/cuda", "asmodeus/cuda"]
-metal = ["abaddon/metal"]
+# Note: GPU features require abaddon/asmodeus built with GPU support
+cuda = []
+metal = []
 
 [dependencies]
 infernum-core = { path = "../infernum-core", version = "0.1.0" }
