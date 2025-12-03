@@ -1,55 +1,104 @@
-# ZSH Aliases
+# Infernum Framework - Development Guide
+
+## Project Overview
+
+Infernum is a blazingly fast local LLM inference framework written in Rust. The codebase is organized as a workspace with 10+ specialized crates.
+
+## Crate Architecture
+
+| Crate | Purpose |
+|-------|---------|
+| `infernum` | Main CLI application |
+| `infernum-core` | Shared types and traits |
+| `abaddon` | Inference engine |
+| `malphas` | Orchestration and routing |
+| `stolas` | Knowledge/RAG engine |
+| `beleth` | Agent framework |
+| `asmodeus` | Fine-tuning and LoRA |
+| `dantalion` | Observability and metrics |
+| `infernum-server` | HTTP API server (OpenAI compatible) |
+| `grimoire-loader` | Persona/prompt loading |
+
+## Development Workflow
+
+### Building
 
 ```bash
-pf               # cd to persona-framework root
-lev-clean        # Clean mammon + leviathan builds
-lev-build        # Build leviathan (-x test)
-lev-run          # Export AWS creds + bootRun
-lev-kill         # Kill all leviathan processes
-lev-restart      # Full restart: kill + clean + build + run
-lev-logs         # tail -f leviathan.out
-bael-dev         # cd bael && npm run dev
-bael-test        # cd bael && playwright headed mode
-eidolon          # Launch script (all|backend|gui|stop|restart|status)
-eidolon-start    # Start backend + GUI
-eidolon-stop     # Stop all components
-eidolon-restart  # Restart all components
-eidolon-status   # Show component status
-eidolon-backend  # Start backend only
-eidolon-gui      # Start GUI only
+cargo build --workspace
+cargo build --release --workspace
 ```
 
-# Grimoire Integration
+### Testing
 
-Prompts MUST be loaded from `/home/lilith/development/projects/grimoire/personas/` at runtime.
-PromptLoader configured to read from filesystem, NOT packaged JARs.
+```bash
+cargo test --workspace
+cargo test --workspace -- --nocapture  # with output
+```
 
-# Git Workflow
+### Linting
+
+```bash
+cargo clippy --workspace --all-features
+cargo fmt --all -- --check
+```
+
+### Running
+
+```bash
+cargo run -p infernum -- --help
+cargo run -p infernum -- serve --port 8080
+cargo run -p infernum -- chat --model "HuggingFaceTB/SmolLM2-135M"
+```
+
+## Git Workflow
 
 **CRITICAL**: Never work directly on main or development branches.
 
-For each roadmap/goal:
 1. Create feature branch: `git checkout -b feature/goal-name`
-2. Commit regularly as you make progress
-3. When complete, create PR for review
+2. Commit regularly with conventional commits
+3. Push and create PR for review
 
-Example:
 ```bash
 git checkout -b feature/streaming-chat
-# make changes
 git add -A && git commit -m "feat: streaming implementation"
-# continue work...
 git push origin feature/streaming-chat
 ```
 
-# Common Workflows
+## Conventional Commits
 
-Build + Run Leviathan:
+Use these prefixes:
+- `feat:` - New features
+- `fix:` - Bug fixes
+- `docs:` - Documentation changes
+- `refactor:` - Code refactoring
+- `test:` - Adding tests
+- `chore:` - Maintenance tasks
+- `perf:` - Performance improvements
+
+## Code Standards
+
+- Follow Rust idioms and the project's clippy configuration
+- All public items should have documentation
+- Use `thiserror` for error types
+- Use `tracing` for logging
+- Prefer async/await for I/O operations
+- Write tests for new functionality
+
+## Benchmarks
+
+Run inference benchmarks:
 ```bash
-pf && lev-clean && lev-build && lev-run
+cargo bench -p abaddon
 ```
 
-Run E2E Test:
-```bash
-pf && cd bael && npx playwright test hydra-marketing-task.e2e.spec.ts:18 --headed --project=chromium
-```
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `HF_TOKEN` | HuggingFace Hub token for gated models |
+| `INFERNUM_LOG` | Log level (trace, debug, info, warn, error) |
+| `INFERNUM_CONFIG` | Custom config file path |
+
+## Configuration
+
+Default config location: `~/.config/infernum/config.toml`
