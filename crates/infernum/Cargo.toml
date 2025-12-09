@@ -1,0 +1,71 @@
+[package]
+name = "infernum"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Infernum CLI - From the depths, intelligence rises"
+readme = "README.md"
+
+[[bin]]
+name = "infernum"
+path = "src/main.rs"
+
+[features]
+default = ["server"]
+server = ["infernum-server"]
+# Note: GPU features require abaddon/asmodeus built with GPU support
+cuda = []
+metal = []
+
+[dependencies]
+infernum-core = { path = "../infernum-core", version = "0.1.0" }
+abaddon = { path = "../abaddon", version = "0.1.0" }
+malphas = { path = "../malphas", version = "0.1.0" }
+stolas = { path = "../stolas", version = "0.1.0", default-features = false }
+beleth = { path = "../beleth", version = "0.1.0" }
+asmodeus = { path = "../asmodeus", version = "0.1.0" }
+dantalion = { path = "../dantalion", version = "0.1.0" }
+grimoire-loader = { path = "../grimoire-loader", version = "0.1.0" }
+infernum-server = { path = "../infernum-server", version = "0.1.0", optional = true }
+
+# Async
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+# Model management
+hf-hub = { workspace = true }
+dirs = "5.0"
+
+# CLI
+clap = { workspace = true }
+dialoguer = { workspace = true }
+indicatif = { workspace = true }
+console = { workspace = true }
+
+# Configuration
+figment = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+
+# Error handling
+color-eyre = { workspace = true }
+anyhow = { workspace = true }
+
+# System info
+num_cpus = { workspace = true }
+
+# Observability
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+assert_cmd = "2.0"
+predicates = "3.1"
