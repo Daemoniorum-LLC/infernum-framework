@@ -1,0 +1,62 @@
+{
+  "name": "TokenStream collect_text Tests",
+  "description": "Tests for collecting text from token streams",
+  "cases": [
+    {
+      "name": "collect_single_chunk",
+      "chunks": [
+        {
+          "choices": [
+            { "index": 0, "delta": { "content": "Hello, world!" } }
+          ]
+        }
+      ],
+      "expected_text": "Hello, world!"
+    },
+    {
+      "name": "collect_multiple_chunks",
+      "chunks": [
+        { "choices": [{ "index": 0, "delta": { "content": "Hello" } }] },
+        { "choices": [{ "index": 0, "delta": { "content": ", " } }] },
+        { "choices": [{ "index": 0, "delta": { "content": "world" } }] },
+        { "choices": [{ "index": 0, "delta": { "content": "!" } }] }
+      ],
+      "expected_text": "Hello, world!"
+    },
+    {
+      "name": "collect_with_empty_deltas",
+      "chunks": [
+        { "choices": [{ "index": 0, "delta": { "content": "Start" } }] },
+        { "choices": [{ "index": 0, "delta": { "content": null } }] },
+        { "choices": [{ "index": 0, "delta": { "content": "End" } }] }
+      ],
+      "expected_text": "StartEnd"
+    },
+    {
+      "name": "collect_empty_stream",
+      "chunks": [],
+      "expected_text": ""
+    },
+    {
+      "name": "collect_multi_choice",
+      "description": "Multiple choices should all contribute to collected text",
+      "chunks": [
+        {
+          "choices": [
+            { "index": 0, "delta": { "content": "A" } },
+            { "index": 1, "delta": { "content": "B" } }
+          ]
+        }
+      ],
+      "expected_text": "AB"
+    },
+    {
+      "name": "collect_with_finish_reason",
+      "chunks": [
+        { "choices": [{ "index": 0, "delta": { "content": "Done" } }] },
+        { "choices": [{ "index": 0, "delta": { "content": null }, "finish_reason": "stop" }] }
+      ],
+      "expected_text": "Done"
+    }
+  ]
+}

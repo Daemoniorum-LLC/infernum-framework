@@ -1,0 +1,392 @@
+//! Inter-agent agreements.
+
+use std::time::{Duration, Instant}
+use std::collections::HashMap
+
+/// A party in an agreement.
+#[derive(Debug, Clone)]
+struct Party {
+    id: str,
+    name: str,
+    role: PartyRole,
+    accepted: bool,
+    signature?: str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PartyRole {
+    Provider,
+    Consumer,
+    Mediator,
+    Witness,
+    Custom,
+}
+
+impl Party {
+    fn new(id: str, name: str) -> Party {
+        Party {
+            id,
+            name,
+            role: PartyRole::Custom,
+            accepted: false,
+            signature: None,
+        }
+    }
+
+    fn with_role(mut self, role: PartyRole) -> Party {
+        self.role = role;
+        self
+    }
+
+    fn sign(mut self, signature: str) {
+        self.signature = Some(signature);
+        self.accepted = true;
+    }
+}
+
+/// A term in an agreement.
+#[derive(Debug, Clone)]
+enum Term {
+    /// A requirement (precondition).
+    Requires(str),
+    /// An assurance (postcondition).
+    Ensures(str),
+    /// A constraint that must be maintained.
+    Maintains(str),
+    /// A service level objective.
+    Slo(ServiceLevelObjective),
+    /// An obligation for a party.
+    Obligation { party: str, action: str },
+    /// A prohibition.
+    Prohibition { party: str, action: str },
+    /// A permission.
+    Permission { party: str, action: str },
+    /// A liability clause.
+    Liability { party: str, conditions: str },
+    /// Custom term.
+    Custom { name: str, description: str },
+}
+
+impl Term {
+    fn verify(self, context: &super::VerificationContext) -> ?super::verification::Violation {
+        match self {
+            Term::Requires(condition) => {
+                // Would evaluate condition against context
+                None
+            },
+            Term::Ensures(condition) => {
+                None
+            },
+            Term::Slo(slo) => {
+                // Check SLO compliance
+                slo.verify(context)
+            },
+            _ => None,
+        }
+    }
+}
+
+/// Service Level Objective.
+#[derive(Debug, Clone)]
+struct ServiceLevelObjective {
+    name: str,
+    metric: str,
+    target: f64,
+    comparison: Comparison,
+    window: Duration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Comparison {
+    LessThan,
+    LessThanOrEqual,
+    GreaterThan,
+    GreaterThanOrEqual,
+    Equal,
+}
+
+impl ServiceLevelObjective {
+    fn new(name: str, metric: str, comparison: Comparison, target: f64) -> ServiceLevelObjective {
+        ServiceLevelObjective {
+            name,
+            metric,
+            target,
+            comparison,
+            window: Duration::from_secs(3600), // 1 hour default
+        }
+    }
+
+    fn with_window(mut self, window: Duration) -> ServiceLevelObjective {
+        self.window = window;
+        self
+    }
+
+    fn verify(self, context: &super::VerificationContext) -> ?super::verification::Violation {
+        if let Some(&value) = context.get::<f64>(&self.metric) {
+            let passed = match self.comparison {
+                Comparison::LessThan => value < self.target,
+                Comparison::LessThanOrEqual => value <= self.target,
+                Comparison::GreaterThan => value > self.target,
+                Comparison::GreaterThanOrEqual => value >= self.target,
+                Comparison::Equal => (value - self.target).abs() < 0.001,
+            };
+
+            if !passed {
+                return Some(super::verification::Violation {
+                    term: self.name,
+                    message: format!(
+                        "SLO violation: {} is {} but should be {:?} {}",
+                        self.metric, value, self.comparison, self.target
+                    ),
+                    severity: super::ViolationSeverity::Moderate,
+                    timestamp: Instant::now(),
+                })
+            }
+        }
+
+        None
+    }
+}
+
+/// An agreement between parties.
+#[derive(Debug, Clone)]
+struct Agreement {
+    id: str,
+    name: str,
+    version: str,
+    parties: [Party],
+    terms: [Term],
+    effective_date?: Instant,
+    expiration_date?: Instant,
+    status: AgreementStatus,
+    amendments: [Amendment],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgreementStatus {
+    Draft,
+    Pending,
+    Active,
+    Amended,
+    Expired,
+    Terminated,
+}
+
+/// An amendment to an agreement.
+#[derive(Debug, Clone)]
+struct Amendment {
+    id: str,
+    description: str,
+    changes: [TermChange],
+    proposed_by: str,
+    accepted_by: [str],
+    timestamp: Instant,
+}
+
+#[derive(Debug, Clone)]
+enum TermChange {
+    Add(Term),
+    Remove(usize),
+    Modify { index: usize, new_term: Term },
+}
+
+impl Agreement {
+    fn new(id: str, name: str) -> Agreement {
+        Agreement {
+            id,
+            name,
+            version: "1.0".to_string(),
+            parties: [],
+            terms: [],
+            effective_date: None,
+            expiration_date: None,
+            status: AgreementStatus::Draft,
+            amendments: [],
+        }
+    }
+
+    fn add_party(mut self, party: Party) {
+        self.parties.push(party);
+    }
+
+    fn add_term(mut self, term: Term) {
+        self.terms.push(term);
+    }
+
+    fn activate(mut self) -> Result<(), AgreementError> {
+        // Check all parties have accepted
+        if !self.parties|τ{|p| p.accepted}|ρ·all() {
+            return Err(AgreementError::NotAllPartiesAccepted)
+        }
+
+        self.effective_date = Some(Instant::now());
+        self.status = AgreementStatus::Active;
+        Ok(())
+    }
+
+    fn is_active(self) -> bool {
+        if self.status != AgreementStatus::Active {
+            return false
+        }
+
+        if let Some(exp) = self.expiration_date {
+            if Instant::now() > exp {
+                return false
+            }
+        }
+
+        true
+    }
+
+    fn propose_amendment(mut self, amendment: Amendment) -> Result<(), AgreementError> {
+        if self.status != AgreementStatus::Active {
+            return Err(AgreementError::NotActive)
+        }
+
+        self.amendments.push(amendment);
+        self.status = AgreementStatus::Amended;
+        Ok(())
+    }
+
+    fn get_obligations(self, party_id: &str) -> [&Term] {
+        self.terms.iter()
+            |φ{|t| match t {
+                Term::Obligation { party, .. } => party == party_id,
+                _ => false,
+            }}
+            |collect()
+    }
+
+    fn get_permissions(self, party_id: &str) -> [&Term] {
+        self.terms.iter()
+            |φ{|t| match t {
+                Term::Permission { party, .. } => party == party_id,
+                _ => false,
+            }}
+            |collect()
+    }
+
+    fn get_prohibitions(self, party_id: &str) -> [&Term] {
+        self.terms.iter()
+            |φ{|t| match t {
+                Term::Prohibition { party, .. } => party == party_id,
+                _ => false,
+            }}
+            |collect()
+    }
+}
+
+/// Agreement errors.
+#[derive(Debug, Clone)]
+enum AgreementError {
+    NotAllPartiesAccepted,
+    NotActive,
+    AlreadyExpired,
+    PartyNotFound,
+    InvalidAmendment,
+}
+
+/// SLA (Service Level Agreement) builder.
+struct SlaBuilder {
+    agreement: Agreement,
+}
+
+impl SlaBuilder {
+    fn new(id: str, name: str) -> SlaBuilder {
+        SlaBuilder {
+            agreement: Agreement::new(id, name),
+        }
+    }
+
+    fn provider(mut self, id: str, name: str) -> SlaBuilder {
+        self.agreement.add_party(Party::new(id, name).with_role(PartyRole::Provider));
+        self
+    }
+
+    fn consumer(mut self, id: str, name: str) -> SlaBuilder {
+        self.agreement.add_party(Party::new(id, name).with_role(PartyRole::Consumer));
+        self
+    }
+
+    fn uptime_slo(mut self, target: f64) -> SlaBuilder {
+        self.agreement.add_term(Term::Slo(
+            ServiceLevelObjective::new("uptime", "availability_percent", Comparison::GreaterThanOrEqual, target)
+        ));
+        self
+    }
+
+    fn latency_slo(mut self, max_ms: f64) -> SlaBuilder {
+        self.agreement.add_term(Term::Slo(
+            ServiceLevelObjective::new("latency", "p99_latency_ms", Comparison::LessThanOrEqual, max_ms)
+        ));
+        self
+    }
+
+    fn error_rate_slo(mut self, max_percent: f64) -> SlaBuilder {
+        self.agreement.add_term(Term::Slo(
+            ServiceLevelObjective::new("error_rate", "error_percent", Comparison::LessThanOrEqual, max_percent)
+        ));
+        self
+    }
+
+    fn expires_in(mut self, duration: Duration) -> SlaBuilder {
+        self.agreement.expiration_date = Some(Instant::now() + duration);
+        self
+    }
+
+    fn build(self) -> Agreement {
+        self.agreement
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_party_creation() {
+        let p = Party::new("p1", "Provider")
+            .with_role(PartyRole::Provider);
+
+        assert!(matches!(p.role, PartyRole::Provider));
+        assert!(!p.accepted);
+    }
+
+    #[test]
+    fn test_party_sign() {
+        let mut p = Party::new("p1", "Provider");
+        p.sign("signature123");
+
+        assert!(p.accepted);
+        assert!(p.signature.is_some());
+    }
+
+    #[test]
+    fn test_slo() {
+        let slo = ServiceLevelObjective::new(
+            "uptime",
+            "availability",
+            Comparison::GreaterThanOrEqual,
+            99.9,
+        );
+
+        assert_eq!(slo.target, 99.9);
+    }
+
+    #[test]
+    fn test_sla_builder() {
+        let sla = SlaBuilder::new("sla1", "API Service SLA")
+            .provider("p1", "API Provider")
+            .consumer("c1", "API Consumer")
+            .uptime_slo(99.9)
+            .latency_slo(100.0)
+            .build();
+
+        assert_eq!(sla.parties.len(), 2);
+        assert_eq!(sla.terms.len(), 2);
+    }
+}

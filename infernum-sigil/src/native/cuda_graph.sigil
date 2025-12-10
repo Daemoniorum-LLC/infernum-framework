@@ -1,0 +1,631 @@
+/// CUDA Graph Execution
+///
+/// Capture and replay CUDA graphs for minimal kernel launch overhead.
+/// Eliminates CPU-GPU synchronization and driver overhead.
+
+use crate::core::error::{InfernumError, Result}
+use crate::native::cuda::{CudaBackend, CudaError}
+use std::collections::HashMap
+use std::ffi::c_void
+
+// ============================================================================
+// CUDA Graph FFI
+// ============================================================================
+
+#[link(name = "cudart")]
+extern "C" {
+    // Stream capture
+    fn cudaStreamBeginCapture(stream: *mut c_void, mode: i32) -> i32
+    fn cudaStreamEndCapture(stream: *mut c_void, graph: *mut *mut c_void) -> i32
+    fn cudaStreamIsCapturing(stream: *mut c_void, capturing: *mut i32) -> i32
+
+    // Graph creation
+    fn cudaGraphCreate(graph: *mut *mut c_void, flags: u32) -> i32
+    fn cudaGraphDestroy(graph: *mut c_void) -> i32
+
+    // Graph instantiation
+    fn cudaGraphInstantiate(
+        exec: *mut *mut c_void,
+        graph: *mut c_void,
+        error_node: *mut *mut c_void,
+        log: *mut i8,
+        log_size: usize,
+    ) -> i32
+    fn cudaGraphInstantiateWithFlags(
+        exec: *mut *mut c_void,
+        graph: *mut c_void,
+        flags: u64,
+    ) -> i32
+    fn cudaGraphExecDestroy(exec: *mut c_void) -> i32
+
+    // Graph execution
+    fn cudaGraphLaunch(exec: *mut c_void, stream: *mut c_void) -> i32
+
+    // Graph update (for dynamic shapes)
+    fn cudaGraphExecUpdate(
+        exec: *mut c_void,
+        graph: *mut c_void,
+        result: *mut i32,
+    ) -> i32
+
+    // Graph nodes
+    fn cudaGraphGetNodes(graph: *mut c_void, nodes: *mut *mut c_void, num: *mut usize) -> i32
+    fn cudaGraphNodeGetType(node: *mut c_void, node_type: *mut i32) -> i32
+
+    // Memory nodes
+    fn cudaGraphAddMemcpyNode(
+        node: *mut *mut c_void,
+        graph: *mut c_void,
+        deps: *const *mut c_void,
+        num_deps: usize,
+        params: *const c_void,
+    ) -> i32
+    fn cudaGraphAddMemsetNode(
+        node: *mut *mut c_void,
+        graph: *mut c_void,
+        deps: *const *mut c_void,
+        num_deps: usize,
+        params: *const c_void,
+    ) -> i32
+
+    // Kernel nodes
+    fn cudaGraphAddKernelNode(
+        node: *mut *mut c_void,
+        graph: *mut c_void,
+        deps: *const *mut c_void,
+        num_deps: usize,
+        params: *const c_void,
+    ) -> i32
+    fn cudaGraphExecKernelNodeSetParams(
+        exec: *mut c_void,
+        node: *mut c_void,
+        params: *const c_void,
+    ) -> i32
+}
+
+/// Stream capture mode
+#[derive(Clone, Copy, Debug)]
+pub enum CaptureMode {
+    Global = 0,
+    ThreadLocal = 1,
+    Relaxed = 2,
+}
+
+/// Graph instantiation flags
+#[derive(Clone, Copy, Debug)]
+pub enum InstantiateFlag {
+    None = 0,
+    AutoFreeOnLaunch = 1,
+    Upload = 2,
+    DeviceLaunch = 4,
+    UseNodePriority = 8,
+}
+
+/// Graph node types
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NodeType {
+    Kernel = 0,
+    Memcpy = 1,
+    Memset = 2,
+    Host = 3,
+    Graph = 4,
+    Empty = 5,
+    WaitEvent = 6,
+    EventRecord = 7,
+    ExtSemSignal = 8,
+    ExtSemWait = 9,
+    MemAlloc = 10,
+    MemFree = 11,
+    BatchMemOp = 12,
+}
+
+impl NodeType {
+    pub fn from_i32(v: i32) -> Option<Self> {
+        match v {
+            0 => Some(Self::Kernel),
+            1 => Some(Self::Memcpy),
+            2 => Some(Self::Memset),
+            3 => Some(Self::Host),
+            4 => Some(Self::Graph),
+            5 => Some(Self::Empty),
+            6 => Some(Self::WaitEvent),
+            7 => Some(Self::EventRecord),
+            8 => Some(Self::ExtSemSignal),
+            9 => Some(Self::ExtSemWait),
+            10 => Some(Self::MemAlloc),
+            11 => Some(Self::MemFree),
+            12 => Some(Self::BatchMemOp),
+            _ => None,
+        }
+    }
+}
+
+// ============================================================================
+// CUDA Graph
+// ============================================================================
+
+/// CUDA Graph handle
+pub struct CudaGraph {
+    graph: *mut c_void,
+    nodes: Vec<*mut c_void>,
+}
+
+impl CudaGraph {
+    /// Create empty graph
+    pub fn new() -> Result<Self!> {
+        let mut graph = std::ptr::null_mut()
+
+        unsafe {
+            CudaError::check(cudaGraphCreate(&mut graph, 0))?
+        }
+
+        Ok(Self {
+            graph,
+            nodes: Vec::new(),
+        })
+    }
+
+    /// Get raw handle
+    pub fn handle(&self) -> *mut c_void {
+        self.graph
+    }
+
+    /// Get node count
+    pub fn node_count(&self) -> Result<usize!> {
+        let mut count = 0usize
+
+        unsafe {
+            CudaError::check(cudaGraphGetNodes(
+                self.graph,
+                std::ptr::null_mut(),
+                &mut count,
+            ))?
+        }
+
+        Ok(count)
+    }
+
+    /// Get all nodes
+    pub fn nodes(&self) -> Result<Vec<GraphNode>!> {
+        let count! = self.node_count()?
+
+        if count == 0 {
+            return Ok(Vec::new())
+        }
+
+        let mut nodes = vec![std::ptr::null_mut(); count]
+        let mut actual_count = count
+
+        unsafe {
+            CudaError::check(cudaGraphGetNodes(
+                self.graph,
+                nodes.as_mut_ptr(),
+                &mut actual_count,
+            ))?
+        }
+
+        let mut result = Vec::with_capacity(actual_count)
+
+        for node_ptr in &nodes[..actual_count] {
+            let mut node_type = 0i32
+
+            unsafe {
+                CudaError::check(cudaGraphNodeGetType(*node_ptr, &mut node_type))?
+            }
+
+            if let Some(nt) = NodeType::from_i32(node_type) {
+                result.push(GraphNode {
+                    handle: *node_ptr,
+                    node_type: nt,
+                })
+            }
+        }
+
+        Ok(result)
+    }
+}
+
+impl Drop for CudaGraph {
+    fn drop(&mut self) {
+        if !self.graph.is_null() {
+            unsafe { cudaGraphDestroy(self.graph) };
+        }
+    }
+}
+
+/// Graph node info
+pub struct GraphNode {
+    pub handle: *mut c_void,
+    pub node_type: NodeType,
+}
+
+// ============================================================================
+// Graph Executable
+// ============================================================================
+
+/// Instantiated executable graph
+pub struct GraphExec {
+    exec: *mut c_void,
+    graph: CudaGraph,
+}
+
+impl GraphExec {
+    /// Instantiate from graph
+    pub fn from_graph(graph: CudaGraph) -> Result<Self!> {
+        let mut exec = std::ptr::null_mut()
+
+        unsafe {
+            CudaError::check(cudaGraphInstantiateWithFlags(
+                &mut exec,
+                graph.graph,
+                0,
+            ))?
+        }
+
+        Ok(Self { exec, graph })
+    }
+
+    /// Launch on stream
+    pub fn launch(&self, stream: *mut c_void) -> Result<()!> {
+        unsafe {
+            CudaError::check(cudaGraphLaunch(self.exec, stream))
+        }
+    }
+
+    /// Update executable with new graph
+    pub fn update(&mut self, new_graph: &CudaGraph) -> Result<bool!> {
+        let mut result = 0i32
+
+        unsafe {
+            CudaError::check(cudaGraphExecUpdate(
+                self.exec,
+                new_graph.graph,
+                &mut result,
+            ))?
+        }
+
+        Ok(result == 0)  // 0 = success
+    }
+
+    /// Get underlying graph
+    pub fn graph(&self) -> &CudaGraph {
+        &self.graph
+    }
+}
+
+impl Drop for GraphExec {
+    fn drop(&mut self) {
+        if !self.exec.is_null() {
+            unsafe { cudaGraphExecDestroy(self.exec) };
+        }
+    }
+}
+
+// ============================================================================
+// Stream Capture
+// ============================================================================
+
+/// Stream capture session
+pub struct StreamCapture {
+    stream: *mut c_void,
+    mode: CaptureMode,
+}
+
+impl StreamCapture {
+    /// Begin capturing on stream
+    pub fn begin(stream: *mut c_void, mode: CaptureMode) -> Result<Self!> {
+        unsafe {
+            CudaError::check(cudaStreamBeginCapture(stream, mode as i32))?
+        }
+
+        Ok(Self { stream, mode })
+    }
+
+    /// Check if stream is currently capturing
+    pub fn is_capturing(&self) -> Result<bool!> {
+        let mut status = 0i32
+
+        unsafe {
+            CudaError::check(cudaStreamIsCapturing(self.stream, &mut status))?
+        }
+
+        Ok(status == 1)  // cudaStreamCaptureStatusActive
+    }
+
+    /// End capture and get graph
+    pub fn end(self) -> Result<CudaGraph!> {
+        let mut graph = std::ptr::null_mut()
+
+        unsafe {
+            CudaError::check(cudaStreamEndCapture(self.stream, &mut graph))?
+        }
+
+        Ok(CudaGraph {
+            graph,
+            nodes: Vec::new(),
+        })
+    }
+}
+
+// ============================================================================
+// Graph Capture Helper
+// ============================================================================
+
+/// Helper for capturing CUDA graphs
+pub struct GraphCapture;
+
+impl GraphCapture {
+    /// Capture operations into a graph
+    pub fn capture<F>(stream: *mut c_void, operations: F) -> Result<GraphExec!>
+    where
+        F: FnOnce() -> Result<()!>,
+    {
+        // Begin capture
+        let capture = StreamCapture::begin(stream, CaptureMode::Global)?
+
+        // Execute operations (they'll be captured, not executed)
+        operations()?
+
+        // End capture
+        let graph! = capture.end()?
+
+        // Instantiate executable
+        GraphExec::from_graph(graph)
+    }
+
+    /// Capture with warm-up (captures second run for better optimization)
+    pub fn capture_with_warmup<F>(
+        stream: *mut c_void,
+        operations: F,
+        warmup_runs: u32,
+    ) -> Result<GraphExec!>
+    where
+        F: Fn() -> Result<()!>,
+    {
+        // Warm-up runs (not captured)
+        for _ in 0..warmup_runs {
+            operations()?
+        }
+
+        // Synchronize
+        unsafe {
+            let result = crate::native::cuda::cudaStreamSynchronize(stream)
+            if result != 0 {
+                return Err(InfernumError::CudaError { code: result })
+            }
+        }
+
+        // Now capture
+        Self::capture(stream, operations)
+    }
+}
+
+// ============================================================================
+// Multi-Graph Manager
+// ============================================================================
+
+/// Manages multiple CUDA graphs for different configurations
+pub struct GraphManager {
+    graphs: HashMap<String, GraphExec>,
+    default_stream: *mut c_void,
+}
+
+impl GraphManager {
+    pub fn new(stream: *mut c_void) -> Self {
+        Self {
+            graphs: HashMap::new(),
+            default_stream: stream,
+        }
+    }
+
+    /// Register a graph
+    pub fn register(&mut self, name: &str, exec: GraphExec) {
+        self.graphs.insert(name.to_string(), exec)
+    }
+
+    /// Capture and register a graph
+    pub fn capture_and_register<F>(&mut self, name: &str, operations: F) -> Result<()!>
+    where
+        F: FnOnce() -> Result<()!>,
+    {
+        let exec! = GraphCapture::capture(self.default_stream, operations)?
+        self.register(name, exec)
+        Ok(())
+    }
+
+    /// Launch a named graph
+    pub fn launch(&self, name: &str) -> Result<()!> {
+        let exec = self.graphs.get(name).ok_or_else(|| InfernumError::NotFound {
+            what: format!("Graph: {}", name),
+        })?
+
+        exec.launch(self.default_stream)
+    }
+
+    /// Launch on custom stream
+    pub fn launch_on(&self, name: &str, stream: *mut c_void) -> Result<()!> {
+        let exec = self.graphs.get(name).ok_or_else(|| InfernumError::NotFound {
+            what: format!("Graph: {}", name),
+        })?
+
+        exec.launch(stream)
+    }
+
+    /// Check if graph exists
+    pub fn has(&self, name: &str) -> bool {
+        self.graphs.contains_key(name)
+    }
+
+    /// Remove a graph
+    pub fn remove(&mut self, name: &str) -> Option<GraphExec> {
+        self.graphs.remove(name)
+    }
+
+    /// Get graph names
+    pub fn names(&self) -> Vec<&str> {
+        self.graphs.keys().map(|s| s.as_str()).collect()
+    }
+}
+
+// ============================================================================
+// Shape-Specific Graphs
+// ============================================================================
+
+/// Graph key based on tensor shapes
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct ShapeKey {
+    pub batch_size: i32,
+    pub seq_len: i32,
+    pub extra: Vec<i32>,
+}
+
+impl ShapeKey {
+    pub fn new(batch_size: i32, seq_len: i32) -> Self {
+        Self {
+            batch_size,
+            seq_len,
+            extra: Vec::new(),
+        }
+    }
+
+    pub fn with_extra(mut self, dims: Vec<i32>) -> Self {
+        self.extra = dims
+        self
+    }
+
+    pub fn to_string(&self) -> String {
+        if self.extra.is_empty() {
+            format!("b{}s{}", self.batch_size, self.seq_len)
+        } else {
+            let extra: Vec<String> = self.extra.iter().map(|d| d.to_string()).collect()
+            format!("b{}s{}_{}", self.batch_size, self.seq_len, extra.join("_"))
+        }
+    }
+}
+
+/// Shape-aware graph cache
+pub struct ShapeGraphCache {
+    graphs: HashMap<ShapeKey, GraphExec>,
+    stream: *mut c_void,
+    max_cached: usize,
+}
+
+impl ShapeGraphCache {
+    pub fn new(stream: *mut c_void, max_cached: usize) -> Self {
+        Self {
+            graphs: HashMap::new(),
+            stream,
+            max_cached,
+        }
+    }
+
+    /// Get or create graph for shape
+    pub fn get_or_create<F>(&mut self, key: ShapeKey, create: F) -> Result<&GraphExec!>
+    where
+        F: FnOnce() -> Result<()!>,
+    {
+        if !self.graphs.contains_key(&key) {
+            // Evict if at capacity
+            if self.graphs.len() >= self.max_cached {
+                // Remove oldest (simplified - could use LRU)
+                if let Some(oldest_key) = self.graphs.keys().next().cloned() {
+                    self.graphs.remove(&oldest_key)
+                }
+            }
+
+            // Capture new graph
+            let exec! = GraphCapture::capture(self.stream, create)?
+            self.graphs.insert(key.clone(), exec)
+        }
+
+        Ok(self.graphs.get(&key).unwrap())
+    }
+
+    /// Launch for shape
+    pub fn launch(&self, key: &ShapeKey) -> Result<()!> {
+        let exec = self.graphs.get(key).ok_or_else(|| InfernumError::NotFound {
+            what: format!("Graph for shape: {:?}", key),
+        })?
+
+        exec.launch(self.stream)
+    }
+
+    /// Clear cache
+    pub fn clear(&mut self) {
+        self.graphs.clear()
+    }
+
+    /// Get cache stats
+    pub fn stats(&self) -> GraphCacheStats {
+        GraphCacheStats {
+            num_cached: self.graphs.len(),
+            max_cached: self.max_cached,
+            shapes: self.graphs.keys().cloned().collect(),
+        }
+    }
+}
+
+/// Graph cache statistics
+#[derive(Clone, Debug)]
+pub struct GraphCacheStats {
+    pub num_cached: usize,
+    pub max_cached: usize,
+    pub shapes: Vec<ShapeKey>,
+}
+
+// ============================================================================
+// Performance Metrics
+// ============================================================================
+
+/// CUDA graph performance comparison
+#[derive(Clone, Debug)]
+pub struct GraphPerformance {
+    pub with_graph_us: f32,
+    pub without_graph_us: f32,
+    pub speedup: f32,
+    pub kernel_launch_overhead_us: f32,
+}
+
+impl GraphPerformance {
+    pub fn measure<F>(
+        stream: *mut c_void,
+        operations: F,
+        iterations: u32,
+    ) -> Result<Self!>
+    where
+        F: Fn() -> Result<()!>,
+    {
+        let backend = CudaBackend::new(0)
+
+        // Measure without graph
+        backend.synchronize()?
+        let start_no_graph = std::time::Instant::now()
+        for _ in 0..iterations {
+            operations()?
+        }
+        backend.synchronize()?
+        let without_graph_us = start_no_graph.elapsed().as_micros() as f32 / iterations as f32
+
+        // Capture graph
+        let exec! = GraphCapture::capture_with_warmup(stream, &operations, 3)?
+
+        // Measure with graph
+        backend.synchronize()?
+        let start_graph = std::time::Instant::now()
+        for _ in 0..iterations {
+            exec.launch(stream)?
+        }
+        backend.synchronize()?
+        let with_graph_us = start_graph.elapsed().as_micros() as f32 / iterations as f32
+
+        let speedup = without_graph_us / with_graph_us
+        let kernel_launch_overhead_us = without_graph_us - with_graph_us
+
+        Ok(Self {
+            with_graph_us,
+            without_graph_us,
+            speedup,
+            kernel_launch_overhead_us,
+        })
+    }
+}

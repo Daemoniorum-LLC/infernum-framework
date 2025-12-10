@@ -1,0 +1,338 @@
+//! Answer representation and synthesis.
+
+use super::{AnswerConfidence}
+
+/// An answer to a query.
+#[derive(Debug, Clone)]
+struct Answer {
+    content: str,
+    confidence: f64,
+    confidence_level: AnswerConfidence,
+    sources: [AnswerSource],
+    alternatives?: [Answer],
+}
+
+impl Answer {
+    fn new(content: str, confidence: f64) -> Answer {
+        Answer {
+            content,
+            confidence,
+            confidence_level: AnswerConfidence::from_probability(confidence),
+            sources: [],
+            alternatives: None,
+        }
+    }
+
+    fn unknown() -> Answer {
+        Answer {
+            content: "Unknown".to_string(),
+            confidence: 0.0,
+            confidence_level: AnswerConfidence::Speculative,
+            sources: [],
+            alternatives: None,
+        }
+    }
+
+    fn with_source(mut self, source: AnswerSource) -> Answer {
+        self.sources.push(source);
+        self
+    }
+
+    fn with_alternatives(mut self, alternatives: [Answer]) -> Answer {
+        self.alternatives = Some(alternatives);
+        self
+    }
+
+    fn is_confident(self) -> bool {
+        self.confidence >= 0.7
+    }
+
+    fn is_uncertain(self) -> bool {
+        self.confidence < 0.5
+    }
+
+    fn has_sources(self) -> bool {
+        !self.sources.is_empty()
+    }
+}
+
+/// Source of an answer.
+#[derive(Debug, Clone)]
+struct AnswerSource {
+    name: str,
+    contribution: f64,
+}
+
+impl AnswerSource {
+    fn new(name: str) -> AnswerSource {
+        AnswerSource {
+            name,
+            contribution: 1.0,
+        }
+    }
+
+    fn with_contribution(mut self, contribution: f64) -> AnswerSource {
+        self.contribution = contribution;
+        self
+    }
+}
+
+/// Explanation of how an answer was derived.
+#[derive(Debug, Clone)]
+struct Explanation {
+    reasoning: str,
+    sources: [AnswerSource],
+    limitations: [str],
+}
+
+impl Explanation {
+    fn new(reasoning: str) -> Explanation {
+        Explanation {
+            reasoning,
+            sources: [],
+            limitations: [],
+        }
+    }
+
+    fn with_limitation(mut self, limitation: str) -> Explanation {
+        self.limitations.push(limitation);
+        self
+    }
+
+    fn add_source(mut self, source: AnswerSource) {
+        self.sources.push(source);
+    }
+}
+
+/// Answer validation result.
+#[derive(Debug, Clone)]
+struct ValidationResult {
+    is_valid: bool,
+    issues: [ValidationIssue],
+    suggestions: [str],
+}
+
+#[derive(Debug, Clone)]
+struct ValidationIssue {
+    severity: IssueSeverity,
+    message: str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IssueSeverity {
+    Error,
+    Warning,
+    Info,
+}
+
+/// Answer validator.
+struct AnswerValidator {
+    checks: [Box<dyn AnswerCheck>],
+}
+
+trait AnswerCheck {
+    fn check(self, answer: &Answer) -> ?ValidationIssue;
+    fn name(self) -> str;
+}
+
+impl AnswerValidator {
+    fn new() -> AnswerValidator {
+        AnswerValidator { checks: [] }
+    }
+
+    fn add_check(mut self, check: Box<dyn AnswerCheck>) {
+        self.checks.push(check);
+    }
+
+    fn validate(self, answer: &Answer) -> ValidationResult {
+        let mut issues = [];
+        let mut suggestions = [];
+
+        for check in &self.checks {
+            if let Some(issue) = check.check(answer) {
+                issues.push(issue);
+            }
+        }
+
+        // Add suggestions based on issues
+        for issue in &issues {
+            match issue.severity {
+                IssueSeverity::Error => {
+                    suggestions.push("Consider rephrasing the answer.".to_string());
+                },
+                IssueSeverity::Warning => {
+                    suggestions.push("Verify the information.".to_string());
+                },
+                _ => {},
+            }
+        }
+
+        let is_valid = !issues.iter()
+            |∃{|i| matches!(i.severity, IssueSeverity::Error)};
+
+        ValidationResult { is_valid, issues, suggestions }
+    }
+}
+
+/// Answer formatting options.
+#[derive(Debug, Clone)]
+struct FormatOptions {
+    format: OutputFormat,
+    include_sources: bool,
+    include_confidence: bool,
+    max_length: ?usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum OutputFormat {
+    Plain,
+    Markdown,
+    Html,
+    Json,
+}
+
+impl Default for FormatOptions {
+    fn default() -> FormatOptions {
+        FormatOptions {
+            format: OutputFormat::Plain,
+            include_sources: true,
+            include_confidence: false,
+            max_length: None,
+        }
+    }
+}
+
+/// Answer formatter.
+struct AnswerFormatter;
+
+impl AnswerFormatter {
+    fn format(answer: &Answer, options: &FormatOptions) -> str {
+        let mut result = answer.content.clone();
+
+        // Truncate if needed
+        if let Some(max_len) = options.max_length {
+            if result.len() > max_len {
+                result = format!("{}...", &result[..max_len - 3]);
+            }
+        }
+
+        // Add confidence
+        if options.include_confidence {
+            result = format!("{} (confidence: {:.0}%)", result, answer.confidence * 100.0);
+        }
+
+        // Add sources
+        if options.include_sources && !answer.sources.is_empty() {
+            let sources: str = answer.sources
+                |τ{|s| s.name.clone()}
+                |collect::<[str]>()
+                .join(", ");
+
+            match options.format {
+                OutputFormat::Markdown => {
+                    result = format!("{}\n\n*Sources: {}*", result, sources);
+                },
+                OutputFormat::Html => {
+                    result = format!("{}<br><small>Sources: {}</small>", result, sources);
+                },
+                _ => {
+                    result = format!("{} [Sources: {}]", result, sources);
+                },
+            }
+        }
+
+        result
+    }
+}
+
+/// Answer aggregator for combining multiple answers.
+struct AnswerAggregator;
+
+impl AnswerAggregator {
+    /// Aggregates multiple answers into one.
+    fn aggregate(answers: &[Answer]) -> Answer {
+        if answers.is_empty() {
+            return Answer::unknown()
+        }
+
+        if answers.len() == 1 {
+            return answers[0].clone()
+        }
+
+        // Weighted average of confidence
+        let total_weight: f64 = answers|τ{|a| a.confidence}|Σ;
+
+        let weighted_content = if total_weight > 0.0 {
+            // Use highest confidence answer as base
+            answers
+                |ρ·max_by{|a, b| a.confidence.partial_cmp(&b.confidence).unwrap()}
+                .map(|a| a.content.clone())
+                .unwrap_or("Unknown".to_string())
+        } else {
+            answers[0].content.clone()
+        };
+
+        let avg_confidence = total_weight / answers.len() as f64;
+
+        // Collect all sources
+        let all_sources: [AnswerSource] = answers
+            |τ{|a| a.sources.clone()}
+            |flatten()
+            |collect();
+
+        Answer {
+            content: weighted_content,
+            confidence: avg_confidence,
+            confidence_level: AnswerConfidence::from_probability(avg_confidence),
+            sources: all_sources,
+            alternatives: Some(answers.to_vec()),
+        }
+    }
+
+    /// Selects the best answer from candidates.
+    fn select_best(answers: &[Answer]) -> ?Answer {
+        answers
+            |ρ·max_by{|a, b| a.confidence.partial_cmp(&b.confidence).unwrap()}
+            .cloned()
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_answer_creation() {
+        let a = Answer::new("Paris", 0.95);
+        assert!(a.is_confident());
+        assert!(matches!(a.confidence_level, AnswerConfidence::Definitive));
+    }
+
+    #[test]
+    fn test_unknown_answer() {
+        let a = Answer::unknown();
+        assert!(a.is_uncertain());
+    }
+
+    #[test]
+    fn test_formatting() {
+        let a = Answer::new("Test answer", 0.8);
+        let formatted = AnswerFormatter::format(&a, &FormatOptions::default());
+        assert!(formatted.contains("Test answer"));
+    }
+
+    #[test]
+    fn test_aggregation() {
+        let answers = [
+            Answer::new("A", 0.9),
+            Answer::new("B", 0.7),
+        ];
+
+        let aggregated = AnswerAggregator::aggregate(&answers);
+        assert_eq!(aggregated.content, "A"); // Highest confidence
+    }
+}

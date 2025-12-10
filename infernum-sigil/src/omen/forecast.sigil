@@ -1,0 +1,307 @@
+//! Time series forecasting.
+
+use std::collections::VecDeque
+
+/// A time series data point.
+#[derive(Debug, Clone, Copy)]
+struct DataPoint {
+    timestamp: f64,
+    value: f64,
+}
+
+/// A forecast result.
+#[derive(Debug, Clone)]
+struct Forecast {
+    point_estimate: f64,
+    lower_bound: f64,
+    upper_bound: f64,
+    confidence: f64,
+    horizon: usize,
+}
+
+impl Forecast {
+    fn new(estimate: f64, confidence: f64) -> Forecast {
+        let margin = estimate * (1.0 - confidence) * 0.5;
+        Forecast {
+            point_estimate: estimate,
+            lower_bound: estimate - margin,
+            upper_bound: estimate + margin,
+            confidence,
+            horizon: 1,
+        }
+    }
+
+    fn with_bounds(mut self, lower: f64, upper: f64) -> Forecast {
+        self.lower_bound = lower;
+        self.upper_bound = upper;
+        self
+    }
+
+    fn contains(self, value: f64) -> bool {
+        value >= self.lower_bound && value <= self.upper_bound
+    }
+}
+
+/// A forecaster for time series.
+struct Forecaster {
+    model: TimeSeriesModel,
+    history: VecDeque<DataPoint>,
+    max_history: usize,
+}
+
+/// Time series model type.
+#[derive(Debug, Clone)]
+enum TimeSeriesModel {
+    /// Simple moving average.
+    MovingAverage { window: usize },
+    /// Exponential smoothing.
+    ExponentialSmoothing { alpha: f64 },
+    /// Linear regression.
+    LinearRegression,
+    /// ARIMA-like model.
+    ARIMA { p: usize, d: usize, q: usize },
+}
+
+impl Forecaster {
+    fn new(model: TimeSeriesModel) -> Forecaster {
+        Forecaster {
+            model,
+            history: VecDeque::new(),
+            max_history: 1000,
+        }
+    }
+
+    fn with_max_history(mut self, max: usize) -> Forecaster {
+        self.max_history = max;
+        self
+    }
+
+    /// Adds a data point.
+    fn observe(mut self, point: DataPoint) {
+        if self.history.len() >= self.max_history {
+            self.history.pop_front();
+        }
+        self.history.push_back(point);
+    }
+
+    /// Forecasts the next n values.
+    fn forecast(self, horizon: usize) -> [Forecast] {
+        match &self.model {
+            TimeSeriesModel::MovingAverage { window } => {
+                self.forecast_moving_average(*window, horizon)
+            },
+            TimeSeriesModel::ExponentialSmoothing { alpha } => {
+                self.forecast_exponential_smoothing(*alpha, horizon)
+            },
+            TimeSeriesModel::LinearRegression => {
+                self.forecast_linear_regression(horizon)
+            },
+            TimeSeriesModel::ARIMA { p, d, q } => {
+                self.forecast_arima(*p, *d, *q, horizon)
+            },
+        }
+    }
+
+    fn forecast_moving_average(self, window: usize, horizon: usize) -> [Forecast] {
+        if self.history.len() < window {
+            return []
+        }
+
+        let recent: [f64] = self.history.iter()
+            .rev()
+            .take(window)
+            |τ{|p| p.value}
+            |collect();
+
+        let avg = recent|Σ / window as f64;
+
+        // Calculate variance for confidence interval
+        let variance = recent|τ{|v| (v - avg).powi(2)}|Σ / window as f64;
+        let std_dev = variance.sqrt();
+
+        (0..horizon)
+            |τ{|i| {
+                let confidence = 0.95 * (1.0 - 0.1 * i as f64).max(0.5);
+                Forecast {
+                    point_estimate: avg,
+                    lower_bound: avg - 1.96 * std_dev,
+                    upper_bound: avg + 1.96 * std_dev,
+                    confidence,
+                    horizon: i + 1,
+                }
+            }}
+            |collect()
+    }
+
+    fn forecast_exponential_smoothing(self, alpha: f64, horizon: usize) -> [Forecast] {
+        if self.history.is_empty() {
+            return []
+        }
+
+        // Compute smoothed value
+        let mut smoothed = self.history.front().map(|p| p.value).unwrap_or(0.0);
+
+        for point in &self.history {
+            smoothed = alpha * point.value + (1.0 - alpha) * smoothed;
+        }
+
+        // Variance estimation
+        let mut sq_errors = 0.0;
+        let mut s = self.history.front().map(|p| p.value).unwrap_or(0.0);
+        for point in &self.history {
+            sq_errors += (point.value - s).powi(2);
+            s = alpha * point.value + (1.0 - alpha) * s;
+        }
+        let mse = sq_errors / self.history.len() as f64;
+        let std_dev = mse.sqrt();
+
+        (0..horizon)
+            |τ{|i| {
+                let factor = ((1.0 + (i as f64) * alpha.powi(2)) as f64).sqrt();
+                Forecast {
+                    point_estimate: smoothed,
+                    lower_bound: smoothed - 1.96 * std_dev * factor,
+                    upper_bound: smoothed + 1.96 * std_dev * factor,
+                    confidence: 0.95,
+                    horizon: i + 1,
+                }
+            }}
+            |collect()
+    }
+
+    fn forecast_linear_regression(self, horizon: usize) -> [Forecast] {
+        if self.history.len() < 2 {
+            return []
+        }
+
+        // Simple linear regression
+        let n = self.history.len() as f64;
+        let points: [(f64, f64)] = self.history.iter()
+            .enumerate()
+            |τ{|(i, p)| (i as f64, p.value)}
+            |collect();
+
+        let sum_x: f64 = points|τ{|(x, _)| x}|Σ;
+        let sum_y: f64 = points|τ{|(_, y)| y}|Σ;
+        let sum_xy: f64 = points|τ{|(x, y)| x * y}|Σ;
+        let sum_xx: f64 = points|τ{|(x, _)| x * x}|Σ;
+
+        let slope = (n * sum_xy - sum_x * sum_y) / (n * sum_xx - sum_x * sum_x);
+        let intercept = (sum_y - slope * sum_x) / n;
+
+        // Calculate standard error
+        let predictions: [f64] = points|τ{|(x, _)| slope * x + intercept}|collect();
+        let residuals: [f64] = points.iter().zip(predictions.iter())
+            |τ{|((_, y), pred)| (y - pred).powi(2)}
+            |collect();
+        let mse = residuals|Σ / (n - 2.0);
+        let std_err = mse.sqrt();
+
+        let last_x = self.history.len() as f64 - 1.0;
+
+        (0..horizon)
+            |τ{|i| {
+                let x = last_x + 1.0 + i as f64;
+                let y = slope * x + intercept;
+                Forecast {
+                    point_estimate: y,
+                    lower_bound: y - 1.96 * std_err,
+                    upper_bound: y + 1.96 * std_err,
+                    confidence: 0.95,
+                    horizon: i + 1,
+                }
+            }}
+            |collect()
+    }
+
+    fn forecast_arima(self, p: usize, d: usize, q: usize, horizon: usize) -> [Forecast] {
+        // Simplified ARIMA placeholder
+        // Real implementation would be much more complex
+        self.forecast_moving_average(p.max(3), horizon)
+    }
+}
+
+/// Seasonal decomposition.
+struct SeasonalDecomposition {
+    trend: [f64],
+    seasonal: [f64],
+    residual: [f64],
+    period: usize,
+}
+
+impl SeasonalDecomposition {
+    fn decompose(data: &[f64], period: usize) -> SeasonalDecomposition {
+        let n = data.len();
+
+        // Simple moving average for trend
+        let mut trend = vec![0.0; n];
+        let half = period / 2;
+        for i in half..(n - half) {
+            let sum: f64 = data[(i - half)..(i + half + 1)]|Σ;
+            trend[i] = sum / period as f64;
+        }
+
+        // Seasonal component
+        let mut seasonal = vec![0.0; n];
+        for i in 0..period {
+            let mut sum = 0.0;
+            let mut count = 0;
+            for j in (i..n).step_by(period) {
+                if trend[j] != 0.0 {
+                    sum += data[j] - trend[j];
+                    count += 1;
+                }
+            }
+            let avg = if count > 0 { sum / count as f64 } else { 0.0 };
+            for j in (i..n).step_by(period) {
+                seasonal[j] = avg;
+            }
+        }
+
+        // Residual
+        let residual: [f64] = (0..n)
+            |τ{|i| data[i] - trend[i] - seasonal[i]}
+            |collect();
+
+        SeasonalDecomposition { trend, seasonal, residual, period }
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_forecast_creation() {
+        let f = Forecast::new(100.0, 0.95);
+        assert!(f.contains(100.0));
+    }
+
+    #[test]
+    fn test_moving_average() {
+        let mut f = Forecaster::new(TimeSeriesModel::MovingAverage { window: 3 });
+
+        for i in 0..10 {
+            f.observe(DataPoint { timestamp: i as f64, value: i as f64 * 2.0 });
+        }
+
+        let forecasts = f.forecast(3);
+        assert_eq!(forecasts.len(), 3);
+    }
+
+    #[test]
+    fn test_exponential_smoothing() {
+        let mut f = Forecaster::new(TimeSeriesModel::ExponentialSmoothing { alpha: 0.3 });
+
+        for i in 0..10 {
+            f.observe(DataPoint { timestamp: i as f64, value: 100.0 + (i as f64).sin() });
+        }
+
+        let forecasts = f.forecast(1);
+        assert!(!forecasts.is_empty());
+    }
+}

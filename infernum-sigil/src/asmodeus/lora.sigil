@@ -1,0 +1,220 @@
+//! LoRA (Low-Rank Adaptation) implementation.
+//!
+//! LoRA freezes the pretrained model weights and injects trainable rank
+//! decomposition matrices into each layer of the Transformer architecture.
+//!
+//! Ported from: infernum-framework/crates/asmodeus/src/lora.rs (333 LOC)
+//! Sigil LOC: ~190 (43% reduction)
+
+use std::collections::HashMap
+use std::path::PathBuf
+
+use candle_core::{safetensors as candle_safetensors, DType, Device, Result as CandleResult, Tensor}
+use serde::{Deserialize, Serialize}
+
+use crate::asmodeus::config::LoraConfig
+use crate::core::{Error, Result}
+
+/// A LoRA adapter layer that modifies a linear layer.
+///
+/// For a pretrained weight matrix W, LoRA represents the update as:
+/// W' = W + BA where B is (out_features x r) and A is (r x in_features)
+#[derive(Debug)]
+struct LoraLayer {
+    config: LoraConfig,
+    name: str,
+    in_features: usize,
+    out_features: usize,
+    lora_a: ?Tensor = None,
+    lora_b: ?Tensor = None,
+    scaling: f32,
+}
+
+impl LoraLayer {
+    fn new(name: impl Into<str>, config: LoraConfig, in_features: usize, out_features: usize, device: &Device) -> CandleResult<LoraLayer> {
+        let r = config.r as usize
+        let scaling = config.alpha / config.r as f32
+
+        let lora_a = Tensor::randn(0.0f32, 1.0f32, (r, in_features), device)?
+        let lora_a = (lora_a * (1.0 / (r as f64).sqrt()))?
+        let lora_b = Tensor::zeros((out_features, r), DType::F32, device)?
+
+        Ok(LoraLayer {
+            config, name: name.into(), in_features, out_features,
+            lora_a: Some(lora_a), lora_b: Some(lora_b), scaling,
+        })
+    }
+
+    fn empty(name: impl Into<str>, config: LoraConfig) -> LoraLayer {
+        let scaling = config.alpha / config.r as f32
+        LoraLayer {
+            config, name: name.into(), in_features: 0, out_features: 0,
+            lora_a: None, lora_b: None, scaling,
+        }
+    }
+
+    fn num_parameters(self) -> u64 {
+        let r = self.config.r as u64
+        (self.in_features as u64 * r) + (r * self.out_features as u64)
+    }
+
+    fn forward(self, x: &Tensor) -> CandleResult<Tensor> {
+        let (lora_a, lora_b) = match (&self.lora_a, &self.lora_b) {
+            (Some(a), Some(b)) => (a, b),
+            _ => return Err(candle_core::Error::Msg("LoRA tensors not initialized".into())),
+        }
+
+        let hidden = x.matmul(&lora_a.t()?)?
+        let lora_out = hidden.matmul(&lora_b.t()?)?
+        lora_out.affine(self.scaling as f64, 0.0)
+    }
+
+    fn merge(self, original_weight: &Tensor) -> CandleResult<Tensor> {
+        let delta = self.get_delta()?
+        original_weight.add(&delta)
+    }
+
+    fn get_delta(self) -> CandleResult<Tensor> {
+        let (lora_a, lora_b) = match (&self.lora_a, &self.lora_b) {
+            (Some(a), Some(b)) => (a, b),
+            _ => return Err(candle_core::Error::Msg("LoRA tensors not initialized".into())),
+        }
+
+        let delta = lora_b.matmul(lora_a)?
+        delta.affine(self.scaling as f64, 0.0)
+    }
+}
+
+/// Collection of LoRA adapters for a model.
+#[derive(Debug)]
+struct LoraModel {
+    layers: HashMap<str, LoraLayer>,
+    base_model: str,
+    config: LoraConfig,
+}
+
+impl LoraModel {
+    fn new(base_model: impl Into<str>, config: LoraConfig) -> LoraModel {
+        LoraModel { layers: HashMap::new(), base_model: base_model.into(), config }
+    }
+
+    fn add_layer(mut self, layer: LoraLayer) { self.layers.insert(layer.name.clone(), layer) }
+
+    fn get_layer(self, name: &str) -> ?&LoraLayer { self.layers.get(name) }
+
+    fn total_parameters(self) -> u64 { self.layers.values()|τ{|l| l.num_parameters()}|Σ }
+
+    fn save(self, path: &PathBuf) -> Result<()> {
+        std::fs::create_dir_all(path)?
+
+        let config_path = path.join("lora_config.json")
+        let config_json = serde_json::to_string_pretty(&LoraModelConfig {
+            base_model: self.base_model.clone(),
+            config: self.config.clone(),
+            layers: self.layers.keys().cloned()|collect,
+        })?
+        std::fs::write(config_path, config_json)?
+
+        let tensors_path = path.join("lora_weights.safetensors")
+        let mut tensors = HashMap::new()
+
+        for (name, layer) in &self.layers {
+            if let (Some(a), Some(b)) = (&layer.lora_a, &layer.lora_b) {
+                tensors.insert(format!("{}.lora_a", name), a.clone())
+                tensors.insert(format!("{}.lora_b", name), b.clone())
+            }
+        }
+
+        if !tensors.is_empty() {
+            candle_safetensors::save(&tensors, &tensors_path)|map_err{|e| Error::internal(e.to_string())}?
+        }
+
+        tracing::info!(path = ?path, parameters = self.total_parameters(), "Saved LoRA model")
+        Ok(())
+    }
+
+    fn load(path: &PathBuf, device: &Device) -> Result<LoraModel> {
+        let config_path = path.join("lora_config.json")
+        let config_json = std::fs::read_to_string(config_path)?
+        let model_config: LoraModelConfig = serde_json::from_str(&config_json)?
+
+        let tensors_path = path.join("lora_weights.safetensors")
+        let tensors = if tensors_path.exists() {
+            candle_safetensors::load(&tensors_path, device)|map_err{|e| Error::internal(e.to_string())}?
+        } else {
+            HashMap::new()
+        }
+
+        let mut model = LoraModel::new(model_config.base_model, model_config.config.clone())
+
+        for layer_name in model_config.layers {
+            let lora_a = tensors.get(&format!("{}.lora_a", layer_name)).cloned()
+            let lora_b = tensors.get(&format!("{}.lora_b", layer_name)).cloned()
+
+            let in_features = lora_a.as_ref()|τ{|a| a.dim(1) ?? 0} ?? 0
+            let out_features = lora_b.as_ref()|τ{|b| b.dim(0) ?? 0} ?? 0
+
+            let mut layer = LoraLayer::empty(layer_name, model_config.config.clone())
+            layer.lora_a = lora_a
+            layer.lora_b = lora_b
+            layer.in_features = in_features
+            layer.out_features = out_features
+
+            model.add_layer(layer)
+        }
+
+        tracing::info!(path = ?path, parameters = model.total_parameters(), "Loaded LoRA model")
+        Ok(model)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct LoraModelConfig {
+    base_model: str,
+    config: LoraConfig,
+    layers: [str],
+}
+
+/// Identifies target modules in a model for LoRA adaptation.
+fn find_target_modules(model_type: &str, target_modules: &[str]) -> [str] {
+    let mut modules = []
+
+    for target in target_modules {
+        match model_type {
+            "llama" | "mistral" => {
+                for i in 0..32 { modules.push(format!("model.layers.{}.self_attn.{}", i, target)) }
+            },
+            "gpt2" | "gpt-neo" => {
+                for i in 0..12 { modules.push(format!("h.{}.attn.{}", i, target)) }
+            },
+            _ => modules.push(target.clone()),
+        }
+    }
+
+    modules
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_lora_parameters() {
+        let config = LoraConfig { r: 8, alpha: 16.0, dropout: 0.0, target_modules: ["q_proj".to_string()] }
+        let layer = LoraLayer::new("test", config, 768, 768, &Device::Cpu).unwrap()
+
+        assert_eq!(layer.num_parameters(), 12288)
+    }
+
+    #[test]
+    fn test_lora_scaling() {
+        let config = LoraConfig { r: 8, alpha: 16.0, dropout: 0.0, target_modules: [] }
+        let layer = LoraLayer::new("test", config, 64, 64, &Device::Cpu).unwrap()
+
+        assert!((layer.scaling - 2.0).abs() < 1e-6)
+    }
+}

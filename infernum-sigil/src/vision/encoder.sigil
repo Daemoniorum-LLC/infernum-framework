@@ -1,0 +1,360 @@
+/// Vision Encoder - High-level image encoding API
+///
+/// Provides unified interface for different vision encoder architectures
+/// used in vision-language models (VLMs).
+
+use core::tensor::{Tensor, DType, Device}
+use core::error::Result
+use vision::types::{ImageInput, PixelValues, ImageFeatures}
+use vision::preprocessing::{ImagePreprocessor, PreprocessConfig}
+use vision::vit::{VisionTransformer, ViTConfig}
+
+/// Vision architecture variants
+pub enum VisionArchitecture {
+    /// OpenAI CLIP ViT variants
+    CLIP_ViT_L_14,
+    CLIP_ViT_H_14,
+    CLIP_ViT_G_14,
+
+    /// Google SigLIP variants
+    SigLIP_SO400M,
+    SigLIP_L_16_384,
+
+    /// EVA-CLIP
+    EVA_CLIP_8B,
+
+    /// InternVL variants
+    InternViT_300M,
+    InternViT_6B,
+
+    /// Qwen2-VL encoder
+    Qwen2VL_ViT,
+
+    /// Custom configuration
+    Custom(ViTConfig),
+}
+
+impl VisionArchitecture {
+    /// Get ViT config for architecture
+    pub fn to_config(self) -> ViTConfig {
+        match self {
+            Self::CLIP_ViT_L_14 => ViTConfig::clip_vit_l_14(),
+            Self::CLIP_ViT_H_14 => ViTConfig {
+                hidden_size: 1280,
+                num_layers: 32,
+                num_heads: 16,
+                intermediate_size: 5120,
+                ..ViTConfig::clip_vit_l_14()
+            },
+            Self::CLIP_ViT_G_14 => ViTConfig {
+                hidden_size: 1664,
+                num_layers: 48,
+                num_heads: 16,
+                intermediate_size: 8192,
+                ..ViTConfig::clip_vit_l_14()
+            },
+            Self::SigLIP_SO400M => ViTConfig::siglip_so400m(),
+            Self::SigLIP_L_16_384 => ViTConfig {
+                hidden_size: 1024,
+                num_layers: 24,
+                num_heads: 16,
+                intermediate_size: 4096,
+                patch_size: 16,
+                image_size: (384, 384),
+                use_cls_token: false,
+                pooling: PoolingStrategy::MeanPool,
+                ..ViTConfig::siglip_so400m()
+            },
+            Self::EVA_CLIP_8B => ViTConfig {
+                hidden_size: 4096,
+                num_layers: 64,
+                num_heads: 32,
+                intermediate_size: 16384,
+                patch_size: 14,
+                image_size: (448, 448),
+                ..ViTConfig::clip_vit_l_14()
+            },
+            Self::InternViT_300M => ViTConfig {
+                hidden_size: 1024,
+                num_layers: 24,
+                num_heads: 16,
+                intermediate_size: 4096,
+                patch_size: 14,
+                image_size: (448, 448),
+                ..ViTConfig::intern_vit_6b()
+            },
+            Self::InternViT_6B => ViTConfig::intern_vit_6b(),
+            Self::Qwen2VL_ViT => ViTConfig::qwen2_vl(),
+            Self::Custom(config) => config,
+        }
+    }
+
+    /// Get preprocessing config for architecture
+    pub fn preprocess_config(self) -> PreprocessConfig {
+        match self {
+            Self::CLIP_ViT_L_14 |
+            Self::CLIP_ViT_H_14 |
+            Self::CLIP_ViT_G_14 => PreprocessConfig::clip_default(),
+
+            Self::SigLIP_SO400M |
+            Self::SigLIP_L_16_384 => PreprocessConfig::siglip_default(),
+
+            Self::Qwen2VL_ViT => PreprocessConfig::qwen2_vl(),
+
+            Self::InternViT_300M |
+            Self::InternViT_6B |
+            Self::EVA_CLIP_8B => PreprocessConfig {
+                image_size: (448, 448),
+                ..PreprocessConfig::clip_default()
+            },
+
+            Self::Custom(config) => PreprocessConfig {
+                image_size: config.image_size,
+                patch_size: config.patch_size,
+                ..PreprocessConfig::clip_default()
+            },
+        }
+    }
+
+    /// Hidden dimension
+    pub fn hidden_size(self) -> u32 {
+        self.to_config().hidden_size
+    }
+}
+
+/// Vision encoder configuration
+pub struct VisionConfig {
+    /// Architecture to use
+    pub architecture: VisionArchitecture,
+
+    /// Device for computation
+    pub device: Device,
+
+    /// Data type
+    pub dtype: DType,
+
+    /// Whether to use anyres (dynamic resolution)
+    pub use_anyres: bool,
+
+    /// Maximum tiles for anyres
+    pub max_tiles: u32,
+
+    /// Whether to use Flash Attention
+    pub use_flash_attention: bool,
+
+    /// Gradient checkpointing
+    pub gradient_checkpointing: bool,
+}
+
+impl VisionConfig {
+    /// Default config for LLaVA
+    pub fn llava_default(device: Device) -> Self {
+        Self {
+            architecture: VisionArchitecture::CLIP_ViT_L_14,
+            device,
+            dtype: DType::F16,
+            use_anyres: true,
+            max_tiles: 6,
+            use_flash_attention: true,
+            gradient_checkpointing: false,
+        }
+    }
+
+    /// Default config for Qwen2-VL
+    pub fn qwen2_vl_default(device: Device) -> Self {
+        Self {
+            architecture: VisionArchitecture::Qwen2VL_ViT,
+            device,
+            dtype: DType::BF16,
+            use_anyres: true,
+            max_tiles: 12,
+            use_flash_attention: true,
+            gradient_checkpointing: false,
+        }
+    }
+
+    /// Default config for InternVL
+    pub fn internvl_default(device: Device) -> Self {
+        Self {
+            architecture: VisionArchitecture::InternViT_6B,
+            device,
+            dtype: DType::BF16,
+            use_anyres: true,
+            max_tiles: 12,
+            use_flash_attention: true,
+            gradient_checkpointing: true,
+        }
+    }
+}
+
+/// Image encoder output
+pub struct EncoderOutput! {
+    /// Image features
+    pub features!: ImageFeatures,
+
+    /// Original pixel values (for reference)
+    pub pixel_values!: PixelValues,
+
+    /// Number of image tokens that will be injected
+    pub num_image_tokens!: u32,
+}
+
+/// Unified image encoder
+pub struct ImageEncoder {
+    /// Configuration
+    config: VisionConfig,
+
+    /// Vision Transformer backbone
+    vit: VisionTransformer,
+
+    /// Image preprocessor
+    preprocessor: ImagePreprocessor,
+}
+
+impl ImageEncoder {
+    /// Create new image encoder
+    pub fn new(config: VisionConfig) -> Self {
+        let vit_config = config.architecture.to_config()
+        let preprocess_config = config.architecture.preprocess_config()
+
+        let vit = VisionTransformer::new(vit_config, config.device)
+        let preprocessor = ImagePreprocessor::new(
+            preprocess_config,
+            config.device,
+            config.dtype,
+        )
+
+        Self { config, vit, preprocessor }
+    }
+
+    /// Create for LLaVA
+    pub fn llava(device: Device) -> Self {
+        Self::new(VisionConfig::llava_default(device))
+    }
+
+    /// Create for Qwen2-VL
+    pub fn qwen2_vl(device: Device) -> Self {
+        Self::new(VisionConfig::qwen2_vl_default(device))
+    }
+
+    /// Create for InternVL
+    pub fn internvl(device: Device) -> Self {
+        Self::new(VisionConfig::internvl_default(device))
+    }
+
+    /// Encode a single image
+    pub fn encode(self, image: ImageInput) -> Result<EncoderOutput!> {
+        // Preprocess image (handles data~ -> computed! transformation)
+        let pixels! = if self.config.use_anyres {
+            self.preprocessor.process_anyres(image)?
+        } else {
+            self.preprocessor.process(image)?
+        }
+
+        // Run through vision transformer
+        let features! = self.vit.forward(pixels!)!
+
+        // Calculate number of image tokens
+        let num_tokens! = features!.seq_len()
+
+        Ok(EncoderOutput! {
+            features!,
+            pixel_values!: pixels!,
+            num_image_tokens!: num_tokens!,
+        })
+    }
+
+    /// Encode a batch of images
+    pub fn encode_batch(self, images: [ImageInput]) -> Result<EncoderOutput!> {
+        // Process each image
+        let processed!: [PixelValues!] = images
+            τ{ img =>
+                if self.config.use_anyres {
+                    self.preprocessor.process_anyres(img)?
+                } else {
+                    self.preprocessor.process(img)?
+                }
+            }!
+
+        // Stack into batch
+        let tensors! = processed! τ{ p! => p!.tensor! }!
+        let max_tiles = processed! τ{ p! => p!.num_tiles! } ρ+{ |a, b| a.max(b) }!
+
+        // Pad to same number of tiles
+        let padded_tensors! = processed!
+            τ{ p! =>
+                if p!.num_tiles! < max_tiles {
+                    pad_tiles(p!.tensor!, p!.num_tiles!, max_tiles)!
+                } else {
+                    p!.tensor!
+                }
+            }!
+
+        let batch_tensor! = Tensor::stack(padded_tensors!, 0)!
+
+        let batch_pixels! = PixelValues! {
+            tensor!: batch_tensor!,
+            original_size!: processed!.first().unwrap().original_size!,
+            processed_size!: processed!.first().unwrap().processed_size!,
+            num_tiles!: max_tiles,
+        }
+
+        // Encode batch
+        let features! = self.vit.forward(batch_pixels!)!
+
+        Ok(EncoderOutput! {
+            features!,
+            pixel_values!: batch_pixels!,
+            num_image_tokens!: features!.seq_len(),
+        })
+    }
+
+    /// Get hidden dimension
+    pub fn hidden_size(self) -> u32 {
+        self.config.architecture.hidden_size()
+    }
+
+    /// Get expected image size
+    pub fn image_size(self) -> (u32, u32) {
+        self.config.architecture.to_config().image_size
+    }
+
+    /// Get number of patches for standard size
+    pub fn num_patches(self) -> u32 {
+        self.config.architecture.to_config().num_patches()
+    }
+}
+
+/// Load pretrained encoder weights
+pub fn load_pretrained(
+    architecture: VisionArchitecture,
+    path: str,
+    device: Device,
+) -> Result<ImageEncoder> {
+    let config = VisionConfig {
+        architecture,
+        device,
+        dtype: DType::F16,
+        use_anyres: true,
+        max_tiles: 6,
+        use_flash_attention: true,
+        gradient_checkpointing: false,
+    }
+
+    let mut encoder = ImageEncoder::new(config)
+
+    // Load weights from checkpoint
+    let weights = load_weights(path)?
+    encoder.vit.load_state_dict(weights)?
+
+    Ok(encoder)
+}
+
+// Helper functions
+fn pad_tiles(tensor!: Tensor, current: u32, target: u32) -> Tensor! {
+    let diff = target - current
+    let padding = Tensor::zeros_like(tensor!.slice([0..diff as i64, .., .., ..])!)!
+    Tensor::cat([tensor!, padding], dim: 0)!
+}
+
+extern fn load_weights(path: str) -> Result<StateDict>

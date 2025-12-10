@@ -1,0 +1,78 @@
+/// Native Backend Bindings
+///
+/// Zero-overhead FFI bindings to C++/CUDA kernels for performance-critical operations.
+/// Sigil acts as a thin orchestration layer while compute happens in native code.
+///
+/// ## Modules
+///
+/// - **ffi**: Dynamic library loading, function pointers, kernel registry
+/// - **cuda**: CUDA runtime API, cuBLAS bindings, streams, events
+/// - **kernels**: Individual kernel wrappers (attention, GEMM, etc.)
+/// - **memory**: CachingAllocator, ArenaAllocator, pinned/unified memory
+/// - **tensorrt**: TensorRT integration for optimized inference
+/// - **fused_kernels**: Custom fused CUDA kernels (attention, MLP, etc.)
+/// - **cuda_graph**: CUDA graph capture and replay for minimal overhead
+/// - **engine**: High-performance execution engine combining all optimizations
+
+pub mod ffi
+pub mod cuda
+pub mod kernels
+pub mod memory
+pub mod tensorrt
+pub mod fused_kernels
+pub mod cuda_graph
+pub mod engine
+pub mod distributed
+
+// Re-export core types
+pub use ffi::*
+pub use cuda::*
+pub use kernels::*
+pub use memory::*
+
+// Re-export TensorRT types
+pub use tensorrt::{
+    TrtDataType, TrtBuilderConfig, TrtNetworkBuilder, TrtEngine,
+    TrtPipeline, TrtBenchResult, Int8Calibrator,
+}
+
+// Re-export fused kernels
+pub use fused_kernels::{
+    FusedAttention, FusedAttentionConfig,
+    FusedMLP, FusedMLPConfig, MLPActivation,
+    FusedNormLinear, FusedRoPE, FusedResidualNorm,
+    FusedSampler, FusedQKVProjection,
+}
+
+// Re-export CUDA graphs
+pub use cuda_graph::{
+    CudaGraph, GraphExec, GraphCapture, StreamCapture,
+    GraphManager, ShapeGraphCache, ShapeKey, GraphPerformance,
+    CaptureMode, NodeType,
+}
+
+// Re-export engine
+pub use engine::{
+    HighPerfEngine, EngineConfig, EngineStats,
+    ExecutionBackend, PrecisionMode,
+    MemoryPlanner, MemoryPlan, InferenceSession,
+    compare_backends,
+}
+
+// Multi-GPU distributed inference
+pub use distributed::{
+    NcclCommunicator,
+    NcclConfig,
+    ReduceOp,
+    TensorParallelLinear,
+    TensorParallelConfig,
+    PipelineExecutor,
+    PipelineConfig,
+    DistributedModel,
+    DistributedConfig,
+    ParallelismStrategy,
+    LoadBalancer,
+    LoadBalanceStrategy,
+    MultiGPUEngine,
+    MultiGPUConfig,
+}

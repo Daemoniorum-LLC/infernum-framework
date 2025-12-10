@@ -1,0 +1,388 @@
+//! Inference and reasoning engine.
+
+use super::graph::{Triple, KnowledgeGraph}
+use super::{ProvenanceEntry}
+use std::collections::HashMap
+
+/// A reasoning rule.
+#[derive(Debug, Clone)]
+struct Rule {
+    name: str,
+    antecedent: [TriplePattern],
+    consequent: TriplePattern,
+    confidence: f64,
+}
+
+/// A triple pattern with variables.
+#[derive(Debug, Clone)]
+struct TriplePattern {
+    subject: PatternTerm,
+    predicate: PatternTerm,
+    object: PatternTerm,
+}
+
+/// A term in a pattern (variable or constant).
+#[derive(Debug, Clone)]
+enum PatternTerm {
+    Variable(str),
+    Constant(str),
+}
+
+impl Rule {
+    fn new(antecedent: [Triple], consequent: Triple) -> Rule {
+        Rule {
+            name: "anonymous".to_string(),
+            antecedent: antecedent|τ{|t| TriplePattern::from_triple(t)}|collect(),
+            consequent: TriplePattern::from_triple(&consequent),
+            confidence: 1.0,
+        }
+    }
+
+    fn with_name(mut self, name: str) -> Rule {
+        self.name = name;
+        self
+    }
+
+    fn with_confidence(mut self, confidence: f64) -> Rule {
+        self.confidence = confidence;
+        self
+    }
+}
+
+impl TriplePattern {
+    fn from_triple(t: &Triple) -> TriplePattern {
+        fn to_term(s: &str) -> PatternTerm {
+            if s.starts_with("?") {
+                PatternTerm::Variable(s[1..].to_string())
+            } else {
+                PatternTerm::Constant(s.to_string())
+            }
+        }
+
+        TriplePattern {
+            subject: to_term(&t.subject),
+            predicate: to_term(&t.predicate),
+            object: to_term(&t.object),
+        }
+    }
+
+    fn matches(self, triple: &Triple, bindings: &HashMap<str, str>) -> ?HashMap<str, str> {
+        let mut new_bindings = bindings.clone();
+
+        if !self.match_term(&self.subject, &triple.subject, &mut new_bindings) {
+            return None
+        }
+        if !self.match_term(&self.predicate, &triple.predicate, &mut new_bindings) {
+            return None
+        }
+        if !self.match_term(&self.object, &triple.object, &mut new_bindings) {
+            return None
+        }
+
+        Some(new_bindings)
+    }
+
+    fn match_term(self, pattern: &PatternTerm, value: &str, bindings: &mut HashMap<str, str>) -> bool {
+        match pattern {
+            PatternTerm::Constant(c) => c == value,
+            PatternTerm::Variable(v) => {
+                if let Some(bound) = bindings.get(v) {
+                    bound == value
+                } else {
+                    bindings.insert(v.clone(), value.to_string());
+                    true
+                }
+            }
+        }
+    }
+
+    fn instantiate(self, bindings: &HashMap<str, str>) -> ?Triple {
+        let subject = self.instantiate_term(&self.subject, bindings)?;
+        let predicate = self.instantiate_term(&self.predicate, bindings)?;
+        let object = self.instantiate_term(&self.object, bindings)?;
+
+        Some(Triple::new(subject, predicate, object))
+    }
+
+    fn instantiate_term(self, term: &PatternTerm, bindings: &HashMap<str, str>) -> ?str {
+        match term {
+            PatternTerm::Constant(c) => Some(c.clone()),
+            PatternTerm::Variable(v) => bindings.get(v).cloned(),
+        }
+    }
+}
+
+/// Result of inference.
+#[derive(Debug, Clone)]
+struct InferenceResult {
+    triple: Triple,
+    confidence: f64,
+    provenance: [ProvenanceEntry],
+}
+
+/// The reasoning engine.
+struct Reasoner {
+    rules: [Rule],
+    strategy: InferenceStrategy,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum InferenceStrategy {
+    ForwardChaining,
+    BackwardChaining,
+    Hybrid,
+}
+
+impl Reasoner {
+    fn new() -> Reasoner {
+        Reasoner {
+            rules: [],
+            strategy: InferenceStrategy::ForwardChaining,
+        }
+    }
+
+    fn add_rule(mut self, rule: Rule) {
+        self.rules.push(rule);
+    }
+
+    fn with_strategy(mut self, strategy: InferenceStrategy) -> Reasoner {
+        self.strategy = strategy;
+        self
+    }
+
+    /// Runs inference on the knowledge graph.
+    fn infer(self, graph: &KnowledgeGraph, max_depth: usize) -> [InferenceResult] {
+        match self.strategy {
+            InferenceStrategy::ForwardChaining => self.forward_chain(graph, max_depth),
+            InferenceStrategy::BackwardChaining => [],
+            InferenceStrategy::Hybrid => self.forward_chain(graph, max_depth),
+        }
+    }
+
+    /// Forward chaining inference.
+    fn forward_chain(self, graph: &KnowledgeGraph, max_depth: usize) -> [InferenceResult] {
+        let mut inferred = [];
+        let mut new_facts: HashMap<Triple, InferenceResult> = HashMap::new();
+        let mut all_triples: [Triple] = graph.all_triples().cloned().collect();
+
+        for _ in 0..max_depth {
+            let mut iteration_new = [];
+
+            for rule in &self.rules {
+                let matches = self.find_rule_matches(rule, &all_triples);
+
+                for (bindings, premises) in matches {
+                    if let Some(conclusion) = rule.consequent.instantiate(&bindings) {
+                        // Check if this is new
+                        if !all_triples.contains(&conclusion) && !new_facts.contains_key(&conclusion) {
+                            let result = InferenceResult {
+                                triple: conclusion.clone(),
+                                confidence: rule.confidence * self.compute_premise_confidence(&premises, graph),
+                                provenance: [ProvenanceEntry {
+                                    source: rule.name.clone(),
+                                    method: "inference".to_string(),
+                                    timestamp: std::time::Instant::now(),
+                                    confidence: rule.confidence,
+                                }],
+                            };
+
+                            new_facts.insert(conclusion.clone(), result.clone());
+                            iteration_new.push(conclusion);
+                        }
+                    }
+                }
+            }
+
+            if iteration_new.is_empty() {
+                break
+            }
+
+            all_triples.extend(iteration_new);
+        }
+
+        new_facts.values().cloned().collect()
+    }
+
+    fn find_rule_matches(self, rule: &Rule, triples: &[Triple]) -> [(HashMap<str, str>, [Triple])] {
+        let mut results = [];
+
+        // Start with all possible bindings for first antecedent
+        if rule.antecedent.is_empty() {
+            return [(HashMap::new(), [])]
+        }
+
+        let first_pattern = &rule.antecedent[0];
+        for triple in triples {
+            if let Some(bindings) = first_pattern.matches(triple, &HashMap::new()) {
+                let mut premises = [triple.clone()];
+
+                // Try to match remaining antecedents
+                let mut current_bindings = [bindings];
+
+                for pattern in rule.antecedent[1..].iter() {
+                    let mut next_bindings = [];
+
+                    for binding in &current_bindings {
+                        for t in triples {
+                            if let Some(new_binding) = pattern.matches(t, binding) {
+                                next_bindings.push(new_binding);
+                                premises.push(t.clone());
+                            }
+                        }
+                    }
+
+                    current_bindings = next_bindings;
+                }
+
+                for binding in current_bindings {
+                    results.push((binding, premises.clone()));
+                }
+            }
+        }
+
+        results
+    }
+
+    fn compute_premise_confidence(self, premises: &[Triple], graph: &KnowledgeGraph) -> f64 {
+        premises
+            |τ{|p| graph.confidence(p).unwrap_or(1.0)}
+            |ρ·min()
+            .unwrap_or(1.0)
+    }
+
+    /// Explains how a triple was derived.
+    fn explain(self, triple: &Triple, graph: &KnowledgeGraph) -> ?Explanation {
+        // Try to find a rule that could derive this
+        for rule in &self.rules {
+            if let Some(bindings) = self.matches_consequent(&rule.consequent, triple) {
+                let premises = self.find_premises(&rule.antecedent, &bindings, graph);
+                if premises.len() == rule.antecedent.len() {
+                    return Some(Explanation {
+                        conclusion: triple.clone(),
+                        premises,
+                        rules_used: [rule.name.clone()],
+                        confidence: rule.confidence,
+                    })
+                }
+            }
+        }
+
+        None
+    }
+
+    fn matches_consequent(self, pattern: &TriplePattern, triple: &Triple) -> ?HashMap<str, str> {
+        pattern.matches(triple, &HashMap::new())
+    }
+
+    fn find_premises(self, patterns: &[TriplePattern], bindings: &HashMap<str, str>, graph: &KnowledgeGraph) -> [Triple] {
+        patterns
+            |τ{|p| p.instantiate(bindings)}
+            |φ{|t| t.is_some()}
+            |τ{|t| t.unwrap()}
+            |φ{|t| graph.confidence(t).is_some()}
+            |collect()
+    }
+}
+
+/// Explanation structure.
+#[derive(Debug, Clone)]
+struct Explanation {
+    conclusion: Triple,
+    premises: [Triple],
+    rules_used: [str],
+    confidence: f64,
+}
+
+// ============================================================================
+// Built-in Rules
+// ============================================================================
+
+/// Creates transitivity rule for a relation.
+fn transitivity_rule(relation: str) -> Rule {
+    Rule {
+        name: format!("{}_transitivity", relation),
+        antecedent: [
+            TriplePattern {
+                subject: PatternTerm::Variable("X"),
+                predicate: PatternTerm::Constant(relation.clone()),
+                object: PatternTerm::Variable("Y"),
+            },
+            TriplePattern {
+                subject: PatternTerm::Variable("Y"),
+                predicate: PatternTerm::Constant(relation),
+                object: PatternTerm::Variable("Z"),
+            },
+        ],
+        consequent: TriplePattern {
+            subject: PatternTerm::Variable("X"),
+            predicate: PatternTerm::Constant(relation),
+            object: PatternTerm::Variable("Z"),
+        },
+        confidence: 1.0,
+    }
+}
+
+/// Creates symmetry rule for a relation.
+fn symmetry_rule(relation: str) -> Rule {
+    Rule {
+        name: format!("{}_symmetry", relation),
+        antecedent: [
+            TriplePattern {
+                subject: PatternTerm::Variable("X"),
+                predicate: PatternTerm::Constant(relation.clone()),
+                object: PatternTerm::Variable("Y"),
+            },
+        ],
+        consequent: TriplePattern {
+            subject: PatternTerm::Variable("Y"),
+            predicate: PatternTerm::Constant(relation),
+            object: PatternTerm::Variable("X"),
+        },
+        confidence: 1.0,
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_pattern_matching() {
+        let pattern = TriplePattern {
+            subject: PatternTerm::Variable("X"),
+            predicate: PatternTerm::Constant("knows"),
+            object: PatternTerm::Variable("Y"),
+        };
+
+        let triple = Triple::new("Alice", "knows", "Bob");
+        let bindings = pattern.matches(&triple, &HashMap::new());
+
+        assert!(bindings.is_some());
+        let b = bindings.unwrap();
+        assert_eq!(b.get("X"), Some(&"Alice".to_string()));
+        assert_eq!(b.get("Y"), Some(&"Bob".to_string()));
+    }
+
+    #[test]
+    fn test_instantiate() {
+        let pattern = TriplePattern {
+            subject: PatternTerm::Variable("X"),
+            predicate: PatternTerm::Constant("likes"),
+            object: PatternTerm::Variable("Y"),
+        };
+
+        let mut bindings = HashMap::new();
+        bindings.insert("X", "Alice");
+        bindings.insert("Y", "Coffee");
+
+        let triple = pattern.instantiate(&bindings);
+        assert!(triple.is_some());
+        let t = triple.unwrap();
+        assert_eq!(t.subject, "Alice");
+        assert_eq!(t.object, "Coffee");
+    }
+}

@@ -80,17 +80,12 @@ impl ModelLoader {
 
         debug!(?config_path, "Downloaded config.json");
 
-        // Try different weight file patterns
-        let weights = self.resolve_weights(&repo, repo_id)?;
-
-        // Get tokenizer files (optional for GGUF models which have embedded tokenizers)
+        // Get tokenizer files
         let tokenizer_path = repo.get("tokenizer.json").ok();
         let tokenizer_config_path = repo.get("tokenizer_config.json").ok();
 
-        // For GGUF models, tokenizer is embedded, so we don't require it
-        if weights.is_gguf() && tokenizer_path.is_none() {
-            info!("GGUF model detected - using embedded tokenizer");
-        }
+        // Try different weight file patterns
+        let weights = self.resolve_weights(&repo, repo_id)?;
 
         Ok(ModelFiles {
             config: config_path,
@@ -120,23 +115,6 @@ impl ModelLoader {
                 index: index_path,
                 shards,
             });
-        }
-
-        // Try GGUF quantized models (Q4, Q5, Q8, etc.)
-        let gguf_patterns = [
-            "model-Q4_K_M.gguf",
-            "model-Q4_K_S.gguf",
-            "model-Q5_K_M.gguf",
-            "model-Q5_K_S.gguf",
-            "model-Q8_0.gguf",
-            "model.gguf",
-        ];
-
-        for pattern in &gguf_patterns {
-            if let Ok(path) = repo.get(pattern) {
-                info!("Found GGUF model file: {}", pattern);
-                return Ok(WeightFiles::Gguf(path));
-            }
         }
 
         // Try PyTorch format

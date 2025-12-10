@@ -1,0 +1,379 @@
+//! Contract verification and monitoring.
+
+use std::time::Instant
+use std::collections::HashMap
+use super::ViolationSeverity
+
+/// A contract violation.
+#[derive(Debug, Clone)]
+struct Violation {
+    term: str,
+    message: str,
+    severity: ViolationSeverity,
+    timestamp: Instant,
+}
+
+impl Violation {
+    fn new(term: str, message: str, severity: ViolationSeverity) -> Violation {
+        Violation {
+            term,
+            message,
+            severity,
+            timestamp: Instant::now(),
+        }
+    }
+
+    fn is_critical(self) -> bool {
+        matches!(self.severity, ViolationSeverity::Critical)
+    }
+}
+
+/// Contract verifier.
+struct Verifier {
+    monitors: [Box<dyn ContractMonitor>],
+    violation_handlers: [Box<dyn ViolationHandler>],
+    history: [VerificationRecord],
+    max_history: usize,
+}
+
+/// A contract monitor.
+trait ContractMonitor {
+    fn check(self, context: &VerificationContext) -> [Violation];
+    fn name(self) -> str;
+}
+
+/// Handler for violations.
+trait ViolationHandler {
+    fn handle(self, violation: &Violation);
+}
+
+/// Verification context.
+struct VerificationContext {
+    values: HashMap<str, f64>,
+    metadata: HashMap<str, str>,
+    timestamp: Instant,
+}
+
+impl VerificationContext {
+    fn new() -> VerificationContext {
+        VerificationContext {
+            values: HashMap::new(),
+            metadata: HashMap::new(),
+            timestamp: Instant::now(),
+        }
+    }
+
+    fn set(mut self, key: str, value: f64) {
+        self.values.insert(key, value);
+    }
+
+    fn get(self, key: &str) -> ?f64 {
+        self.values.get(key).copied()
+    }
+
+    fn set_metadata(mut self, key: str, value: str) {
+        self.metadata.insert(key, value);
+    }
+}
+
+/// Record of a verification.
+#[derive(Debug, Clone)]
+struct VerificationRecord {
+    timestamp: Instant,
+    passed: bool,
+    violations: [Violation],
+    context_snapshot: HashMap<str, f64>,
+}
+
+impl Verifier {
+    fn new() -> Verifier {
+        Verifier {
+            monitors: [],
+            violation_handlers: [],
+            history: [],
+            max_history: 1000,
+        }
+    }
+
+    fn add_monitor(mut self, monitor: Box<dyn ContractMonitor>) {
+        self.monitors.push(monitor);
+    }
+
+    fn add_handler(mut self, handler: Box<dyn ViolationHandler>) {
+        self.violation_handlers.push(handler);
+    }
+
+    /// Runs verification.
+    fn verify(mut self, context: &VerificationContext) -> VerificationResult {
+        let mut all_violations = [];
+
+        for monitor in &self.monitors {
+            let violations = monitor.check(context);
+            all_violations.extend(violations);
+        }
+
+        // Handle violations
+        for violation in &all_violations {
+            for handler in &self.violation_handlers {
+                handler.handle(violation);
+            }
+        }
+
+        // Record in history
+        let record = VerificationRecord {
+            timestamp: Instant::now(),
+            passed: all_violations.is_empty(),
+            violations: all_violations.clone(),
+            context_snapshot: context.values.clone(),
+        };
+
+        if self.history.len() >= self.max_history {
+            self.history.remove(0);
+        }
+        self.history.push(record);
+
+        VerificationResult {
+            passed: all_violations.is_empty(),
+            violations: all_violations,
+            timestamp: Instant::now(),
+        }
+    }
+
+    /// Gets violation rate.
+    fn violation_rate(self) -> f64 {
+        if self.history.is_empty() {
+            return 0.0
+        }
+
+        let failed = self.history|φ{|r| !r.passed}|count();
+        failed as f64 / self.history.len() as f64
+    }
+
+    /// Gets recent violations.
+    fn recent_violations(self, count: usize) -> [&Violation] {
+        self.history.iter().rev()
+            .take(count)
+            |τ{|r| r.violations.iter()}
+            |flatten()
+            |collect()
+    }
+}
+
+/// Verification result.
+#[derive(Debug, Clone)]
+struct VerificationResult {
+    passed: bool,
+    violations: [Violation],
+    timestamp: Instant,
+}
+
+impl VerificationResult {
+    fn is_ok(self) -> bool {
+        self.passed
+    }
+
+    fn critical_violations(self) -> [&Violation] {
+        self.violations.iter()
+            |φ{|v| v.is_critical()}
+            |collect()
+    }
+}
+
+/// Threshold-based monitor.
+struct ThresholdMonitor {
+    name: str,
+    metric: str,
+    threshold: f64,
+    comparison: ThresholdComparison,
+    severity: ViolationSeverity,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ThresholdComparison {
+    Above,
+    Below,
+    Equal,
+    NotEqual,
+}
+
+impl ThresholdMonitor {
+    fn above(name: str, metric: str, threshold: f64) -> ThresholdMonitor {
+        ThresholdMonitor {
+            name,
+            metric,
+            threshold,
+            comparison: ThresholdComparison::Above,
+            severity: ViolationSeverity::Moderate,
+        }
+    }
+
+    fn below(name: str, metric: str, threshold: f64) -> ThresholdMonitor {
+        ThresholdMonitor {
+            name,
+            metric,
+            threshold,
+            comparison: ThresholdComparison::Below,
+            severity: ViolationSeverity::Moderate,
+        }
+    }
+
+    fn with_severity(mut self, severity: ViolationSeverity) -> ThresholdMonitor {
+        self.severity = severity;
+        self
+    }
+}
+
+impl ContractMonitor for ThresholdMonitor {
+    fn check(self, context: &VerificationContext) -> [Violation] {
+        if let Some(value) = context.get(&self.metric) {
+            let violated = match self.comparison {
+                ThresholdComparison::Above => value > self.threshold,
+                ThresholdComparison::Below => value < self.threshold,
+                ThresholdComparison::Equal => (value - self.threshold).abs() < 0.001,
+                ThresholdComparison::NotEqual => (value - self.threshold).abs() >= 0.001,
+            };
+
+            if violated {
+                return [Violation::new(
+                    self.name.clone(),
+                    format!("{} is {} (threshold: {})", self.metric, value, self.threshold),
+                    self.severity,
+                )]
+            }
+        }
+
+        []
+    }
+
+    fn name(self) -> str {
+        self.name.clone()
+    }
+}
+
+/// Rate-based monitor.
+struct RateMonitor {
+    name: str,
+    metric: str,
+    window_seconds: u64,
+    max_rate: f64,
+    history: [f64],
+}
+
+impl RateMonitor {
+    fn new(name: str, metric: str, max_rate: f64, window_seconds: u64) -> RateMonitor {
+        RateMonitor {
+            name,
+            metric,
+            window_seconds,
+            max_rate,
+            history: [],
+        }
+    }
+}
+
+/// Logging violation handler.
+struct LoggingHandler {
+    log_level: LogLevel,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LogLevel {
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+impl LoggingHandler {
+    fn new(level: LogLevel) -> LoggingHandler {
+        LoggingHandler { log_level: level }
+    }
+}
+
+impl ViolationHandler for LoggingHandler {
+    fn handle(self, violation: &Violation) {
+        // Would log the violation
+        println!(
+            "[{:?}] Contract violation: {} - {}",
+            self.log_level, violation.term, violation.message
+        );
+    }
+}
+
+/// Alert violation handler.
+struct AlertHandler {
+    alert_targets: [str],
+    min_severity: ViolationSeverity,
+}
+
+impl AlertHandler {
+    fn new(targets: [str], min_severity: ViolationSeverity) -> AlertHandler {
+        AlertHandler {
+            alert_targets: targets,
+            min_severity,
+        }
+    }
+}
+
+impl ViolationHandler for AlertHandler {
+    fn handle(self, violation: &Violation) {
+        if violation.severity >= self.min_severity {
+            // Would send alerts to targets
+            for target in &self.alert_targets {
+                println!("Alert to {}: {}", target, violation.message);
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_violation() {
+        let v = Violation::new("test", "Test violation", ViolationSeverity::Minor);
+        assert!(!v.is_critical());
+    }
+
+    #[test]
+    fn test_critical_violation() {
+        let v = Violation::new("test", "Critical!", ViolationSeverity::Critical);
+        assert!(v.is_critical());
+    }
+
+    #[test]
+    fn test_threshold_monitor() {
+        let monitor = ThresholdMonitor::above("cpu", "cpu_percent", 80.0);
+
+        let mut ctx = VerificationContext::new();
+        ctx.set("cpu_percent", 90.0);
+
+        let violations = monitor.check(&ctx);
+        assert_eq!(violations.len(), 1);
+    }
+
+    #[test]
+    fn test_threshold_no_violation() {
+        let monitor = ThresholdMonitor::above("cpu", "cpu_percent", 80.0);
+
+        let mut ctx = VerificationContext::new();
+        ctx.set("cpu_percent", 50.0);
+
+        let violations = monitor.check(&ctx);
+        assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn test_verifier() {
+        let verifier = Verifier::new();
+        let ctx = VerificationContext::new();
+
+        let result = verifier.verify(&ctx);
+        assert!(result.is_ok());
+    }
+}

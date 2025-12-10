@@ -1,0 +1,768 @@
+/// GGUF Format Support
+///
+/// Load and parse GGUF model files (llama.cpp format).
+/// GGUF is the standard format for quantized LLM inference.
+
+use crate::core::error::{InfernumError, Result}
+use std::collections::HashMap
+use std::io::{Read, Seek, SeekFrom}
+use std::fs::File
+use std::path::Path
+
+// ============================================================================
+// GGUF Constants
+// ============================================================================
+
+/// GGUF magic number
+const GGUF_MAGIC: u32 = 0x46554747  // "GGUF" in little-endian
+
+/// GGUF versions
+const GGUF_VERSION_1: u32 = 1
+const GGUF_VERSION_2: u32 = 2
+const GGUF_VERSION_3: u32 = 3
+
+/// Supported GGUF versions
+const GGUF_SUPPORTED_VERSIONS: [u32; 3] = [GGUF_VERSION_1, GGUF_VERSION_2, GGUF_VERSION_3]
+
+// ============================================================================
+// GGUF Types
+// ============================================================================
+
+/// GGUF metadata value types
+#[derive(Clone, Debug)]
+pub enum GgufValueType {
+    U8 = 0,
+    I8 = 1,
+    U16 = 2,
+    I16 = 3,
+    U32 = 4,
+    I32 = 5,
+    F32 = 6,
+    Bool = 7,
+    String = 8,
+    Array = 9,
+    U64 = 10,
+    I64 = 11,
+    F64 = 12,
+}
+
+impl GgufValueType {
+    pub fn from_u32(v: u32) -> Option<Self> {
+        match v {
+            0 => Some(Self::U8),
+            1 => Some(Self::I8),
+            2 => Some(Self::U16),
+            3 => Some(Self::I16),
+            4 => Some(Self::U32),
+            5 => Some(Self::I32),
+            6 => Some(Self::F32),
+            7 => Some(Self::Bool),
+            8 => Some(Self::String),
+            9 => Some(Self::Array),
+            10 => Some(Self::U64),
+            11 => Some(Self::I64),
+            12 => Some(Self::F64),
+            _ => None,
+        }
+    }
+}
+
+/// GGUF tensor type (quantization format)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GgufTensorType {
+    F32 = 0,
+    F16 = 1,
+    Q4_0 = 2,
+    Q4_1 = 3,
+    Q5_0 = 6,
+    Q5_1 = 7,
+    Q8_0 = 8,
+    Q8_1 = 9,
+    Q2_K = 10,
+    Q3_K = 11,
+    Q4_K = 12,
+    Q5_K = 13,
+    Q6_K = 14,
+    Q8_K = 15,
+    IQ2_XXS = 16,
+    IQ2_XS = 17,
+    IQ3_XXS = 18,
+    IQ1_S = 19,
+    IQ4_NL = 20,
+    IQ3_S = 21,
+    IQ2_S = 22,
+    IQ4_XS = 23,
+    I8 = 24,
+    I16 = 25,
+    I32 = 26,
+    I64 = 27,
+    F64 = 28,
+    BF16 = 29,
+}
+
+impl GgufTensorType {
+    pub fn from_u32(v: u32) -> Option<Self> {
+        match v {
+            0 => Some(Self::F32),
+            1 => Some(Self::F16),
+            2 => Some(Self::Q4_0),
+            3 => Some(Self::Q4_1),
+            6 => Some(Self::Q5_0),
+            7 => Some(Self::Q5_1),
+            8 => Some(Self::Q8_0),
+            9 => Some(Self::Q8_1),
+            10 => Some(Self::Q2_K),
+            11 => Some(Self::Q3_K),
+            12 => Some(Self::Q4_K),
+            13 => Some(Self::Q5_K),
+            14 => Some(Self::Q6_K),
+            15 => Some(Self::Q8_K),
+            16 => Some(Self::IQ2_XXS),
+            17 => Some(Self::IQ2_XS),
+            18 => Some(Self::IQ3_XXS),
+            19 => Some(Self::IQ1_S),
+            20 => Some(Self::IQ4_NL),
+            21 => Some(Self::IQ3_S),
+            22 => Some(Self::IQ2_S),
+            23 => Some(Self::IQ4_XS),
+            24 => Some(Self::I8),
+            25 => Some(Self::I16),
+            26 => Some(Self::I32),
+            27 => Some(Self::I64),
+            28 => Some(Self::F64),
+            29 => Some(Self::BF16),
+            _ => None,
+        }
+    }
+
+    /// Get block size for quantized types
+    pub fn block_size(&self) -> usize {
+        match self {
+            Self::Q4_0 | Self::Q4_1 => 32,
+            Self::Q5_0 | Self::Q5_1 => 32,
+            Self::Q8_0 | Self::Q8_1 => 32,
+            Self::Q2_K => 256,
+            Self::Q3_K => 256,
+            Self::Q4_K => 256,
+            Self::Q5_K => 256,
+            Self::Q6_K => 256,
+            Self::Q8_K => 256,
+            _ => 1,
+        }
+    }
+
+    /// Get bytes per block
+    pub fn bytes_per_block(&self) -> usize {
+        match self {
+            Self::F32 => 4,
+            Self::F16 => 2,
+            Self::BF16 => 2,
+            Self::Q4_0 => 18,   // 2 bytes scale + 16 bytes data
+            Self::Q4_1 => 20,   // 2 bytes scale + 2 bytes min + 16 bytes data
+            Self::Q5_0 => 22,   // 2 bytes scale + 4 bytes high bits + 16 bytes data
+            Self::Q5_1 => 24,
+            Self::Q8_0 => 34,   // 2 bytes scale + 32 bytes data
+            Self::Q8_1 => 36,
+            Self::Q2_K => 84,
+            Self::Q3_K => 110,
+            Self::Q4_K => 144,
+            Self::Q5_K => 176,
+            Self::Q6_K => 210,
+            Self::Q8_K => 292,
+            Self::I8 => 1,
+            Self::I16 => 2,
+            Self::I32 => 4,
+            Self::I64 | Self::F64 => 8,
+            _ => 1,  // IQ types vary
+        }
+    }
+
+    /// Get human-readable name
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::F32 => "F32",
+            Self::F16 => "F16",
+            Self::Q4_0 => "Q4_0",
+            Self::Q4_1 => "Q4_1",
+            Self::Q5_0 => "Q5_0",
+            Self::Q5_1 => "Q5_1",
+            Self::Q8_0 => "Q8_0",
+            Self::Q8_1 => "Q8_1",
+            Self::Q2_K => "Q2_K",
+            Self::Q3_K => "Q3_K",
+            Self::Q4_K => "Q4_K",
+            Self::Q5_K => "Q5_K",
+            Self::Q6_K => "Q6_K",
+            Self::Q8_K => "Q8_K",
+            Self::IQ2_XXS => "IQ2_XXS",
+            Self::IQ2_XS => "IQ2_XS",
+            Self::IQ3_XXS => "IQ3_XXS",
+            Self::IQ1_S => "IQ1_S",
+            Self::IQ4_NL => "IQ4_NL",
+            Self::IQ3_S => "IQ3_S",
+            Self::IQ2_S => "IQ2_S",
+            Self::IQ4_XS => "IQ4_XS",
+            Self::I8 => "I8",
+            Self::I16 => "I16",
+            Self::I32 => "I32",
+            Self::I64 => "I64",
+            Self::F64 => "F64",
+            Self::BF16 => "BF16",
+        }
+    }
+}
+
+/// GGUF metadata value
+#[derive(Clone, Debug)]
+pub enum GgufValue {
+    U8(u8),
+    I8(i8),
+    U16(u16),
+    I16(i16),
+    U32(u32),
+    I32(i32),
+    U64(u64),
+    I64(i64),
+    F32(f32),
+    F64(f64),
+    Bool(bool),
+    String(String),
+    Array(Vec<GgufValue>),
+}
+
+impl GgufValue {
+    pub fn as_string(&self) -> Option<&str> {
+        match self {
+            Self::String(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn as_u32(&self) -> Option<u32> {
+        match self {
+            Self::U32(v) => Some(*v),
+            Self::U64(v) => Some(*v as u32),
+            Self::I32(v) => Some(*v as u32),
+            _ => None,
+        }
+    }
+
+    pub fn as_u64(&self) -> Option<u64> {
+        match self {
+            Self::U64(v) => Some(*v),
+            Self::U32(v) => Some(*v as u64),
+            _ => None,
+        }
+    }
+
+    pub fn as_f32(&self) -> Option<f32> {
+        match self {
+            Self::F32(v) => Some(*v),
+            Self::F64(v) => Some(*v as f32),
+            _ => None,
+        }
+    }
+
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Self::Bool(v) => Some(*v),
+            _ => None,
+        }
+    }
+}
+
+// ============================================================================
+// GGUF Tensor Info
+// ============================================================================
+
+/// GGUF tensor descriptor
+#[derive(Clone, Debug)]
+pub struct GgufTensorInfo {
+    pub name: String,
+    pub dimensions: Vec<u64>,
+    pub tensor_type: GgufTensorType,
+    pub offset: u64,
+}
+
+impl GgufTensorInfo {
+    /// Get number of elements
+    pub fn num_elements(&self) -> u64 {
+        self.dimensions.iter().product()
+    }
+
+    /// Get tensor size in bytes
+    pub fn byte_size(&self) -> u64 {
+        let n_elements = self.num_elements()
+        let block_size = self.tensor_type.block_size() as u64
+        let n_blocks = (n_elements + block_size - 1) / block_size
+        n_blocks * (self.tensor_type.bytes_per_block() as u64)
+    }
+}
+
+// ============================================================================
+// GGUF Header
+// ============================================================================
+
+/// GGUF file header
+#[derive(Clone, Debug)]
+pub struct GgufHeader {
+    pub version: u32,
+    pub tensor_count: u64,
+    pub metadata_kv_count: u64,
+}
+
+// ============================================================================
+// GGUF Reader
+// ============================================================================
+
+/// GGUF file reader
+pub struct GgufReader {
+    file: File,
+    header: GgufHeader,
+    metadata: HashMap<String, GgufValue>,
+    tensors: HashMap<String, GgufTensorInfo>,
+    data_offset: u64,
+    alignment: u64,
+}
+
+impl GgufReader {
+    /// Open a GGUF file
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self!> {
+        let mut file! = File::open(path.as_ref()).map_err(|e| InfernumError::IoError {
+            message: format!("Failed to open GGUF file: {}", e),
+        })?
+
+        // Read and verify magic
+        let magic! = Self::read_u32(&mut file)?
+        if magic != GGUF_MAGIC {
+            return Err(InfernumError::InvalidFormat {
+                message: format!("Invalid GGUF magic: {:x}", magic),
+            })
+        }
+
+        // Read version
+        let version! = Self::read_u32(&mut file)?
+        if !GGUF_SUPPORTED_VERSIONS.contains(&version) {
+            return Err(InfernumError::InvalidFormat {
+                message: format!("Unsupported GGUF version: {}", version),
+            })
+        }
+
+        // Read counts
+        let tensor_count! = Self::read_u64(&mut file)?
+        let metadata_kv_count! = Self::read_u64(&mut file)?
+
+        let header = GgufHeader {
+            version,
+            tensor_count,
+            metadata_kv_count,
+        }
+
+        // Read metadata
+        let mut metadata = HashMap::new()
+        for _ in 0..metadata_kv_count {
+            let (key, value)! = Self::read_metadata_kv(&mut file, version)?
+            metadata.insert(key, value)
+        }
+
+        // Get alignment (default 32)
+        let alignment = metadata.get("general.alignment")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(32)
+
+        // Read tensor info
+        let mut tensors = HashMap::new()
+        for _ in 0..tensor_count {
+            let info! = Self::read_tensor_info(&mut file, version)?
+            tensors.insert(info.name.clone(), info)
+        }
+
+        // Calculate data offset (aligned)
+        let current_pos! = file.stream_position().map_err(|e| InfernumError::IoError {
+            message: format!("Failed to get position: {}", e),
+        })?
+
+        let data_offset = (current_pos + alignment - 1) / alignment * alignment
+
+        Ok(Self {
+            file,
+            header,
+            metadata,
+            tensors,
+            data_offset,
+            alignment,
+        })
+    }
+
+    /// Read u32 from file
+    fn read_u32(file: &mut File) -> Result<u32!> {
+        let mut buf = [0u8; 4]
+        file.read_exact(&mut buf).map_err(|e| InfernumError::IoError {
+            message: format!("Failed to read u32: {}", e),
+        })?
+        Ok(u32::from_le_bytes(buf))
+    }
+
+    /// Read u64 from file
+    fn read_u64(file: &mut File) -> Result<u64!> {
+        let mut buf = [0u8; 8]
+        file.read_exact(&mut buf).map_err(|e| InfernumError::IoError {
+            message: format!("Failed to read u64: {}", e),
+        })?
+        Ok(u64::from_le_bytes(buf))
+    }
+
+    /// Read string from file
+    fn read_string(file: &mut File, version: u32) -> Result<String!> {
+        let len = if version >= 2 {
+            Self::read_u64(file)? as usize
+        } else {
+            Self::read_u32(file)? as usize
+        }
+
+        let mut buf = vec![0u8; len]
+        file.read_exact(&mut buf).map_err(|e| InfernumError::IoError {
+            message: format!("Failed to read string: {}", e),
+        })?
+
+        String::from_utf8(buf).map_err(|_| InfernumError::InvalidFormat {
+            message: "Invalid UTF-8 string".to_string(),
+        })
+    }
+
+    /// Read metadata key-value pair
+    fn read_metadata_kv(file: &mut File, version: u32) -> Result<(String, GgufValue)!> {
+        let key! = Self::read_string(file, version)?
+        let value_type! = Self::read_u32(file)?
+        let value! = Self::read_value(file, value_type, version)?
+
+        Ok((key, value))
+    }
+
+    /// Read a value of given type
+    fn read_value(file: &mut File, value_type: u32, version: u32) -> Result<GgufValue!> {
+        let vtype = GgufValueType::from_u32(value_type).ok_or_else(|| InfernumError::InvalidFormat {
+            message: format!("Unknown value type: {}", value_type),
+        })?
+
+        match vtype {
+            GgufValueType::U8 => {
+                let mut buf = [0u8; 1]
+                file.read_exact(&mut buf).map_err(|e| InfernumError::IoError {
+                    message: format!("Failed to read u8: {}", e),
+                })?
+                Ok(GgufValue::U8(buf[0]))
+            },
+            GgufValueType::I8 => {
+                let mut buf = [0u8; 1]
+                file.read_exact(&mut buf).map_err(|e| InfernumError::IoError {
+                    message: format!("Failed to read i8: {}", e),
+                })?
+                Ok(GgufValue::I8(buf[0] as i8))
+            },
+            GgufValueType::U16 => {
+                let mut buf = [0u8; 2]
+                file.read_exact(&mut buf).map_err(|e| InfernumError::IoError {
+                    message: format!("Failed to read u16: {}", e),
+                })?
+                Ok(GgufValue::U16(u16::from_le_bytes(buf)))
+            },
+            GgufValueType::I16 => {
+                let mut buf = [0u8; 2]
+                file.read_exact(&mut buf).map_err(|e| InfernumError::IoError {
+                    message: format!("Failed to read i16: {}", e),
+                })?
+                Ok(GgufValue::I16(i16::from_le_bytes(buf)))
+            },
+            GgufValueType::U32 => {
+                Ok(GgufValue::U32(Self::read_u32(file)?))
+            },
+            GgufValueType::I32 => {
+                let mut buf = [0u8; 4]
+                file.read_exact(&mut buf).map_err(|e| InfernumError::IoError {
+                    message: format!("Failed to read i32: {}", e),
+                })?
+                Ok(GgufValue::I32(i32::from_le_bytes(buf)))
+            },
+            GgufValueType::U64 => {
+                Ok(GgufValue::U64(Self::read_u64(file)?))
+            },
+            GgufValueType::I64 => {
+                let mut buf = [0u8; 8]
+                file.read_exact(&mut buf).map_err(|e| InfernumError::IoError {
+                    message: format!("Failed to read i64: {}", e),
+                })?
+                Ok(GgufValue::I64(i64::from_le_bytes(buf)))
+            },
+            GgufValueType::F32 => {
+                let mut buf = [0u8; 4]
+                file.read_exact(&mut buf).map_err(|e| InfernumError::IoError {
+                    message: format!("Failed to read f32: {}", e),
+                })?
+                Ok(GgufValue::F32(f32::from_le_bytes(buf)))
+            },
+            GgufValueType::F64 => {
+                let mut buf = [0u8; 8]
+                file.read_exact(&mut buf).map_err(|e| InfernumError::IoError {
+                    message: format!("Failed to read f64: {}", e),
+                })?
+                Ok(GgufValue::F64(f64::from_le_bytes(buf)))
+            },
+            GgufValueType::Bool => {
+                let mut buf = [0u8; 1]
+                file.read_exact(&mut buf).map_err(|e| InfernumError::IoError {
+                    message: format!("Failed to read bool: {}", e),
+                })?
+                Ok(GgufValue::Bool(buf[0] != 0))
+            },
+            GgufValueType::String => {
+                let s! = Self::read_string(file, version)?
+                Ok(GgufValue::String(s))
+            },
+            GgufValueType::Array => {
+                let array_type! = Self::read_u32(file)?
+                let len = if version >= 2 {
+                    Self::read_u64(file)? as usize
+                } else {
+                    Self::read_u32(file)? as usize
+                }
+
+                let mut array = Vec::with_capacity(len)
+                for _ in 0..len {
+                    let value! = Self::read_value(file, array_type, version)?
+                    array.push(value)
+                }
+
+                Ok(GgufValue::Array(array))
+            },
+        }
+    }
+
+    /// Read tensor info
+    fn read_tensor_info(file: &mut File, version: u32) -> Result<GgufTensorInfo!> {
+        let name! = Self::read_string(file, version)?
+
+        // Read dimensions
+        let n_dims! = Self::read_u32(file)? as usize
+        let mut dimensions = Vec::with_capacity(n_dims)
+        for _ in 0..n_dims {
+            dimensions.push(Self::read_u64(file)?)
+        }
+
+        // Read tensor type
+        let tensor_type_raw! = Self::read_u32(file)?
+        let tensor_type = GgufTensorType::from_u32(tensor_type_raw)
+            .ok_or_else(|| InfernumError::InvalidFormat {
+                message: format!("Unknown tensor type: {}", tensor_type_raw),
+            })?
+
+        // Read offset
+        let offset! = Self::read_u64(file)?
+
+        Ok(GgufTensorInfo {
+            name,
+            dimensions,
+            tensor_type,
+            offset,
+        })
+    }
+
+    // ========================================================================
+    // Public API
+    // ========================================================================
+
+    /// Get GGUF version
+    pub fn version(&self) -> u32 {
+        self.header.version
+    }
+
+    /// Get metadata value
+    pub fn metadata(&self, key: &str) -> Option<&GgufValue> {
+        self.metadata.get(key)
+    }
+
+    /// Get all metadata keys
+    pub fn metadata_keys(&self) -> Vec<&str> {
+        self.metadata.keys().map(|s| s.as_str()).collect()
+    }
+
+    /// Get tensor info
+    pub fn tensor_info(&self, name: &str) -> Option<&GgufTensorInfo> {
+        self.tensors.get(name)
+    }
+
+    /// Get all tensor names
+    pub fn tensor_names(&self) -> Vec<&str> {
+        self.tensors.keys().map(|s| s.as_str()).collect()
+    }
+
+    /// Get tensor count
+    pub fn tensor_count(&self) -> u64 {
+        self.header.tensor_count
+    }
+
+    /// Read tensor data as bytes
+    pub fn read_tensor_bytes(&mut self, name: &str) -> Result<Vec<u8>!> {
+        let info! = self.tensors.get(name).ok_or_else(|| InfernumError::NotFound {
+            what: format!("Tensor: {}", name),
+        })?.clone()
+
+        let absolute_offset = self.data_offset + info.offset
+        self.file.seek(SeekFrom::Start(absolute_offset)).map_err(|e| InfernumError::IoError {
+            message: format!("Failed to seek: {}", e),
+        })?
+
+        let size = info.byte_size() as usize
+        let mut data = vec![0u8; size]
+        self.file.read_exact(&mut data).map_err(|e| InfernumError::IoError {
+            message: format!("Failed to read tensor: {}", e),
+        })?
+
+        Ok(data)
+    }
+
+    /// Get model architecture
+    pub fn architecture(&self) -> Option<&str> {
+        self.metadata("general.architecture")?.as_string()
+    }
+
+    /// Get model name
+    pub fn model_name(&self) -> Option<&str> {
+        self.metadata("general.name")?.as_string()
+    }
+
+    /// Get quantization type (from first weight tensor)
+    pub fn quantization_type(&self) -> Option<GgufTensorType> {
+        for (name, info) in &self.tensors {
+            if name.contains("weight") {
+                return Some(info.tensor_type)
+            }
+        }
+        None
+    }
+
+    /// Get context length
+    pub fn context_length(&self) -> Option<u32> {
+        self.metadata.get("llama.context_length")
+            .or_else(|| self.metadata.get("qwen2.context_length"))
+            .or_else(|| self.metadata.get("mistral.context_length"))
+            .and_then(|v| v.as_u32())
+    }
+
+    /// Get embedding length (hidden size)
+    pub fn embedding_length(&self) -> Option<u32> {
+        self.metadata.get("llama.embedding_length")
+            .or_else(|| self.metadata.get("qwen2.embedding_length"))
+            .or_else(|| self.metadata.get("mistral.embedding_length"))
+            .and_then(|v| v.as_u32())
+    }
+
+    /// Get number of layers
+    pub fn num_layers(&self) -> Option<u32> {
+        self.metadata.get("llama.block_count")
+            .or_else(|| self.metadata.get("qwen2.block_count"))
+            .or_else(|| self.metadata.get("mistral.block_count"))
+            .and_then(|v| v.as_u32())
+    }
+
+    /// Get vocab size
+    pub fn vocab_size(&self) -> Option<u32> {
+        self.metadata.get("llama.vocab_size")
+            .or_else(|| self.metadata.get("tokenizer.ggml.tokens"))
+            .and_then(|v| match v {
+                GgufValue::U32(n) => Some(*n),
+                GgufValue::Array(arr) => Some(arr.len() as u32),
+                _ => None,
+            })
+    }
+}
+
+// ============================================================================
+// GGUF Model Config
+// ============================================================================
+
+/// Parsed GGUF model configuration
+#[derive(Clone, Debug)]
+pub struct GgufModelConfig {
+    pub architecture: String,
+    pub name: Option<String>,
+    pub quantization: GgufTensorType,
+    pub vocab_size: u32,
+    pub context_length: u32,
+    pub embedding_length: u32,
+    pub num_layers: u32,
+    pub num_attention_heads: u32,
+    pub num_kv_heads: Option<u32>,
+    pub rope_theta: Option<f32>,
+    pub rope_scaling: Option<f32>,
+}
+
+impl GgufModelConfig {
+    /// Extract config from GGUF reader
+    pub fn from_reader(reader: &GgufReader) -> Result<Self!> {
+        let architecture = reader.architecture()
+            .ok_or_else(|| InfernumError::InvalidFormat {
+                message: "Missing architecture".to_string(),
+            })?
+            .to_string()
+
+        let quantization = reader.quantization_type()
+            .unwrap_or(GgufTensorType::F16)
+
+        let vocab_size = reader.vocab_size().unwrap_or(32000)
+        let context_length = reader.context_length().unwrap_or(4096)
+        let embedding_length = reader.embedding_length().unwrap_or(4096)
+        let num_layers = reader.num_layers().unwrap_or(32)
+
+        let prefix = &architecture
+        let num_attention_heads = reader.metadata(&format!("{}.attention.head_count", prefix))
+            .or_else(|| reader.metadata(&format!("{}.head_count", prefix)))
+            .and_then(|v| v.as_u32())
+            .unwrap_or(32)
+
+        let num_kv_heads = reader.metadata(&format!("{}.attention.head_count_kv", prefix))
+            .or_else(|| reader.metadata(&format!("{}.head_count_kv", prefix)))
+            .and_then(|v| v.as_u32())
+
+        let rope_theta = reader.metadata(&format!("{}.rope.freq_base", prefix))
+            .and_then(|v| v.as_f32())
+
+        let rope_scaling = reader.metadata(&format!("{}.rope.scaling.factor", prefix))
+            .and_then(|v| v.as_f32())
+
+        Ok(Self {
+            architecture,
+            name: reader.model_name().map(|s| s.to_string()),
+            quantization,
+            vocab_size,
+            context_length,
+            embedding_length,
+            num_layers,
+            num_attention_heads,
+            num_kv_heads,
+            rope_theta,
+            rope_scaling,
+        })
+    }
+}
+
+// ============================================================================
+// Convenience Functions
+// ============================================================================
+
+/// Load GGUF file
+pub fn load<P: AsRef<Path>>(path: P) -> Result<GgufReader!> {
+    GgufReader::open(path)
+}
+
+/// Get model config from GGUF file
+pub fn model_config<P: AsRef<Path>>(path: P) -> Result<GgufModelConfig!> {
+    let reader! = GgufReader::open(path)?
+    GgufModelConfig::from_reader(&reader)
+}
+
+/// List tensors in GGUF file
+pub fn list_tensors<P: AsRef<Path>>(path: P) -> Result<Vec<String>!> {
+    let reader! = GgufReader::open(path)?
+    Ok(reader.tensor_names().into_iter().map(|s| s.to_string()).collect())
+}

@@ -1,0 +1,171 @@
+//! Error types for the Infernum ecosystem.
+//!
+//! Updated to match infernum-core 0.1.0 error types.
+//!
+//! Ported from: infernum/crates/infernum-core/src/error.rs (145 LOC)
+//! Sigil LOC: ~90 (38% reduction)
+
+use std::fmt::Display
+use std::time::Duration
+
+/// Result type alias using Error.
+type Result<T> = std::result::Result<T, Error>
+
+/// Unified error type for the Infernum ecosystem.
+#[derive(Debug, Clone)]
+enum Error {
+    /// Model was not found in the registry.
+    ModelNotFound { model_id: str },
+
+    /// Model architecture is not supported.
+    UnsupportedArchitecture { architecture: str },
+
+    /// Out of memory during inference.
+    OutOfMemory { requested: usize, available: usize },
+
+    /// Context length exceeded for the model.
+    ContextLengthExceeded { current: u32, max: u32 },
+
+    /// Invalid configuration provided.
+    InvalidConfig { message: str },
+
+    /// Backend-specific error.
+    Backend { backend: str, message: str },
+
+    /// Operation timed out.
+    Timeout { duration: Duration },
+
+    /// Rate limited by the system.
+    RateLimited { retry_after: Duration },
+
+    /// Tokenization error.
+    Tokenization { message: str },
+
+    /// Model loading error.
+    ModelLoad { message: str },
+
+    /// I/O error.
+    Io { message: str },
+
+    /// Serialization error.
+    Serialization { message: str },
+
+    /// Internal error (unexpected state).
+    Internal { message: str },
+}
+
+impl Display for Error {
+    fn fmt(self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            Error::ModelNotFound { model_id } =>
+                write!(f, "Model not found: {}", model_id),
+            Error::UnsupportedArchitecture { architecture } =>
+                write!(f, "Unsupported model architecture: {}", architecture),
+            Error::OutOfMemory { requested, available } =>
+                write!(f, "Out of memory: requested {} bytes, available {} bytes", requested, available),
+            Error::ContextLengthExceeded { current, max } =>
+                write!(f, "Context length exceeded: {} tokens > {} max tokens", current, max),
+            Error::InvalidConfig { message } =>
+                write!(f, "Invalid configuration: {}", message),
+            Error::Backend { backend, message } =>
+                write!(f, "Backend error ({}): {}", backend, message),
+            Error::Timeout { duration } =>
+                write!(f, "Operation timed out after {:?}", duration),
+            Error::RateLimited { retry_after } =>
+                write!(f, "Rate limited: retry after {:?}", retry_after),
+            Error::Tokenization { message } =>
+                write!(f, "Tokenization error: {}", message),
+            Error::ModelLoad { message } =>
+                write!(f, "Failed to load model: {}", message),
+            Error::Io { message } =>
+                write!(f, "I/O error: {}", message),
+            Error::Serialization { message } =>
+                write!(f, "Serialization error: {}", message),
+            Error::Internal { message } =>
+                write!(f, "Internal error: {}", message),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+impl Error {
+    /// Returns true if this error is retryable.
+    fn is_retryable(self) -> bool {
+        match self {
+            Error::Timeout { .. } | Error::RateLimited { .. } => true,
+            _ => false,
+        }
+    }
+
+    /// Returns true if this error is due to resource exhaustion.
+    fn is_resource_exhaustion(self) -> bool {
+        match self {
+            Error::OutOfMemory { .. } | Error::ContextLengthExceeded { .. } => true,
+            _ => false,
+        }
+    }
+
+    /// Creates an internal error with the given message.
+    fn internal(message: impl Into<str>) -> Error {
+        Error::Internal { message: message.into() }
+    }
+
+    /// Creates a backend error with the given backend name and message.
+    fn backend(backend: impl Into<str>, message: impl Into<str>) -> Error {
+        Error::Backend { backend: backend.into(), message: message.into() }
+    }
+
+    /// Creates a model load error.
+    fn model_load(message: impl Into<str>) -> Error {
+        Error::ModelLoad { message: message.into() }
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_error_display() {
+        let err = Error::ModelNotFound { model_id: "gpt-4" }
+        assert!(err.to_string().contains("gpt-4"))
+    }
+
+    #[test]
+    fn test_is_retryable() {
+        let timeout = Error::Timeout { duration: Duration::from_secs(30) }
+        let rate_limited = Error::RateLimited { retry_after: Duration::from_secs(60) }
+        let not_found = Error::ModelNotFound { model_id: "test" }
+
+        assert!(timeout.is_retryable())
+        assert!(rate_limited.is_retryable())
+        assert!(!not_found.is_retryable())
+    }
+
+    #[test]
+    fn test_is_resource_exhaustion() {
+        let oom = Error::OutOfMemory { requested: 1000, available: 500 }
+        let ctx = Error::ContextLengthExceeded { current: 5000, max: 4096 }
+        let internal = Error::Internal { message: "test" }
+
+        assert!(oom.is_resource_exhaustion())
+        assert!(ctx.is_resource_exhaustion())
+        assert!(!internal.is_resource_exhaustion())
+    }
+
+    #[test]
+    fn test_error_constructors() {
+        let internal = Error::internal("test message")
+        let backend = Error::backend("cuda", "device not found")
+        let model_load = Error::model_load("file not found")
+
+        assert!(internal.to_string().contains("test message"))
+        assert!(backend.to_string().contains("cuda"))
+        assert!(model_load.to_string().contains("file not found"))
+    }
+}

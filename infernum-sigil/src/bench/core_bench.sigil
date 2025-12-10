@@ -1,0 +1,543 @@
+/// Core Module Benchmarks
+///
+/// Benchmarks for core types, tensor operations, and basic inference.
+
+use crate::bench::config::{BenchmarkMeta, BenchmarkCategory, BenchmarkSizes}
+use crate::bench::runner::{Benchmark, black_box}
+use crate::core::error::Result
+
+// ============================================================================
+// Tensor Benchmarks
+// ============================================================================
+
+/// Tensor creation benchmark
+pub struct TensorCreateBench {
+    sizes: BenchmarkSizes,
+    size_name: String,
+}
+
+impl TensorCreateBench {
+    pub fn small() -> Self {
+        Self {
+            sizes: BenchmarkSizes::standard(),
+            size_name: "small".to_string(),
+        }
+    }
+
+    pub fn medium() -> Self {
+        Self {
+            sizes: BenchmarkSizes::standard(),
+            size_name: "medium".to_string(),
+        }
+    }
+
+    pub fn large() -> Self {
+        Self {
+            sizes: BenchmarkSizes::standard(),
+            size_name: "large".to_string(),
+        }
+    }
+}
+
+impl Benchmark for TensorCreateBench {
+    fn meta(&self) -> BenchmarkMeta {
+        BenchmarkMeta::new(
+            &format!("tensor_create_{}", self.size_name),
+            BenchmarkCategory::Core,
+        )
+        .description("Tensor allocation and initialization")
+        .tag("tensor")
+        .tag("memory")
+    }
+
+    fn run(&mut self) -> Result<()!> {
+        let size = match self.size_name.as_str() {
+            "small" => &self.sizes.small,
+            "medium" => &self.sizes.medium,
+            "large" => &self.sizes.large,
+            _ => &self.sizes.medium,
+        }
+
+        // Simulate tensor creation
+        let data: Vec<f32> = vec![0.0; (size.batch * size.hidden_dim * size.hidden_dim) as usize]
+        black_box(&data);
+        Ok(())
+    }
+}
+
+/// Matrix multiplication benchmark
+pub struct MatmulBench {
+    m: u32,
+    n: u32,
+    k: u32,
+    data_a: Vec<f32>,
+    data_b: Vec<f32>,
+}
+
+impl MatmulBench {
+    pub fn new(m: u32, n: u32, k: u32) -> Self {
+        Self {
+            m,
+            n,
+            k,
+            data_a: Vec::new(),
+            data_b: Vec::new(),
+        }
+    }
+
+    pub fn small() -> Self {
+        Self::new(64, 64, 64)
+    }
+
+    pub fn medium() -> Self {
+        Self::new(512, 512, 512)
+    }
+
+    pub fn large() -> Self {
+        Self::new(2048, 2048, 2048)
+    }
+}
+
+impl Benchmark for MatmulBench {
+    fn meta(&self) -> BenchmarkMeta {
+        let size = if self.m <= 128 { "small" }
+            else if self.m <= 1024 { "medium" }
+            else { "large" }
+
+        BenchmarkMeta::new(
+            &format!("matmul_{}x{}x{}_{}", self.m, self.n, self.k, size),
+            BenchmarkCategory::Core,
+        )
+        .description(&format!("Matrix multiply {}x{}x{}", self.m, self.n, self.k))
+        .tag("matmul")
+        .tag("compute")
+    }
+
+    fn setup(&mut self) -> Result<()!> {
+        self.data_a = (0..(self.m * self.k)).map(|i| i as f32 * 0.001).collect()
+        self.data_b = (0..(self.k * self.n)).map(|i| i as f32 * 0.001).collect()
+        Ok(())
+    }
+
+    fn run(&mut self) -> Result<()!> {
+        // Naive matmul (would use optimized implementation)
+        let mut result = vec![0.0f32; (self.m * self.n) as usize]
+
+        for i in 0..self.m {
+            for j in 0..self.n {
+                let mut sum = 0.0f32
+                for kk in 0..self.k {
+                    sum += self.data_a[(i * self.k + kk) as usize]
+                        * self.data_b[(kk * self.n + j) as usize]
+                }
+                result[(i * self.n + j) as usize] = sum
+            }
+        }
+
+        black_box(&result);
+        Ok(())
+    }
+}
+
+/// Softmax benchmark
+pub struct SoftmaxBench {
+    batch: u32,
+    seq_len: u32,
+    data: Vec<f32>,
+}
+
+impl SoftmaxBench {
+    pub fn new(batch: u32, seq_len: u32) -> Self {
+        Self {
+            batch,
+            seq_len,
+            data: Vec::new(),
+        }
+    }
+
+    pub fn small() -> Self {
+        Self::new(1, 512)
+    }
+
+    pub fn medium() -> Self {
+        Self::new(4, 2048)
+    }
+
+    pub fn large() -> Self {
+        Self::new(8, 8192)
+    }
+}
+
+impl Benchmark for SoftmaxBench {
+    fn meta(&self) -> BenchmarkMeta {
+        BenchmarkMeta::new(
+            &format!("softmax_{}x{}", self.batch, self.seq_len),
+            BenchmarkCategory::Core,
+        )
+        .description("Softmax activation")
+        .tag("activation")
+        .tag("numerics")
+    }
+
+    fn setup(&mut self) -> Result<()!> {
+        self.data = (0..(self.batch * self.seq_len))
+            .map(|i| (i as f32 * 0.01).sin())
+            .collect()
+        Ok(())
+    }
+
+    fn run(&mut self) -> Result<()!> {
+        let mut result = self.data.clone()
+
+        for b in 0..self.batch {
+            let start = (b * self.seq_len) as usize
+            let end = start + self.seq_len as usize
+
+            // Find max for numerical stability
+            let max = result[start..end].iter().cloned().fold(f32::NEG_INFINITY, f32::max)
+
+            // Exp and sum
+            let mut sum = 0.0f32
+            for i in start..end {
+                result[i] = (result[i] - max).exp()
+                sum += result[i]
+            }
+
+            // Normalize
+            for i in start..end {
+                result[i] /= sum
+            }
+        }
+
+        black_box(&result);
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Tokenization Benchmarks
+// ============================================================================
+
+/// Tokenization benchmark
+pub struct TokenizeBench {
+    text: String,
+    vocab_size: u32,
+}
+
+impl TokenizeBench {
+    pub fn short() -> Self {
+        Self {
+            text: "Hello, world! This is a test.".to_string(),
+            vocab_size: 32000,
+        }
+    }
+
+    pub fn medium() -> Self {
+        Self {
+            text: "The quick brown fox jumps over the lazy dog. ".repeat(100),
+            vocab_size: 32000,
+        }
+    }
+
+    pub fn long() -> Self {
+        Self {
+            text: "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ".repeat(1000),
+            vocab_size: 32000,
+        }
+    }
+}
+
+impl Benchmark for TokenizeBench {
+    fn meta(&self) -> BenchmarkMeta {
+        let len = self.text.len()
+        let size = if len < 100 { "short" }
+            else if len < 10000 { "medium" }
+            else { "long" }
+
+        BenchmarkMeta::new(
+            &format!("tokenize_{}", size),
+            BenchmarkCategory::Core,
+        )
+        .description(&format!("Tokenize {} chars", len))
+        .tag("tokenizer")
+        .tag("text")
+    }
+
+    fn run(&mut self) -> Result<()!> {
+        // Simulate BPE tokenization (simplified)
+        let mut tokens = Vec::new()
+        let bytes = self.text.as_bytes()
+
+        let mut i = 0
+        while i < bytes.len() {
+            // Simulate token lookup (would use actual BPE)
+            let token_len = (1..=4)
+                .rev()
+                .find(|&l| i + l <= bytes.len())
+                .unwrap_or(1)
+
+            let token_id = bytes[i..i + token_len]
+                .iter()
+                .fold(0u32, |acc, &b| acc.wrapping_mul(256).wrapping_add(b as u32))
+                % self.vocab_size
+
+            tokens.push(token_id)
+            i += token_len
+        }
+
+        black_box(&tokens);
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Sampling Benchmarks
+// ============================================================================
+
+/// Sampling benchmark
+pub struct SamplingBench {
+    vocab_size: u32,
+    top_k: u32,
+    top_p: f32,
+    logits: Vec<f32>,
+}
+
+impl SamplingBench {
+    pub fn new(vocab_size: u32, top_k: u32, top_p: f32) -> Self {
+        Self {
+            vocab_size,
+            top_k,
+            top_p,
+            logits: Vec::new(),
+        }
+    }
+
+    pub fn greedy() -> Self {
+        Self::new(32000, 1, 1.0)
+    }
+
+    pub fn top_k_40() -> Self {
+        Self::new(32000, 40, 1.0)
+    }
+
+    pub fn top_p_0_9() -> Self {
+        Self::new(32000, 0, 0.9)
+    }
+
+    pub fn combined() -> Self {
+        Self::new(32000, 40, 0.9)
+    }
+}
+
+impl Benchmark for SamplingBench {
+    fn meta(&self) -> BenchmarkMeta {
+        let name = if self.top_k == 1 {
+            "greedy".to_string()
+        } else if self.top_k > 0 && self.top_p < 1.0 {
+            format!("top_k{}_top_p{:.1}", self.top_k, self.top_p)
+        } else if self.top_k > 0 {
+            format!("top_k{}", self.top_k)
+        } else {
+            format!("top_p{:.1}", self.top_p)
+        }
+
+        BenchmarkMeta::new(
+            &format!("sampling_{}", name),
+            BenchmarkCategory::Core,
+        )
+        .description("Token sampling")
+        .tag("sampling")
+        .tag("inference")
+    }
+
+    fn setup(&mut self) -> Result<()!> {
+        // Generate random logits
+        self.logits = (0..self.vocab_size)
+            .map(|i| ((i as f32 * 0.1).sin() * 10.0))
+            .collect()
+        Ok(())
+    }
+
+    fn run(&mut self) -> Result<()!> {
+        let mut logits = self.logits.clone()
+
+        // Apply softmax
+        let max = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
+        let sum: f32 = logits.iter().map(|x| (x - max).exp()).sum()
+        for l in logits.iter_mut() {
+            *l = (*l - max).exp() / sum
+        }
+
+        // Top-k filtering
+        if self.top_k > 0 && self.top_k < self.vocab_size {
+            let mut indexed: Vec<(usize, f32)> = logits.iter().cloned().enumerate().collect()
+            indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap())
+
+            for (idx, _) in indexed.iter().skip(self.top_k as usize) {
+                logits[*idx] = 0.0
+            }
+
+            // Renormalize
+            let sum: f32 = logits.iter().sum()
+            for l in logits.iter_mut() {
+                *l /= sum
+            }
+        }
+
+        // Top-p filtering
+        if self.top_p < 1.0 {
+            let mut indexed: Vec<(usize, f32)> = logits.iter().cloned().enumerate().collect()
+            indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap())
+
+            let mut cumsum = 0.0f32
+            for (idx, prob) in indexed {
+                if cumsum >= self.top_p {
+                    logits[idx] = 0.0
+                } else {
+                    cumsum += prob
+                }
+            }
+
+            // Renormalize
+            let sum: f32 = logits.iter().sum()
+            if sum > 0.0 {
+                for l in logits.iter_mut() {
+                    *l /= sum
+                }
+            }
+        }
+
+        // Sample (simplified)
+        let r = 0.5f32  // Would use actual random
+        let mut cumsum = 0.0f32
+        let mut sampled = 0u32
+        for (i, &p) in logits.iter().enumerate() {
+            cumsum += p
+            if cumsum >= r {
+                sampled = i as u32
+                break
+            }
+        }
+
+        black_box(sampled);
+        Ok(())
+    }
+}
+
+// ============================================================================
+// KV Cache Benchmarks
+// ============================================================================
+
+/// KV Cache benchmark
+pub struct KVCacheBench {
+    batch: u32,
+    num_layers: u32,
+    num_heads: u32,
+    head_dim: u32,
+    seq_len: u32,
+    cache_k: Vec<Vec<f32>>,
+    cache_v: Vec<Vec<f32>>,
+}
+
+impl KVCacheBench {
+    pub fn new(batch: u32, num_layers: u32, num_heads: u32, head_dim: u32, seq_len: u32) -> Self {
+        Self {
+            batch,
+            num_layers,
+            num_heads,
+            head_dim,
+            seq_len,
+            cache_k: Vec::new(),
+            cache_v: Vec::new(),
+        }
+    }
+
+    pub fn small() -> Self {
+        Self::new(1, 12, 12, 64, 512)
+    }
+
+    pub fn medium() -> Self {
+        Self::new(1, 32, 32, 128, 2048)
+    }
+
+    pub fn large() -> Self {
+        Self::new(1, 80, 64, 128, 8192)
+    }
+}
+
+impl Benchmark for KVCacheBench {
+    fn meta(&self) -> BenchmarkMeta {
+        let size = if self.num_layers <= 12 { "small" }
+            else if self.num_layers <= 32 { "medium" }
+            else { "large" }
+
+        BenchmarkMeta::new(
+            &format!("kv_cache_{}", size),
+            BenchmarkCategory::Core,
+        )
+        .description(&format!("KV cache update {}L x {}H", self.num_layers, self.num_heads))
+        .tag("kvcache")
+        .tag("memory")
+    }
+
+    fn setup(&mut self) -> Result<()!> {
+        let cache_size = (self.batch * self.num_heads * self.seq_len * self.head_dim) as usize
+        self.cache_k = (0..self.num_layers).map(|_| vec![0.0f32; cache_size]).collect()
+        self.cache_v = (0..self.num_layers).map(|_| vec![0.0f32; cache_size]).collect()
+        Ok(())
+    }
+
+    fn run(&mut self) -> Result<()!> {
+        // Simulate KV cache update (append new KV)
+        let new_k: Vec<f32> = vec![1.0; (self.batch * self.num_heads * self.head_dim) as usize]
+        let new_v: Vec<f32> = vec![1.0; (self.batch * self.num_heads * self.head_dim) as usize]
+
+        for layer in 0..self.num_layers as usize {
+            // Would update cache at current position
+            let pos = 0usize  // Current position
+            let stride = (self.num_heads * self.head_dim) as usize
+
+            for i in 0..new_k.len() {
+                self.cache_k[layer][pos * stride + i] = new_k[i]
+                self.cache_v[layer][pos * stride + i] = new_v[i]
+            }
+        }
+
+        black_box(&self.cache_k);
+        Ok(())
+    }
+}
+
+// ============================================================================
+// All Core Benchmarks
+// ============================================================================
+
+pub fn all_core_benchmarks() -> Vec<Box<dyn Benchmark>> {
+    vec![
+        // Tensor creation
+        Box::new(TensorCreateBench::small()),
+        Box::new(TensorCreateBench::medium()),
+        Box::new(TensorCreateBench::large()),
+
+        // Matrix multiplication
+        Box::new(MatmulBench::small()),
+        Box::new(MatmulBench::medium()),
+
+        // Softmax
+        Box::new(SoftmaxBench::small()),
+        Box::new(SoftmaxBench::medium()),
+
+        // Tokenization
+        Box::new(TokenizeBench::short()),
+        Box::new(TokenizeBench::medium()),
+
+        // Sampling
+        Box::new(SamplingBench::greedy()),
+        Box::new(SamplingBench::top_k_40()),
+        Box::new(SamplingBench::top_p_0_9()),
+
+        // KV Cache
+        Box::new(KVCacheBench::small()),
+        Box::new(KVCacheBench::medium()),
+    ]
+}

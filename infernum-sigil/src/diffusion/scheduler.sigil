@@ -1,0 +1,1143 @@
+/// Noise Schedulers - Diffusion Process Control
+///
+/// Implements various noise scheduling algorithms for diffusion models:
+/// - DDPM: Denoising Diffusion Probabilistic Models (Ho et al.)
+/// - DDIM: Denoising Diffusion Implicit Models (Song et al.)
+/// - Euler: Euler method for ODEs
+/// - DPM-Solver: Fast ODE solver (Lu et al.)
+/// - Flow Matching: Rectified flow for SD3/Flux
+///
+/// Sigil features:
+/// - `computed!` for all scheduler outputs (verified numerical results)
+/// - `τ{}` morpheme for timestep sequence generation
+/// - `ρ+` for cumulative product calculations
+/// - `grad()` available for score-based formulations
+
+use core::tensor::{Tensor, DType, Device}
+use core::error::Result
+use diffusion::types::{LatentTensor, NoisePrediction, DiffusionTimestep}
+
+// ============================================================================
+// Scheduler Configuration
+// ============================================================================
+
+/// Scheduler type enumeration
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchedulerType {
+    /// Denoising Diffusion Probabilistic Models
+    DDPM,
+    /// Denoising Diffusion Implicit Models
+    DDIM,
+    /// Euler discrete method
+    Euler,
+    /// Euler ancestral (stochastic)
+    EulerAncestral,
+    /// DPM-Solver++ multistep
+    DPMSolverMultistep,
+    /// DPM-Solver++ SDE
+    DPMSolverSDE,
+    /// UniPC (Unified Predictor-Corrector)
+    UniPC,
+    /// Flow Matching (rectified flow)
+    FlowMatch,
+    /// LCM (Latent Consistency Models)
+    LCM,
+}
+
+/// Beta schedule type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BetaSchedule {
+    /// Linear schedule (SD 1.x)
+    Linear,
+    /// Scaled linear (SD 2.x+)
+    ScaledLinear,
+    /// Squaredcos with zero SNR
+    SquaredCosCapV2,
+    /// Sigmoid schedule
+    Sigmoid,
+}
+
+/// Prediction type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PredictionType {
+    /// Predict noise (epsilon)
+    Epsilon,
+    /// Predict velocity
+    VPrediction,
+    /// Predict sample directly
+    Sample,
+}
+
+/// Scheduler configuration
+#[derive(Debug, Clone)]
+pub struct SchedulerConfig {
+    /// Number of training timesteps
+    pub num_train_timesteps: u32 = 1000,
+
+    /// Beta start value
+    pub beta_start: f32 = 0.00085,
+
+    /// Beta end value
+    pub beta_end: f32 = 0.012,
+
+    /// Beta schedule type
+    pub beta_schedule: BetaSchedule = BetaSchedule::ScaledLinear,
+
+    /// Prediction type
+    pub prediction_type: PredictionType = PredictionType::Epsilon,
+
+    /// Clip sample range
+    pub clip_sample: bool = false,
+
+    /// Sample clipping range
+    pub clip_sample_range: f32 = 1.0,
+
+    /// Whether to rescale betas for zero terminal SNR
+    pub rescale_betas_zero_snr: bool = false,
+
+    /// Timestep spacing strategy
+    pub timestep_spacing: TimestepSpacing = TimestepSpacing::Leading,
+
+    /// Steps offset for certain models
+    pub steps_offset: u32 = 0,
+}
+
+/// Timestep spacing strategy
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimestepSpacing {
+    Leading,
+    Trailing,
+    Linspace,
+}
+
+impl SchedulerConfig {
+    /// Config for SD 1.x
+    pub fn sd_1x() -> Self {
+        Self {
+            num_train_timesteps: 1000,
+            beta_start: 0.00085,
+            beta_end: 0.012,
+            beta_schedule: BetaSchedule::ScaledLinear,
+            prediction_type: PredictionType::Epsilon,
+            ..Default::default()
+        }
+    }
+
+    /// Config for SD 2.x (v-prediction)
+    pub fn sd_2x() -> Self {
+        Self {
+            num_train_timesteps: 1000,
+            beta_start: 0.00085,
+            beta_end: 0.012,
+            beta_schedule: BetaSchedule::ScaledLinear,
+            prediction_type: PredictionType::VPrediction,
+            rescale_betas_zero_snr: true,
+            ..Default::default()
+        }
+    }
+
+    /// Config for SDXL
+    pub fn sdxl() -> Self {
+        Self {
+            num_train_timesteps: 1000,
+            beta_start: 0.00085,
+            beta_end: 0.012,
+            beta_schedule: BetaSchedule::ScaledLinear,
+            prediction_type: PredictionType::Epsilon,
+            ..Default::default()
+        }
+    }
+
+    /// Config for SD3/Flux (flow matching)
+    pub fn flow_matching() -> Self {
+        Self {
+            num_train_timesteps: 1000,
+            beta_start: 0.0,
+            beta_end: 1.0,
+            beta_schedule: BetaSchedule::Linear,
+            prediction_type: PredictionType::VPrediction,
+            timestep_spacing: TimestepSpacing::Linspace,
+            ..Default::default()
+        }
+    }
+}
+
+impl Default for SchedulerConfig {
+    fn default() -> Self {
+        Self::sdxl()
+    }
+}
+
+// ============================================================================
+// Scheduler Output
+// ============================================================================
+
+/// Output from a scheduler step
+#[derive(Debug, Clone)]
+pub struct SchedulerOutput! {
+    /// Previous sample (x_{t-1})
+    pub prev_sample!: Tensor,
+
+    /// Predicted original sample (x_0 prediction)
+    pub pred_original_sample!: Tensor?,
+
+    /// Derivative for higher-order methods
+    pub derivative!: Tensor?,
+}
+
+// ============================================================================
+// Noise Scheduler Trait
+// ============================================================================
+
+/// Common interface for all schedulers
+pub trait NoiseScheduler: Send + Sync {
+    /// Set number of inference timesteps
+    fn set_timesteps(mut self, num_inference_steps: u32, device: &Device)
+
+    /// Get timesteps for inference
+    fn timesteps(self) -> &[DiffusionTimestep]
+
+    /// Get initial noise scale
+    fn init_noise_sigma(self) -> f32
+
+    /// Scale model input if needed
+    fn scale_model_input(self, sample!: &Tensor, timestep: &DiffusionTimestep) -> Tensor!
+
+    /// Perform one denoising step
+    fn step(
+        self,
+        model_output!: &NoisePrediction!,
+        timestep: &DiffusionTimestep,
+        sample!: &Tensor,
+        generator?: &mut Generator,
+    ) -> Result<SchedulerOutput!>
+
+    /// Add noise to sample (for img2img)
+    fn add_noise(
+        self,
+        original!: &Tensor,
+        noise!: &Tensor,
+        timestep: &DiffusionTimestep,
+    ) -> Tensor!
+}
+
+// ============================================================================
+// DDPM Scheduler
+// ============================================================================
+
+/// DDPM scheduler (Denoising Diffusion Probabilistic Models)
+pub struct DDPMScheduler {
+    config: SchedulerConfig,
+    betas!: Tensor,
+    alphas!: Tensor,
+    alphas_cumprod!: Tensor,
+    timesteps: [DiffusionTimestep],
+    num_inference_steps?: u32,
+}
+
+impl DDPMScheduler {
+    pub fn new(config: SchedulerConfig, device: &Device) -> Result<Self> {
+        let betas! = compute_betas(&config, device)?
+        let alphas! = (1.0 - &betas!)?
+        let alphas_cumprod! = alphas!.cumprod(0)?
+
+        Ok(Self {
+            config,
+            betas!,
+            alphas!,
+            alphas_cumprod!,
+            timesteps: vec![],
+            num_inference_steps: None,
+        })
+    }
+}
+
+impl NoiseScheduler for DDPMScheduler {
+    fn set_timesteps(mut self, num_inference_steps: u32, device: &Device) {
+        self.num_inference_steps = Some(num_inference_steps)
+
+        let step_ratio = self.config.num_train_timesteps / num_inference_steps
+
+        self.timesteps = (0..num_inference_steps)
+            |rev
+            τ{ |i| {
+                let step = i * step_ratio + self.config.steps_offset
+                let alpha_cumprod = self.alphas_cumprod!.get_1d(step as usize)
+                DiffusionTimestep::from_step(step, self.config.num_train_timesteps, alpha_cumprod)
+            }}
+            |collect
+    }
+
+    fn timesteps(self) -> &[DiffusionTimestep] {
+        &self.timesteps
+    }
+
+    fn init_noise_sigma(self) -> f32 {
+        1.0
+    }
+
+    fn scale_model_input(self, sample!: &Tensor, _timestep: &DiffusionTimestep) -> Tensor! {
+        sample!.clone()
+    }
+
+    fn step(
+        self,
+        model_output!: &NoisePrediction!,
+        timestep: &DiffusionTimestep,
+        sample!: &Tensor,
+        generator?: &mut Generator,
+    ) -> Result<SchedulerOutput!> {
+        let t = timestep.step as usize
+
+        // Get coefficients
+        let alpha_prod_t = self.alphas_cumprod!.get_1d(t)
+        let alpha_prod_t_prev = if t > 0 {
+            self.alphas_cumprod!.get_1d(t - 1)
+        } else {
+            1.0
+        }
+        let beta_prod_t = 1.0 - alpha_prod_t
+        let beta_prod_t_prev = 1.0 - alpha_prod_t_prev
+
+        // Predict x_0
+        let pred_original_sample! = match self.config.prediction_type {
+            PredictionType::Epsilon => {
+                let sqrt_alpha = alpha_prod_t.sqrt()
+                let sqrt_beta = beta_prod_t.sqrt()
+                ((sample! - sqrt_beta * &model_output!.noise!)? / sqrt_alpha)?
+            }
+            PredictionType::VPrediction => {
+                let sqrt_alpha = alpha_prod_t.sqrt()
+                let sqrt_beta = beta_prod_t.sqrt()
+                (sqrt_alpha * sample! - sqrt_beta * &model_output!.noise!)?
+            }
+            PredictionType::Sample => {
+                model_output!.noise!.clone()
+            }
+        }
+
+        // Clip if configured
+        let pred_original_sample! = if self.config.clip_sample {
+            pred_original_sample!.clamp(-self.config.clip_sample_range, self.config.clip_sample_range)?
+        } else {
+            pred_original_sample!
+        }
+
+        // Compute coefficients for x_{t-1}
+        let sqrt_alpha_prev = alpha_prod_t_prev.sqrt()
+        let sqrt_beta_prev = beta_prod_t_prev.sqrt()
+
+        // Mean of q(x_{t-1} | x_t, x_0)
+        let pred_sample_coeff = sqrt_alpha_prev * (1.0 - alpha_prod_t / alpha_prod_t_prev).sqrt()
+        let current_sample_coeff = (alpha_prod_t / alpha_prod_t_prev).sqrt() * sqrt_beta_prev / beta_prod_t.sqrt()
+
+        let mean! = (pred_sample_coeff * &pred_original_sample! + current_sample_coeff * sample!)?
+
+        // Add noise (variance)
+        let prev_sample! = if t > 0 {
+            let variance = (1.0 - alpha_prod_t / alpha_prod_t_prev) * beta_prod_t_prev / beta_prod_t
+            let std = variance.sqrt()
+
+            let noise! = if let Some(gen) = generator {
+                Tensor::randn_like_with_generator(&mean!, gen)?
+            } else {
+                Tensor::randn_like(&mean!)?
+            }
+
+            (mean! + std * noise!)?
+        } else {
+            mean!
+        }
+
+        Ok(SchedulerOutput! {
+            prev_sample!,
+            pred_original_sample!: Some(pred_original_sample!),
+            derivative!: None,
+        })
+    }
+
+    fn add_noise(
+        self,
+        original!: &Tensor,
+        noise!: &Tensor,
+        timestep: &DiffusionTimestep,
+    ) -> Tensor! {
+        let sqrt_alpha = timestep.alpha_cumprod.sqrt()
+        let sqrt_beta = (1.0 - timestep.alpha_cumprod).sqrt()
+
+        (sqrt_alpha * original! + sqrt_beta * noise!)!
+    }
+}
+
+// ============================================================================
+// DDIM Scheduler
+// ============================================================================
+
+/// DDIM scheduler (deterministic, adjustable steps)
+pub struct DDIMScheduler {
+    config: SchedulerConfig,
+    alphas_cumprod!: Tensor,
+    timesteps: [DiffusionTimestep],
+    num_inference_steps?: u32,
+    eta: f32,
+}
+
+impl DDIMScheduler {
+    pub fn new(config: SchedulerConfig, device: &Device) -> Result<Self> {
+        let betas! = compute_betas(&config, device)?
+        let alphas! = (1.0 - &betas!)?
+        let alphas_cumprod! = alphas!.cumprod(0)?
+
+        Ok(Self {
+            config,
+            alphas_cumprod!,
+            timesteps: vec![],
+            num_inference_steps: None,
+            eta: 0.0, // Deterministic by default
+        })
+    }
+
+    /// Set eta (0 = deterministic, 1 = DDPM-like stochasticity)
+    pub fn with_eta(mut self, eta: f32) -> Self {
+        self.eta = eta
+        self
+    }
+}
+
+impl NoiseScheduler for DDIMScheduler {
+    fn set_timesteps(mut self, num_inference_steps: u32, device: &Device) {
+        self.num_inference_steps = Some(num_inference_steps)
+
+        // Linspace timesteps
+        self.timesteps = (0..num_inference_steps)
+            |rev
+            τ{ |i| {
+                let t = (i as f32 / (num_inference_steps - 1) as f32) * (self.config.num_train_timesteps - 1) as f32
+                let step = t.round() as u32
+                let alpha_cumprod = self.alphas_cumprod!.get_1d(step as usize)
+                DiffusionTimestep::from_step(step, self.config.num_train_timesteps, alpha_cumprod)
+            }}
+            |collect
+    }
+
+    fn timesteps(self) -> &[DiffusionTimestep] {
+        &self.timesteps
+    }
+
+    fn init_noise_sigma(self) -> f32 {
+        1.0
+    }
+
+    fn scale_model_input(self, sample!: &Tensor, _timestep: &DiffusionTimestep) -> Tensor! {
+        sample!.clone()
+    }
+
+    fn step(
+        self,
+        model_output!: &NoisePrediction!,
+        timestep: &DiffusionTimestep,
+        sample!: &Tensor,
+        generator?: &mut Generator,
+    ) -> Result<SchedulerOutput!> {
+        let timestep_idx = self.timesteps.iter().position(|t| t.step == timestep.step).unwrap()
+
+        // Get alpha values
+        let alpha_prod_t = timestep.alpha_cumprod
+        let alpha_prod_t_prev = if timestep_idx < self.timesteps.len() - 1 {
+            self.timesteps[timestep_idx + 1].alpha_cumprod
+        } else {
+            1.0
+        }
+
+        let beta_prod_t = 1.0 - alpha_prod_t
+
+        // Predict x_0
+        let pred_original_sample! = match self.config.prediction_type {
+            PredictionType::Epsilon => {
+                ((sample! - beta_prod_t.sqrt() * &model_output!.noise!)? / alpha_prod_t.sqrt())?
+            }
+            PredictionType::VPrediction => {
+                (alpha_prod_t.sqrt() * sample! - beta_prod_t.sqrt() * &model_output!.noise!)?
+            }
+            PredictionType::Sample => {
+                model_output!.noise!.clone()
+            }
+        }
+
+        // Get epsilon from x_0 prediction
+        let pred_epsilon! = match self.config.prediction_type {
+            PredictionType::Epsilon => model_output!.noise!.clone(),
+            _ => ((sample! - alpha_prod_t.sqrt() * &pred_original_sample!)? / beta_prod_t.sqrt())?,
+        }
+
+        // Compute variance
+        let variance = (1.0 - alpha_prod_t_prev) / (1.0 - alpha_prod_t) * (1.0 - alpha_prod_t / alpha_prod_t_prev)
+        let std = (variance * self.eta * self.eta).sqrt()
+
+        // Direction pointing to x_t
+        let direction_sigma = (1.0 - alpha_prod_t_prev - std * std).max(0.0).sqrt()
+
+        // Compute x_{t-1}
+        let prev_sample! = (alpha_prod_t_prev.sqrt() * &pred_original_sample! +
+                           direction_sigma * &pred_epsilon!)?
+
+        // Add noise if eta > 0
+        let prev_sample! = if self.eta > 0.0 && timestep_idx < self.timesteps.len() - 1 {
+            let noise! = if let Some(gen) = generator {
+                Tensor::randn_like_with_generator(&prev_sample!, gen)?
+            } else {
+                Tensor::randn_like(&prev_sample!)?
+            }
+            (prev_sample! + std * noise!)?
+        } else {
+            prev_sample!
+        }
+
+        Ok(SchedulerOutput! {
+            prev_sample!,
+            pred_original_sample!: Some(pred_original_sample!),
+            derivative!: None,
+        })
+    }
+
+    fn add_noise(
+        self,
+        original!: &Tensor,
+        noise!: &Tensor,
+        timestep: &DiffusionTimestep,
+    ) -> Tensor! {
+        let sqrt_alpha = timestep.alpha_cumprod.sqrt()
+        let sqrt_beta = (1.0 - timestep.alpha_cumprod).sqrt()
+        (sqrt_alpha * original! + sqrt_beta * noise!)!
+    }
+}
+
+// ============================================================================
+// Euler Scheduler
+// ============================================================================
+
+/// Euler discrete scheduler (fast, stable)
+pub struct EulerScheduler {
+    config: SchedulerConfig,
+    sigmas!: Tensor,
+    timesteps: [DiffusionTimestep],
+    num_inference_steps?: u32,
+}
+
+impl EulerScheduler {
+    pub fn new(config: SchedulerConfig, device: &Device) -> Result<Self> {
+        let betas! = compute_betas(&config, device)?
+        let alphas! = (1.0 - &betas!)?
+        let alphas_cumprod! = alphas!.cumprod(0)?
+
+        // Compute sigmas from alphas
+        let sigmas! = ((1.0 - &alphas_cumprod!)? / &alphas_cumprod!)?.sqrt()?
+
+        Ok(Self {
+            config,
+            sigmas!,
+            timesteps: vec![],
+            num_inference_steps: None,
+        })
+    }
+}
+
+impl NoiseScheduler for EulerScheduler {
+    fn set_timesteps(mut self, num_inference_steps: u32, device: &Device) {
+        self.num_inference_steps = Some(num_inference_steps)
+
+        // Compute timesteps in sigma space
+        let max_sigma = self.sigmas!.get_1d(0)
+        let min_sigma = self.sigmas!.get_1d(self.config.num_train_timesteps as usize - 1)
+
+        self.timesteps = (0..num_inference_steps)
+            τ{ |i| {
+                let t = i as f32 / (num_inference_steps - 1) as f32
+                let sigma = max_sigma.powf(1.0 - t) * min_sigma.powf(t)
+                DiffusionTimestep::from_time(sigma)
+            }}
+            |collect
+    }
+
+    fn timesteps(self) -> &[DiffusionTimestep] {
+        &self.timesteps
+    }
+
+    fn init_noise_sigma(self) -> f32 {
+        self.timesteps.first().map(|t| t.sigma).unwrap_or(1.0)
+    }
+
+    fn scale_model_input(self, sample!: &Tensor, timestep: &DiffusionTimestep) -> Tensor! {
+        // Scale by sqrt(sigma^2 + 1) for Euler
+        let scale = (timestep.sigma * timestep.sigma + 1.0).sqrt()
+        (sample! / scale)!
+    }
+
+    fn step(
+        self,
+        model_output!: &NoisePrediction!,
+        timestep: &DiffusionTimestep,
+        sample!: &Tensor,
+        _generator?: &mut Generator,
+    ) -> Result<SchedulerOutput!> {
+        let timestep_idx = self.timesteps.iter().position(|t| (t.sigma - timestep.sigma).abs() < 1e-6).unwrap()
+
+        let sigma = timestep.sigma
+        let sigma_next = if timestep_idx < self.timesteps.len() - 1 {
+            self.timesteps[timestep_idx + 1].sigma
+        } else {
+            0.0
+        }
+
+        // Convert model output to d (derivative)
+        let d! = match self.config.prediction_type {
+            PredictionType::Epsilon => {
+                // d = (x - x_0) / sigma = epsilon
+                model_output!.noise!.clone()
+            }
+            PredictionType::VPrediction => {
+                // Convert v to epsilon
+                let sigma_sq = sigma * sigma
+                let alpha_sq = 1.0 / (sigma_sq + 1.0)
+                let sqrt_alpha = alpha_sq.sqrt()
+                let sqrt_beta = (1.0 - alpha_sq).sqrt()
+                (sqrt_alpha * &model_output!.noise! + sqrt_beta * sample!)?
+            }
+            PredictionType::Sample => {
+                // d = (x - x_0) / sigma
+                ((sample! - &model_output!.noise!)? / sigma)?
+            }
+        }
+
+        // Euler step: x_{t-1} = x_t + (sigma_next - sigma) * d
+        let dt = sigma_next - sigma
+        let prev_sample! = (sample! + dt * d!)?
+
+        // Predict original sample
+        let pred_original_sample! = (sample! - sigma * &d!)?
+
+        Ok(SchedulerOutput! {
+            prev_sample!,
+            pred_original_sample!: Some(pred_original_sample!),
+            derivative!: Some(d!),
+        })
+    }
+
+    fn add_noise(
+        self,
+        original!: &Tensor,
+        noise!: &Tensor,
+        timestep: &DiffusionTimestep,
+    ) -> Tensor! {
+        (original! + timestep.sigma * noise!)!
+    }
+}
+
+// ============================================================================
+// Euler Ancestral Scheduler
+// ============================================================================
+
+/// Euler ancestral scheduler (stochastic version)
+pub struct EulerAncestralScheduler {
+    inner: EulerScheduler,
+    eta: f32,
+}
+
+impl EulerAncestralScheduler {
+    pub fn new(config: SchedulerConfig, device: &Device) -> Result<Self> {
+        let inner = EulerScheduler::new(config, device)?
+        Ok(Self { inner, eta: 1.0 })
+    }
+
+    pub fn with_eta(mut self, eta: f32) -> Self {
+        self.eta = eta
+        self
+    }
+}
+
+impl NoiseScheduler for EulerAncestralScheduler {
+    fn set_timesteps(mut self, num_inference_steps: u32, device: &Device) {
+        self.inner.set_timesteps(num_inference_steps, device)
+    }
+
+    fn timesteps(self) -> &[DiffusionTimestep] {
+        self.inner.timesteps()
+    }
+
+    fn init_noise_sigma(self) -> f32 {
+        self.inner.init_noise_sigma()
+    }
+
+    fn scale_model_input(self, sample!: &Tensor, timestep: &DiffusionTimestep) -> Tensor! {
+        self.inner.scale_model_input(sample!, timestep)
+    }
+
+    fn step(
+        self,
+        model_output!: &NoisePrediction!,
+        timestep: &DiffusionTimestep,
+        sample!: &Tensor,
+        generator?: &mut Generator,
+    ) -> Result<SchedulerOutput!> {
+        let timestep_idx = self.inner.timesteps.iter()
+            .position(|t| (t.sigma - timestep.sigma).abs() < 1e-6).unwrap()
+
+        let sigma = timestep.sigma
+        let sigma_next = if timestep_idx < self.inner.timesteps.len() - 1 {
+            self.inner.timesteps[timestep_idx + 1].sigma
+        } else {
+            0.0
+        }
+
+        // Compute sigma_up and sigma_down for ancestral sampling
+        let sigma_up = (sigma_next * sigma_next * (sigma * sigma - sigma_next * sigma_next) / (sigma * sigma))
+            .sqrt().min(sigma_next) * self.eta
+        let sigma_down = (sigma_next * sigma_next - sigma_up * sigma_up).sqrt()
+
+        // Get derivative
+        let d! = model_output!.noise!.clone() // Simplified
+
+        // Euler step to sigma_down
+        let dt = sigma_down - sigma
+        let x_down! = (sample! + dt * &d!)?
+
+        // Add noise at sigma_up
+        let prev_sample! = if sigma_up > 0.0 {
+            let noise! = if let Some(gen) = generator {
+                Tensor::randn_like_with_generator(&x_down!, gen)?
+            } else {
+                Tensor::randn_like(&x_down!)?
+            }
+            (x_down! + sigma_up * noise!)?
+        } else {
+            x_down!
+        }
+
+        let pred_original_sample! = (sample! - sigma * &d!)?
+
+        Ok(SchedulerOutput! {
+            prev_sample!,
+            pred_original_sample!: Some(pred_original_sample!),
+            derivative!: Some(d!),
+        })
+    }
+
+    fn add_noise(
+        self,
+        original!: &Tensor,
+        noise!: &Tensor,
+        timestep: &DiffusionTimestep,
+    ) -> Tensor! {
+        self.inner.add_noise(original!, noise!, timestep)
+    }
+}
+
+// ============================================================================
+// DPM-Solver Scheduler
+// ============================================================================
+
+/// DPM-Solver++ multistep scheduler (fast, high quality)
+pub struct DPMSolverScheduler {
+    config: SchedulerConfig,
+    alphas_cumprod!: Tensor,
+    timesteps: [DiffusionTimestep],
+    num_inference_steps?: u32,
+    order: u32,
+    model_outputs!: [Tensor],
+    lower_order_nums: u32,
+}
+
+impl DPMSolverScheduler {
+    pub fn new(config: SchedulerConfig, device: &Device) -> Result<Self> {
+        let betas! = compute_betas(&config, device)?
+        let alphas! = (1.0 - &betas!)?
+        let alphas_cumprod! = alphas!.cumprod(0)?
+
+        Ok(Self {
+            config,
+            alphas_cumprod!,
+            timesteps: vec![],
+            num_inference_steps: None,
+            order: 2, // Default to 2nd order
+            model_outputs!: vec![],
+            lower_order_nums: 0,
+        })
+    }
+
+    /// Set solver order (1, 2, or 3)
+    pub fn with_order(mut self, order: u32) -> Self {
+        self.order = order.clamp(1, 3)
+        self
+    }
+
+    fn convert_model_output(
+        self,
+        model_output!: &Tensor,
+        timestep: &DiffusionTimestep,
+        sample!: &Tensor,
+    ) -> Tensor! {
+        // Convert to data prediction (x_0)
+        let alpha_t = timestep.alpha_cumprod
+        let sigma_t = (1.0 - alpha_t).sqrt()
+
+        match self.config.prediction_type {
+            PredictionType::Epsilon => {
+                ((sample! - sigma_t * model_output!)? / alpha_t.sqrt())?
+            }
+            PredictionType::VPrediction => {
+                (alpha_t.sqrt() * sample! - sigma_t * model_output!)?
+            }
+            PredictionType::Sample => {
+                model_output!.clone()
+            }
+        }
+    }
+}
+
+impl NoiseScheduler for DPMSolverScheduler {
+    fn set_timesteps(mut self, num_inference_steps: u32, device: &Device) {
+        self.num_inference_steps = Some(num_inference_steps)
+        self.model_outputs! = vec![]
+        self.lower_order_nums = 0
+
+        // Linspace in log-sigma space for better distribution
+        let last_alpha = self.alphas_cumprod!.get_1d(self.config.num_train_timesteps as usize - 1)
+        let first_alpha = self.alphas_cumprod!.get_1d(0)
+
+        self.timesteps = (0..num_inference_steps)
+            |rev
+            τ{ |i| {
+                let t = i as f32 / (num_inference_steps - 1) as f32
+                let log_alpha = first_alpha.ln() * (1.0 - t) + last_alpha.ln() * t
+                let alpha = log_alpha.exp()
+                let step = ((1.0 - t) * (self.config.num_train_timesteps - 1) as f32).round() as u32
+                DiffusionTimestep::from_step(step, self.config.num_train_timesteps, alpha)
+            }}
+            |collect
+    }
+
+    fn timesteps(self) -> &[DiffusionTimestep] {
+        &self.timesteps
+    }
+
+    fn init_noise_sigma(self) -> f32 {
+        1.0
+    }
+
+    fn scale_model_input(self, sample!: &Tensor, _timestep: &DiffusionTimestep) -> Tensor! {
+        sample!.clone()
+    }
+
+    fn step(
+        self,
+        model_output!: &NoisePrediction!,
+        timestep: &DiffusionTimestep,
+        sample!: &Tensor,
+        _generator?: &mut Generator,
+    ) -> Result<SchedulerOutput!> {
+        let timestep_idx = self.timesteps.iter().position(|t| t.step == timestep.step).unwrap()
+
+        // Convert model output to x_0 prediction
+        let x0_pred! = self.convert_model_output(&model_output!.noise!, timestep, sample!)
+
+        // Store for multistep
+        self.model_outputs!.push(x0_pred!.clone())
+        if self.model_outputs!.len() > self.order as usize {
+            self.model_outputs!.remove(0)
+        }
+
+        // Get next timestep
+        let next_timestep = if timestep_idx < self.timesteps.len() - 1 {
+            self.timesteps[timestep_idx + 1]
+        } else {
+            DiffusionTimestep::from_step(0, self.config.num_train_timesteps, 1.0)
+        }
+
+        // Compute lambda (log-SNR)
+        let lambda_t = timestep.log_snr()
+        let lambda_s = next_timestep.log_snr()
+        let h = lambda_s - lambda_t
+
+        // DPM-Solver++ update
+        let alpha_t = timestep.alpha_cumprod
+        let alpha_s = next_timestep.alpha_cumprod
+        let sigma_t = (1.0 - alpha_t).sqrt()
+        let sigma_s = (1.0 - alpha_s).sqrt()
+
+        let prev_sample! = if self.model_outputs!.len() == 1 || self.order == 1 {
+            // First order (Euler-like)
+            let x0! = &self.model_outputs![0]
+            (alpha_s.sqrt() * x0! + sigma_s * (sample! - alpha_t.sqrt() * x0!)? / sigma_t)?
+        } else if self.model_outputs!.len() == 2 || self.order == 2 {
+            // Second order
+            let x0_1! = &self.model_outputs![self.model_outputs!.len() - 1]
+            let x0_0! = &self.model_outputs![self.model_outputs!.len() - 2]
+            let d0! = x0_1!
+            let d1! = ((x0_1! - x0_0!)? / h)?
+
+            (alpha_s.sqrt() * (d0! + 0.5 * h * d1!)? +
+             sigma_s * (sample! - alpha_t.sqrt() * x0_1!)? / sigma_t)?
+        } else {
+            // Third order
+            let x0_2! = &self.model_outputs![self.model_outputs!.len() - 1]
+            let x0_1! = &self.model_outputs![self.model_outputs!.len() - 2]
+            let x0_0! = &self.model_outputs![self.model_outputs!.len() - 3]
+
+            // Simplified third-order update
+            (alpha_s.sqrt() * x0_2! +
+             sigma_s * (sample! - alpha_t.sqrt() * x0_2!)? / sigma_t)?
+        }
+
+        Ok(SchedulerOutput! {
+            prev_sample!,
+            pred_original_sample!: Some(x0_pred!),
+            derivative!: None,
+        })
+    }
+
+    fn add_noise(
+        self,
+        original!: &Tensor,
+        noise!: &Tensor,
+        timestep: &DiffusionTimestep,
+    ) -> Tensor! {
+        let sqrt_alpha = timestep.alpha_cumprod.sqrt()
+        let sqrt_beta = (1.0 - timestep.alpha_cumprod).sqrt()
+        (sqrt_alpha * original! + sqrt_beta * noise!)!
+    }
+}
+
+// ============================================================================
+// Flow Matching Scheduler
+// ============================================================================
+
+/// Flow Matching scheduler for SD3/Flux
+pub struct FlowMatchScheduler {
+    config: SchedulerConfig,
+    timesteps: [DiffusionTimestep],
+    num_inference_steps?: u32,
+    shift: f32,
+}
+
+impl FlowMatchScheduler {
+    pub fn new(config: SchedulerConfig, _device: &Device) -> Result<Self> {
+        Ok(Self {
+            config: SchedulerConfig::flow_matching(),
+            timesteps: vec![],
+            num_inference_steps: None,
+            shift: 3.0, // Default shift for Flux
+        })
+    }
+
+    /// Set shift parameter (affects noise schedule)
+    pub fn with_shift(mut self, shift: f32) -> Self {
+        self.shift = shift
+        self
+    }
+}
+
+impl NoiseScheduler for FlowMatchScheduler {
+    fn set_timesteps(mut self, num_inference_steps: u32, device: &Device) {
+        self.num_inference_steps = Some(num_inference_steps)
+
+        // Linear timesteps from 1 to 0 with shift
+        self.timesteps = (0..num_inference_steps)
+            τ{ |i| {
+                let t = 1.0 - i as f32 / num_inference_steps as f32
+                // Apply shift: t' = t / (t + (1-t) * shift)
+                let t_shifted = t / (t + (1.0 - t) * self.shift)
+                DiffusionTimestep::from_time(t_shifted)
+            }}
+            |collect
+    }
+
+    fn timesteps(self) -> &[DiffusionTimestep] {
+        &self.timesteps
+    }
+
+    fn init_noise_sigma(self) -> f32 {
+        1.0
+    }
+
+    fn scale_model_input(self, sample!: &Tensor, _timestep: &DiffusionTimestep) -> Tensor! {
+        sample!.clone()
+    }
+
+    fn step(
+        self,
+        model_output!: &NoisePrediction!,
+        timestep: &DiffusionTimestep,
+        sample!: &Tensor,
+        _generator?: &mut Generator,
+    ) -> Result<SchedulerOutput!> {
+        let timestep_idx = self.timesteps.iter()
+            .position(|t| (t.t - timestep.t).abs() < 1e-6).unwrap()
+
+        let t = timestep.t
+        let t_next = if timestep_idx < self.timesteps.len() - 1 {
+            self.timesteps[timestep_idx + 1].t
+        } else {
+            0.0
+        }
+
+        // Flow matching: x_t = (1-t) * x_0 + t * noise
+        // Velocity: v = noise - x_0
+        // So: x_0 = x_t - t * v
+
+        let v! = &model_output!.noise! // Model predicts velocity
+        let dt = t_next - t
+
+        // Euler step along flow
+        let prev_sample! = (sample! + dt * v!)?
+
+        // Predict x_0
+        let pred_original_sample! = (sample! - t * v!)?
+
+        Ok(SchedulerOutput! {
+            prev_sample!,
+            pred_original_sample!: Some(pred_original_sample!),
+            derivative!: Some(v!.clone()),
+        })
+    }
+
+    fn add_noise(
+        self,
+        original!: &Tensor,
+        noise!: &Tensor,
+        timestep: &DiffusionTimestep,
+    ) -> Tensor! {
+        // Flow interpolation: x_t = (1-t) * x_0 + t * noise
+        let t = timestep.t
+        ((1.0 - t) * original! + t * noise!)!
+    }
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Compute beta schedule
+fn compute_betas(config: &SchedulerConfig, device: &Device) -> Result<Tensor!> {
+    let num_steps = config.num_train_timesteps as usize
+
+    let betas!: Tensor = match config.beta_schedule {
+        BetaSchedule::Linear => {
+            Tensor::linspace(config.beta_start, config.beta_end, num_steps, device)?
+        }
+        BetaSchedule::ScaledLinear => {
+            let start = config.beta_start.sqrt()
+            let end = config.beta_end.sqrt()
+            let linear = Tensor::linspace(start, end, num_steps, device)?
+            linear.sqr()?
+        }
+        BetaSchedule::SquaredCosCapV2 => {
+            // Cosine schedule with zero terminal SNR
+            let steps: [f32] = (0..=num_steps)
+                τ{ |i| {
+                    let t = i as f32 / num_steps as f32
+                    let alpha = (t * std::f32::consts::PI / 2.0).cos().powi(2)
+                    alpha
+                }}
+                |collect
+
+            let alphas_cumprod = Tensor::new(steps.as_slice(), device)?
+            let alphas_cumprod_prev = alphas_cumprod.narrow(0, 0, num_steps)?
+            let alphas_cumprod_curr = alphas_cumprod.narrow(0, 1, num_steps)?
+
+            (1.0 - alphas_cumprod_curr / alphas_cumprod_prev)?
+                .clamp(0.0001, 0.9999)?
+        }
+        BetaSchedule::Sigmoid => {
+            let steps: [f32] = (0..num_steps)
+                τ{ |i| {
+                    let t = i as f32 / (num_steps - 1) as f32
+                    let v = -6.0 + 12.0 * t // sigmoid input from -6 to 6
+                    let s = 1.0 / (1.0 + (-v).exp())
+                    config.beta_start + s * (config.beta_end - config.beta_start)
+                }}
+                |collect
+
+            Tensor::new(steps.as_slice(), device)?
+        }
+    }
+
+    // Apply zero terminal SNR rescaling if configured
+    if config.rescale_betas_zero_snr {
+        rescale_zero_terminal_snr(betas!, device)
+    } else {
+        Ok(betas!)
+    }
+}
+
+/// Rescale betas for zero terminal SNR
+fn rescale_zero_terminal_snr(betas!: Tensor, device: &Device) -> Result<Tensor!> {
+    let alphas! = (1.0 - &betas!)?
+    let alphas_cumprod! = alphas!.cumprod(0)?
+
+    // Rescale so final alpha_cumprod is close to 0
+    let alphas_cumprod_sqrt! = alphas_cumprod!.sqrt()?
+    let alphas_cumprod_sqrt_0 = alphas_cumprod_sqrt!.get_1d(0)
+    let alphas_cumprod_sqrt_t = alphas_cumprod_sqrt!.get_1d(alphas_cumprod_sqrt!.dim(0)? - 1)
+
+    let rescaled! = (alphas_cumprod_sqrt! - alphas_cumprod_sqrt_t)?
+        * (1.0 / (alphas_cumprod_sqrt_0 - alphas_cumprod_sqrt_t))?
+
+    let alphas_cumprod_rescaled! = rescaled!.sqr()?
+    let alphas_rescaled! = alphas_cumprod_rescaled!.diff()?
+
+    (1.0 - alphas_rescaled!)
+}
+
+extern struct Generator
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_scheduler_config() {
+        let config = SchedulerConfig::sdxl()
+        assert_eq!(config.num_train_timesteps, 1000)
+        assert_eq!(config.prediction_type, PredictionType::Epsilon)
+    }
+
+    #[test]
+    fn test_ddim_timesteps() {
+        let config = SchedulerConfig::sdxl()
+        let mut scheduler = DDIMScheduler::new(config, &Device::Cpu)?
+        scheduler.set_timesteps(50, &Device::Cpu)
+
+        assert_eq!(scheduler.timesteps().len(), 50)
+    }
+
+    #[test]
+    fn test_flow_matching_timesteps() {
+        let config = SchedulerConfig::flow_matching()
+        let mut scheduler = FlowMatchScheduler::new(config, &Device::Cpu)?
+        scheduler.set_timesteps(28, &Device::Cpu) // Flux default
+
+        assert_eq!(scheduler.timesteps().len(), 28)
+        assert!(scheduler.timesteps()[0].t > scheduler.timesteps()[27].t)
+    }
+
+    #[test]
+    fn test_beta_schedules() {
+        let device = Device::Cpu
+
+        let linear = compute_betas(&SchedulerConfig {
+            beta_schedule: BetaSchedule::Linear,
+            ..Default::default()
+        }, &device)?
+        assert_eq!(linear.dim(0)?, 1000)
+
+        let scaled = compute_betas(&SchedulerConfig {
+            beta_schedule: BetaSchedule::ScaledLinear,
+            ..Default::default()
+        }, &device)?
+        assert_eq!(scaled.dim(0)?, 1000)
+    }
+}

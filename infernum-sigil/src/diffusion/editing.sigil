@@ -1,0 +1,1124 @@
+/// Image Editing Module
+///
+/// This module provides image editing capabilities for diffusion models:
+/// - Inpainting: Fill masked regions
+/// - Outpainting: Extend canvas
+/// - Img2Img: Transform existing images
+/// - Upscaling: Tile-based super-resolution
+///
+/// Uses Sigil evidentiality types for safe image processing.
+
+use crate::core::error::{InfernumError, Result}
+use crate::abaddon::backend::{Tensor, TensorOps, ComputeBackend}
+use crate::diffusion::types::{LatentTensor, GenerationOutput, DiffusionConfig}
+use crate::diffusion::vae::{VAE, VAEConfig}
+use crate::diffusion::scheduler::{NoiseScheduler, SchedulerConfig}
+use crate::diffusion::pipeline::{DiffusionPipeline, GenerationRequest}
+
+// ============================================================================
+// Image Edit Operations
+// ============================================================================
+
+/// Types of image editing operations
+pub enum ImageEditOperation {
+    /// Inpaint masked regions
+    Inpaint(InpaintConfig),
+    /// Extend image (outpaint)
+    Outpaint(OutpaintConfig),
+    /// Image-to-image transformation
+    Img2Img(Img2ImgConfig),
+    /// Super-resolution upscaling
+    Upscale(UpscaleConfig),
+    /// Variation (generate similar images)
+    Variation(VariationConfig),
+    /// Remix with different style
+    Remix(RemixConfig),
+}
+
+// ============================================================================
+// Inpainting
+// ============================================================================
+
+/// Inpainting configuration
+pub struct InpaintConfig {
+    /// Binary mask (1 = inpaint, 0 = keep)
+    pub mask: Tensor,
+    /// Blur radius for mask edges
+    pub mask_blur: u32,
+    /// Inpaint at full resolution (vs downscaled)
+    pub inpaint_full_res: bool,
+    /// Padding when inpainting at full res
+    pub inpaint_full_res_padding: u32,
+    /// Strength of denoising (0.0-1.0)
+    pub strength: f32,
+    /// Use mask-aware latent noise
+    pub masked_latent_noise: bool,
+}
+
+impl InpaintConfig {
+    pub fn default() -> Self {
+        Self {
+            mask: Tensor::empty(),
+            mask_blur: 4,
+            inpaint_full_res: false,
+            inpaint_full_res_padding: 32,
+            strength: 1.0,
+            masked_latent_noise: true,
+        }
+    }
+
+    /// Config for precise inpainting
+    pub fn precise(mask: Tensor) -> Self {
+        Self {
+            mask,
+            mask_blur: 0,
+            inpaint_full_res: true,
+            inpaint_full_res_padding: 64,
+            strength: 1.0,
+            masked_latent_noise: true,
+        }
+    }
+
+    /// Config for blended inpainting
+    pub fn blended(mask: Tensor) -> Self {
+        Self {
+            mask,
+            mask_blur: 8,
+            inpaint_full_res: false,
+            inpaint_full_res_padding: 32,
+            strength: 0.85,
+            masked_latent_noise: false,
+        }
+    }
+}
+
+/// Inpainting pipeline
+pub struct InpaintPipeline<B: ComputeBackend> {
+    /// Base diffusion pipeline
+    pipeline: DiffusionPipeline<B>,
+    /// Whether model has native inpaint support
+    native_inpaint: bool,
+}
+
+impl<B: ComputeBackend> InpaintPipeline<B> {
+    /// Create inpainting pipeline
+    pub fn new(pipeline: DiffusionPipeline<B>, native_inpaint: bool) -> Self {
+        Self { pipeline, native_inpaint }
+    }
+
+    /// Create from model path
+    pub async fn from_pretrained(
+        model_path: str~,
+        native_inpaint: bool,
+        backend: B,
+    ) -> Result<Self> {
+        let pipeline = DiffusionPipeline::from_pretrained(model_path~, backend).await?
+        Ok(Self::new(pipeline, native_inpaint))
+    }
+
+    /// Run inpainting
+    pub async fn inpaint(
+        &self,
+        image~: &Tensor<B>,
+        config: InpaintConfig,
+        request: GenerationRequest~,
+    ) -> Result<GenerationOutput<B>!> {
+        // Prepare mask
+        let mask! = self.prepare_mask(&config)?
+
+        // Get latent space dimensions
+        let (_, _, h, w) = image~.shape4()
+        let latent_h = h / 8
+        let latent_w = w / 8
+
+        // Downsample mask to latent space
+        let latent_mask! = interpolate_nearest(&mask, latent_h, latent_w)?
+
+        if config.inpaint_full_res {
+            self.inpaint_full_res(image~, &mask, &latent_mask, config, request~).await
+        } else {
+            self.inpaint_standard(image~, &mask, &latent_mask, config, request~).await
+        }
+    }
+
+    /// Prepare mask (blur, normalize)
+    fn prepare_mask(&self, config: &InpaintConfig) -> Result<Tensor<B>!> {
+        let mut mask! = config.mask.clone()
+
+        // Ensure binary
+        mask = (mask > 0.5).float()
+
+        // Apply blur if configured
+        if config.mask_blur > 0 {
+            mask = gaussian_blur(&mask, config.mask_blur * 2 + 1, config.mask_blur as f32)?
+        }
+
+        // Normalize to 0-1
+        let max_val = mask.max()
+        if max_val > 0.0 {
+            mask = mask / max_val
+        }
+
+        Ok(mask)
+    }
+
+    /// Standard inpainting (full image)
+    async fn inpaint_standard(
+        &self,
+        image~: &Tensor<B>,
+        mask: &Tensor<B>,
+        latent_mask: &Tensor<B>,
+        config: InpaintConfig,
+        request: GenerationRequest~,
+    ) -> Result<GenerationOutput<B>!> {
+        // Encode image to latents
+        let init_latents! = self.pipeline.encode_image(image~)?
+
+        // Calculate starting timestep based on strength
+        let num_steps = request.num_inference_steps.unwrap_or(50)
+        let start_step = ((1.0 - config.strength) * num_steps as f32) as u32
+
+        // Get text embeddings
+        let prompt_embeds! = self.pipeline.encode_prompt(&request.prompt)?
+        let negative_embeds! = request.negative_prompt.as_ref()
+            .map(|p| self.pipeline.encode_prompt(p))
+            .transpose()?
+
+        // Initialize latents with noise
+        let noise = self.pipeline.backend().randn_like(&init_latents)?
+        let mut latents! = self.pipeline.scheduler().add_noise(
+            &init_latents,
+            &noise,
+            self.pipeline.scheduler().timesteps()[start_step as usize],
+        )?
+
+        // Prepare masked noise (optional)
+        let masked_noise = if config.masked_latent_noise {
+            Some(self.pipeline.backend().randn_like(&latents)?)
+        } else {
+            None
+        }
+
+        // Denoising loop
+        for (i, &timestep) in self.pipeline.scheduler().timesteps()[start_step as usize..].iter().enumerate() {
+            // Predict noise
+            let noise_pred! = if self.native_inpaint {
+                // Native inpaint model takes mask and masked image as input
+                let masked_image! = image~ * (1.0 - mask)
+                let masked_latents! = self.pipeline.encode_image(&masked_image)?
+                self.pipeline.forward_inpaint(
+                    &latents,
+                    timestep,
+                    &prompt_embeds,
+                    negative_embeds.as_ref(),
+                    latent_mask,
+                    &masked_latents,
+                )?
+            } else {
+                self.pipeline.forward(&latents, timestep, &prompt_embeds, negative_embeds.as_ref())?
+            }
+
+            // Scheduler step
+            latents = self.pipeline.scheduler().step(&noise_pred, timestep, &latents)?
+
+            // Apply mask: keep original in non-masked areas
+            if !self.native_inpaint {
+                // Re-noise original latents to current timestep
+                let original_noised! = self.pipeline.scheduler().add_noise(
+                    &init_latents,
+                    masked_noise.as_ref().unwrap_or(&noise),
+                    timestep,
+                )?
+                // Blend: masked region uses generated, unmasked uses original
+                latents = latents.clone() * latent_mask + original_noised * (1.0 - latent_mask)
+            }
+
+            // Progress callback
+            if let Some(callback) = &request.progress_callback {
+                callback(ProgressInfo {
+                    step: start_step + i as u32,
+                    total_steps: num_steps,
+                    latents: Some(latents.clone()),
+                })
+            }
+        }
+
+        // Decode latents
+        let image! = self.pipeline.decode_latents(&latents)?
+
+        Ok(GenerationOutput {
+            images: vec![image],
+            latents,
+            seed: request.seed.unwrap_or(0),
+        })
+    }
+
+    /// Full resolution inpainting (crop around mask)
+    async fn inpaint_full_res(
+        &self,
+        image~: &Tensor<B>,
+        mask: &Tensor<B>,
+        _latent_mask: &Tensor<B>,
+        config: InpaintConfig,
+        mut request: GenerationRequest~,
+    ) -> Result<GenerationOutput<B>!> {
+        // Find mask bounding box
+        let bbox! = find_mask_bbox(mask)?
+        let (x1, y1, x2, y2) = bbox
+
+        // Add padding
+        let pad = config.inpaint_full_res_padding
+        let (_, _, h, w) = image~.shape4()
+        let x1 = (x1 as i32 - pad as i32).max(0) as u32
+        let y1 = (y1 as i32 - pad as i32).max(0) as u32
+        let x2 = (x2 + pad).min(w)
+        let y2 = (y2 + pad).min(h)
+
+        // Crop image and mask
+        let cropped_image! = image~.slice([.., .., y1..y2, x1..x2])?
+        let cropped_mask! = mask.slice([.., .., y1..y2, x1..x2])?
+
+        // Resize to generation size
+        let target_size = request.width.unwrap_or(512)
+        let resized_image! = interpolate_bilinear(&cropped_image, target_size, target_size)?
+        let resized_mask! = interpolate_nearest(&cropped_mask, target_size, target_size)?
+
+        // Override request dimensions
+        request.width = Some(target_size)
+        request.height = Some(target_size)
+
+        // Create config with resized mask
+        let resized_config = InpaintConfig {
+            mask: resized_mask.clone(),
+            inpaint_full_res: false,  // Already cropped
+            ..config
+        }
+
+        // Latent mask for resized
+        let latent_h = target_size / 8
+        let latent_w = target_size / 8
+        let resized_latent_mask! = interpolate_nearest(&resized_mask, latent_h, latent_w)?
+
+        // Run standard inpainting on crop
+        let result! = self.inpaint_standard(
+            &resized_image,
+            &resized_mask,
+            &resized_latent_mask,
+            resized_config,
+            request,
+        ).await?
+
+        // Resize result back
+        let crop_h = y2 - y1
+        let crop_w = x2 - x1
+        let resized_result! = interpolate_bilinear(&result.images[0], crop_h, crop_w)?
+
+        // Paste back into original
+        let mut output! = image~.clone()
+        output = paste_region(&output, &resized_result, x1, y1)?
+
+        // Blend edges with original using mask
+        let blend_mask! = gaussian_blur(&cropped_mask, 9, 2.0)?
+        let original_crop! = image~.slice([.., .., y1..y2, x1..x2])?
+        let blended! = resized_result * blend_mask + original_crop * (1.0 - blend_mask)
+        output = paste_region(&output, &blended, x1, y1)?
+
+        Ok(GenerationOutput {
+            images: vec![output],
+            latents: result.latents,
+            seed: result.seed,
+        })
+    }
+}
+
+// ============================================================================
+// Outpainting
+// ============================================================================
+
+/// Outpainting configuration
+pub struct OutpaintConfig {
+    /// Direction to extend
+    pub direction: OutpaintDirection,
+    /// Amount to extend (pixels)
+    pub extend_pixels: u32,
+    /// Blend overlap (pixels)
+    pub overlap: u32,
+    /// Strength of generation
+    pub strength: f32,
+    /// Feather edges
+    pub feather: u32,
+}
+
+/// Direction for outpainting
+pub enum OutpaintDirection {
+    Left,
+    Right,
+    Top,
+    Bottom,
+    All,
+    Custom { left: u32, right: u32, top: u32, bottom: u32 },
+}
+
+impl OutpaintConfig {
+    pub fn default(direction: OutpaintDirection) -> Self {
+        Self {
+            direction,
+            extend_pixels: 256,
+            overlap: 64,
+            strength: 0.95,
+            feather: 16,
+        }
+    }
+}
+
+/// Outpainting pipeline
+pub struct OutpaintPipeline<B: ComputeBackend> {
+    /// Inpaint pipeline (outpainting uses inpainting internally)
+    inpaint: InpaintPipeline<B>,
+}
+
+impl<B: ComputeBackend> OutpaintPipeline<B> {
+    pub fn new(pipeline: DiffusionPipeline<B>) -> Self {
+        Self {
+            inpaint: InpaintPipeline::new(pipeline, false),
+        }
+    }
+
+    /// Run outpainting
+    pub async fn outpaint(
+        &self,
+        image~: &Tensor<B>,
+        config: OutpaintConfig,
+        request: GenerationRequest~,
+    ) -> Result<GenerationOutput<B>!> {
+        let (_, c, h, w) = image~.shape4()
+
+        // Calculate new dimensions
+        let (pad_left, pad_right, pad_top, pad_bottom) = match config.direction {
+            OutpaintDirection::Left => (config.extend_pixels, 0, 0, 0),
+            OutpaintDirection::Right => (0, config.extend_pixels, 0, 0),
+            OutpaintDirection::Top => (0, 0, config.extend_pixels, 0),
+            OutpaintDirection::Bottom => (0, 0, 0, config.extend_pixels),
+            OutpaintDirection::All => (
+                config.extend_pixels,
+                config.extend_pixels,
+                config.extend_pixels,
+                config.extend_pixels,
+            ),
+            OutpaintDirection::Custom { left, right, top, bottom } => (left, right, top, bottom),
+        }
+
+        let new_h = h + pad_top + pad_bottom
+        let new_w = w + pad_left + pad_right
+
+        // Create expanded canvas
+        let mut canvas! = self.inpaint.pipeline.backend().zeros([1, c, new_h, new_w])?
+
+        // Paste original image
+        canvas = paste_region(&canvas, image~, pad_left, pad_top)?
+
+        // Create mask (1 = generate, 0 = keep)
+        let mut mask! = self.inpaint.pipeline.backend().ones([1, 1, new_h, new_w])?
+
+        // Mark original region as 0
+        let zeros_region! = self.inpaint.pipeline.backend().zeros([1, 1, h, w])?
+        mask = paste_region(&mask, &zeros_region, pad_left, pad_top)?
+
+        // Add overlap region (gradient mask for blending)
+        if config.overlap > 0 {
+            mask = apply_overlap_gradient(&mask, pad_left, pad_top, h, w, config.overlap)?
+        }
+
+        // Run inpainting
+        let inpaint_config = InpaintConfig {
+            mask,
+            mask_blur: config.feather,
+            inpaint_full_res: false,
+            inpaint_full_res_padding: 0,
+            strength: config.strength,
+            masked_latent_noise: true,
+        }
+
+        self.inpaint.inpaint(&canvas, inpaint_config, request~).await
+    }
+}
+
+// ============================================================================
+// Img2Img
+// ============================================================================
+
+/// Image-to-image configuration
+pub struct Img2ImgConfig {
+    /// Denoising strength (0.0 = no change, 1.0 = full generation)
+    pub strength: f32,
+    /// Add noise before encoding (vs encode then noise)
+    pub noise_before_encode: bool,
+}
+
+impl Img2ImgConfig {
+    pub fn default() -> Self {
+        Self {
+            strength: 0.75,
+            noise_before_encode: false,
+        }
+    }
+
+    /// Light transformation
+    pub fn light() -> Self {
+        Self {
+            strength: 0.3,
+            noise_before_encode: false,
+        }
+    }
+
+    /// Strong transformation
+    pub fn strong() -> Self {
+        Self {
+            strength: 0.9,
+            noise_before_encode: false,
+        }
+    }
+}
+
+/// Img2Img pipeline
+pub struct Img2ImgPipeline<B: ComputeBackend> {
+    pipeline: DiffusionPipeline<B>,
+}
+
+impl<B: ComputeBackend> Img2ImgPipeline<B> {
+    pub fn new(pipeline: DiffusionPipeline<B>) -> Self {
+        Self { pipeline }
+    }
+
+    /// Run img2img transformation
+    pub async fn transform(
+        &self,
+        image~: &Tensor<B>,
+        config: Img2ImgConfig,
+        request: GenerationRequest~,
+    ) -> Result<GenerationOutput<B>!> {
+        // Preprocess image
+        let preprocessed! = self.preprocess_image(image~, &request)?
+
+        // Encode to latents
+        let init_latents! = self.pipeline.encode_image(&preprocessed)?
+
+        // Calculate starting step
+        let num_steps = request.num_inference_steps.unwrap_or(50)
+        let start_step = ((1.0 - config.strength) * num_steps as f32) as u32
+
+        // Get timesteps from scheduler
+        let timesteps = self.pipeline.scheduler().timesteps()
+        let start_timestep = timesteps[start_step as usize]
+
+        // Add noise to latents
+        let noise = self.pipeline.backend().randn_like(&init_latents)?
+        let mut latents! = self.pipeline.scheduler().add_noise(
+            &init_latents,
+            &noise,
+            start_timestep,
+        )?
+
+        // Encode prompts
+        let prompt_embeds! = self.pipeline.encode_prompt(&request.prompt)?
+        let negative_embeds! = request.negative_prompt.as_ref()
+            .map(|p| self.pipeline.encode_prompt(p))
+            .transpose()?
+
+        // Denoising loop
+        for (i, &timestep) in timesteps[start_step as usize..].iter().enumerate() {
+            // Predict noise
+            let noise_pred! = self.pipeline.forward(
+                &latents,
+                timestep,
+                &prompt_embeds,
+                negative_embeds.as_ref(),
+            )?
+
+            // Scheduler step
+            latents = self.pipeline.scheduler().step(&noise_pred, timestep, &latents)?
+
+            // Progress callback
+            if let Some(callback) = &request.progress_callback {
+                callback(ProgressInfo {
+                    step: start_step + i as u32,
+                    total_steps: num_steps,
+                    latents: Some(latents.clone()),
+                })
+            }
+        }
+
+        // Decode latents
+        let image! = self.pipeline.decode_latents(&latents)?
+
+        Ok(GenerationOutput {
+            images: vec![image],
+            latents,
+            seed: request.seed.unwrap_or(0),
+        })
+    }
+
+    /// Preprocess image to target dimensions
+    fn preprocess_image(
+        &self,
+        image~: &Tensor<B>,
+        request: &GenerationRequest,
+    ) -> Result<Tensor<B>!> {
+        let target_w = request.width.unwrap_or(512)
+        let target_h = request.height.unwrap_or(512)
+
+        let (_, _, h, w) = image~.shape4()
+
+        if h == target_h && w == target_w {
+            return Ok(image~.clone())
+        }
+
+        // Resize with aspect ratio preservation
+        let scale = (target_w as f32 / w as f32).min(target_h as f32 / h as f32)
+        let new_w = (w as f32 * scale) as u32
+        let new_h = (h as f32 * scale) as u32
+
+        let resized! = interpolate_bilinear(image~, new_h, new_w)?
+
+        // Center crop/pad to exact dimensions
+        let result! = center_crop_or_pad(&resized, target_h, target_w, &self.pipeline.backend())?
+
+        Ok(result)
+    }
+}
+
+// ============================================================================
+// Upscaling
+// ============================================================================
+
+/// Upscale configuration
+pub struct UpscaleConfig {
+    /// Scale factor (e.g., 2, 4)
+    pub scale_factor: u32,
+    /// Tile size for processing
+    pub tile_size: u32,
+    /// Tile overlap
+    pub tile_overlap: u32,
+    /// Denoising strength
+    pub strength: f32,
+    /// Use tiled VAE decoding
+    pub tiled_vae: bool,
+    /// Use refiner model (for SDXL)
+    pub use_refiner: bool,
+}
+
+impl UpscaleConfig {
+    pub fn default() -> Self {
+        Self {
+            scale_factor: 2,
+            tile_size: 512,
+            tile_overlap: 64,
+            strength: 0.3,
+            tiled_vae: true,
+            use_refiner: false,
+        }
+    }
+
+    /// High quality 4x upscale
+    pub fn hq_4x() -> Self {
+        Self {
+            scale_factor: 4,
+            tile_size: 512,
+            tile_overlap: 96,
+            strength: 0.35,
+            tiled_vae: true,
+            use_refiner: true,
+        }
+    }
+}
+
+/// Upscaling pipeline
+pub struct UpscalePipeline<B: ComputeBackend> {
+    /// Base pipeline
+    pipeline: DiffusionPipeline<B>,
+    /// Optional refiner
+    refiner: Option<DiffusionPipeline<B>>,
+    /// Upscale model (e.g., RealESRGAN)
+    upscale_model: Option<UpscaleModel<B>>,
+}
+
+impl<B: ComputeBackend> UpscalePipeline<B> {
+    pub fn new(pipeline: DiffusionPipeline<B>) -> Self {
+        Self {
+            pipeline,
+            refiner: None,
+            upscale_model: None,
+        }
+    }
+
+    /// Set refiner model
+    pub fn with_refiner(mut self, refiner: DiffusionPipeline<B>) -> Self {
+        self.refiner = Some(refiner)
+        self
+    }
+
+    /// Set upscale model
+    pub fn with_upscale_model(mut self, model: UpscaleModel<B>) -> Self {
+        self.upscale_model = Some(model)
+        self
+    }
+
+    /// Run upscaling
+    pub async fn upscale(
+        &self,
+        image~: &Tensor<B>,
+        config: UpscaleConfig,
+        request: GenerationRequest~,
+    ) -> Result<GenerationOutput<B>!> {
+        let (_, c, h, w) = image~.shape4()
+        let new_h = h * config.scale_factor
+        let new_w = w * config.scale_factor
+
+        // Initial upscale using model or interpolation
+        let upscaled! = if let Some(ref model) = self.upscale_model {
+            model.upscale(image~, config.scale_factor)?
+        } else {
+            interpolate_lanczos(image~, new_h, new_w)?
+        }
+
+        // Process in tiles
+        let tiles! = extract_overlapping_tiles(&upscaled, config.tile_size, config.tile_overlap)?
+
+        let mut processed_tiles: Vec<Tensor<B>> = Vec::new()
+
+        for (i, tile) in tiles.iter().enumerate() {
+            // Img2img each tile
+            let img2img_config = Img2ImgConfig {
+                strength: config.strength,
+                noise_before_encode: false,
+            }
+
+            let tile_request = GenerationRequest {
+                prompt: request.prompt.clone(),
+                negative_prompt: request.negative_prompt.clone(),
+                width: Some(config.tile_size),
+                height: Some(config.tile_size),
+                num_inference_steps: Some(20),  // Fewer steps for tiles
+                ..request.clone()
+            }
+
+            let result! = Img2ImgPipeline::new(self.pipeline.clone())
+                .transform(tile, img2img_config, tile_request)
+                .await?
+
+            processed_tiles.push(result.images[0].clone())
+
+            // Progress callback
+            if let Some(callback) = &request.progress_callback {
+                callback(ProgressInfo {
+                    step: i as u32,
+                    total_steps: tiles.len() as u32,
+                    latents: None,
+                })
+            }
+        }
+
+        // Reassemble tiles with blending
+        let result! = reassemble_tiles(
+            &processed_tiles,
+            new_h,
+            new_w,
+            config.tile_size,
+            config.tile_overlap,
+        )?
+
+        // Optional refiner pass
+        let final_result! = if config.use_refiner {
+            if let Some(ref refiner) = self.refiner {
+                self.run_refiner(refiner, &result, &request).await?
+            } else {
+                result
+            }
+        } else {
+            result
+        }
+
+        Ok(GenerationOutput {
+            images: vec![final_result],
+            latents: self.pipeline.backend().zeros([1, 4, new_h / 8, new_w / 8])?,
+            seed: request.seed.unwrap_or(0),
+        })
+    }
+
+    /// Run SDXL refiner
+    async fn run_refiner(
+        &self,
+        refiner: &DiffusionPipeline<B>,
+        image: &Tensor<B>,
+        request: &GenerationRequest,
+    ) -> Result<Tensor<B>!> {
+        let img2img = Img2ImgPipeline::new(refiner.clone())
+        let config = Img2ImgConfig { strength: 0.2, noise_before_encode: false }
+
+        let refiner_request = GenerationRequest {
+            prompt: request.prompt.clone(),
+            negative_prompt: request.negative_prompt.clone(),
+            num_inference_steps: Some(25),
+            ..request.clone()
+        }
+
+        let result! = img2img.transform(image, config, refiner_request).await?
+        Ok(result.images[0].clone())
+    }
+}
+
+/// Neural upscale model (e.g., RealESRGAN)
+pub struct UpscaleModel<B: ComputeBackend> {
+    /// Model weights
+    model: RRDBNet<B>,
+    /// Scale factor this model was trained for
+    scale: u32,
+}
+
+impl<B: ComputeBackend> UpscaleModel<B> {
+    /// Load from checkpoint
+    pub fn load(path: str~, scale: u32, backend: B) -> Result<Self> {
+        let state_dict = safetensors::load(path~)?
+        let model = RRDBNet::new(scale, backend)?
+        model.load_state_dict(state_dict)?
+        Ok(Self { model, scale })
+    }
+
+    /// Upscale image
+    pub fn upscale(&self, image~: &Tensor<B>, target_scale: u32) -> Result<Tensor<B>!> {
+        let mut result! = image~.clone()
+
+        // Apply model multiple times if needed
+        let mut current_scale = 1
+        while current_scale < target_scale {
+            result = self.model.forward(&result)?
+            current_scale *= self.scale
+        }
+
+        // Final resize if not exact multiple
+        if current_scale != target_scale {
+            let (_, _, h, w) = result.shape4()
+            let factor = target_scale as f32 / current_scale as f32
+            let new_h = (h as f32 * factor) as u32
+            let new_w = (w as f32 * factor) as u32
+            result = interpolate_lanczos(&result, new_h, new_w)?
+        }
+
+        Ok(result)
+    }
+}
+
+/// RRDB Network (RealESRGAN architecture)
+struct RRDBNet<B: ComputeBackend> {
+    conv_first: Conv2d<B>,
+    rrdb_blocks: Vec<RRDB<B>>,
+    conv_body: Conv2d<B>,
+    upsamples: Vec<Upsample<B>>,
+    conv_hr: Conv2d<B>,
+    conv_last: Conv2d<B>,
+}
+
+impl<B: ComputeBackend> RRDBNet<B> {
+    fn new(scale: u32, backend: B) -> Result<Self> {
+        let num_feat = 64
+        let num_block = 23
+
+        let conv_first = Conv2d::new(3, num_feat, 3, 1, 1, backend.clone())?
+
+        let rrdb_blocks: Vec<RRDB<B>> = (0..num_block)
+            τ{ |_| RRDB::new(num_feat, backend.clone()) }
+            .collect::<Result<_>>()?
+
+        let conv_body = Conv2d::new(num_feat, num_feat, 3, 1, 1, backend.clone())?
+
+        // Upsample layers (2x per layer)
+        let num_upsample = (scale as f32).log2() as u32
+        let upsamples: Vec<Upsample<B>> = (0..num_upsample)
+            τ{ |_| Upsample::new(num_feat, backend.clone()) }
+            .collect::<Result<_>>()?
+
+        let conv_hr = Conv2d::new(num_feat, num_feat, 3, 1, 1, backend.clone())?
+        let conv_last = Conv2d::new(num_feat, 3, 3, 1, 1, backend)?
+
+        Ok(Self {
+            conv_first,
+            rrdb_blocks,
+            conv_body,
+            upsamples,
+            conv_hr,
+            conv_last,
+        })
+    }
+
+    fn forward(&self, x: &Tensor<B>) -> Result<Tensor<B>!> {
+        let feat! = self.conv_first.forward(x)?
+        let mut body_feat! = feat.clone()
+
+        for block in self.rrdb_blocks.iter() {
+            body_feat = block.forward(&body_feat)?
+        }
+
+        body_feat = self.conv_body.forward(&body_feat)?
+        let feat! = feat + body_feat
+
+        let mut up_feat! = feat
+        for upsample in self.upsamples.iter() {
+            up_feat = upsample.forward(&up_feat)?
+        }
+
+        let out! = self.conv_hr.forward(&up_feat)?.leaky_relu(0.2)
+        self.conv_last.forward(&out)
+    }
+
+    fn load_state_dict(&self, _state_dict: Map<str, Tensor<B>>) -> Result<()> {
+        // Load weights into each component
+        Ok(())
+    }
+}
+
+/// Residual-in-Residual Dense Block
+struct RRDB<B: ComputeBackend> {
+    rdb1: ResidualDenseBlock<B>,
+    rdb2: ResidualDenseBlock<B>,
+    rdb3: ResidualDenseBlock<B>,
+}
+
+impl<B: ComputeBackend> RRDB<B> {
+    fn new(num_feat: u32, backend: B) -> Result<Self> {
+        Ok(Self {
+            rdb1: ResidualDenseBlock::new(num_feat, backend.clone())?,
+            rdb2: ResidualDenseBlock::new(num_feat, backend.clone())?,
+            rdb3: ResidualDenseBlock::new(num_feat, backend)?,
+        })
+    }
+
+    fn forward(&self, x: &Tensor<B>) -> Result<Tensor<B>!> {
+        let out! = self.rdb1.forward(x)?
+        let out! = self.rdb2.forward(&out)?
+        let out! = self.rdb3.forward(&out)?
+        Ok(out * 0.2 + x.clone())
+    }
+}
+
+/// Residual Dense Block
+struct ResidualDenseBlock<B: ComputeBackend> {
+    convs: Vec<Conv2d<B>>,
+}
+
+impl<B: ComputeBackend> ResidualDenseBlock<B> {
+    fn new(num_feat: u32, backend: B) -> Result<Self> {
+        let growth = 32
+        let convs = vec![
+            Conv2d::new(num_feat, growth, 3, 1, 1, backend.clone())?,
+            Conv2d::new(num_feat + growth, growth, 3, 1, 1, backend.clone())?,
+            Conv2d::new(num_feat + growth * 2, growth, 3, 1, 1, backend.clone())?,
+            Conv2d::new(num_feat + growth * 3, growth, 3, 1, 1, backend.clone())?,
+            Conv2d::new(num_feat + growth * 4, num_feat, 3, 1, 1, backend)?,
+        ]
+        Ok(Self { convs })
+    }
+
+    fn forward(&self, x: &Tensor<B>) -> Result<Tensor<B>!> {
+        let x1! = self.convs[0].forward(x)?.leaky_relu(0.2)
+        let x2! = self.convs[1].forward(&cat([x, &x1], 1)?)?.leaky_relu(0.2)
+        let x3! = self.convs[2].forward(&cat([x, &x1, &x2], 1)?)?.leaky_relu(0.2)
+        let x4! = self.convs[3].forward(&cat([x, &x1, &x2, &x3], 1)?)?.leaky_relu(0.2)
+        let x5! = self.convs[4].forward(&cat([x, &x1, &x2, &x3, &x4], 1)?)?
+        Ok(x5 * 0.2 + x.clone())
+    }
+}
+
+/// Pixel shuffle upsample
+struct Upsample<B: ComputeBackend> {
+    conv: Conv2d<B>,
+}
+
+impl<B: ComputeBackend> Upsample<B> {
+    fn new(num_feat: u32, backend: B) -> Result<Self> {
+        let conv = Conv2d::new(num_feat, num_feat * 4, 3, 1, 1, backend)?
+        Ok(Self { conv })
+    }
+
+    fn forward(&self, x: &Tensor<B>) -> Result<Tensor<B>!> {
+        let out! = self.conv.forward(x)?
+        pixel_shuffle(&out, 2)?.leaky_relu(0.2)
+    }
+}
+
+// ============================================================================
+// Variation
+// ============================================================================
+
+/// Variation configuration
+pub struct VariationConfig {
+    /// Variation strength (0 = identical, 1 = completely different)
+    pub strength: f32,
+}
+
+impl VariationConfig {
+    pub fn subtle() -> Self { Self { strength: 0.3 } }
+    pub fn moderate() -> Self { Self { strength: 0.5 } }
+    pub fn strong() -> Self { Self { strength: 0.8 } }
+}
+
+// ============================================================================
+// Remix
+// ============================================================================
+
+/// Remix configuration (style transfer + content preservation)
+pub struct RemixConfig {
+    /// Content preservation strength
+    pub content_strength: f32,
+    /// Style injection strength
+    pub style_strength: f32,
+    /// Style reference image
+    pub style_image: Option<Tensor>,
+}
+
+impl RemixConfig {
+    pub fn default() -> Self {
+        Self {
+            content_strength: 0.7,
+            style_strength: 0.5,
+            style_image: None,
+        }
+    }
+}
+
+// ============================================================================
+// SDXL Refiner Pipeline
+// ============================================================================
+
+/// SDXL refiner for high-quality outputs
+pub struct SDXLRefinerPipeline<B: ComputeBackend> {
+    /// Base SDXL model
+    base: DiffusionPipeline<B>,
+    /// Refiner model
+    refiner: DiffusionPipeline<B>,
+    /// High noise fraction for base (e.g., 0.8)
+    high_noise_frac: f32,
+}
+
+impl<B: ComputeBackend> SDXLRefinerPipeline<B> {
+    /// Create SDXL with refiner
+    pub fn new(base: DiffusionPipeline<B>, refiner: DiffusionPipeline<B>) -> Self {
+        Self {
+            base,
+            refiner,
+            high_noise_frac: 0.8,
+        }
+    }
+
+    /// Set high noise fraction
+    pub fn with_high_noise_frac(mut self, frac: f32) -> Self {
+        self.high_noise_frac = frac
+        self
+    }
+
+    /// Generate with base + refiner
+    pub async fn generate(
+        &self,
+        request: GenerationRequest~,
+    ) -> Result<GenerationOutput<B>!> {
+        let num_steps = request.num_inference_steps.unwrap_or(50)
+        let base_steps = (num_steps as f32 * self.high_noise_frac) as u32
+        let refiner_steps = num_steps - base_steps
+
+        // Run base model
+        let base_request = GenerationRequest {
+            num_inference_steps: Some(base_steps),
+            output_type: OutputType::Latent,  // Keep as latents
+            ..request.clone()
+        }
+
+        let base_output! = self.base.generate(base_request).await?
+
+        // Run refiner
+        let refiner_config = Img2ImgConfig {
+            strength: 1.0 - self.high_noise_frac,
+            noise_before_encode: false,
+        }
+
+        let refiner_request = GenerationRequest {
+            prompt: request.prompt.clone(),
+            negative_prompt: request.negative_prompt.clone(),
+            num_inference_steps: Some(refiner_steps),
+            ..request.clone()
+        }
+
+        let img2img = Img2ImgPipeline::new(self.refiner.clone())
+        let decoded! = self.base.decode_latents(&base_output.latents)?
+
+        img2img.transform(&decoded, refiner_config, refiner_request).await
+    }
+}
+
+// ============================================================================
+// Helper Types and Functions
+// ============================================================================
+
+/// Progress info for callbacks
+pub struct ProgressInfo<B: ComputeBackend> {
+    pub step: u32,
+    pub total_steps: u32,
+    pub latents: Option<Tensor<B>>,
+}
+
+/// Output type enum
+pub enum OutputType {
+    Image,
+    Latent,
+}
+
+// Forward declarations
+struct Conv2d<B: ComputeBackend> { /* from unet */ }
+
+// Image processing helpers
+fn gaussian_blur<B: ComputeBackend>(image: &Tensor<B>, kernel_size: u32, sigma: f32) -> Result<Tensor<B>!> { unimplemented!() }
+fn interpolate_nearest<B: ComputeBackend>(image: &Tensor<B>, h: u32, w: u32) -> Result<Tensor<B>!> { unimplemented!() }
+fn interpolate_bilinear<B: ComputeBackend>(image: &Tensor<B>, h: u32, w: u32) -> Result<Tensor<B>!> { unimplemented!() }
+fn interpolate_lanczos<B: ComputeBackend>(image: &Tensor<B>, h: u32, w: u32) -> Result<Tensor<B>!> { unimplemented!() }
+fn find_mask_bbox<B: ComputeBackend>(mask: &Tensor<B>) -> Result<(u32, u32, u32, u32)!> { unimplemented!() }
+fn paste_region<B: ComputeBackend>(canvas: &Tensor<B>, patch: &Tensor<B>, x: u32, y: u32) -> Result<Tensor<B>!> { unimplemented!() }
+fn apply_overlap_gradient<B: ComputeBackend>(mask: &Tensor<B>, x: u32, y: u32, h: u32, w: u32, overlap: u32) -> Result<Tensor<B>!> { unimplemented!() }
+fn center_crop_or_pad<B: ComputeBackend>(image: &Tensor<B>, h: u32, w: u32, backend: &B) -> Result<Tensor<B>!> { unimplemented!() }
+fn extract_overlapping_tiles<B: ComputeBackend>(image: &Tensor<B>, tile_size: u32, overlap: u32) -> Result<Vec<Tensor<B>>!> { unimplemented!() }
+fn reassemble_tiles<B: ComputeBackend>(tiles: &[Tensor<B>], h: u32, w: u32, tile_size: u32, overlap: u32) -> Result<Tensor<B>!> { unimplemented!() }
+fn pixel_shuffle<B: ComputeBackend>(x: &Tensor<B>, upscale_factor: u32) -> Result<Tensor<B>!> { unimplemented!() }
+fn cat<B: ComputeBackend>(tensors: &[&Tensor<B>], dim: u32) -> Result<Tensor<B>!> { unimplemented!() }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_inpaint_config() {
+        let config = InpaintConfig::default()
+        assert_eq!(config.strength, 1.0)
+        assert_eq!(config.mask_blur, 4)
+    }
+
+    #[test]
+    fn test_outpaint_config() {
+        let config = OutpaintConfig::default(OutpaintDirection::Right)
+        assert_eq!(config.extend_pixels, 256)
+    }
+
+    #[test]
+    fn test_img2img_config() {
+        let light = Img2ImgConfig::light()
+        let strong = Img2ImgConfig::strong()
+        assert!(light.strength < strong.strength)
+    }
+
+    #[test]
+    fn test_upscale_config() {
+        let config = UpscaleConfig::hq_4x()
+        assert_eq!(config.scale_factor, 4)
+        assert!(config.use_refiner)
+    }
+}

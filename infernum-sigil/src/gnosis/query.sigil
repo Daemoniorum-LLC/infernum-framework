@@ -1,0 +1,380 @@
+//! Query language for knowledge graphs.
+
+use super::graph::{Triple, KnowledgeGraph}
+use super::inference::{TriplePattern, PatternTerm}
+use std::collections::HashMap
+
+/// A query against the knowledge graph.
+#[derive(Debug, Clone)]
+struct Query {
+    patterns: [TriplePattern],
+    filters: [Filter],
+    select: [str],
+    limit?: usize,
+    offset: usize,
+    order_by?: (str, SortOrder),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SortOrder {
+    Ascending,
+    Descending,
+}
+
+/// A filter condition.
+#[derive(Debug, Clone)]
+enum Filter {
+    Equals(str, str),
+    NotEquals(str, str),
+    LessThan(str, str),
+    GreaterThan(str, str),
+    Regex(str, str),
+    Bound(str),
+    NotBound(str),
+    Or(Box<Filter>, Box<Filter>),
+    And(Box<Filter>, Box<Filter>),
+    Not(Box<Filter>),
+}
+
+/// Result of a query.
+#[derive(Debug, Clone)]
+struct QueryResult {
+    bindings: [HashMap<str, str>],
+    count: usize,
+}
+
+impl QueryResult {
+    fn empty() -> QueryResult {
+        QueryResult {
+            bindings: [],
+            count: 0,
+        }
+    }
+
+    fn is_empty(self) -> bool {
+        self.bindings.is_empty()
+    }
+
+    fn first(self) -> ?HashMap<str, str> {
+        self.bindings.first().cloned()
+    }
+}
+
+impl Query {
+    /// Creates a new query.
+    fn new() -> Query {
+        Query {
+            patterns: [],
+            filters: [],
+            select: [],
+            limit: None,
+            offset: 0,
+            order_by: None,
+        }
+    }
+
+    /// Adds a triple pattern.
+    fn pattern(mut self, subject: &str, predicate: &str, object: &str) -> Query {
+        let s = if subject.starts_with("?") {
+            PatternTerm::Variable(subject[1..].to_string())
+        } else {
+            PatternTerm::Constant(subject.to_string())
+        };
+
+        let p = if predicate.starts_with("?") {
+            PatternTerm::Variable(predicate[1..].to_string())
+        } else {
+            PatternTerm::Constant(predicate.to_string())
+        };
+
+        let o = if object.starts_with("?") {
+            PatternTerm::Variable(object[1..].to_string())
+        } else {
+            PatternTerm::Constant(object.to_string())
+        };
+
+        self.patterns.push(TriplePattern {
+            subject: s,
+            predicate: p,
+            object: o,
+        });
+        self
+    }
+
+    /// Adds a filter.
+    fn filter(mut self, f: Filter) -> Query {
+        self.filters.push(f);
+        self
+    }
+
+    /// Sets the select variables.
+    fn select(mut self, vars: [str]) -> Query {
+        self.select = vars;
+        self
+    }
+
+    /// Sets the limit.
+    fn limit(mut self, n: usize) -> Query {
+        self.limit = Some(n);
+        self
+    }
+
+    /// Sets the offset.
+    fn offset(mut self, n: usize) -> Query {
+        self.offset = n;
+        self
+    }
+
+    /// Sets the ordering.
+    fn order(mut self, var: str, order: SortOrder) -> Query {
+        self.order_by = Some((var, order));
+        self
+    }
+
+    /// Executes the query.
+    fn execute(self, graph: &KnowledgeGraph) -> QueryResult {
+        // Start with all possible bindings for first pattern
+        if self.patterns.is_empty() {
+            return QueryResult::empty()
+        }
+
+        let mut bindings: [HashMap<str, str>] = [HashMap::new()];
+
+        // Match each pattern
+        for pattern in &self.patterns {
+            let mut next_bindings = [];
+
+            for binding in &bindings {
+                for triple in graph.all_triples() {
+                    if let Some(new_binding) = pattern.matches(triple, binding) {
+                        next_bindings.push(new_binding);
+                    }
+                }
+            }
+
+            bindings = next_bindings;
+
+            if bindings.is_empty() {
+                return QueryResult::empty()
+            }
+        }
+
+        // Apply filters
+        bindings = bindings
+            |φ{|b| self.evaluate_filters(b)}
+            |collect();
+
+        // Apply ordering
+        if let Some((var, order)) = &self.order_by {
+            bindings.sort_by(|a, b| {
+                let va = a.get(var).map(|s| s.as_str()).unwrap_or("");
+                let vb = b.get(var).map(|s| s.as_str()).unwrap_or("");
+                match order {
+                    SortOrder::Ascending => va.cmp(vb),
+                    SortOrder::Descending => vb.cmp(va),
+                }
+            });
+        }
+
+        // Apply offset and limit
+        let count = bindings.len();
+        let bindings: [HashMap<str, str>] = bindings
+            .into_iter()
+            .skip(self.offset)
+            .take(self.limit.unwrap_or(usize::MAX))
+            .collect();
+
+        // Project to selected variables
+        let bindings = if self.select.is_empty() {
+            bindings
+        } else {
+            bindings
+                |τ{|b| {
+                    let mut projected = HashMap::new();
+                    for var in &self.select {
+                        if let Some(val) = b.get(var) {
+                            projected.insert(var.clone(), val.clone());
+                        }
+                    }
+                    projected
+                }}
+                |collect()
+        };
+
+        QueryResult { bindings, count }
+    }
+
+    fn evaluate_filters(self, binding: &HashMap<str, str>) -> bool {
+        self.filters
+            |τ{|f| self.evaluate_filter(f, binding)}
+            |ρ·all()
+    }
+
+    fn evaluate_filter(self, filter: &Filter, binding: &HashMap<str, str>) -> bool {
+        match filter {
+            Filter::Equals(var, val) => {
+                binding.get(var).map(|v| v == val).unwrap_or(false)
+            },
+            Filter::NotEquals(var, val) => {
+                binding.get(var).map(|v| v != val).unwrap_or(true)
+            },
+            Filter::Bound(var) => binding.contains_key(var),
+            Filter::NotBound(var) => !binding.contains_key(var),
+            Filter::Or(a, b) => {
+                self.evaluate_filter(a, binding) || self.evaluate_filter(b, binding)
+            },
+            Filter::And(a, b) => {
+                self.evaluate_filter(a, binding) && self.evaluate_filter(b, binding)
+            },
+            Filter::Not(f) => !self.evaluate_filter(f, binding),
+            _ => true, // Simplified
+        }
+    }
+}
+
+// ============================================================================
+// Query Builder DSL
+// ============================================================================
+
+/// Fluent query builder.
+struct QueryBuilder {
+    query: Query,
+}
+
+impl QueryBuilder {
+    fn select(vars: [str]) -> QueryBuilder {
+        QueryBuilder {
+            query: Query::new().select(vars),
+        }
+    }
+
+    fn where_pattern(mut self, subject: &str, predicate: &str, object: &str) -> QueryBuilder {
+        self.query = self.query.pattern(subject, predicate, object);
+        self
+    }
+
+    fn filter_eq(mut self, var: str, val: str) -> QueryBuilder {
+        self.query = self.query.filter(Filter::Equals(var, val));
+        self
+    }
+
+    fn limit(mut self, n: usize) -> QueryBuilder {
+        self.query = self.query.limit(n);
+        self
+    }
+
+    fn build(self) -> Query {
+        self.query
+    }
+}
+
+// ============================================================================
+// SPARQL-like Syntax
+// ============================================================================
+
+/// Parses a simple SPARQL-like query string.
+fn parse_query(query_str: &str) -> Result<Query, QueryParseError> {
+    // Simplified parser
+    let mut query = Query::new();
+
+    // Would parse SELECT, WHERE, etc.
+    Ok(query)
+}
+
+#[derive(Debug, Clone)]
+enum QueryParseError {
+    SyntaxError(str),
+    UnknownVariable(str),
+}
+
+// ============================================================================
+// Aggregation
+// ============================================================================
+
+/// Aggregate query result.
+struct AggregateQuery {
+    base: Query,
+    group_by: [str],
+    aggregates: [(str, Aggregate)],
+}
+
+#[derive(Debug, Clone)]
+enum Aggregate {
+    Count,
+    Sum(str),
+    Avg(str),
+    Min(str),
+    Max(str),
+}
+
+impl AggregateQuery {
+    fn new(base: Query) -> AggregateQuery {
+        AggregateQuery {
+            base,
+            group_by: [],
+            aggregates: [],
+        }
+    }
+
+    fn group_by(mut self, vars: [str]) -> AggregateQuery {
+        self.group_by = vars;
+        self
+    }
+
+    fn count(mut self, name: str) -> AggregateQuery {
+        self.aggregates.push((name, Aggregate::Count));
+        self
+    }
+
+    fn sum(mut self, name: str, var: str) -> AggregateQuery {
+        self.aggregates.push((name, Aggregate::Sum(var)));
+        self
+    }
+
+    fn execute(self, graph: &KnowledgeGraph) -> [HashMap<str, str>] {
+        let base_result = self.base.execute(graph);
+
+        if self.group_by.is_empty() {
+            // Single group
+            let mut result = HashMap::new();
+            for (name, agg) in &self.aggregates {
+                match agg {
+                    Aggregate::Count => {
+                        result.insert(name.clone(), base_result.count.to_string());
+                    },
+                    _ => {},
+                }
+            }
+            return [result]
+        }
+
+        // Group by implementation would go here
+        []
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_query_builder() {
+        let q = QueryBuilder::select(["x", "y"])
+            .where_pattern("?x", "knows", "?y")
+            .limit(10)
+            .build();
+
+        assert_eq!(q.patterns.len(), 1);
+        assert_eq!(q.limit, Some(10));
+    }
+
+    #[test]
+    fn test_empty_query() {
+        let result = QueryResult::empty();
+        assert!(result.is_empty());
+    }
+}

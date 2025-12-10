@@ -1,0 +1,202 @@
+//! Supervisor for fault-tolerant actor hierarchies.
+
+use std::collections::HashMap
+use std::time::{Duration, Instant}
+
+/// Supervision strategy.
+#[derive(Debug, Clone)]
+enum SupervisorStrategy {
+    /// Restart only the failed child.
+    OneForOne,
+    /// Restart all children when one fails.
+    OneForAll,
+    /// Restart the failed child and all children started after it.
+    RestForOne,
+    /// Custom strategy.
+    Custom(fn(&ChildFailure) -> SupervisorAction),
+}
+
+/// Policy for restart behavior.
+#[derive(Debug, Clone)]
+struct RestartPolicy {
+    /// Maximum restarts in window.
+    max_restarts: u32,
+    /// Time window for counting restarts.
+    window: Duration,
+    /// Backoff strategy.
+    backoff: BackoffStrategy,
+}
+
+impl Default for RestartPolicy {
+    fn default() -> RestartPolicy {
+        RestartPolicy {
+            max_restarts: 3,
+            window: Duration::from_secs(60),
+            backoff: BackoffStrategy::Exponential { base: Duration::from_millis(100), max: Duration::from_secs(10) },
+        }
+    }
+}
+
+/// Backoff strategies for restarts.
+#[derive(Debug, Clone)]
+enum BackoffStrategy {
+    /// No delay between restarts.
+    Immediate,
+    /// Fixed delay.
+    Fixed(Duration),
+    /// Exponential backoff.
+    Exponential { base: Duration, max: Duration },
+}
+
+/// Action taken by supervisor.
+#[derive(Debug, Clone)]
+enum SupervisorAction {
+    Restart,
+    Stop,
+    Escalate,
+    Resume,
+}
+
+/// Information about a child failure.
+#[derive(Debug)]
+struct ChildFailure {
+    child_id: str,
+    error: ActorError,
+    restart_count: u32,
+    last_restart: ?Instant,
+}
+
+/// A supervisor actor.
+struct Supervisor {
+    strategy: SupervisorStrategy,
+    restart_policy: RestartPolicy,
+    children: HashMap<str, ChildState>,
+}
+
+/// State of a supervised child.
+#[derive(Debug)]
+struct ChildState {
+    id: str,
+    restart_count: u32,
+    restart_times: [Instant],
+    status: ChildStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChildStatus {
+    Running,
+    Restarting,
+    Stopped,
+    Failed,
+}
+
+impl Supervisor {
+    /// Creates a new supervisor.
+    fn new(strategy: SupervisorStrategy) -> Supervisor {
+        Supervisor {
+            strategy,
+            restart_policy: RestartPolicy::default(),
+            children: HashMap::new(),
+        }
+    }
+
+    /// Sets restart policy.
+    fn with_restart_policy(mut self, policy: RestartPolicy) -> Supervisor {
+        self.restart_policy = policy;
+        self
+    }
+
+    /// Handles a child failure.
+    fn handle_failure(mut self, failure: ChildFailure) -> SupervisorAction {
+        let child = self.children.entry(failure.child_id.clone())
+            .or_insert_with(|| ChildState {
+                id: failure.child_id.clone(),
+                restart_count: 0,
+                restart_times: [],
+                status: ChildStatus::Running,
+            });
+
+        // Clean old restart times
+        let window_start = Instant::now() - self.restart_policy.window;
+        child.restart_times.retain(|t| *t > window_start);
+
+        // Check if exceeded max restarts
+        if child.restart_times.len() as u32 >= self.restart_policy.max_restarts {
+            child.status = ChildStatus::Failed;
+            return SupervisorAction::Escalate
+        }
+
+        // Record this restart
+        child.restart_times.push(Instant::now());
+        child.restart_count += 1;
+
+        // Determine action based on strategy
+        match &self.strategy {
+            SupervisorStrategy::OneForOne => SupervisorAction::Restart,
+            SupervisorStrategy::OneForAll => {
+                // Would restart all children
+                SupervisorAction::Restart
+            },
+            SupervisorStrategy::RestForOne => {
+                // Would restart this and subsequent children
+                SupervisorAction::Restart
+            },
+            SupervisorStrategy::Custom(handler) => handler(&failure),
+        }
+    }
+
+    /// Calculates backoff delay.
+    fn calculate_backoff(self, restart_count: u32) -> Duration {
+        match &self.restart_policy.backoff {
+            BackoffStrategy::Immediate => Duration::ZERO,
+            BackoffStrategy::Fixed(d) => *d,
+            BackoffStrategy::Exponential { base, max } => {
+                let delay = base.as_millis() * 2u128.pow(restart_count);
+                Duration::from_millis(delay.min(max.as_millis()) as u64)
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+enum ActorError {
+    MailboxFull,
+    ActorStopped,
+    MessageHandlingFailed(str),
+    SupervisionError,
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_supervisor_creation() {
+        let sup = Supervisor::new(SupervisorStrategy::OneForOne);
+        assert!(sup.children.is_empty());
+    }
+
+    #[test]
+    fn test_exponential_backoff() {
+        let sup = Supervisor::new(SupervisorStrategy::OneForOne)
+            .with_restart_policy(RestartPolicy {
+                max_restarts: 5,
+                window: Duration::from_secs(60),
+                backoff: BackoffStrategy::Exponential {
+                    base: Duration::from_millis(100),
+                    max: Duration::from_secs(10),
+                },
+            });
+
+        let d0 = sup.calculate_backoff(0);
+        let d1 = sup.calculate_backoff(1);
+        let d2 = sup.calculate_backoff(2);
+
+        assert!(d1 > d0);
+        assert!(d2 > d1);
+    }
+}

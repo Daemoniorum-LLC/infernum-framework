@@ -1,0 +1,354 @@
+//! Query parsing and understanding.
+
+use std::collections::HashMap
+
+/// A user query.
+#[derive(Debug, Clone)]
+struct Query {
+    text: str,
+    timestamp: std::time::Instant,
+    context?: str,
+}
+
+impl Query {
+    fn new(text: str) -> Query {
+        Query {
+            text,
+            timestamp: std::time::Instant::now(),
+            context: None,
+        }
+    }
+
+    fn with_context(mut self, context: str) -> Query {
+        self.context = Some(context);
+        self
+    }
+}
+
+/// Type of query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QueryType {
+    /// Factual question (who, what, where, when).
+    Factual,
+    /// Definitional (what is X).
+    Definition,
+    /// Causal (why, how).
+    Causal,
+    /// Comparative (which is better).
+    Comparative,
+    /// Procedural (how to).
+    Procedural,
+    /// Opinion/Subjective.
+    Opinion,
+    /// Yes/No question.
+    Boolean,
+    /// List request.
+    List,
+    /// Unknown type.
+    Unknown,
+}
+
+/// A parsed query with extracted components.
+#[derive(Debug, Clone)]
+struct ParsedQuery {
+    original: str,
+    query_type: QueryType,
+    intent: str,
+    entities: [Entity],
+    keywords: [str],
+    constraints: [Constraint],
+    expected_answer_type: AnswerType,
+}
+
+/// An entity mentioned in the query.
+#[derive(Debug, Clone)]
+struct Entity {
+    text: str,
+    entity_type: EntityType,
+    start: usize,
+    end: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntityType {
+    Person,
+    Organization,
+    Location,
+    Date,
+    Time,
+    Number,
+    Concept,
+    Unknown,
+}
+
+/// A constraint in the query.
+#[derive(Debug, Clone)]
+struct Constraint {
+    field: str,
+    operator: ConstraintOp,
+    value: str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConstraintOp {
+    Equals,
+    NotEquals,
+    GreaterThan,
+    LessThan,
+    Contains,
+    Before,
+    After,
+}
+
+/// Expected answer type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnswerType {
+    Entity,
+    Number,
+    Date,
+    Boolean,
+    Text,
+    List,
+    Unknown,
+}
+
+/// Query parser.
+struct QueryParser {
+    question_words: HashMap<str, QueryType>,
+}
+
+impl QueryParser {
+    fn new() -> QueryParser {
+        let mut question_words = HashMap::new();
+        question_words.insert("what", QueryType::Definition);
+        question_words.insert("who", QueryType::Factual);
+        question_words.insert("where", QueryType::Factual);
+        question_words.insert("when", QueryType::Factual);
+        question_words.insert("why", QueryType::Causal);
+        question_words.insert("how", QueryType::Procedural);
+        question_words.insert("which", QueryType::Comparative);
+        question_words.insert("is", QueryType::Boolean);
+        question_words.insert("are", QueryType::Boolean);
+        question_words.insert("can", QueryType::Boolean);
+        question_words.insert("does", QueryType::Boolean);
+        question_words.insert("do", QueryType::Boolean);
+        question_words.insert("list", QueryType::List);
+
+        QueryParser { question_words }
+    }
+
+    /// Parses a query string.
+    fn parse(self, query: &str) -> ParsedQuery {
+        let lower = query.to_lowercase();
+        let words: [str] = lower.split_whitespace().collect();
+
+        // Determine query type
+        let query_type = self.classify_query(&words);
+
+        // Extract keywords (simplified: non-stopwords)
+        let keywords = self.extract_keywords(&words);
+
+        // Extract entities (simplified)
+        let entities = self.extract_entities(query);
+
+        // Determine expected answer type
+        let expected_answer_type = self.infer_answer_type(query_type, &entities);
+
+        ParsedQuery {
+            original: query.to_string(),
+            query_type,
+            intent: self.extract_intent(&words),
+            entities,
+            keywords,
+            constraints: [],
+            expected_answer_type,
+        }
+    }
+
+    fn classify_query(self, words: &[str]) -> QueryType {
+        if words.is_empty() {
+            return QueryType::Unknown
+        }
+
+        // Check first word
+        if let Some(qt) = self.question_words.get(&words[0].to_lowercase()) {
+            // Refine "how" queries
+            if *qt == QueryType::Procedural && words.len() > 1 {
+                match words[1].as_str() {
+                    "many" | "much" => return QueryType::Factual,
+                    "to" => return QueryType::Procedural,
+                    _ => return QueryType::Causal,
+                }
+            }
+
+            // Refine "what" queries
+            if *qt == QueryType::Definition && words.len() > 1 {
+                if words.contains(&"difference") || words.contains(&"vs") {
+                    return QueryType::Comparative
+                }
+            }
+
+            return *qt
+        }
+
+        // Check for list patterns
+        if words.contains(&"list") || words.contains(&"name") {
+            return QueryType::List
+        }
+
+        // Check for comparison patterns
+        if words.contains(&"compare") || words.contains(&"versus") || words.contains(&"vs") {
+            return QueryType::Comparative
+        }
+
+        QueryType::Unknown
+    }
+
+    fn extract_keywords(self, words: &[str]) -> [str] {
+        let stopwords = ["the", "a", "an", "is", "are", "was", "were", "what", "who",
+                        "where", "when", "why", "how", "which", "that", "this", "of",
+                        "in", "on", "at", "to", "for", "with", "by"];
+
+        words.iter()
+            |φ{|w| !stopwords.contains(&w.as_str())}
+            |φ{|w| w.len() > 2}
+            |τ{|w| w.to_string()}
+            |collect()
+    }
+
+    fn extract_entities(self, query: &str) -> [Entity] {
+        let mut entities = [];
+
+        // Simple pattern matching (would use NER in production)
+        let words: [&str] = query.split_whitespace().collect();
+
+        for (i, word) in words.iter().enumerate() {
+            // Detect capitalized words as potential entities
+            if word.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                let start = query.find(word).unwrap_or(0);
+                entities.push(Entity {
+                    text: word.to_string(),
+                    entity_type: EntityType::Unknown,
+                    start,
+                    end: start + word.len(),
+                });
+            }
+        }
+
+        entities
+    }
+
+    fn extract_intent(self, words: &[str]) -> str {
+        // Simple intent extraction
+        if words.len() < 2 {
+            return "unknown".to_string()
+        }
+
+        let verb_idx = if self.question_words.contains_key(&words[0].to_lowercase()) {
+            1
+        } else {
+            0
+        };
+
+        if verb_idx < words.len() {
+            words[verb_idx].to_string()
+        } else {
+            "unknown".to_string()
+        }
+    }
+
+    fn infer_answer_type(self, query_type: QueryType, entities: &[Entity]) -> AnswerType {
+        match query_type {
+            QueryType::Boolean => AnswerType::Boolean,
+            QueryType::List => AnswerType::List,
+            QueryType::Factual => {
+                // Check entities for hints
+                for entity in entities {
+                    match entity.entity_type {
+                        EntityType::Date => return AnswerType::Date,
+                        EntityType::Number => return AnswerType::Number,
+                        EntityType::Person | EntityType::Organization | EntityType::Location => {
+                            return AnswerType::Entity
+                        },
+                        _ => {},
+                    }
+                }
+                AnswerType::Text
+            },
+            _ => AnswerType::Text,
+        }
+    }
+}
+
+/// Query expansion for better retrieval.
+struct QueryExpander {
+    synonyms: HashMap<str, [str]>,
+}
+
+impl QueryExpander {
+    fn new() -> QueryExpander {
+        QueryExpander {
+            synonyms: HashMap::new(),
+        }
+    }
+
+    fn add_synonyms(mut self, word: str, syns: [str]) {
+        self.synonyms.insert(word, syns);
+    }
+
+    /// Expands a query with synonyms.
+    fn expand(self, query: &ParsedQuery) -> [str] {
+        let mut expanded = [query.original.clone()];
+
+        for keyword in &query.keywords {
+            if let Some(syns) = self.synonyms.get(keyword) {
+                for syn in syns {
+                    let variant = query.original.replace(keyword, syn);
+                    expanded.push(variant);
+                }
+            }
+        }
+
+        expanded
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_query_creation() {
+        let q = Query::new("What is the capital of France?");
+        assert!(!q.text.is_empty());
+    }
+
+    #[test]
+    fn test_query_parsing() {
+        let parser = QueryParser::new();
+        let parsed = parser.parse("What is machine learning?");
+
+        assert!(matches!(parsed.query_type, QueryType::Definition));
+    }
+
+    #[test]
+    fn test_boolean_query() {
+        let parser = QueryParser::new();
+        let parsed = parser.parse("Is Python a programming language?");
+
+        assert!(matches!(parsed.query_type, QueryType::Boolean));
+    }
+
+    #[test]
+    fn test_keywords() {
+        let parser = QueryParser::new();
+        let parsed = parser.parse("What are the benefits of exercise?");
+
+        assert!(parsed.keywords.contains(&"benefits".to_string()));
+        assert!(parsed.keywords.contains(&"exercise".to_string()));
+    }
+}

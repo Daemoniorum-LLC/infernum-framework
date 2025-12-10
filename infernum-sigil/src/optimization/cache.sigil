@@ -1,0 +1,844 @@
+/// Caching for Diffusion Models
+///
+/// Implements prompt embedding caching, latent caching, and other
+/// acceleration techniques for faster repeated inference.
+
+use crate::core::error::{InfernumError, Result}
+use crate::abaddon::backend::{Tensor, TensorOps, ComputeBackend}
+use std::collections::HashMap
+use std::hash::{Hash, Hasher}
+use std::time::{Duration, Instant}
+
+// ============================================================================
+// Prompt Embedding Cache
+// ============================================================================
+
+/// Configuration for prompt embedding cache
+pub struct PromptCacheConfig {
+    /// Maximum number of cached entries
+    pub max_entries: usize,
+    /// Maximum cache size in bytes
+    pub max_size_bytes: u64,
+    /// TTL for cache entries (None = no expiry)
+    pub ttl: Option<Duration>,
+    /// Use LRU eviction
+    pub use_lru: bool,
+    /// Hash prompt with model ID
+    pub include_model_id: bool,
+}
+
+impl PromptCacheConfig {
+    pub fn default() -> Self {
+        Self {
+            max_entries: 1000,
+            max_size_bytes: 1024 * 1024 * 1024,  // 1GB
+            ttl: None,
+            use_lru: true,
+            include_model_id: true,
+        }
+    }
+
+    pub fn small() -> Self {
+        Self {
+            max_entries: 100,
+            max_size_bytes: 256 * 1024 * 1024,  // 256MB
+            ttl: Some(Duration::from_secs(3600)),  // 1 hour
+            use_lru: true,
+            include_model_id: true,
+        }
+    }
+}
+
+/// Cached prompt embedding entry
+struct CacheEntry<B: ComputeBackend> {
+    /// The cached embedding
+    embedding: Tensor<B>,
+    /// Pooled embedding (if applicable)
+    pooled: Option<Tensor<B>>,
+    /// Creation time
+    created_at: Instant,
+    /// Last access time
+    last_accessed: Instant,
+    /// Size in bytes
+    size_bytes: u64,
+}
+
+/// Prompt embedding cache
+pub struct PromptCache<B: ComputeBackend> {
+    config: PromptCacheConfig,
+    /// Cache storage
+    cache: HashMap<u64, CacheEntry<B>>,
+    /// Access order for LRU (key -> position)
+    access_order: Vec<u64>,
+    /// Current cache size
+    current_size: u64,
+    /// Cache statistics
+    stats: CacheStats,
+}
+
+/// Cache statistics
+pub struct CacheStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub evictions: u64,
+    pub total_entries: usize,
+    pub total_size_bytes: u64,
+}
+
+impl CacheStats {
+    fn new() -> Self {
+        Self {
+            hits: 0,
+            misses: 0,
+            evictions: 0,
+            total_entries: 0,
+            total_size_bytes: 0,
+        }
+    }
+
+    pub fn hit_rate(&self) -> f32 {
+        let total = self.hits + self.misses
+        if total == 0 {
+            0.0
+        } else {
+            self.hits as f32 / total as f32
+        }
+    }
+}
+
+impl<B: ComputeBackend> PromptCache<B> {
+    pub fn new(config: PromptCacheConfig) -> Self {
+        Self {
+            config,
+            cache: HashMap::new(),
+            access_order: Vec::new(),
+            current_size: 0,
+            stats: CacheStats::new(),
+        }
+    }
+
+    /// Get cached embedding
+    pub fn get(&mut self, prompt: &str, model_id: Option<&str>) -> Option<CachedEmbedding<B>> {
+        let key = self.compute_key(prompt, model_id)
+
+        if let Some(entry) = self.cache.get_mut(&key) {
+            // Check TTL
+            if let Some(ttl) = self.config.ttl {
+                if entry.created_at.elapsed() > ttl {
+                    self.remove_entry(key)
+                    self.stats.misses += 1
+                    return None
+                }
+            }
+
+            // Update LRU
+            entry.last_accessed = Instant::now()
+            if self.config.use_lru {
+                self.update_lru(key)
+            }
+
+            self.stats.hits += 1
+            Some(CachedEmbedding {
+                embedding: entry.embedding.clone(),
+                pooled: entry.pooled.clone(),
+            })
+        } else {
+            self.stats.misses += 1
+            None
+        }
+    }
+
+    /// Cache an embedding
+    pub fn put(
+        &mut self,
+        prompt: &str,
+        model_id: Option<&str>,
+        embedding: Tensor<B>,
+        pooled: Option<Tensor<B>>,
+    ) {
+        let key = self.compute_key(prompt, model_id)
+
+        // Calculate size
+        let size = embedding.size_bytes()
+            + pooled.as_ref().map(|p| p.size_bytes()).unwrap_or(0)
+
+        // Evict if necessary
+        while self.current_size + size > self.config.max_size_bytes
+            || self.cache.len() >= self.config.max_entries
+        {
+            if !self.evict_one() {
+                break
+            }
+        }
+
+        // Insert
+        let entry = CacheEntry {
+            embedding,
+            pooled,
+            created_at: Instant::now(),
+            last_accessed: Instant::now(),
+            size_bytes: size,
+        }
+
+        self.cache.insert(key, entry)
+        self.access_order.push(key)
+        self.current_size += size
+        self.stats.total_entries = self.cache.len()
+        self.stats.total_size_bytes = self.current_size
+    }
+
+    /// Clear expired entries
+    pub fn clear_expired(&mut self) {
+        if let Some(ttl) = self.config.ttl {
+            let expired: Vec<u64> = self.cache
+                .iter()
+                .filter(|(_, e)| e.created_at.elapsed() > ttl)
+                .map(|(k, _)| *k)
+                .collect()
+
+            for key in expired {
+                self.remove_entry(key)
+            }
+        }
+    }
+
+    /// Clear all entries
+    pub fn clear(&mut self) {
+        self.cache.clear()
+        self.access_order.clear()
+        self.current_size = 0
+        self.stats.total_entries = 0
+        self.stats.total_size_bytes = 0
+    }
+
+    /// Get cache statistics
+    pub fn stats(&self) -> &CacheStats {
+        &self.stats
+    }
+
+    fn compute_key(&self, prompt: &str, model_id: Option<&str>) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new()
+        prompt.hash(&mut hasher)
+        if self.config.include_model_id {
+            if let Some(id) = model_id {
+                id.hash(&mut hasher)
+            }
+        }
+        hasher.finish()
+    }
+
+    fn update_lru(&mut self, key: u64) {
+        if let Some(pos) = self.access_order.iter().position(|&k| k == key) {
+            self.access_order.remove(pos)
+            self.access_order.push(key)
+        }
+    }
+
+    fn evict_one(&mut self) -> bool {
+        if self.access_order.is_empty() {
+            return false
+        }
+
+        // LRU: evict first (oldest) entry
+        let key = self.access_order.remove(0)
+        self.remove_entry(key)
+        self.stats.evictions += 1
+        true
+    }
+
+    fn remove_entry(&mut self, key: u64) {
+        if let Some(entry) = self.cache.remove(&key) {
+            self.current_size -= entry.size_bytes
+        }
+        self.access_order.retain(|&k| k != key)
+        self.stats.total_entries = self.cache.len()
+        self.stats.total_size_bytes = self.current_size
+    }
+}
+
+/// Cached embedding result
+pub struct CachedEmbedding<B: ComputeBackend> {
+    pub embedding: Tensor<B>,
+    pub pooled: Option<Tensor<B>>,
+}
+
+// ============================================================================
+// Latent Cache
+// ============================================================================
+
+/// Cache for intermediate latent states during inference
+pub struct LatentCache<B: ComputeBackend> {
+    /// Cached latents keyed by step
+    steps: HashMap<u32, Tensor<B>>,
+    /// CFG cached states
+    cfg_cache: Option<CFGCache<B>>,
+    /// Maximum cached steps
+    max_steps: u32,
+}
+
+impl<B: ComputeBackend> LatentCache<B> {
+    pub fn new(max_steps: u32) -> Self {
+        Self {
+            steps: HashMap::new(),
+            cfg_cache: None,
+            max_steps,
+        }
+    }
+
+    /// Cache latent at step
+    pub fn cache_step(&mut self, step: u32, latent: Tensor<B>) {
+        if self.steps.len() as u32 >= self.max_steps {
+            // Remove oldest
+            if let Some(min_step) = self.steps.keys().min().cloned() {
+                self.steps.remove(&min_step)
+            }
+        }
+        self.steps.insert(step, latent)
+    }
+
+    /// Get cached latent
+    pub fn get_step(&self, step: u32) -> Option<&Tensor<B>> {
+        self.steps.get(&step)
+    }
+
+    /// Cache CFG uncond output for reuse
+    pub fn cache_cfg_uncond(&mut self, step: u32, uncond: Tensor<B>) {
+        let cache = self.cfg_cache.get_or_insert_with(|| CFGCache {
+            uncond_outputs: HashMap::new(),
+        })
+        cache.uncond_outputs.insert(step, uncond)
+    }
+
+    /// Get cached CFG uncond
+    pub fn get_cfg_uncond(&self, step: u32) -> Option<&Tensor<B>> {
+        self.cfg_cache.as_ref()?.uncond_outputs.get(&step)
+    }
+
+    /// Clear cache
+    pub fn clear(&mut self) {
+        self.steps.clear()
+        self.cfg_cache = None
+    }
+}
+
+struct CFGCache<B: ComputeBackend> {
+    uncond_outputs: HashMap<u32, Tensor<B>>,
+}
+
+// ============================================================================
+// Attention KV Cache
+// ============================================================================
+
+/// KV cache for attention layers (useful for autoregressive generation)
+pub struct KVCache<B: ComputeBackend> {
+    /// Key cache per layer
+    keys: Vec<Tensor<B>>,
+    /// Value cache per layer
+    values: Vec<Tensor<B>>,
+    /// Current sequence length
+    seq_len: u32,
+    /// Maximum sequence length
+    max_seq_len: u32,
+    /// Number of layers
+    num_layers: u32,
+}
+
+impl<B: ComputeBackend> KVCache<B> {
+    pub fn new(
+        num_layers: u32,
+        max_seq_len: u32,
+        num_heads: u32,
+        head_dim: u32,
+        batch_size: u32,
+        backend: &B,
+    ) -> Result<Self!> {
+        let mut keys = Vec::with_capacity(num_layers as usize)
+        let mut values = Vec::with_capacity(num_layers as usize)
+
+        for _ in 0..num_layers {
+            keys.push(backend.zeros([batch_size, num_heads, max_seq_len, head_dim])?)
+            values.push(backend.zeros([batch_size, num_heads, max_seq_len, head_dim])?)
+        }
+
+        Ok(Self {
+            keys,
+            values,
+            seq_len: 0,
+            max_seq_len,
+            num_layers,
+        })
+    }
+
+    /// Update cache with new KV
+    pub fn update(
+        &mut self,
+        layer_idx: u32,
+        new_k: &Tensor<B>,
+        new_v: &Tensor<B>,
+    ) -> Result<(Tensor<B>, Tensor<B>)!> {
+        let new_len = new_k.shape()[2]
+
+        if self.seq_len + new_len > self.max_seq_len {
+            return Err(InfernumError::CacheOverflow {
+                current: self.seq_len,
+                added: new_len,
+                max: self.max_seq_len,
+            })
+        }
+
+        // Update cache
+        let start = self.seq_len
+        let end = self.seq_len + new_len
+
+        self.keys[layer_idx as usize] = self.keys[layer_idx as usize].slice_assign(
+            [.., .., start..end, ..],
+            new_k,
+        )?
+
+        self.values[layer_idx as usize] = self.values[layer_idx as usize].slice_assign(
+            [.., .., start..end, ..],
+            new_v,
+        )?
+
+        // Update seq_len on last layer
+        if layer_idx == self.num_layers - 1 {
+            self.seq_len = end
+        }
+
+        // Return full cached KV
+        let full_k! = self.keys[layer_idx as usize].slice([.., .., ..end, ..])?
+        let full_v! = self.values[layer_idx as usize].slice([.., .., ..end, ..])?
+
+        Ok((full_k, full_v))
+    }
+
+    /// Get cached KV for layer
+    pub fn get(&self, layer_idx: u32) -> Option<(Tensor<B>, Tensor<B>)> {
+        if self.seq_len == 0 {
+            return None
+        }
+
+        let k = self.keys.get(layer_idx as usize)?.slice([.., .., ..self.seq_len, ..]).ok()?
+        let v = self.values.get(layer_idx as usize)?.slice([.., .., ..self.seq_len, ..]).ok()?
+
+        Some((k, v))
+    }
+
+    /// Current sequence length
+    pub fn len(&self) -> u32 {
+        self.seq_len
+    }
+
+    /// Reset cache
+    pub fn reset(&mut self) {
+        self.seq_len = 0
+    }
+}
+
+// ============================================================================
+// Model Output Cache
+// ============================================================================
+
+/// Cache computed model outputs for batched inference
+pub struct OutputCache<B: ComputeBackend> {
+    /// Cached outputs by request ID
+    outputs: HashMap<String, CachedOutput<B>>,
+    /// Maximum cache size
+    max_entries: usize,
+}
+
+struct CachedOutput<B: ComputeBackend> {
+    output: Tensor<B>,
+    metadata: OutputMetadata,
+    created_at: Instant,
+}
+
+pub struct OutputMetadata {
+    pub prompt: String,
+    pub steps: u32,
+    pub cfg_scale: f32,
+    pub seed: u64,
+}
+
+impl<B: ComputeBackend> OutputCache<B> {
+    pub fn new(max_entries: usize) -> Self {
+        Self {
+            outputs: HashMap::new(),
+            max_entries,
+        }
+    }
+
+    /// Cache output
+    pub fn cache(&mut self, request_id: &str, output: Tensor<B>, metadata: OutputMetadata) {
+        if self.outputs.len() >= self.max_entries {
+            // Remove oldest
+            if let Some(oldest_key) = self.outputs
+                .iter()
+                .min_by_key(|(_, v)| v.created_at)
+                .map(|(k, _)| k.clone())
+            {
+                self.outputs.remove(&oldest_key)
+            }
+        }
+
+        self.outputs.insert(request_id.to_string(), CachedOutput {
+            output,
+            metadata,
+            created_at: Instant::now(),
+        })
+    }
+
+    /// Get cached output
+    pub fn get(&self, request_id: &str) -> Option<(&Tensor<B>, &OutputMetadata)> {
+        self.outputs.get(request_id).map(|c| (&c.output, &c.metadata))
+    }
+
+    /// Remove cached output
+    pub fn remove(&mut self, request_id: &str) -> Option<Tensor<B>> {
+        self.outputs.remove(request_id).map(|c| c.output)
+    }
+}
+
+// ============================================================================
+// Scheduler State Cache
+// ============================================================================
+
+/// Cache scheduler states for consistent regeneration
+pub struct SchedulerCache {
+    /// Cached sigma schedules
+    sigma_schedules: HashMap<String, Vec<f32>>,
+    /// Cached timestep schedules
+    timestep_schedules: HashMap<String, Vec<u32>>,
+}
+
+impl SchedulerCache {
+    pub fn new() -> Self {
+        Self {
+            sigma_schedules: HashMap::new(),
+            timestep_schedules: HashMap::new(),
+        }
+    }
+
+    /// Get or compute sigma schedule
+    pub fn get_or_compute_sigmas<F>(
+        &mut self,
+        key: &str,
+        compute_fn: F,
+    ) -> &[f32]
+    where
+        F: FnOnce() -> Vec<f32>,
+    {
+        if !self.sigma_schedules.contains_key(key) {
+            let sigmas = compute_fn()
+            self.sigma_schedules.insert(key.to_string(), sigmas)
+        }
+        &self.sigma_schedules[key]
+    }
+
+    /// Get or compute timestep schedule
+    pub fn get_or_compute_timesteps<F>(
+        &mut self,
+        key: &str,
+        compute_fn: F,
+    ) -> &[u32]
+    where
+        F: FnOnce() -> Vec<u32>,
+    {
+        if !self.timestep_schedules.contains_key(key) {
+            let timesteps = compute_fn()
+            self.timestep_schedules.insert(key.to_string(), timesteps)
+        }
+        &self.timestep_schedules[key]
+    }
+
+    /// Clear all cached schedules
+    pub fn clear(&mut self) {
+        self.sigma_schedules.clear()
+        self.timestep_schedules.clear()
+    }
+}
+
+// ============================================================================
+// Disk Cache
+// ============================================================================
+
+/// Disk-based cache for large tensors
+pub struct DiskCache {
+    /// Cache directory
+    cache_dir: std::path::PathBuf,
+    /// Maximum cache size in bytes
+    max_size: u64,
+    /// Current size
+    current_size: u64,
+    /// Index of cached files
+    index: HashMap<String, DiskCacheEntry>,
+}
+
+struct DiskCacheEntry {
+    path: std::path::PathBuf,
+    size: u64,
+    created_at: Instant,
+}
+
+impl DiskCache {
+    pub fn new(cache_dir: std::path::PathBuf, max_size: u64) -> Result<Self!> {
+        std::fs::create_dir_all(&cache_dir)?
+
+        Ok(Self {
+            cache_dir,
+            max_size,
+            current_size: 0,
+            index: HashMap::new(),
+        })
+    }
+
+    /// Save tensor to disk
+    pub fn save<B: ComputeBackend>(&mut self, key: &str, tensor: &Tensor<B>) -> Result<()!> {
+        let path = self.cache_dir.join(format!("{}.tensor", key))
+        let size = tensor.size_bytes()
+
+        // Evict if needed
+        while self.current_size + size > self.max_size {
+            if !self.evict_oldest() {
+                break
+            }
+        }
+
+        // Serialize and save
+        let bytes! = tensor.to_bytes()?
+        std::fs::write(&path, bytes)?
+
+        self.index.insert(key.to_string(), DiskCacheEntry {
+            path,
+            size,
+            created_at: Instant::now(),
+        })
+        self.current_size += size
+
+        Ok(())
+    }
+
+    /// Load tensor from disk
+    pub fn load<B: ComputeBackend>(&self, key: &str) -> Result<Option<Tensor<B>>!> {
+        match self.index.get(key) {
+            Some(entry) => {
+                let bytes! = std::fs::read(&entry.path)?
+                let tensor! = Tensor::from_bytes(&bytes)?
+                Ok(Some(tensor))
+            },
+            None => Ok(None),
+        }
+    }
+
+    /// Check if key exists
+    pub fn contains(&self, key: &str) -> bool {
+        self.index.contains_key(key)
+    }
+
+    /// Remove from cache
+    pub fn remove(&mut self, key: &str) -> Result<bool!> {
+        if let Some(entry) = self.index.remove(key) {
+            std::fs::remove_file(&entry.path)?
+            self.current_size -= entry.size
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn evict_oldest(&mut self) -> bool {
+        if let Some((key, _)) = self.index
+            .iter()
+            .min_by_key(|(_, e)| e.created_at)
+            .map(|(k, e)| (k.clone(), e.created_at))
+        {
+            let _ = self.remove(&key)
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Clear all cached files
+    pub fn clear(&mut self) -> Result<()!> {
+        for entry in self.index.values() {
+            let _ = std::fs::remove_file(&entry.path)
+        }
+        self.index.clear()
+        self.current_size = 0
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Cached Pipeline
+// ============================================================================
+
+/// Wrapper that adds caching to any diffusion pipeline
+pub struct CachedPipeline<P, B: ComputeBackend> {
+    pipeline: P,
+    prompt_cache: PromptCache<B>,
+    latent_cache: LatentCache<B>,
+    /// Enable prompt caching
+    cache_prompts: bool,
+    /// Enable latent caching
+    cache_latents: bool,
+}
+
+impl<P, B: ComputeBackend> CachedPipeline<P, B> {
+    pub fn new(pipeline: P) -> Self {
+        Self {
+            pipeline,
+            prompt_cache: PromptCache::new(PromptCacheConfig::default()),
+            latent_cache: LatentCache::new(100),
+            cache_prompts: true,
+            cache_latents: false,
+        }
+    }
+
+    pub fn with_prompt_cache(mut self, config: PromptCacheConfig) -> Self {
+        self.prompt_cache = PromptCache::new(config)
+        self
+    }
+
+    pub fn enable_latent_cache(mut self, max_steps: u32) -> Self {
+        self.latent_cache = LatentCache::new(max_steps)
+        self.cache_latents = true
+        self
+    }
+
+    /// Get underlying pipeline
+    pub fn inner(&self) -> &P {
+        &self.pipeline
+    }
+
+    /// Get mutable underlying pipeline
+    pub fn inner_mut(&mut self) -> &mut P {
+        &mut self.pipeline
+    }
+
+    /// Get prompt cache statistics
+    pub fn cache_stats(&self) -> &CacheStats {
+        self.prompt_cache.stats()
+    }
+
+    /// Clear all caches
+    pub fn clear_caches(&mut self) {
+        self.prompt_cache.clear()
+        self.latent_cache.clear()
+    }
+}
+
+// ============================================================================
+// Precomputed Embeddings
+// ============================================================================
+
+/// Precomputed embeddings for common prompts
+pub struct PrecomputedEmbeddings<B: ComputeBackend> {
+    /// Embeddings by prompt
+    embeddings: HashMap<String, PrecomputedEntry<B>>,
+    /// Negative prompt embeddings
+    negative_embeddings: HashMap<String, PrecomputedEntry<B>>,
+}
+
+struct PrecomputedEntry<B: ComputeBackend> {
+    embedding: Tensor<B>,
+    pooled: Option<Tensor<B>>,
+}
+
+impl<B: ComputeBackend> PrecomputedEmbeddings<B> {
+    pub fn new() -> Self {
+        Self {
+            embeddings: HashMap::new(),
+            negative_embeddings: HashMap::new(),
+        }
+    }
+
+    /// Add precomputed embedding
+    pub fn add(
+        &mut self,
+        prompt: &str,
+        embedding: Tensor<B>,
+        pooled: Option<Tensor<B>>,
+    ) {
+        self.embeddings.insert(prompt.to_string(), PrecomputedEntry {
+            embedding,
+            pooled,
+        })
+    }
+
+    /// Add precomputed negative embedding
+    pub fn add_negative(
+        &mut self,
+        prompt: &str,
+        embedding: Tensor<B>,
+        pooled: Option<Tensor<B>>,
+    ) {
+        self.negative_embeddings.insert(prompt.to_string(), PrecomputedEntry {
+            embedding,
+            pooled,
+        })
+    }
+
+    /// Get precomputed embedding
+    pub fn get(&self, prompt: &str) -> Option<CachedEmbedding<B>> {
+        self.embeddings.get(prompt).map(|e| CachedEmbedding {
+            embedding: e.embedding.clone(),
+            pooled: e.pooled.clone(),
+        })
+    }
+
+    /// Get precomputed negative embedding
+    pub fn get_negative(&self, prompt: &str) -> Option<CachedEmbedding<B>> {
+        self.negative_embeddings.get(prompt).map(|e| CachedEmbedding {
+            embedding: e.embedding.clone(),
+            pooled: e.pooled.clone(),
+        })
+    }
+
+    /// Save to file
+    pub fn save(&self, path: &std::path::Path) -> Result<()!> {
+        // Would serialize embeddings to file
+        unimplemented!()
+    }
+
+    /// Load from file
+    pub fn load(path: &std::path::Path) -> Result<Self!> {
+        // Would deserialize embeddings from file
+        unimplemented!()
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_cache_stats() {
+        let stats = CacheStats::new()
+        assert_eq!(stats.hit_rate(), 0.0)
+    }
+
+    #[test]
+    fn test_prompt_cache_config() {
+        let config = PromptCacheConfig::small()
+        assert_eq!(config.max_entries, 100)
+        assert!(config.ttl.is_some())
+    }
+
+    #[test]
+    fn test_scheduler_cache() {
+        let mut cache = SchedulerCache::new()
+
+        let sigmas = cache.get_or_compute_sigmas("test", || vec![1.0, 0.5, 0.1])
+        assert_eq!(sigmas.len(), 3)
+
+        // Should return cached
+        let sigmas2 = cache.get_or_compute_sigmas("test", || vec![])
+        assert_eq!(sigmas2.len(), 3)
+    }
+}

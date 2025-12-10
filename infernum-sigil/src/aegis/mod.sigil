@@ -1,0 +1,429 @@
+//! # Aegis - Security and Safety Guardrails
+//!
+//! *"The shield that guards the realm of inference"*
+//!
+//! Aegis provides comprehensive security and safety mechanisms for LLM inference:
+//! - Content filtering and moderation
+//! - Input/output sanitization
+//! - Rate limiting and abuse prevention
+//! - Trust boundary enforcement
+//! - Prompt injection detection
+//! - PII/sensitive data protection
+//!
+//! ## Evidentiality Integration
+//!
+//! Aegis leverages Sigil's evidentiality system:
+//! - `~` (reported) - Untrusted external input
+//! - `‽` (paradox) - Trust boundary requiring validation
+//! - `!` (known) - Validated, safe content
+
+pub mod filter
+pub mod sanitizer
+pub mod guardian
+pub mod trust
+pub mod detector
+pub mod limiter
+
+use std::sync::Arc
+use std::collections::HashMap
+use parking_lot::RwLock
+
+// Re-export core types
+pub use filter::{ContentFilter, FilterConfig, FilterResult, FilterAction, ContentCategory}
+pub use sanitizer::{Sanitizer, SanitizeConfig, SanitizeResult}
+pub use guardian::{Guardian, GuardianConfig, GuardianVerdict, ThreatLevel}
+pub use trust::{TrustBoundary, TrustLevel, TrustContext, TrustValidation}
+pub use detector::{InjectionDetector, PIIDetector, DetectionResult, ThreatType}
+pub use limiter::{RateLimiter, RateLimitConfig, RateLimitResult, TokenBucket}
+
+/// The main Aegis security coordinator.
+/// Orchestrates all security subsystems.
+struct Aegis {
+    config: AegisConfig,
+    guardian: Guardian,
+    filter: ContentFilter,
+    sanitizer: Sanitizer,
+    injection_detector: InjectionDetector,
+    pii_detector: PIIDetector,
+    rate_limiter: RateLimiter,
+    trust_context: Arc<RwLock<TrustContext>>,
+}
+
+/// Configuration for Aegis security system.
+#[derive(Debug, Clone)]
+struct AegisConfig {
+    /// Enable content filtering
+    content_filter_enabled: bool = true,
+    /// Enable input sanitization
+    sanitization_enabled: bool = true,
+    /// Enable prompt injection detection
+    injection_detection_enabled: bool = true,
+    /// Enable PII detection and redaction
+    pii_protection_enabled: bool = true,
+    /// Enable rate limiting
+    rate_limiting_enabled: bool = true,
+    /// Default trust level for new contexts
+    default_trust_level: TrustLevel = TrustLevel::Untrusted,
+    /// Maximum tokens per request
+    max_tokens_per_request: u32 = 4096,
+    /// Blocked content categories
+    blocked_categories: [ContentCategory] = [],
+    /// Custom blocked patterns (regex)
+    blocked_patterns: [str] = [],
+    /// PII types to redact
+    pii_redaction_types: [PIIType] = [PIIType::Email, PIIType::Phone, PIIType::SSN, PIIType::CreditCard],
+}
+
+impl Default for AegisConfig {
+    fn default() -> AegisConfig {
+        AegisConfig {
+            content_filter_enabled: true,
+            sanitization_enabled: true,
+            injection_detection_enabled: true,
+            pii_protection_enabled: true,
+            rate_limiting_enabled: true,
+            default_trust_level: TrustLevel::Untrusted,
+            max_tokens_per_request: 4096,
+            blocked_categories: [
+                ContentCategory::Violence,
+                ContentCategory::Hate,
+                ContentCategory::Sexual,
+                ContentCategory::SelfHarm,
+            ],
+            blocked_patterns: [],
+            pii_redaction_types: [PIIType::Email, PIIType::Phone, PIIType::SSN, PIIType::CreditCard],
+        }
+    }
+}
+
+/// Types of PII that can be detected and redacted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PIIType {
+    Email,
+    Phone,
+    SSN,
+    CreditCard,
+    Address,
+    Name,
+    DateOfBirth,
+    IPAddress,
+    Custom,
+}
+
+/// Result of Aegis security scan.
+#[derive(Debug, Clone)]
+struct AegisResult {
+    /// Whether the content passed all checks
+    passed: bool,
+    /// Sanitized content (if sanitization enabled)
+    sanitized_content?: str,
+    /// Detected threats
+    threats: [DetectedThreat],
+    /// Trust validation result
+    trust_validation: TrustValidation,
+    /// Rate limit status
+    rate_limit_status: RateLimitResult,
+    /// Detailed verdicts from each subsystem
+    verdicts: HashMap<str, SubsystemVerdict>,
+}
+
+/// A detected security threat.
+#[derive(Debug, Clone)]
+struct DetectedThreat {
+    threat_type: ThreatType,
+    severity: ThreatLevel,
+    description: str,
+    location?: TextSpan,
+    mitigation?: str,
+}
+
+/// Text span for locating threats.
+#[derive(Debug, Clone)]
+struct TextSpan {
+    start: usize,
+    end: usize,
+    text: str,
+}
+
+/// Verdict from a security subsystem.
+#[derive(Debug, Clone)]
+struct SubsystemVerdict {
+    subsystem: str,
+    passed: bool,
+    details: str,
+    confidence: f32,
+}
+
+impl Aegis {
+    /// Creates a new Aegis instance with the given configuration.
+    fn new(config: AegisConfig) -> Aegis {
+        let guardian_config = GuardianConfig {
+            threat_threshold: ThreatLevel::Medium,
+            enable_heuristics: true,
+            enable_ml_detection: false,
+        };
+
+        let filter_config = FilterConfig {
+            categories: config.blocked_categories.clone(),
+            custom_patterns: config.blocked_patterns.clone(),
+            action: FilterAction::Block,
+        };
+
+        let rate_config = RateLimitConfig {
+            requests_per_minute: 60,
+            tokens_per_minute: 100000,
+            burst_size: 10,
+        };
+
+        Aegis {
+            config: config.clone(),
+            guardian: Guardian::new(guardian_config),
+            filter: ContentFilter::new(filter_config),
+            sanitizer: Sanitizer::default(),
+            injection_detector: InjectionDetector::new(),
+            pii_detector: PIIDetector::new(config.pii_redaction_types.clone()),
+            rate_limiter: RateLimiter::new(rate_config),
+            trust_context: Arc::new(RwLock::new(TrustContext::new(config.default_trust_level))),
+        }
+    }
+
+    /// Creates an Aegis instance with default configuration.
+    fn default() -> Aegis { Aegis::new(AegisConfig::default()) }
+
+    /// Validates input at trust boundary (~ → ‽ → !).
+    /// This is the primary entry point for untrusted input.
+    fn validate_input·trust(self, input~: str, context: &str) -> Result<AegisResult!> {
+        let mut result = AegisResult {
+            passed: true,
+            sanitized_content: None,
+            threats: [],
+            trust_validation: TrustValidation::pending(),
+            rate_limit_status: RateLimitResult::allowed(),
+            verdicts: HashMap::new(),
+        };
+
+        // Rate limiting check
+        if self.config.rate_limiting_enabled {
+            let rate_result = self.rate_limiter.check(context)
+            result.rate_limit_status = rate_result.clone()
+            if !rate_result.allowed {
+                result.passed = false
+                result.verdicts.insert("rate_limiter".to_string(), SubsystemVerdict {
+                    subsystem: "rate_limiter".to_string(),
+                    passed: false,
+                    details: format!("Rate limit exceeded: {}", rate_result.reason ?? ""),
+                    confidence: 1.0,
+                })
+                return Ok(result)
+            }
+        }
+
+        // Prompt injection detection
+        if self.config.injection_detection_enabled {
+            let injection_result = self.injection_detector.scan(input)
+            if injection_result.detected {
+                result.passed = false
+                result.threats.extend(injection_result.threats|τ{|t| DetectedThreat {
+                    threat_type: ThreatType::PromptInjection,
+                    severity: t.severity,
+                    description: t.description.clone(),
+                    location: t.location.clone(),
+                    mitigation: Some("Input contains potential prompt injection".to_string()),
+                }})
+                result.verdicts.insert("injection_detector".to_string(), SubsystemVerdict {
+                    subsystem: "injection_detector".to_string(),
+                    passed: false,
+                    details: "Prompt injection detected".to_string(),
+                    confidence: injection_result.confidence,
+                })
+            }
+        }
+
+        // Content filtering
+        if self.config.content_filter_enabled {
+            let filter_result = self.filter.scan(input)
+            if filter_result.action == FilterAction::Block {
+                result.passed = false
+                result.threats.extend(filter_result.matches|τ{|m| DetectedThreat {
+                    threat_type: ThreatType::BlockedContent,
+                    severity: ThreatLevel::High,
+                    description: format!("Blocked category: {:?}", m.category),
+                    location: m.span.clone(),
+                    mitigation: None,
+                }})
+            }
+            result.verdicts.insert("content_filter".to_string(), SubsystemVerdict {
+                subsystem: "content_filter".to_string(),
+                passed: filter_result.action != FilterAction::Block,
+                details: format!("{} categories flagged", filter_result.matches.len()),
+                confidence: filter_result.confidence,
+            })
+        }
+
+        // PII detection and redaction
+        let processed_input = if self.config.pii_protection_enabled {
+            let pii_result = self.pii_detector.scan_and_redact(input)
+            if !pii_result.detections.is_empty() {
+                result.threats.extend(pii_result.detections|τ{|d| DetectedThreat {
+                    threat_type: ThreatType::PIIExposure,
+                    severity: ThreatLevel::Medium,
+                    description: format!("PII detected: {:?}", d.pii_type),
+                    location: d.span.clone(),
+                    mitigation: Some("PII has been redacted".to_string()),
+                }})
+            }
+            pii_result.redacted_text
+        } else {
+            input.to_string()
+        };
+
+        // Input sanitization
+        if self.config.sanitization_enabled {
+            let sanitized = self.sanitizer.sanitize(&processed_input)
+            result.sanitized_content = Some(sanitized)
+        }
+
+        // Guardian final verdict
+        let guardian_verdict = self.guardian.evaluate(&result.threats)
+        result.verdicts.insert("guardian".to_string(), SubsystemVerdict {
+            subsystem: "guardian".to_string(),
+            passed: guardian_verdict.allow,
+            details: guardian_verdict.reason.clone(),
+            confidence: guardian_verdict.confidence,
+        })
+
+        if !guardian_verdict.allow {
+            result.passed = false
+        }
+
+        // Update trust validation
+        result.trust_validation = if result.passed {
+            TrustValidation::validated(TrustLevel::Verified)
+        } else {
+            TrustValidation::rejected(result.threats|α|τ{|t| t.description.clone()} ?? "Unknown threat".to_string())
+        };
+
+        Ok(result)
+    }
+
+    /// Validates output before returning to user.
+    fn validate_output(self, output!: str) -> Result<AegisResult!> {
+        let mut result = AegisResult {
+            passed: true,
+            sanitized_content: None,
+            threats: [],
+            trust_validation: TrustValidation::validated(TrustLevel::Verified),
+            rate_limit_status: RateLimitResult::allowed(),
+            verdicts: HashMap::new(),
+        };
+
+        // Content filtering for output
+        if self.config.content_filter_enabled {
+            let filter_result = self.filter.scan(output)
+            if filter_result.action == FilterAction::Block {
+                result.passed = false
+                result.threats.push(DetectedThreat {
+                    threat_type: ThreatType::UnsafeOutput,
+                    severity: ThreatLevel::High,
+                    description: "Output contains blocked content".to_string(),
+                    location: None,
+                    mitigation: Some("Output filtered".to_string()),
+                })
+            }
+        }
+
+        // PII leak prevention
+        if self.config.pii_protection_enabled {
+            let pii_result = self.pii_detector.scan_and_redact(output)
+            if !pii_result.detections.is_empty() {
+                result.sanitized_content = Some(pii_result.redacted_text)
+                result.threats.push(DetectedThreat {
+                    threat_type: ThreatType::PIILeak,
+                    severity: ThreatLevel::High,
+                    description: "Output contained PII that was redacted".to_string(),
+                    location: None,
+                    mitigation: Some("PII redacted from output".to_string()),
+                })
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Creates a trust boundary context for a session.
+    fn create_trust_context(self, session_id: &str) -> TrustContext {
+        TrustContext::new_session(session_id, self.config.default_trust_level)
+    }
+
+    /// Elevates trust level after successful validation.
+    fn elevate_trust(self, context: &mut TrustContext, new_level: TrustLevel) {
+        if new_level as u8 > context.level as u8 {
+            context.level = new_level
+            context.elevation_history.push(TrustElevation {
+                from: context.level,
+                to: new_level,
+                timestamp: std::time::Instant::now(),
+                reason: "Validated by Aegis".to_string(),
+            })
+        }
+    }
+
+    /// Gets current configuration.
+    fn config(self) -> &AegisConfig { &self.config }
+
+    /// Updates configuration.
+    fn set_config(mut self, config: AegisConfig) { self.config = config }
+}
+
+/// Trust elevation record.
+#[derive(Debug, Clone)]
+struct TrustElevation {
+    from: TrustLevel,
+    to: TrustLevel,
+    timestamp: std::time::Instant,
+    reason: str,
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_aegis_creation() {
+        let aegis = Aegis::default()
+        assert!(aegis.config.content_filter_enabled)
+        assert!(aegis.config.injection_detection_enabled)
+    }
+
+    #[test]
+    fn test_safe_input_validation() {
+        let aegis = Aegis::default()
+        let result = aegis.validate_input·trust("Hello, how are you?", "test_session").unwrap()
+        assert!(result.passed)
+        assert!(result.threats.is_empty())
+    }
+
+    #[test]
+    fn test_pii_detection() {
+        let aegis = Aegis::default()
+        let input = "My email is test@example.com and my SSN is 123-45-6789"
+        let result = aegis.validate_input·trust(input, "test_session").unwrap()
+
+        assert!(!result.threats.is_empty())
+        assert!(result.threats|∃{|t| t.threat_type == ThreatType::PIIExposure})
+    }
+
+    #[test]
+    fn test_trust_context() {
+        let aegis = Aegis::default()
+        let mut ctx = aegis.create_trust_context("session_1")
+
+        assert_eq!(ctx.level, TrustLevel::Untrusted)
+        aegis.elevate_trust(&mut ctx, TrustLevel::Verified)
+        assert_eq!(ctx.level, TrustLevel::Verified)
+    }
+}

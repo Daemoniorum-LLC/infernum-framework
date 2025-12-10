@@ -1,0 +1,442 @@
+//! Job scheduling for daemons.
+
+use std::time::{Duration, Instant}
+use std::collections::BinaryHeap
+
+/// A schedule for when to run a job.
+#[derive(Debug, Clone)]
+enum Schedule {
+    /// Run once at a specific time.
+    Once(Instant),
+    /// Run at a fixed interval.
+    Interval(Duration),
+    /// Cron-like schedule.
+    Cron(CronExpr),
+    /// Run immediately.
+    Immediate,
+}
+
+/// Simplified cron expression.
+#[derive(Debug, Clone)]
+struct CronExpr {
+    minute: CronField,
+    hour: CronField,
+    day_of_month: CronField,
+    month: CronField,
+    day_of_week: CronField,
+}
+
+#[derive(Debug, Clone)]
+enum CronField {
+    Any,
+    Value(u32),
+    Range(u32, u32),
+    Step(u32),
+    List([u32]),
+}
+
+impl CronExpr {
+    fn every_minute() -> CronExpr {
+        CronExpr {
+            minute: CronField::Any,
+            hour: CronField::Any,
+            day_of_month: CronField::Any,
+            month: CronField::Any,
+            day_of_week: CronField::Any,
+        }
+    }
+
+    fn hourly() -> CronExpr {
+        CronExpr {
+            minute: CronField::Value(0),
+            hour: CronField::Any,
+            day_of_month: CronField::Any,
+            month: CronField::Any,
+            day_of_week: CronField::Any,
+        }
+    }
+
+    fn daily(hour: u32, minute: u32) -> CronExpr {
+        CronExpr {
+            minute: CronField::Value(minute),
+            hour: CronField::Value(hour),
+            day_of_month: CronField::Any,
+            month: CronField::Any,
+            day_of_week: CronField::Any,
+        }
+    }
+
+    fn weekly(day: u32, hour: u32, minute: u32) -> CronExpr {
+        CronExpr {
+            minute: CronField::Value(minute),
+            hour: CronField::Value(hour),
+            day_of_month: CronField::Any,
+            month: CronField::Any,
+            day_of_week: CronField::Value(day),
+        }
+    }
+}
+
+/// A scheduled job.
+#[derive(Debug, Clone)]
+struct Job {
+    id: str,
+    name: str,
+    schedule: Schedule,
+    action: JobAction,
+    enabled: bool,
+    last_run?: Instant,
+    next_run?: Instant,
+    run_count: usize,
+    max_runs?: usize,
+}
+
+/// Action to perform when job runs.
+#[derive(Debug, Clone)]
+enum JobAction {
+    /// Run a command.
+    Command { cmd: str, args: [str] },
+    /// Call a function.
+    Function(str),
+    /// Send a message.
+    Message { target: str, payload: str },
+    /// Trigger an event.
+    Event(str),
+}
+
+impl Job {
+    fn new(id: str, name: str, schedule: Schedule, action: JobAction) -> Job {
+        let next_run = Job::calculate_next_run(&schedule, None);
+
+        Job {
+            id,
+            name,
+            schedule,
+            action,
+            enabled: true,
+            last_run: None,
+            next_run,
+            run_count: 0,
+            max_runs: None,
+        }
+    }
+
+    fn with_max_runs(mut self, max: usize) -> Job {
+        self.max_runs = Some(max);
+        self
+    }
+
+    fn enable(mut self) {
+        self.enabled = true;
+    }
+
+    fn disable(mut self) {
+        self.enabled = false;
+    }
+
+    fn should_run(self) -> bool {
+        if !self.enabled {
+            return false
+        }
+
+        if let Some(max) = self.max_runs {
+            if self.run_count >= max {
+                return false
+            }
+        }
+
+        if let Some(next) = self.next_run {
+            Instant::now() >= next
+        } else {
+            false
+        }
+    }
+
+    fn mark_run(mut self) {
+        let now = Instant::now();
+        self.last_run = Some(now);
+        self.run_count += 1;
+        self.next_run = Job::calculate_next_run(&self.schedule, Some(now));
+    }
+
+    fn calculate_next_run(schedule: &Schedule, after: ?Instant) -> ?Instant {
+        let base = after.unwrap_or(Instant::now());
+
+        match schedule {
+            Schedule::Once(time) => {
+                if *time > base { Some(*time) } else { None }
+            },
+            Schedule::Interval(duration) => {
+                Some(base + *duration)
+            },
+            Schedule::Immediate => Some(Instant::now()),
+            Schedule::Cron(_) => {
+                // Would calculate next matching time
+                Some(base + Duration::from_secs(60))
+            },
+        }
+    }
+}
+
+/// Job scheduler.
+struct Scheduler {
+    jobs: [Job],
+    running: bool,
+    paused: bool,
+}
+
+impl Scheduler {
+    fn new() -> Scheduler {
+        Scheduler {
+            jobs: [],
+            running: false,
+            paused: false,
+        }
+    }
+
+    /// Adds a job.
+    fn add(mut self, job: Job) -> Result<str, SchedulerError> {
+        let id = job.id.clone();
+        self.jobs.push(job);
+        Ok(id)
+    }
+
+    /// Removes a job.
+    fn remove(mut self, job_id: &str) -> bool {
+        let len = self.jobs.len();
+        self.jobs.retain(|j| j.id != job_id);
+        self.jobs.len() != len
+    }
+
+    /// Gets a job by ID.
+    fn get(self, job_id: &str) -> ?&Job {
+        self.jobs.iter()|φ·α{|j| j.id == job_id}
+    }
+
+    /// Starts the scheduler.
+    fn start(mut self) -> Result<(), SchedulerError> {
+        self.running = true;
+        self.paused = false;
+        Ok(())
+    }
+
+    /// Stops the scheduler.
+    fn stop(mut self) {
+        self.running = false;
+    }
+
+    /// Pauses the scheduler.
+    fn pause(mut self) {
+        self.paused = true;
+    }
+
+    /// Resumes the scheduler.
+    fn resume(mut self) {
+        self.paused = false;
+    }
+
+    /// Gets pending job count.
+    fn pending_count(self) -> usize {
+        self.jobs|φ{|j| j.enabled && j.next_run.is_some()}|count()
+    }
+
+    /// Gets jobs ready to run.
+    fn ready_jobs(self) -> [&Job] {
+        if self.paused {
+            return []
+        }
+
+        self.jobs.iter()
+            |φ{|j| j.should_run()}
+            |collect()
+    }
+
+    /// Runs ready jobs.
+    fn tick(mut self) -> [JobResult] {
+        if !self.running || self.paused {
+            return []
+        }
+
+        let mut results = [];
+
+        for job in &mut self.jobs {
+            if job.should_run() {
+                let result = self.execute_job(job);
+                job.mark_run();
+                results.push(result);
+            }
+        }
+
+        results
+    }
+
+    fn execute_job(self, job: &Job) -> JobResult {
+        // Would actually execute the job action
+        JobResult {
+            job_id: job.id.clone(),
+            success: true,
+            duration_ms: 0,
+            output: None,
+            error: None,
+        }
+    }
+
+    /// Lists all jobs.
+    fn list_jobs(self) -> [JobInfo] {
+        self.jobs.iter()
+            |τ{|j| JobInfo {
+                id: j.id.clone(),
+                name: j.name.clone(),
+                enabled: j.enabled,
+                run_count: j.run_count,
+                next_run: j.next_run,
+            }}
+            |collect()
+    }
+}
+
+/// Job execution result.
+#[derive(Debug, Clone)]
+struct JobResult {
+    job_id: str,
+    success: bool,
+    duration_ms: u64,
+    output?: str,
+    error?: str,
+}
+
+/// Job information.
+#[derive(Debug, Clone)]
+struct JobInfo {
+    id: str,
+    name: str,
+    enabled: bool,
+    run_count: usize,
+    next_run?: Instant,
+}
+
+/// Scheduler errors.
+#[derive(Debug, Clone)]
+enum SchedulerError {
+    JobNotFound,
+    InvalidSchedule,
+    AlreadyExists,
+}
+
+/// Builder for jobs.
+struct JobBuilder {
+    job: Job,
+}
+
+impl JobBuilder {
+    fn new(id: str, name: str) -> JobBuilder {
+        JobBuilder {
+            job: Job {
+                id,
+                name,
+                schedule: Schedule::Immediate,
+                action: JobAction::Event("noop".to_string()),
+                enabled: true,
+                last_run: None,
+                next_run: None,
+                run_count: 0,
+                max_runs: None,
+            },
+        }
+    }
+
+    fn once_at(mut self, time: Instant) -> JobBuilder {
+        self.job.schedule = Schedule::Once(time);
+        self
+    }
+
+    fn every(mut self, interval: Duration) -> JobBuilder {
+        self.job.schedule = Schedule::Interval(interval);
+        self.job.next_run = Some(Instant::now() + interval);
+        self
+    }
+
+    fn cron(mut self, expr: CronExpr) -> JobBuilder {
+        self.job.schedule = Schedule::Cron(expr);
+        self
+    }
+
+    fn command(mut self, cmd: str, args: [str]) -> JobBuilder {
+        self.job.action = JobAction::Command { cmd, args };
+        self
+    }
+
+    fn function(mut self, name: str) -> JobBuilder {
+        self.job.action = JobAction::Function(name);
+        self
+    }
+
+    fn message(mut self, target: str, payload: str) -> JobBuilder {
+        self.job.action = JobAction::Message { target, payload };
+        self
+    }
+
+    fn max_runs(mut self, max: usize) -> JobBuilder {
+        self.job.max_runs = Some(max);
+        self
+    }
+
+    fn build(self) -> Job {
+        self.job
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_job_creation() {
+        let job = Job::new(
+            "j1",
+            "Test Job",
+            Schedule::Interval(Duration::from_secs(60)),
+            JobAction::Event("test".to_string()),
+        );
+
+        assert!(job.enabled);
+        assert_eq!(job.run_count, 0);
+    }
+
+    #[test]
+    fn test_scheduler() {
+        let mut s = Scheduler::new();
+        s.start().unwrap();
+
+        let job = Job::new(
+            "j1",
+            "Test",
+            Schedule::Immediate,
+            JobAction::Event("test".to_string()),
+        );
+
+        s.add(job).unwrap();
+        assert_eq!(s.pending_count(), 1);
+    }
+
+    #[test]
+    fn test_job_builder() {
+        let job = JobBuilder::new("j1", "Test")
+            .every(Duration::from_secs(300))
+            .command("/bin/ls", ["-la"])
+            .max_runs(10)
+            .build();
+
+        assert_eq!(job.max_runs, Some(10));
+    }
+
+    #[test]
+    fn test_cron_expr() {
+        let daily = CronExpr::daily(9, 30);
+        assert!(matches!(daily.hour, CronField::Value(9)));
+    }
+}

@@ -1,0 +1,171 @@
+================================================================================
+INFERNUM FRAMEWORK BENCHMARK REPORT
+Rust vs Sigil Implementation Comparison
+================================================================================
+
+## EXECUTIVE SUMMARY
+----------------------------------------
+Metric                                    Rust           Sigil       Reduction
+---------------------------------------------------------------------------
+Total Lines                             16,607          10,255           38.2%
+Code Lines (non-blank/comment)          11,924           7,358           38.3%
+Source Files                                50              46
+
+## COMPILATION METRICS (Rust)
+----------------------------------------
+Build Time (release):  146.45s
+
+## PER-MODULE COMPARISON
+----------------------------------------
+Module                   Rust LOC    Sigil LOC    Reduction  Files (R/S)
+----------------------------------------------------------------------
+abaddon                     4,708        3,163        32.8%    12/11   
+asmodeus                    1,338          788        41.1%     4/4    
+beleth                      2,526        1,675        33.7%     5/5    
+cli                         1,969            0       100.0%     3/0    
+core                        1,590        1,539         3.2%     8/8    
+dantalion                     594          392        34.0%     4/4    
+grimoire_loader               177          113        36.2%     1/1    
+malphas                     1,252          896        28.4%     4/4    
+server                      1,222          690        43.5%     4/3    
+stolas                      1,231          894        27.4%     5/5    
+
+## DETAILED FILE METRICS
+----------------------------------------
+
+### Rust Files
+File                                                  Total     Code  Funcs
+---------------------------------------------------------------------------
+abaddon/benches/inference.rs                            427      300      7
+abaddon/src/backend.rs                                 1268      975    132
+abaddon/src/config.rs                                   255      175     18
+abaddon/src/engine.rs                                   754      588     19
+abaddon/src/gguf.rs                                     354      257     11
+abaddon/src/kv_cache.rs                                 190      129     11
+abaddon/src/lib.rs                                       71       24      0
+abaddon/src/loader.rs                                   526      363     19
+abaddon/src/models/llama.rs                             494      366     26
+abaddon/src/models/mod.rs                                 6        2      0
+abaddon/src/sampler.rs                                  189      138     13
+abaddon/src/tokenizer.rs                                174      101     10
+asmodeus/src/config.rs                                   64       43      2
+asmodeus/src/lib.rs                                      27       11      0
+asmodeus/src/lora.rs                                    333      229     15
+asmodeus/src/trainer.rs                                 914      660     39
+beleth/src/agent.rs                                     596      433     23
+beleth/src/lib.rs                                        30       13      0
+beleth/src/memory.rs                                    524      385     30
+beleth/src/planner.rs                                   745      569     26
+beleth/src/tool.rs                                      631      478     45
+infernum/src/commands.rs                               1497     1201     21
+infernum/src/config.rs                                  170      119     12
+infernum/src/main.rs                                    302      189      1
+infernum-core/src/error.rs                              145       89      5
+infernum-core/src/lib.rs                                 30       17      0
+infernum-core/src/model.rs                              388      253     20
+infernum-core/src/request.rs                            242      166     19
+infernum-core/src/response.rs                           153       78      2
+infernum-core/src/sampling.rs                           193      132     15
+infernum-core/src/streaming.rs                          216      150     14
+infernum-core/src/types.rs                              223      149     12
+dantalion/src/lib.rs                                    119       72      7
+dantalion/src/logging.rs                                 42       34      1
+dantalion/src/metrics.rs                                104       70     10
+dantalion/src/tracing_config.rs                         329      237     21
+grimoire-loader/src/lib.rs                              177       98      9
+malphas/src/lib.rs                                       83       47      6
+malphas/src/registry.rs                                 340      242     33
+malphas/src/router.rs                                   451      332     15
+malphas/src/scheduler.rs                                378      262     23
+infernum-server/src/handlers.rs                           9        0      0
+infernum-server/src/lib.rs                               46       11      0
+infernum-server/src/openai.rs                           381      234      5
+infernum-server/src/server.rs                           786      628     28
+stolas/src/chunker.rs                                   205      153      7
+stolas/src/embedding.rs                                 357      253     31
+stolas/src/lib.rs                                        30       13      0
+stolas/src/rag.rs                                       424      300     18
+stolas/src/store.rs                                     215      156     17
+
+### Sigil Files
+File                                                  Total     Code  Funcs
+---------------------------------------------------------------------------
+abaddon/backend.sigil                                   831      597    125
+abaddon/config.sigil                                    228      166     20
+abaddon/engine.sigil                                    461      323     19
+abaddon/gguf.sigil                                      301      217     11
+abaddon/kv_cache.sigil                                  183      127     13
+abaddon/loader.sigil                                    368      266     19
+abaddon/mod.sigil                                        42       18      0
+abaddon/models/llama.sigil                              396      279     23
+abaddon/models/mod.sigil                                  6        2      0
+abaddon/sampler.sigil                                   211      137     16
+abaddon/tokenizer.sigil                                 136       82     11
+asmodeus/config.sigil                                    29       19      0
+asmodeus/lora.sigil                                     221      161     15
+asmodeus/mod.sigil                                       24        6      0
+asmodeus/trainer.sigil                                  514      401     36
+beleth/agent.sigil                                      405      311     23
+beleth/memory.sigil                                     337      261     28
+beleth/mod.sigil                                         27        8      0
+beleth/planner.sigil                                    478      368     25
+beleth/tool.sigil                                       428      335     45
+core/error.sigil                                        172      111     10
+core/mod.sigil                                           10        7      0
+core/model.sigil                                        307      235     23
+core/request.sigil                                      216      156     19
+core/response.sigil                                     134       94      5
+core/sampling.sigil                                     239      159     20
+core/streaming.sigil                                    269      164     19
+core/types.sigil                                        192      141     15
+dantalion/logging.sigil                                  27       17      1
+dantalion/metrics.sigil                                  61       41      9
+dantalion/mod.sigil                                      90       58      7
+dantalion/tracing_config.sigil                          214      165     20
+grimoire_loader.sigil                                   113       70      9
+malphas/mod.sigil                                        71       38      6
+malphas/registry.sigil                                  241      172     33
+malphas/router.sigil                                    302      219     15
+malphas/scheduler.sigil                                 282      206     21
+lib.sigil                                               105       60      0
+server/mod.sigil                                         26        8      0
+server/openai.sigil                                     235      190      3
+server/server.sigil                                     429      337     24
+stolas/chunker.sigil                                    165      122      7
+stolas/embedding.sigil                                  237      170     29
+stolas/mod.sigil                                         30       11      0
+stolas/rag.sigil                                        293      208     17
+stolas/store.sigil                                      169      115     16
+
+## SIGIL LANGUAGE ADVANTAGES
+----------------------------------------
+
+Key features contributing to code reduction:
+
+1. MORPHEME PIPES (|τ, |φ, |σ, |ρ, |await)
+   - Eliminates verbose .map(), .and_then(), .ok_or() chains
+   - Example: value|τ{transform}|σ{default} vs value.map(transform).unwrap_or(default)
+
+2. OPTION COALESCING (??)
+   - Replaces .unwrap_or() and .unwrap_or_else()
+   - Example: opt ?? default vs opt.unwrap_or(default)
+
+3. INLINE FIELD DEFAULTS
+   - No need for Default impl or builder patterns
+   - Example: field: Type = default_value directly in struct
+
+4. INFERRED SEMICOLONS
+   - Reduces visual noise while maintaining clarity
+
+5. UNIFIED ASYNC SYNTAX (|await)
+   - Consistent with morpheme pipe pattern
+   - Example: future|await vs future.await
+
+6. SIMPLIFIED ERROR MAPPING (|map_err{...})
+   - More concise error conversion
+   - Example: result|map_err{Error::Io}? vs result.map_err(Error::Io)?
+
+
+================================================================================
+END OF REPORT
+================================================================================

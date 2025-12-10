@@ -1,0 +1,740 @@
+{
+  "rust": {
+    "name": "infernum-framework",
+    "language": "Rust",
+    "total_lines": 16607,
+    "total_code_lines": 11924,
+    "total_files": 50,
+    "compilation_time": 146.45036125183105,
+    "binary_size": 0,
+    "modules": {
+      "grimoire_loader": {
+        "total_lines": 177,
+        "code_lines": 98,
+        "file_count": 1,
+        "files": [
+          {
+            "path": "crates/grimoire-loader/src/lib.rs",
+            "total_lines": 177,
+            "code_lines": 98,
+            "function_count": 9
+          }
+        ]
+      },
+      "abaddon": {
+        "total_lines": 4708,
+        "code_lines": 3418,
+        "file_count": 12,
+        "files": [
+          {
+            "path": "crates/abaddon/src/loader.rs",
+            "total_lines": 526,
+            "code_lines": 363,
+            "function_count": 19
+          },
+          {
+            "path": "crates/abaddon/src/config.rs",
+            "total_lines": 255,
+            "code_lines": 175,
+            "function_count": 18
+          },
+          {
+            "path": "crates/abaddon/src/backend.rs",
+            "total_lines": 1268,
+            "code_lines": 975,
+            "function_count": 132
+          },
+          {
+            "path": "crates/abaddon/src/lib.rs",
+            "total_lines": 71,
+            "code_lines": 24,
+            "function_count": 0
+          },
+          {
+            "path": "crates/abaddon/src/gguf.rs",
+            "total_lines": 354,
+            "code_lines": 257,
+            "function_count": 11
+          },
+          {
+            "path": "crates/abaddon/src/sampler.rs",
+            "total_lines": 189,
+            "code_lines": 138,
+            "function_count": 13
+          },
+          {
+            "path": "crates/abaddon/src/kv_cache.rs",
+            "total_lines": 190,
+            "code_lines": 129,
+            "function_count": 11
+          },
+          {
+            "path": "crates/abaddon/src/engine.rs",
+            "total_lines": 754,
+            "code_lines": 588,
+            "function_count": 19
+          },
+          {
+            "path": "crates/abaddon/src/tokenizer.rs",
+            "total_lines": 174,
+            "code_lines": 101,
+            "function_count": 10
+          },
+          {
+            "path": "crates/abaddon/src/models/llama.rs",
+            "total_lines": 494,
+            "code_lines": 366,
+            "function_count": 26
+          },
+          {
+            "path": "crates/abaddon/src/models/mod.rs",
+            "total_lines": 6,
+            "code_lines": 2,
+            "function_count": 0
+          },
+          {
+            "path": "crates/abaddon/benches/inference.rs",
+            "total_lines": 427,
+            "code_lines": 300,
+            "function_count": 7
+          }
+        ]
+      },
+      "malphas": {
+        "total_lines": 1252,
+        "code_lines": 883,
+        "file_count": 4,
+        "files": [
+          {
+            "path": "crates/malphas/src/router.rs",
+            "total_lines": 451,
+            "code_lines": 332,
+            "function_count": 15
+          },
+          {
+            "path": "crates/malphas/src/scheduler.rs",
+            "total_lines": 378,
+            "code_lines": 262,
+            "function_count": 23
+          },
+          {
+            "path": "crates/malphas/src/lib.rs",
+            "total_lines": 83,
+            "code_lines": 47,
+            "function_count": 6
+          },
+          {
+            "path": "crates/malphas/src/registry.rs",
+            "total_lines": 340,
+            "code_lines": 242,
+            "function_count": 33
+          }
+        ]
+      },
+      "beleth": {
+        "total_lines": 2526,
+        "code_lines": 1878,
+        "file_count": 5,
+        "files": [
+          {
+            "path": "crates/beleth/src/memory.rs",
+            "total_lines": 524,
+            "code_lines": 385,
+            "function_count": 30
+          },
+          {
+            "path": "crates/beleth/src/agent.rs",
+            "total_lines": 596,
+            "code_lines": 433,
+            "function_count": 23
+          },
+          {
+            "path": "crates/beleth/src/planner.rs",
+            "total_lines": 745,
+            "code_lines": 569,
+            "function_count": 26
+          },
+          {
+            "path": "crates/beleth/src/lib.rs",
+            "total_lines": 30,
+            "code_lines": 13,
+            "function_count": 0
+          },
+          {
+            "path": "crates/beleth/src/tool.rs",
+            "total_lines": 631,
+            "code_lines": 478,
+            "function_count": 45
+          }
+        ]
+      },
+      "asmodeus": {
+        "total_lines": 1338,
+        "code_lines": 943,
+        "file_count": 4,
+        "files": [
+          {
+            "path": "crates/asmodeus/src/config.rs",
+            "total_lines": 64,
+            "code_lines": 43,
+            "function_count": 2
+          },
+          {
+            "path": "crates/asmodeus/src/lib.rs",
+            "total_lines": 27,
+            "code_lines": 11,
+            "function_count": 0
+          },
+          {
+            "path": "crates/asmodeus/src/lora.rs",
+            "total_lines": 333,
+            "code_lines": 229,
+            "function_count": 15
+          },
+          {
+            "path": "crates/asmodeus/src/trainer.rs",
+            "total_lines": 914,
+            "code_lines": 660,
+            "function_count": 39
+          }
+        ]
+      },
+      "cli": {
+        "total_lines": 1969,
+        "code_lines": 1509,
+        "file_count": 3,
+        "files": [
+          {
+            "path": "crates/infernum/src/commands.rs",
+            "total_lines": 1497,
+            "code_lines": 1201,
+            "function_count": 21
+          },
+          {
+            "path": "crates/infernum/src/config.rs",
+            "total_lines": 170,
+            "code_lines": 119,
+            "function_count": 12
+          },
+          {
+            "path": "crates/infernum/src/main.rs",
+            "total_lines": 302,
+            "code_lines": 189,
+            "function_count": 1
+          }
+        ]
+      },
+      "dantalion": {
+        "total_lines": 594,
+        "code_lines": 413,
+        "file_count": 4,
+        "files": [
+          {
+            "path": "crates/dantalion/src/tracing_config.rs",
+            "total_lines": 329,
+            "code_lines": 237,
+            "function_count": 21
+          },
+          {
+            "path": "crates/dantalion/src/lib.rs",
+            "total_lines": 119,
+            "code_lines": 72,
+            "function_count": 7
+          },
+          {
+            "path": "crates/dantalion/src/metrics.rs",
+            "total_lines": 104,
+            "code_lines": 70,
+            "function_count": 10
+          },
+          {
+            "path": "crates/dantalion/src/logging.rs",
+            "total_lines": 42,
+            "code_lines": 34,
+            "function_count": 1
+          }
+        ]
+      },
+      "core": {
+        "total_lines": 1590,
+        "code_lines": 1034,
+        "file_count": 8,
+        "files": [
+          {
+            "path": "crates/infernum-core/src/lib.rs",
+            "total_lines": 30,
+            "code_lines": 17,
+            "function_count": 0
+          },
+          {
+            "path": "crates/infernum-core/src/error.rs",
+            "total_lines": 145,
+            "code_lines": 89,
+            "function_count": 5
+          },
+          {
+            "path": "crates/infernum-core/src/response.rs",
+            "total_lines": 153,
+            "code_lines": 78,
+            "function_count": 2
+          },
+          {
+            "path": "crates/infernum-core/src/streaming.rs",
+            "total_lines": 216,
+            "code_lines": 150,
+            "function_count": 14
+          },
+          {
+            "path": "crates/infernum-core/src/model.rs",
+            "total_lines": 388,
+            "code_lines": 253,
+            "function_count": 20
+          },
+          {
+            "path": "crates/infernum-core/src/request.rs",
+            "total_lines": 242,
+            "code_lines": 166,
+            "function_count": 19
+          },
+          {
+            "path": "crates/infernum-core/src/types.rs",
+            "total_lines": 223,
+            "code_lines": 149,
+            "function_count": 12
+          },
+          {
+            "path": "crates/infernum-core/src/sampling.rs",
+            "total_lines": 193,
+            "code_lines": 132,
+            "function_count": 15
+          }
+        ]
+      },
+      "stolas": {
+        "total_lines": 1231,
+        "code_lines": 875,
+        "file_count": 5,
+        "files": [
+          {
+            "path": "crates/stolas/src/embedding.rs",
+            "total_lines": 357,
+            "code_lines": 253,
+            "function_count": 31
+          },
+          {
+            "path": "crates/stolas/src/store.rs",
+            "total_lines": 215,
+            "code_lines": 156,
+            "function_count": 17
+          },
+          {
+            "path": "crates/stolas/src/lib.rs",
+            "total_lines": 30,
+            "code_lines": 13,
+            "function_count": 0
+          },
+          {
+            "path": "crates/stolas/src/chunker.rs",
+            "total_lines": 205,
+            "code_lines": 153,
+            "function_count": 7
+          },
+          {
+            "path": "crates/stolas/src/rag.rs",
+            "total_lines": 424,
+            "code_lines": 300,
+            "function_count": 18
+          }
+        ]
+      },
+      "server": {
+        "total_lines": 1222,
+        "code_lines": 873,
+        "file_count": 4,
+        "files": [
+          {
+            "path": "crates/infernum-server/src/openai.rs",
+            "total_lines": 381,
+            "code_lines": 234,
+            "function_count": 5
+          },
+          {
+            "path": "crates/infernum-server/src/lib.rs",
+            "total_lines": 46,
+            "code_lines": 11,
+            "function_count": 0
+          },
+          {
+            "path": "crates/infernum-server/src/handlers.rs",
+            "total_lines": 9,
+            "code_lines": 0,
+            "function_count": 0
+          },
+          {
+            "path": "crates/infernum-server/src/server.rs",
+            "total_lines": 786,
+            "code_lines": 628,
+            "function_count": 28
+          }
+        ]
+      }
+    }
+  },
+  "sigil": {
+    "name": "infernum-sigil",
+    "language": "Sigil",
+    "total_lines": 10255,
+    "total_code_lines": 7358,
+    "total_files": 46,
+    "compilation_time": 0.0,
+    "binary_size": 0,
+    "modules": {
+      "grimoire_loader": {
+        "total_lines": 113,
+        "code_lines": 70,
+        "file_count": 1,
+        "files": [
+          {
+            "path": "src/grimoire_loader.sigil",
+            "total_lines": 113,
+            "code_lines": 70,
+            "function_count": 9
+          }
+        ]
+      },
+      "root": {
+        "total_lines": 105,
+        "code_lines": 60,
+        "file_count": 1,
+        "files": [
+          {
+            "path": "src/lib.sigil",
+            "total_lines": 105,
+            "code_lines": 60,
+            "function_count": 0
+          }
+        ]
+      },
+      "abaddon": {
+        "total_lines": 3163,
+        "code_lines": 2214,
+        "file_count": 11,
+        "files": [
+          {
+            "path": "src/abaddon/gguf.sigil",
+            "total_lines": 301,
+            "code_lines": 217,
+            "function_count": 11
+          },
+          {
+            "path": "src/abaddon/loader.sigil",
+            "total_lines": 368,
+            "code_lines": 266,
+            "function_count": 19
+          },
+          {
+            "path": "src/abaddon/tokenizer.sigil",
+            "total_lines": 136,
+            "code_lines": 82,
+            "function_count": 11
+          },
+          {
+            "path": "src/abaddon/backend.sigil",
+            "total_lines": 831,
+            "code_lines": 597,
+            "function_count": 125
+          },
+          {
+            "path": "src/abaddon/kv_cache.sigil",
+            "total_lines": 183,
+            "code_lines": 127,
+            "function_count": 13
+          },
+          {
+            "path": "src/abaddon/config.sigil",
+            "total_lines": 228,
+            "code_lines": 166,
+            "function_count": 20
+          },
+          {
+            "path": "src/abaddon/sampler.sigil",
+            "total_lines": 211,
+            "code_lines": 137,
+            "function_count": 16
+          },
+          {
+            "path": "src/abaddon/mod.sigil",
+            "total_lines": 42,
+            "code_lines": 18,
+            "function_count": 0
+          },
+          {
+            "path": "src/abaddon/engine.sigil",
+            "total_lines": 461,
+            "code_lines": 323,
+            "function_count": 19
+          },
+          {
+            "path": "src/abaddon/models/llama.sigil",
+            "total_lines": 396,
+            "code_lines": 279,
+            "function_count": 23
+          },
+          {
+            "path": "src/abaddon/models/mod.sigil",
+            "total_lines": 6,
+            "code_lines": 2,
+            "function_count": 0
+          }
+        ]
+      },
+      "malphas": {
+        "total_lines": 896,
+        "code_lines": 635,
+        "file_count": 4,
+        "files": [
+          {
+            "path": "src/malphas/scheduler.sigil",
+            "total_lines": 282,
+            "code_lines": 206,
+            "function_count": 21
+          },
+          {
+            "path": "src/malphas/router.sigil",
+            "total_lines": 302,
+            "code_lines": 219,
+            "function_count": 15
+          },
+          {
+            "path": "src/malphas/mod.sigil",
+            "total_lines": 71,
+            "code_lines": 38,
+            "function_count": 6
+          },
+          {
+            "path": "src/malphas/registry.sigil",
+            "total_lines": 241,
+            "code_lines": 172,
+            "function_count": 33
+          }
+        ]
+      },
+      "beleth": {
+        "total_lines": 1675,
+        "code_lines": 1283,
+        "file_count": 5,
+        "files": [
+          {
+            "path": "src/beleth/planner.sigil",
+            "total_lines": 478,
+            "code_lines": 368,
+            "function_count": 25
+          },
+          {
+            "path": "src/beleth/agent.sigil",
+            "total_lines": 405,
+            "code_lines": 311,
+            "function_count": 23
+          },
+          {
+            "path": "src/beleth/tool.sigil",
+            "total_lines": 428,
+            "code_lines": 335,
+            "function_count": 45
+          },
+          {
+            "path": "src/beleth/memory.sigil",
+            "total_lines": 337,
+            "code_lines": 261,
+            "function_count": 28
+          },
+          {
+            "path": "src/beleth/mod.sigil",
+            "total_lines": 27,
+            "code_lines": 8,
+            "function_count": 0
+          }
+        ]
+      },
+      "asmodeus": {
+        "total_lines": 788,
+        "code_lines": 587,
+        "file_count": 4,
+        "files": [
+          {
+            "path": "src/asmodeus/trainer.sigil",
+            "total_lines": 514,
+            "code_lines": 401,
+            "function_count": 36
+          },
+          {
+            "path": "src/asmodeus/lora.sigil",
+            "total_lines": 221,
+            "code_lines": 161,
+            "function_count": 15
+          },
+          {
+            "path": "src/asmodeus/config.sigil",
+            "total_lines": 29,
+            "code_lines": 19,
+            "function_count": 0
+          },
+          {
+            "path": "src/asmodeus/mod.sigil",
+            "total_lines": 24,
+            "code_lines": 6,
+            "function_count": 0
+          }
+        ]
+      },
+      "server": {
+        "total_lines": 690,
+        "code_lines": 535,
+        "file_count": 3,
+        "files": [
+          {
+            "path": "src/server/openai.sigil",
+            "total_lines": 235,
+            "code_lines": 190,
+            "function_count": 3
+          },
+          {
+            "path": "src/server/server.sigil",
+            "total_lines": 429,
+            "code_lines": 337,
+            "function_count": 24
+          },
+          {
+            "path": "src/server/mod.sigil",
+            "total_lines": 26,
+            "code_lines": 8,
+            "function_count": 0
+          }
+        ]
+      },
+      "dantalion": {
+        "total_lines": 392,
+        "code_lines": 281,
+        "file_count": 4,
+        "files": [
+          {
+            "path": "src/dantalion/metrics.sigil",
+            "total_lines": 61,
+            "code_lines": 41,
+            "function_count": 9
+          },
+          {
+            "path": "src/dantalion/logging.sigil",
+            "total_lines": 27,
+            "code_lines": 17,
+            "function_count": 1
+          },
+          {
+            "path": "src/dantalion/tracing_config.sigil",
+            "total_lines": 214,
+            "code_lines": 165,
+            "function_count": 20
+          },
+          {
+            "path": "src/dantalion/mod.sigil",
+            "total_lines": 90,
+            "code_lines": 58,
+            "function_count": 7
+          }
+        ]
+      },
+      "stolas": {
+        "total_lines": 894,
+        "code_lines": 626,
+        "file_count": 5,
+        "files": [
+          {
+            "path": "src/stolas/rag.sigil",
+            "total_lines": 293,
+            "code_lines": 208,
+            "function_count": 17
+          },
+          {
+            "path": "src/stolas/store.sigil",
+            "total_lines": 169,
+            "code_lines": 115,
+            "function_count": 16
+          },
+          {
+            "path": "src/stolas/embedding.sigil",
+            "total_lines": 237,
+            "code_lines": 170,
+            "function_count": 29
+          },
+          {
+            "path": "src/stolas/chunker.sigil",
+            "total_lines": 165,
+            "code_lines": 122,
+            "function_count": 7
+          },
+          {
+            "path": "src/stolas/mod.sigil",
+            "total_lines": 30,
+            "code_lines": 11,
+            "function_count": 0
+          }
+        ]
+      },
+      "core": {
+        "total_lines": 1539,
+        "code_lines": 1067,
+        "file_count": 8,
+        "files": [
+          {
+            "path": "src/core/request.sigil",
+            "total_lines": 216,
+            "code_lines": 156,
+            "function_count": 19
+          },
+          {
+            "path": "src/core/streaming.sigil",
+            "total_lines": 269,
+            "code_lines": 164,
+            "function_count": 19
+          },
+          {
+            "path": "src/core/types.sigil",
+            "total_lines": 192,
+            "code_lines": 141,
+            "function_count": 15
+          },
+          {
+            "path": "src/core/error.sigil",
+            "total_lines": 172,
+            "code_lines": 111,
+            "function_count": 10
+          },
+          {
+            "path": "src/core/response.sigil",
+            "total_lines": 134,
+            "code_lines": 94,
+            "function_count": 5
+          },
+          {
+            "path": "src/core/sampling.sigil",
+            "total_lines": 239,
+            "code_lines": 159,
+            "function_count": 20
+          },
+          {
+            "path": "src/core/mod.sigil",
+            "total_lines": 10,
+            "code_lines": 7,
+            "function_count": 0
+          },
+          {
+            "path": "src/core/model.sigil",
+            "total_lines": 307,
+            "code_lines": 235,
+            "function_count": 23
+          }
+        ]
+      }
+    }
+  }
+}

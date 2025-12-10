@@ -1,0 +1,939 @@
+/// 3D U-Net for Video Diffusion
+///
+/// Implements U-Net architectures with temporal modeling for video generation.
+/// Supports SVD-style U-Net and AnimateDiff motion modules.
+
+use crate::core::error::{InfernumError, Result}
+use crate::abaddon::backend::{Tensor, TensorOps, ComputeBackend}
+use crate::video::types::{VideoTensor, LatentVideo, TemporalConfig}
+use crate::video::temporal::{TemporalAttention, TemporalAttentionConfig, MotionModule, MotionModuleConfig}
+use crate::diffusion::unet::{UNet2D, UNet2DConfig, ResNetBlock, CrossAttentionBlock}
+
+// ============================================================================
+// UNet3D Configuration
+// ============================================================================
+
+/// Configuration for 3D U-Net
+pub struct UNet3DConfig {
+    /// Input channels (latent channels)
+    pub in_channels: u32,
+    /// Output channels (latent channels)
+    pub out_channels: u32,
+    /// Block output channels
+    pub block_out_channels: [u32],
+    /// Layers per block
+    pub layers_per_block: u32,
+    /// Cross attention dimension
+    pub cross_attention_dim: u32,
+    /// Attention head dimension
+    pub attention_head_dim: u32,
+    /// Number of frames
+    pub num_frames: u32,
+    /// Temporal attention config
+    pub temporal_config: TemporalConfig,
+    /// Use motion modules (AnimateDiff-style)
+    pub use_motion_modules: bool,
+    /// Addition embed type (for micro-conditioning)
+    pub addition_embed_type: Option<str>,
+    /// Use FPS conditioning
+    pub use_fps_conditioning: bool,
+}
+
+impl UNet3DConfig {
+    /// SVD configuration
+    pub fn svd() -> Self {
+        Self {
+            in_channels: 8,  // 4 latent + 4 noise conditioning
+            out_channels: 4,
+            block_out_channels: [320, 640, 1280, 1280],
+            layers_per_block: 2,
+            cross_attention_dim: 1024,
+            attention_head_dim: 64,
+            num_frames: 14,
+            temporal_config: TemporalConfig::svd(),
+            use_motion_modules: false,
+            addition_embed_type: Some("text_time"),
+            use_fps_conditioning: true,
+        }
+    }
+
+    /// AnimateDiff configuration (SD1.5 + motion)
+    pub fn animatediff() -> Self {
+        Self {
+            in_channels: 4,
+            out_channels: 4,
+            block_out_channels: [320, 640, 1280, 1280],
+            layers_per_block: 2,
+            cross_attention_dim: 768,
+            attention_head_dim: 64,
+            num_frames: 16,
+            temporal_config: TemporalConfig::animatediff(),
+            use_motion_modules: true,
+            addition_embed_type: None,
+            use_fps_conditioning: false,
+        }
+    }
+
+    /// AnimateDiff v2 configuration
+    pub fn animatediff_v2() -> Self {
+        Self {
+            use_motion_modules: true,
+            temporal_config: TemporalConfig {
+                causal_attention: false,
+                position_encoding: crate::video::types::TemporalPositionType::RoPE,
+                ..TemporalConfig::animatediff()
+            },
+            ..Self::animatediff()
+        }
+    }
+}
+
+// ============================================================================
+// UNet3D
+// ============================================================================
+
+/// 3D U-Net for video diffusion
+pub struct UNet3D<B: ComputeBackend> {
+    /// Configuration
+    config: UNet3DConfig,
+    /// Input convolution
+    conv_in: Conv2d<B>,
+    /// Time embedding
+    time_embed: TimeEmbedding<B>,
+    /// FPS embedding (for SVD)
+    fps_embed: Option<FPSEmbedding<B>>,
+    /// Addition embedding (for micro-conditioning)
+    add_embed: Option<AdditionEmbedding<B>>,
+    /// Down blocks
+    down_blocks: Vec<DownBlock3D<B>>,
+    /// Mid block
+    mid_block: MidBlock3D<B>,
+    /// Up blocks
+    up_blocks: Vec<UpBlock3D<B>>,
+    /// Output norm
+    conv_norm_out: GroupNorm<B>,
+    /// Output convolution
+    conv_out: Conv2d<B>,
+    /// Backend
+    backend: B,
+}
+
+impl<B: ComputeBackend> UNet3D<B> {
+    /// Create new UNet3D
+    pub fn new(config: UNet3DConfig, backend: B) -> Result<Self> {
+        // Input conv: latent_channels -> first block channels
+        let conv_in = Conv2d::new(
+            config.in_channels,
+            config.block_out_channels[0],
+            3, 1, 1,
+            backend.clone(),
+        )?
+
+        // Time embedding
+        let time_embed = TimeEmbedding::new(
+            config.block_out_channels[0],
+            config.block_out_channels[0] * 4,
+            backend.clone(),
+        )?
+
+        // FPS embedding (for SVD)
+        let fps_embed = if config.use_fps_conditioning {
+            Some(FPSEmbedding::new(256, config.block_out_channels[0] * 4, backend.clone())?)
+        } else {
+            None
+        }
+
+        // Addition embedding
+        let add_embed = config.addition_embed_type.as_ref().map(|embed_type| {
+            AdditionEmbedding::new(
+                embed_type,
+                config.cross_attention_dim,
+                config.block_out_channels[0] * 4,
+                backend.clone(),
+            )
+        }).transpose()?
+
+        // Down blocks
+        let mut down_blocks = Vec::new()
+        let mut in_channels = config.block_out_channels[0]
+
+        for (i, &out_channels) in config.block_out_channels.iter().enumerate() {
+            let is_last = i == config.block_out_channels.len() - 1
+            let block = DownBlock3D::new(
+                in_channels,
+                out_channels,
+                config.layers_per_block,
+                !is_last,  // add downsampler
+                config.cross_attention_dim,
+                config.attention_head_dim,
+                &config.temporal_config,
+                config.use_motion_modules,
+                backend.clone(),
+            )?
+            down_blocks.push(block)
+            in_channels = out_channels
+        }
+
+        // Mid block
+        let mid_block = MidBlock3D::new(
+            in_channels,
+            config.cross_attention_dim,
+            config.attention_head_dim,
+            &config.temporal_config,
+            config.use_motion_modules,
+            backend.clone(),
+        )?
+
+        // Up blocks
+        let mut up_blocks = Vec::new()
+        let reversed_channels: Vec<u32> = config.block_out_channels.iter().rev().cloned().collect()
+
+        for (i, &out_channels) in reversed_channels.iter().enumerate() {
+            let is_last = i == reversed_channels.len() - 1
+            let skip_channels = reversed_channels.get(i + 1).cloned().unwrap_or(out_channels)
+
+            let block = UpBlock3D::new(
+                in_channels + skip_channels,  // with skip connection
+                out_channels,
+                config.layers_per_block,
+                !is_last,  // add upsampler
+                config.cross_attention_dim,
+                config.attention_head_dim,
+                &config.temporal_config,
+                config.use_motion_modules,
+                backend.clone(),
+            )?
+            up_blocks.push(block)
+            in_channels = out_channels
+        }
+
+        // Output
+        let conv_norm_out = GroupNorm::new(32, config.block_out_channels[0], backend.clone())?
+        let conv_out = Conv2d::new(
+            config.block_out_channels[0],
+            config.out_channels,
+            3, 1, 1,
+            backend.clone(),
+        )?
+
+        Ok(Self {
+            config,
+            conv_in,
+            time_embed,
+            fps_embed,
+            add_embed,
+            down_blocks,
+            mid_block,
+            up_blocks,
+            conv_norm_out,
+            conv_out,
+            backend,
+        })
+    }
+
+    /// Forward pass
+    pub fn forward(
+        &self,
+        sample~: &LatentVideo<B>,         // [batch, channels, frames, height, width]
+        timestep: u32,
+        encoder_hidden_states~: &Tensor<B>,  // Text embeddings
+        added_cond_kwargs: Option<&AddedCondKwargs<B>>,
+    ) -> Result<LatentVideo<B>!> {
+        let (batch, channels, frames, height, width) = sample~.shape5()
+
+        // Time embedding
+        let t_emb! = self.time_embed.forward(timestep)?
+
+        // FPS conditioning
+        let t_emb! = if let (Some(ref fps_emb), Some(kwargs)) = (&self.fps_embed, added_cond_kwargs) {
+            if let Some(fps) = kwargs.fps {
+                let fps_emb! = fps_emb.forward(fps)?
+                t_emb + fps_emb
+            } else {
+                t_emb
+            }
+        } else {
+            t_emb
+        }
+
+        // Addition embedding
+        let t_emb! = if let (Some(ref add_emb), Some(kwargs)) = (&self.add_embed, added_cond_kwargs) {
+            if let Some(ref text_embeds) = kwargs.text_embeds {
+                let add_emb! = add_emb.forward(text_embeds, kwargs.time_ids.as_ref())?
+                t_emb + add_emb
+            } else {
+                t_emb
+            }
+        } else {
+            t_emb
+        }
+
+        // Reshape for spatial operations: [batch * frames, channels, height, width]
+        let sample = sample~.permute([0, 2, 1, 3, 4])?
+            .reshape([batch * frames, channels, height, width])?
+
+        // Input conv
+        let mut h! = self.conv_in.forward(&sample)?
+
+        // Expand time embedding for all frames
+        let t_emb = t_emb.unsqueeze(1)?.expand([batch, frames, -1])?
+            .reshape([batch * frames, -1])?
+
+        // Encoder hidden states for all frames
+        let encoder_hidden_states = encoder_hidden_states~.unsqueeze(1)?
+            .expand([batch, frames, -1, -1])?
+            .reshape([batch * frames, -1, encoder_hidden_states~.shape()[-1]])?
+
+        // Down blocks
+        let mut skip_connections: Vec<Tensor<B>> = Vec::new()
+
+        for block in self.down_blocks.iter() {
+            let (new_h, skips) = block.forward(&h, &t_emb, &encoder_hidden_states, batch, frames)?
+            h = new_h
+            skip_connections.extend(skips)
+        }
+
+        // Mid block
+        h = self.mid_block.forward(&h, &t_emb, &encoder_hidden_states, batch, frames)?
+
+        // Up blocks (with skip connections)
+        for block in self.up_blocks.iter() {
+            // Pop skip connections for this block
+            let num_skips = block.num_resnets()
+            let skips: Vec<Tensor<B>> = (0..num_skips)
+                .map(|_| skip_connections.pop().unwrap())
+                .collect()
+
+            h = block.forward(&h, &t_emb, &encoder_hidden_states, &skips, batch, frames)?
+        }
+
+        // Output
+        h = self.conv_norm_out.forward(&h)?.silu()
+        h = self.conv_out.forward(&h)?
+
+        // Reshape back to [batch, channels, frames, height, width]
+        let out_channels = self.config.out_channels
+        h.reshape([batch, frames, out_channels, height, width])?
+            .permute([0, 2, 1, 3, 4])
+    }
+
+    /// Load from checkpoint
+    pub fn load(path: str~, config: UNet3DConfig, backend: B) -> Result<Self> {
+        let state_dict = safetensors::load(path~)?
+        let mut model = Self::new(config, backend)?
+        model.load_state_dict(state_dict)?
+        Ok(model)
+    }
+
+    fn load_state_dict(&mut self, state_dict: Map<str, Tensor<B>>) -> Result<()> {
+        self.conv_in.load_state_dict(&state_dict, "conv_in")?
+        self.time_embed.load_state_dict(&state_dict, "time_embedding")?
+
+        if let Some(ref mut fps_emb) = self.fps_embed {
+            fps_emb.load_state_dict(&state_dict, "add_time_proj")?
+        }
+        if let Some(ref mut add_emb) = self.add_embed {
+            add_emb.load_state_dict(&state_dict, "add_embedding")?
+        }
+
+        for (i, block) in self.down_blocks.iter_mut().enumerate() {
+            block.load_state_dict(&state_dict, &format!("down_blocks.{}", i))?
+        }
+        self.mid_block.load_state_dict(&state_dict, "mid_block")?
+        for (i, block) in self.up_blocks.iter_mut().enumerate() {
+            block.load_state_dict(&state_dict, &format!("up_blocks.{}", i))?
+        }
+
+        self.conv_norm_out.load_state_dict(&state_dict, "conv_norm_out")?
+        self.conv_out.load_state_dict(&state_dict, "conv_out")?
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Building Blocks
+// ============================================================================
+
+/// 3D Down block with temporal attention
+pub struct DownBlock3D<B: ComputeBackend> {
+    /// Spatial ResNet blocks
+    resnets: Vec<SpatioTemporalResBlock<B>>,
+    /// Cross attention blocks
+    attentions: Vec<CrossAttentionBlock<B>>,
+    /// Temporal attention blocks
+    temporal_attns: Vec<TemporalAttention<B>>,
+    /// Motion modules (optional)
+    motion_modules: Option<Vec<MotionModule<B>>>,
+    /// Downsampler
+    downsampler: Option<Downsample2D<B>>,
+}
+
+impl<B: ComputeBackend> DownBlock3D<B> {
+    pub fn new(
+        in_channels: u32,
+        out_channels: u32,
+        num_layers: u32,
+        add_downsample: bool,
+        cross_attention_dim: u32,
+        attention_head_dim: u32,
+        temporal_config: &TemporalConfig,
+        use_motion_modules: bool,
+        backend: B,
+    ) -> Result<Self> {
+        let mut resnets = Vec::new()
+        let mut attentions = Vec::new()
+        let mut temporal_attns = Vec::new()
+
+        for i in 0..num_layers {
+            let in_ch = if i == 0 { in_channels } else { out_channels }
+
+            resnets.push(SpatioTemporalResBlock::new(in_ch, out_channels, backend.clone())?)
+            attentions.push(CrossAttentionBlock::new(
+                out_channels,
+                cross_attention_dim,
+                out_channels / attention_head_dim,
+                backend.clone(),
+            )?)
+            temporal_attns.push(TemporalAttention::new(
+                TemporalAttentionConfig {
+                    dim: out_channels,
+                    num_heads: out_channels / attention_head_dim,
+                    causal: temporal_config.causal_attention,
+                    ..TemporalAttentionConfig::default(out_channels)
+                },
+                backend.clone(),
+            )?)
+        }
+
+        let motion_modules = if use_motion_modules {
+            Some((0..num_layers)
+                .map(|_| MotionModule::new(MotionModuleConfig::default(out_channels), backend.clone()))
+                .collect::<Result<_>>()?)
+        } else {
+            None
+        }
+
+        let downsampler = if add_downsample {
+            Some(Downsample2D::new(out_channels, out_channels, backend)?)
+        } else {
+            None
+        }
+
+        Ok(Self { resnets, attentions, temporal_attns, motion_modules, downsampler })
+    }
+
+    pub fn forward(
+        &self,
+        x: &Tensor<B>,
+        t_emb: &Tensor<B>,
+        encoder_hidden_states: &Tensor<B>,
+        batch: u32,
+        frames: u32,
+    ) -> Result<(Tensor<B>!, Vec<Tensor<B>>)> {
+        let mut h! = x.clone()
+        let mut skip_connections: Vec<Tensor<B>> = Vec::new()
+
+        for (i, (resnet, attn)) in self.resnets.iter().zip(self.attentions.iter()).enumerate() {
+            // Spatial processing
+            h = resnet.forward(&h, t_emb)?
+            h = attn.forward(&h, encoder_hidden_states)?
+
+            // Temporal attention
+            h = self.apply_temporal(&h, i, batch, frames)?
+
+            skip_connections.push(h.clone())
+        }
+
+        if let Some(ref down) = self.downsampler {
+            h = down.forward(&h)?
+            skip_connections.push(h.clone())
+        }
+
+        Ok((h, skip_connections))
+    }
+
+    fn apply_temporal(&self, x: &Tensor<B>, layer_idx: usize, batch: u32, frames: u32) -> Result<Tensor<B>!> {
+        let (bf, c, h, w) = x.shape4()
+
+        // Reshape for temporal attention: [batch, frames, h*w, c]
+        let x = x.reshape([batch, frames, c, h * w])?
+            .permute([0, 1, 3, 2])?
+
+        // Temporal attention
+        let x! = self.temporal_attns[layer_idx].forward(&x, None)?
+
+        // Motion module (if present)
+        let x! = if let Some(ref modules) = self.motion_modules {
+            let x = x.permute([0, 3, 1, 2])?.reshape([batch, c, frames, h, w])?
+            let x! = modules[layer_idx].forward(&x)?
+            x.permute([0, 2, 3, 4, 1])?.reshape([batch, frames, h * w, c])?
+        } else {
+            x
+        }
+
+        // Reshape back: [batch * frames, c, h, w]
+        x.permute([0, 1, 3, 2])?.reshape([batch * frames, c, h, w])
+    }
+
+    pub fn num_resnets(&self) -> usize {
+        self.resnets.len() + if self.downsampler.is_some() { 1 } else { 0 }
+    }
+
+    pub fn load_state_dict(&mut self, state_dict: &Map<str, Tensor<B>>, prefix: &str) -> Result<()> {
+        for (i, resnet) in self.resnets.iter_mut().enumerate() {
+            resnet.load_state_dict(state_dict, &format!("{}.resnets.{}", prefix, i))?
+        }
+        for (i, attn) in self.attentions.iter_mut().enumerate() {
+            attn.load_state_dict(state_dict, &format!("{}.attentions.{}", prefix, i))?
+        }
+        for (i, temp_attn) in self.temporal_attns.iter_mut().enumerate() {
+            temp_attn.load_state_dict(state_dict, &format!("{}.temp_attentions.{}", prefix, i))?
+        }
+        if let Some(ref mut modules) = self.motion_modules {
+            for (i, module) in modules.iter_mut().enumerate() {
+                module.load_state_dict(state_dict, &format!("{}.motion_modules.{}", prefix, i))?
+            }
+        }
+        if let Some(ref mut down) = self.downsampler {
+            down.load_state_dict(state_dict, &format!("{}.downsamplers.0", prefix))?
+        }
+        Ok(())
+    }
+}
+
+/// 3D Up block with temporal attention
+pub struct UpBlock3D<B: ComputeBackend> {
+    resnets: Vec<SpatioTemporalResBlock<B>>,
+    attentions: Vec<CrossAttentionBlock<B>>,
+    temporal_attns: Vec<TemporalAttention<B>>,
+    motion_modules: Option<Vec<MotionModule<B>>>,
+    upsampler: Option<Upsample2D<B>>,
+}
+
+impl<B: ComputeBackend> UpBlock3D<B> {
+    pub fn new(
+        in_channels: u32,
+        out_channels: u32,
+        num_layers: u32,
+        add_upsample: bool,
+        cross_attention_dim: u32,
+        attention_head_dim: u32,
+        temporal_config: &TemporalConfig,
+        use_motion_modules: bool,
+        backend: B,
+    ) -> Result<Self> {
+        let mut resnets = Vec::new()
+        let mut attentions = Vec::new()
+        let mut temporal_attns = Vec::new()
+
+        for i in 0..num_layers {
+            let in_ch = if i == 0 { in_channels } else { out_channels }
+
+            resnets.push(SpatioTemporalResBlock::new(in_ch, out_channels, backend.clone())?)
+            attentions.push(CrossAttentionBlock::new(
+                out_channels,
+                cross_attention_dim,
+                out_channels / attention_head_dim,
+                backend.clone(),
+            )?)
+            temporal_attns.push(TemporalAttention::new(
+                TemporalAttentionConfig {
+                    dim: out_channels,
+                    num_heads: out_channels / attention_head_dim,
+                    causal: temporal_config.causal_attention,
+                    ..TemporalAttentionConfig::default(out_channels)
+                },
+                backend.clone(),
+            )?)
+        }
+
+        let motion_modules = if use_motion_modules {
+            Some((0..num_layers)
+                .map(|_| MotionModule::new(MotionModuleConfig::default(out_channels), backend.clone()))
+                .collect::<Result<_>>()?)
+        } else {
+            None
+        }
+
+        let upsampler = if add_upsample {
+            Some(Upsample2D::new(out_channels, out_channels, backend)?)
+        } else {
+            None
+        }
+
+        Ok(Self { resnets, attentions, temporal_attns, motion_modules, upsampler })
+    }
+
+    pub fn forward(
+        &self,
+        x: &Tensor<B>,
+        t_emb: &Tensor<B>,
+        encoder_hidden_states: &Tensor<B>,
+        skip_connections: &[Tensor<B>],
+        batch: u32,
+        frames: u32,
+    ) -> Result<Tensor<B>!> {
+        let mut h! = x.clone()
+
+        for (i, ((resnet, attn), skip)) in self.resnets.iter()
+            .zip(self.attentions.iter())
+            .zip(skip_connections.iter())
+            .enumerate()
+        {
+            // Concatenate skip connection
+            h = concat(&[&h, skip], 1)?
+
+            // Spatial processing
+            h = resnet.forward(&h, t_emb)?
+            h = attn.forward(&h, encoder_hidden_states)?
+
+            // Temporal attention (reuse from DownBlock3D logic)
+            h = self.apply_temporal(&h, i, batch, frames)?
+        }
+
+        if let Some(ref up) = self.upsampler {
+            h = up.forward(&h)?
+        }
+
+        Ok(h)
+    }
+
+    fn apply_temporal(&self, x: &Tensor<B>, layer_idx: usize, batch: u32, frames: u32) -> Result<Tensor<B>!> {
+        let (bf, c, h, w) = x.shape4()
+
+        let x = x.reshape([batch, frames, c, h * w])?.permute([0, 1, 3, 2])?
+        let x! = self.temporal_attns[layer_idx].forward(&x, None)?
+
+        let x! = if let Some(ref modules) = self.motion_modules {
+            let x = x.permute([0, 3, 1, 2])?.reshape([batch, c, frames, h, w])?
+            let x! = modules[layer_idx].forward(&x)?
+            x.permute([0, 2, 3, 4, 1])?.reshape([batch, frames, h * w, c])?
+        } else {
+            x
+        }
+
+        x.permute([0, 1, 3, 2])?.reshape([batch * frames, c, h, w])
+    }
+
+    pub fn num_resnets(&self) -> usize {
+        self.resnets.len()
+    }
+
+    pub fn load_state_dict(&mut self, state_dict: &Map<str, Tensor<B>>, prefix: &str) -> Result<()> {
+        for (i, resnet) in self.resnets.iter_mut().enumerate() {
+            resnet.load_state_dict(state_dict, &format!("{}.resnets.{}", prefix, i))?
+        }
+        for (i, attn) in self.attentions.iter_mut().enumerate() {
+            attn.load_state_dict(state_dict, &format!("{}.attentions.{}", prefix, i))?
+        }
+        for (i, temp_attn) in self.temporal_attns.iter_mut().enumerate() {
+            temp_attn.load_state_dict(state_dict, &format!("{}.temp_attentions.{}", prefix, i))?
+        }
+        if let Some(ref mut modules) = self.motion_modules {
+            for (i, module) in modules.iter_mut().enumerate() {
+                module.load_state_dict(state_dict, &format!("{}.motion_modules.{}", prefix, i))?
+            }
+        }
+        if let Some(ref mut up) = self.upsampler {
+            up.load_state_dict(state_dict, &format!("{}.upsamplers.0", prefix))?
+        }
+        Ok(())
+    }
+}
+
+/// 3D Mid block
+pub struct MidBlock3D<B: ComputeBackend> {
+    resnet_1: SpatioTemporalResBlock<B>,
+    attn: CrossAttentionBlock<B>,
+    temporal_attn: TemporalAttention<B>,
+    motion_module: Option<MotionModule<B>>,
+    resnet_2: SpatioTemporalResBlock<B>,
+}
+
+impl<B: ComputeBackend> MidBlock3D<B> {
+    pub fn new(
+        channels: u32,
+        cross_attention_dim: u32,
+        attention_head_dim: u32,
+        temporal_config: &TemporalConfig,
+        use_motion_module: bool,
+        backend: B,
+    ) -> Result<Self> {
+        let motion_module = if use_motion_module {
+            Some(MotionModule::new(MotionModuleConfig::default(channels), backend.clone())?)
+        } else {
+            None
+        }
+
+        Ok(Self {
+            resnet_1: SpatioTemporalResBlock::new(channels, channels, backend.clone())?,
+            attn: CrossAttentionBlock::new(
+                channels,
+                cross_attention_dim,
+                channels / attention_head_dim,
+                backend.clone(),
+            )?,
+            temporal_attn: TemporalAttention::new(
+                TemporalAttentionConfig {
+                    dim: channels,
+                    num_heads: channels / attention_head_dim,
+                    causal: temporal_config.causal_attention,
+                    ..TemporalAttentionConfig::default(channels)
+                },
+                backend.clone(),
+            )?,
+            motion_module,
+            resnet_2: SpatioTemporalResBlock::new(channels, channels, backend)?,
+        })
+    }
+
+    pub fn forward(
+        &self,
+        x: &Tensor<B>,
+        t_emb: &Tensor<B>,
+        encoder_hidden_states: &Tensor<B>,
+        batch: u32,
+        frames: u32,
+    ) -> Result<Tensor<B>!> {
+        let (bf, c, h, w) = x.shape4()
+
+        let mut out! = self.resnet_1.forward(x, t_emb)?
+        out = self.attn.forward(&out, encoder_hidden_states)?
+
+        // Temporal attention
+        let out = out.reshape([batch, frames, c, h * w])?.permute([0, 1, 3, 2])?
+        let out! = self.temporal_attn.forward(&out, None)?
+
+        // Motion module
+        let out! = if let Some(ref module) = self.motion_module {
+            let out = out.permute([0, 3, 1, 2])?.reshape([batch, c, frames, h, w])?
+            let out! = module.forward(&out)?
+            out.permute([0, 2, 3, 4, 1])?.reshape([batch, frames, h * w, c])?
+        } else {
+            out
+        }
+
+        let out = out.permute([0, 1, 3, 2])?.reshape([batch * frames, c, h, w])?
+        self.resnet_2.forward(&out, t_emb)
+    }
+
+    pub fn load_state_dict(&mut self, state_dict: &Map<str, Tensor<B>>, prefix: &str) -> Result<()> {
+        self.resnet_1.load_state_dict(state_dict, &format!("{}.resnets.0", prefix))?
+        self.attn.load_state_dict(state_dict, &format!("{}.attentions.0", prefix))?
+        self.temporal_attn.load_state_dict(state_dict, &format!("{}.temp_attentions.0", prefix))?
+        if let Some(ref mut module) = self.motion_module {
+            module.load_state_dict(state_dict, &format!("{}.motion_modules.0", prefix))?
+        }
+        self.resnet_2.load_state_dict(state_dict, &format!("{}.resnets.1", prefix))?
+        Ok(())
+    }
+}
+
+/// Spatiotemporal ResNet block
+pub struct SpatioTemporalResBlock<B: ComputeBackend> {
+    norm1: GroupNorm<B>,
+    conv1: Conv2d<B>,
+    norm2: GroupNorm<B>,
+    conv2: Conv2d<B>,
+    time_emb_proj: Linear<B>,
+    skip: Option<Conv2d<B>>,
+}
+
+impl<B: ComputeBackend> SpatioTemporalResBlock<B> {
+    pub fn new(in_channels: u32, out_channels: u32, backend: B) -> Result<Self> {
+        let skip = if in_channels != out_channels {
+            Some(Conv2d::new(in_channels, out_channels, 1, 1, 0, backend.clone())?)
+        } else {
+            None
+        }
+
+        Ok(Self {
+            norm1: GroupNorm::new(32, in_channels, backend.clone())?,
+            conv1: Conv2d::new(in_channels, out_channels, 3, 1, 1, backend.clone())?,
+            norm2: GroupNorm::new(32, out_channels, backend.clone())?,
+            conv2: Conv2d::new(out_channels, out_channels, 3, 1, 1, backend.clone())?,
+            time_emb_proj: Linear::new(out_channels * 4, out_channels, backend)?,
+            skip,
+        })
+    }
+
+    pub fn forward(&self, x: &Tensor<B>, t_emb: &Tensor<B>) -> Result<Tensor<B>!> {
+        let h! = self.norm1.forward(x)?.silu()
+        let h! = self.conv1.forward(&h)?
+
+        // Add time embedding
+        let t! = self.time_emb_proj.forward(&t_emb.silu()?)?
+        let h! = h + t.unsqueeze(-1)?.unsqueeze(-1)?
+
+        let h! = self.norm2.forward(&h)?.silu()
+        let h! = self.conv2.forward(&h)?
+
+        let skip! = if let Some(ref s) = self.skip {
+            s.forward(x)?
+        } else {
+            x.clone()
+        }
+
+        Ok(h + skip)
+    }
+
+    pub fn load_state_dict(&mut self, state_dict: &Map<str, Tensor<B>>, prefix: &str) -> Result<()> {
+        self.norm1.load_state_dict(state_dict, &format!("{}.norm1", prefix))?
+        self.conv1.load_state_dict(state_dict, &format!("{}.conv1", prefix))?
+        self.norm2.load_state_dict(state_dict, &format!("{}.norm2", prefix))?
+        self.conv2.load_state_dict(state_dict, &format!("{}.conv2", prefix))?
+        self.time_emb_proj.load_state_dict(state_dict, &format!("{}.time_emb_proj", prefix))?
+        if let Some(ref mut s) = self.skip {
+            s.load_state_dict(state_dict, &format!("{}.conv_shortcut", prefix))?
+        }
+        Ok(())
+    }
+}
+
+/// Temporal convolution block
+pub struct TemporalConvBlock<B: ComputeBackend> {
+    conv: Conv1d<B>,
+    norm: GroupNorm<B>,
+}
+
+impl<B: ComputeBackend> TemporalConvBlock<B> {
+    pub fn new(channels: u32, backend: B) -> Result<Self> {
+        Ok(Self {
+            conv: Conv1d::new(channels, channels, 3, 1, 1, backend.clone())?,
+            norm: GroupNorm::new(32, channels, backend)?,
+        })
+    }
+
+    pub fn forward(&self, x: &Tensor<B>) -> Result<Tensor<B>!> {
+        let h = self.norm.forward(x)?.silu()
+        self.conv.forward(&h)
+    }
+}
+
+// ============================================================================
+// Additional Conditioning
+// ============================================================================
+
+/// Additional conditioning kwargs
+pub struct AddedCondKwargs<B: ComputeBackend> {
+    pub fps: Option<u32>,
+    pub motion_bucket_id: Option<u32>,
+    pub noise_aug_strength: Option<f32>,
+    pub text_embeds: Option<Tensor<B>>,
+    pub time_ids: Option<Tensor<B>>,
+}
+
+/// FPS embedding
+struct FPSEmbedding<B: ComputeBackend> {
+    linear: Linear<B>,
+}
+
+impl<B: ComputeBackend> FPSEmbedding<B> {
+    fn new(in_features: u32, out_features: u32, backend: B) -> Result<Self> {
+        Ok(Self {
+            linear: Linear::new(in_features, out_features, backend)?,
+        })
+    }
+
+    fn forward(&self, fps: u32) -> Result<Tensor<B>!> {
+        // Sinusoidal embedding for FPS
+        let half_dim = 128
+        let emb = sinusoidal_embedding(fps as f32, half_dim)?
+        self.linear.forward(&emb)
+    }
+
+    fn load_state_dict(&mut self, state_dict: &Map<str, Tensor<B>>, prefix: &str) -> Result<()> {
+        self.linear.load_state_dict(state_dict, &format!("{}.linear_1", prefix))
+    }
+}
+
+/// Addition embedding (text + time)
+struct AdditionEmbedding<B: ComputeBackend> {
+    linear_1: Linear<B>,
+    linear_2: Linear<B>,
+}
+
+impl<B: ComputeBackend> AdditionEmbedding<B> {
+    fn new(embed_type: &str, text_dim: u32, out_dim: u32, backend: B) -> Result<Self> {
+        let in_dim = text_dim + 256  // text + time embedding
+        Ok(Self {
+            linear_1: Linear::new(in_dim, out_dim, backend.clone())?,
+            linear_2: Linear::new(out_dim, out_dim, backend)?,
+        })
+    }
+
+    fn forward(&self, text_embeds: &Tensor<B>, time_ids: Option<&Tensor<B>>) -> Result<Tensor<B>!> {
+        let time_emb = time_ids.map(|t| t.clone()).unwrap_or_else(|| text_embeds.zeros_like());
+        let concat = concat(&[text_embeds, &time_emb], -1)?
+        let h = self.linear_1.forward(&concat)?.silu()
+        self.linear_2.forward(&h)
+    }
+
+    fn load_state_dict(&mut self, state_dict: &Map<str, Tensor<B>>, prefix: &str) -> Result<()> {
+        self.linear_1.load_state_dict(state_dict, &format!("{}.linear_1", prefix))?
+        self.linear_2.load_state_dict(state_dict, &format!("{}.linear_2", prefix))
+    }
+}
+
+// ============================================================================
+// Helper Types
+// ============================================================================
+
+struct TimeEmbedding<B: ComputeBackend> {
+    linear_1: Linear<B>,
+    linear_2: Linear<B>,
+}
+
+impl<B: ComputeBackend> TimeEmbedding<B> {
+    fn new(in_channels: u32, out_channels: u32, backend: B) -> Result<Self> {
+        Ok(Self {
+            linear_1: Linear::new(in_channels, out_channels, backend.clone())?,
+            linear_2: Linear::new(out_channels, out_channels, backend)?,
+        })
+    }
+
+    fn forward(&self, timestep: u32) -> Result<Tensor<B>!> {
+        let emb = sinusoidal_embedding(timestep as f32, 160)?
+        let h = self.linear_1.forward(&emb)?.silu()
+        self.linear_2.forward(&h)
+    }
+
+    fn load_state_dict(&mut self, state_dict: &Map<str, Tensor<B>>, prefix: &str) -> Result<()> {
+        self.linear_1.load_state_dict(state_dict, &format!("{}.linear_1", prefix))?
+        self.linear_2.load_state_dict(state_dict, &format!("{}.linear_2", prefix))
+    }
+}
+
+// Forward declarations for types from other modules
+struct Conv2d<B: ComputeBackend> { /* ... */ }
+struct Conv1d<B: ComputeBackend> { /* ... */ }
+struct Linear<B: ComputeBackend> { /* ... */ }
+struct GroupNorm<B: ComputeBackend> { /* ... */ }
+struct Downsample2D<B: ComputeBackend> { /* ... */ }
+struct Upsample2D<B: ComputeBackend> { /* ... */ }
+
+fn sinusoidal_embedding<B: ComputeBackend>(value: f32, dim: u32) -> Result<Tensor<B>!> { unimplemented!() }
+fn concat<B: ComputeBackend>(tensors: &[&Tensor<B>], dim: i32) -> Result<Tensor<B>!> { unimplemented!() }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_unet3d_config_svd() {
+        let config = UNet3DConfig::svd()
+        assert_eq!(config.in_channels, 8)
+        assert!(config.use_fps_conditioning)
+    }
+
+    #[test]
+    fn test_unet3d_config_animatediff() {
+        let config = UNet3DConfig::animatediff()
+        assert!(config.use_motion_modules)
+        assert!(!config.use_fps_conditioning)
+    }
+}

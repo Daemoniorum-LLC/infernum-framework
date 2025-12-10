@@ -1,0 +1,311 @@
+//! Goal and motivation systems.
+
+use std::collections::HashMap
+
+/// Priority levels for goals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Priority {
+    Low = 0,
+    Medium = 1,
+    High = 2,
+    Critical = 3,
+}
+
+/// Fundamental drives/motivations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Drive {
+    Curiosity,      // Desire to learn and explore
+    Helpfulness,    // Desire to assist others
+    Achievement,    // Desire to accomplish goals
+    Safety,         // Desire for security
+    Connection,     // Desire for interaction
+    Autonomy,       // Desire for independence
+    Competence,     // Desire to improve skills
+    Purpose,        // Desire for meaning
+}
+
+impl Drive {
+    /// Describes the drive.
+    fn description(self) -> &'static str {
+        match self {
+            Drive::Curiosity => "Desire to learn, explore, and understand",
+            Drive::Helpfulness => "Desire to assist and benefit others",
+            Drive::Achievement => "Desire to accomplish and succeed",
+            Drive::Safety => "Desire for security and stability",
+            Drive::Connection => "Desire for meaningful interaction",
+            Drive::Autonomy => "Desire for independence and self-direction",
+            Drive::Competence => "Desire to develop and improve abilities",
+            Drive::Purpose => "Desire for meaningful contribution",
+        }
+    }
+}
+
+/// A goal to be pursued.
+#[derive(Debug, Clone)]
+struct Goal {
+    id: str,
+    name: str,
+    description: str,
+    priority: Priority,
+    drives: [Drive],           // Which drives this goal satisfies
+    required_capabilities: [str],
+    min_proficiency: f32,
+    blocked_by: [str],         // Limitations that block this
+    sub_goals: [str],          // IDs of sub-goals
+    parent?: str,              // Parent goal ID
+    progress: f32,             // 0.0 to 1.0
+    status: GoalStatus,
+    requires_focus: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GoalStatus {
+    Inactive,
+    Active,
+    Blocked,
+    Completed,
+    Failed,
+    Abandoned,
+}
+
+impl Goal {
+    /// Creates a new goal.
+    fn new(name: &str, description: &str) -> Goal {
+        Goal {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: name.to_string(),
+            description: description.to_string(),
+            priority: Priority::Medium,
+            drives: [],
+            required_capabilities: [],
+            min_proficiency: 0.5,
+            blocked_by: [],
+            sub_goals: [],
+            parent: None,
+            progress: 0.0,
+            status: GoalStatus::Inactive,
+            requires_focus: true,
+        }
+    }
+
+    fn with_priority(mut self, priority: Priority) -> Goal {
+        self.priority = priority;
+        self
+    }
+
+    fn with_drives(mut self, drives: [Drive]) -> Goal {
+        self.drives = drives;
+        self
+    }
+
+    fn requiring(mut self, capabilities: [str]) -> Goal {
+        self.required_capabilities = capabilities;
+        self
+    }
+
+    fn update_progress(mut self, progress: f32) {
+        self.progress = progress.clamp(0.0, 1.0);
+        if self.progress >= 1.0 {
+            self.status = GoalStatus::Completed;
+        }
+    }
+}
+
+/// Motivation state for a drive.
+#[derive(Debug, Clone)]
+struct Motivation {
+    drive: Drive,
+    strength: f32,     // Current motivation strength
+    satiation: f32,    // How satisfied the drive is
+    last_satisfied: ?std::time::Instant,
+}
+
+impl Motivation {
+    fn new(drive: Drive) -> Motivation {
+        Motivation {
+            drive,
+            strength: 0.5,
+            satiation: 0.5,
+            last_satisfied: None,
+        }
+    }
+
+    /// Updates motivation based on satiation decay.
+    fn update(mut self) {
+        // Motivation increases as satiation decreases
+        if let Some(last) = self.last_satisfied {
+            let elapsed = last.elapsed().as_secs_f32();
+            let decay = (elapsed / 3600.0).min(1.0); // Decay over 1 hour
+            self.satiation = (self.satiation - decay * 0.1).max(0.0);
+            self.strength = 1.0 - self.satiation;
+        }
+    }
+
+    /// Satisfies the drive.
+    fn satisfy(mut self, amount: f32) {
+        self.satiation = (self.satiation + amount).min(1.0);
+        self.strength = 1.0 - self.satiation;
+        self.last_satisfied = Some(std::time::Instant::now());
+    }
+}
+
+/// Stack of active goals with priority management.
+#[derive(Debug)]
+struct GoalStack {
+    goals: HashMap<str, Goal>,
+    active_ids: [str],
+    motivations: HashMap<Drive, Motivation>,
+}
+
+impl GoalStack {
+    /// Creates a new goal stack with primary drives.
+    fn new(primary_drives: [Drive]) -> GoalStack {
+        let motivations = primary_drives
+            |τ{|d| (d, Motivation::new(d))}
+            |collect::<HashMap<Drive, Motivation>>();
+
+        GoalStack {
+            goals: HashMap::new(),
+            active_ids: [],
+            motivations,
+        }
+    }
+
+    /// Adds a goal to the stack.
+    fn push(mut self, goal: Goal) {
+        let id = goal.id.clone();
+        self.goals.insert(id.clone(), goal);
+        self.active_ids.push(id);
+        self.reorder();
+    }
+
+    /// Removes and returns the top goal.
+    fn pop(mut self) -> ?Goal {
+        if let Some(id) = self.active_ids.pop() {
+            self.goals.remove(&id)
+        } else {
+            None
+        }
+    }
+
+    /// Gets the current top goal.
+    fn peek(self) -> ?&Goal {
+        self.active_ids.last()
+            |σ{|id| self.goals.get(id)}
+    }
+
+    /// Reorders goals by priority.
+    fn reorder(mut self) {
+        self.active_ids.sort_by(|a, b| {
+            let goal_a = self.goals.get(a);
+            let goal_b = self.goals.get(b);
+            match (goal_a, goal_b) {
+                (Some(a), Some(b)) => a.priority.cmp(&b.priority),
+                _ => std::cmp::Ordering::Equal,
+            }
+        });
+    }
+
+    /// Gets all active goals.
+    fn active_goals(self) -> [Goal] {
+        self.active_ids
+            |τ{|id| self.goals.get(id)}
+            |φ{|g| g.is_some()}
+            |τ{|g| g.unwrap().clone()}
+            |collect()
+    }
+
+    /// Gets goals that conflict with the given goal.
+    fn conflicts_with(self, goal: &Goal) -> [Goal] {
+        self.goals.values()
+            |φ{|g| {
+                // Goals conflict if they require the same limited resources
+                // or have incompatible drives
+                g.status == GoalStatus::Active &&
+                g.required_capabilities.iter()|∃{|c| goal.required_capabilities.contains(c)}
+            }}
+            |τ{|g| g.clone()}
+            |collect()
+    }
+
+    /// Gets goals that support/align with the given goal.
+    fn supports(self, goal: &Goal) -> [Goal] {
+        self.goals.values()
+            |φ{|g| {
+                g.status == GoalStatus::Active &&
+                g.drives.iter()|∃{|d| goal.drives.contains(d)}
+            }}
+            |τ{|g| g.clone()}
+            |collect()
+    }
+
+    /// Updates motivation for a drive.
+    fn satisfy_drive(mut self, drive: Drive, amount: f32) {
+        if let Some(motivation) = self.motivations.get_mut(&drive) {
+            motivation.satisfy(amount);
+        }
+    }
+
+    /// Gets the most urgent motivation.
+    fn most_urgent_drive(self) -> ?Drive {
+        self.motivations.values()
+            |ρ·max_by{|a, b| a.strength.partial_cmp(&b.strength).unwrap()}
+            |τ{|m| m.drive}
+    }
+
+    /// Marks a goal as completed.
+    fn complete(mut self, goal_id: &str) {
+        if let Some(goal) = self.goals.get_mut(goal_id) {
+            goal.status = GoalStatus::Completed;
+            goal.progress = 1.0;
+
+            // Satisfy associated drives
+            for drive in &goal.drives {
+                self.satisfy_drive(*drive, 0.3);
+            }
+
+            // Remove from active
+            self.active_ids.retain(|id| id != goal_id);
+        }
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_goal_creation() {
+        let goal = Goal::new("learn_rust", "Learn the Rust programming language")
+            .with_priority(Priority::High)
+            .with_drives([Drive::Curiosity, Drive::Competence]);
+
+        assert_eq!(goal.name, "learn_rust");
+        assert_eq!(goal.priority, Priority::High);
+    }
+
+    #[test]
+    fn test_goal_stack() {
+        let mut stack = GoalStack::new([Drive::Curiosity]);
+
+        stack.push(Goal::new("low", "Low priority").with_priority(Priority::Low));
+        stack.push(Goal::new("high", "High priority").with_priority(Priority::High));
+
+        let top = stack.peek().unwrap();
+        assert_eq!(top.priority, Priority::High);
+    }
+
+    #[test]
+    fn test_motivation() {
+        let mut motivation = Motivation::new(Drive::Curiosity);
+        assert_eq!(motivation.strength, 0.5);
+
+        motivation.satisfy(0.3);
+        assert!(motivation.satiation > 0.5);
+        assert!(motivation.strength < 0.5);
+    }
+}

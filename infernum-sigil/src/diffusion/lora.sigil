@@ -1,0 +1,1089 @@
+/// Diffusion LoRA & Fine-tuning Module
+///
+/// This module provides LoRA (Low-Rank Adaptation) and fine-tuning capabilities
+/// for diffusion models, including DreamBooth and Textual Inversion.
+///
+/// Uses Sigil evidentiality types:
+/// - `data~`: Untrusted user inputs (prompts, images)
+/// - `computed!`: Verified model outputs and gradients
+/// - `found?`: Optional configurations
+
+use crate::core::error::{InfernumError, Result}
+use crate::abaddon::backend::{Tensor, TensorOps, ComputeBackend}
+use crate::asmodeus::{LoraConfig, LoraLayer, AdamW, LRScheduler, TrainingSample}
+
+// ============================================================================
+// Diffusion LoRA Configuration
+// ============================================================================
+
+/// Configuration for LoRA adaptation of diffusion models
+pub struct DiffusionLoRAConfig {
+    /// Target modules for LoRA injection
+    pub target_modules: [str~],
+    /// LoRA rank (typical: 4-128)
+    pub rank: u32,
+    /// LoRA alpha scaling factor
+    pub alpha: f32,
+    /// Apply LoRA to text encoder
+    pub text_encoder_lora: bool,
+    /// Apply LoRA to U-Net/DiT
+    pub unet_lora: bool,
+    /// Dropout probability for LoRA layers
+    pub dropout: f32,
+    /// Use bias in LoRA layers
+    pub use_bias: bool,
+    /// Scale for LoRA weight initialization
+    pub init_scale: f32,
+}
+
+impl DiffusionLoRAConfig {
+    /// Default config for U-Net attention layers
+    pub fn unet_attention() -> Self {
+        Self {
+            target_modules: ["to_q", "to_k", "to_v", "to_out.0"],
+            rank: 32,
+            alpha: 32.0,
+            text_encoder_lora: false,
+            unet_lora: true,
+            dropout: 0.0,
+            use_bias: false,
+            init_scale: 1.0,
+        }
+    }
+
+    /// Full U-Net LoRA (attention + feedforward)
+    pub fn unet_full() -> Self {
+        Self {
+            target_modules: [
+                "to_q", "to_k", "to_v", "to_out.0",
+                "ff.net.0.proj", "ff.net.2",
+                "proj_in", "proj_out",
+            ],
+            rank: 64,
+            alpha: 64.0,
+            text_encoder_lora: false,
+            unet_lora: true,
+            dropout: 0.0,
+            use_bias: false,
+            init_scale: 1.0,
+        }
+    }
+
+    /// SDXL-optimized LoRA config
+    pub fn sdxl() -> Self {
+        Self {
+            target_modules: [
+                "to_q", "to_k", "to_v", "to_out.0",
+                "add_k_proj", "add_v_proj",  // SDXL additions
+            ],
+            rank: 64,
+            alpha: 64.0,
+            text_encoder_lora: true,
+            unet_lora: true,
+            dropout: 0.0,
+            use_bias: false,
+            init_scale: 1.0,
+        }
+    }
+
+    /// DiT/MMDiT LoRA config
+    pub fn dit() -> Self {
+        Self {
+            target_modules: [
+                "attn.qkv",
+                "attn.proj",
+                "mlp.fc1",
+                "mlp.fc2",
+            ],
+            rank: 64,
+            alpha: 64.0,
+            text_encoder_lora: false,
+            unet_lora: true,
+            dropout: 0.0,
+            use_bias: false,
+            init_scale: 1.0,
+        }
+    }
+
+    /// Compute effective LoRA scale
+    pub fn scale(&self) -> f32 {
+        self.alpha / self.rank as f32
+    }
+}
+
+// ============================================================================
+// Diffusion LoRA Layer
+// ============================================================================
+
+/// LoRA layer specifically designed for diffusion models
+pub struct DiffusionLoRALayer<B: ComputeBackend> {
+    /// Down projection (d -> r)
+    lora_down: Tensor<B>,
+    /// Up projection (r -> d)
+    lora_up: Tensor<B>,
+    /// Scaling factor
+    scale: f32,
+    /// Dropout mask (if enabled)
+    dropout: f32,
+    /// Original layer name
+    name: str,
+}
+
+impl<B: ComputeBackend> DiffusionLoRALayer<B> {
+    /// Create a new LoRA layer
+    pub fn new(
+        in_features: u32,
+        out_features: u32,
+        config: &DiffusionLoRAConfig,
+        name: str,
+        backend: &B,
+    ) -> Result<Self> {
+        // Initialize down projection with Kaiming uniform
+        let lora_down = backend.randn([config.rank, in_features])?
+            τ{ |x| x * (config.init_scale / (in_features as f32).sqrt()) }
+
+        // Initialize up projection with zeros
+        let lora_up = backend.zeros([out_features, config.rank])?
+
+        Ok(Self {
+            lora_down,
+            lora_up,
+            scale: config.scale(),
+            dropout: config.dropout,
+            name,
+        })
+    }
+
+    /// Forward pass: compute LoRA delta
+    pub fn forward(&self, x~: Tensor<B>, training: bool) -> Tensor<B>! {
+        // x: [batch, seq, in_features]
+        // down: [rank, in_features]
+        // up: [out_features, rank]
+
+        let down_out! = x~ @ self.lora_down.transpose()  // [batch, seq, rank]
+
+        // Apply dropout during training
+        let dropped! = if training && self.dropout > 0.0 {
+            let mask = backend.dropout_mask(down_out.shape(), self.dropout)
+            down_out * mask * (1.0 / (1.0 - self.dropout))
+        } else {
+            down_out
+        }
+
+        let up_out! = dropped @ self.lora_up.transpose()  // [batch, seq, out_features]
+
+        up_out * self.scale
+    }
+
+    /// Merge LoRA weights into base layer
+    pub fn merge(&self, base_weight: &mut Tensor<B>) -> Result<()> {
+        // delta_w = up @ down * scale
+        let delta! = (self.lora_up @ self.lora_down) * self.scale
+        *base_weight = base_weight.clone() + delta
+        Ok(())
+    }
+
+    /// Extract merged delta for export
+    pub fn get_delta(&self) -> Tensor<B>! {
+        (self.lora_up @ self.lora_down) * self.scale
+    }
+}
+
+// ============================================================================
+// LoRA Collection for Full Model
+// ============================================================================
+
+/// Collection of LoRA layers for a diffusion model
+pub struct DiffusionLoRA<B: ComputeBackend> {
+    /// LoRA layers indexed by module name
+    pub layers: Map<str, DiffusionLoRALayer<B>>,
+    /// Configuration used
+    pub config: DiffusionLoRAConfig,
+    /// Total trainable parameters
+    pub num_params: u64,
+}
+
+impl<B: ComputeBackend> DiffusionLoRA<B> {
+    /// Create LoRA adapter for a model
+    pub fn new(
+        model_structure: &ModelStructure,
+        config: DiffusionLoRAConfig,
+        backend: &B,
+    ) -> Result<Self> {
+        let mut layers = Map::new()
+        let mut num_params: u64 = 0
+
+        for (name, shape) in model_structure.layers.iter() {
+            // Check if this layer should have LoRA
+            let should_adapt = config.target_modules.iter()
+                .any(|target| name.contains(target))
+
+            if should_adapt && shape.len() == 2 {
+                let (out_features, in_features) = (shape[0], shape[1])
+                let layer = DiffusionLoRALayer::new(
+                    in_features,
+                    out_features,
+                    &config,
+                    name.clone(),
+                    backend,
+                )?
+
+                // Count parameters: down (r * in) + up (out * r)
+                num_params += (config.rank * in_features) as u64
+                num_params += (out_features * config.rank) as u64
+
+                layers.insert(name.clone(), layer)
+            }
+        }
+
+        Ok(Self { layers, config, num_params })
+    }
+
+    /// Get all trainable parameters
+    pub fn parameters(&self) -> Vec<&Tensor<B>> {
+        self.layers.values()
+            .flat_map(|l| [&l.lora_down, &l.lora_up])
+            .collect()
+    }
+
+    /// Get mutable parameters for training
+    pub fn parameters_mut(&mut self) -> Vec<&mut Tensor<B>> {
+        self.layers.values_mut()
+            .flat_map(|l| [&mut l.lora_down, &mut l.lora_up])
+            .collect()
+    }
+
+    /// Merge all LoRA weights into base model
+    pub fn merge_into(&self, model: &mut DiffusionModel<B>) -> Result<()> {
+        for (name, lora_layer) in self.layers.iter() {
+            if let Some(base_weight) = model.get_weight_mut(name) {
+                lora_layer.merge(base_weight)?
+            }
+        }
+        Ok(())
+    }
+
+    /// Save LoRA weights to safetensors format
+    pub fn save(&self, path: str~) -> Result<()> {
+        let mut tensors = Map::new()
+
+        for (name, layer) in self.layers.iter() {
+            tensors.insert(format!("{}.lora_down", name), layer.lora_down.clone())
+            tensors.insert(format!("{}.lora_up", name), layer.lora_up.clone())
+        }
+
+        // Save metadata
+        let metadata = LoRAMetadata {
+            rank: self.config.rank,
+            alpha: self.config.alpha,
+            target_modules: self.config.target_modules.clone(),
+        }
+
+        safetensors::save_with_metadata(tensors, metadata, path~)?
+        Ok(())
+    }
+
+    /// Load LoRA weights from safetensors
+    pub fn load(path: str~, backend: &B) -> Result<Self> {
+        let (tensors, metadata) = safetensors::load_with_metadata(path~)?
+
+        let config = DiffusionLoRAConfig {
+            target_modules: metadata.target_modules,
+            rank: metadata.rank,
+            alpha: metadata.alpha,
+            text_encoder_lora: false,
+            unet_lora: true,
+            dropout: 0.0,
+            use_bias: false,
+            init_scale: 1.0,
+        }
+
+        let mut layers = Map::new()
+        let mut num_params: u64 = 0
+
+        // Group by layer name
+        let layer_names: Set<str> = tensors.keys()
+            .map(|k| k.rsplit_once('.').map(|(n, _)| n).unwrap_or(k))
+            .collect()
+
+        for name in layer_names {
+            let down_key = format!("{}.lora_down", name)
+            let up_key = format!("{}.lora_up", name)
+
+            if let (Some(down), Some(up)) = (tensors.get(&down_key), tensors.get(&up_key)) {
+                let layer = DiffusionLoRALayer {
+                    lora_down: down.clone().to_backend(backend)?,
+                    lora_up: up.clone().to_backend(backend)?,
+                    scale: config.scale(),
+                    dropout: 0.0,
+                    name: name.to_string(),
+                }
+
+                num_params += down.numel() as u64 + up.numel() as u64
+                layers.insert(name.to_string(), layer)
+            }
+        }
+
+        Ok(Self { layers, config, num_params })
+    }
+}
+
+// ============================================================================
+// Multiple LoRA Merging
+// ============================================================================
+
+/// Configuration for merging multiple LoRAs
+pub struct LoRAMergeConfig {
+    /// LoRA paths and their weights
+    pub loras: [(str~, f32)],
+    /// Merge method
+    pub method: LoRAMergeMethod,
+}
+
+/// Methods for merging multiple LoRAs
+pub enum LoRAMergeMethod {
+    /// Simple weighted sum
+    WeightedSum,
+    /// TIES merging (trim, elect, sign)
+    TIES { density: f32 },
+    /// DARE merging (drop and rescale)
+    DARE { drop_rate: f32 },
+    /// SVD-based merging
+    SVD { rank: u32 },
+}
+
+/// Merge multiple LoRAs into a single adapter
+pub fn merge_loras<B: ComputeBackend>(
+    loras: &[(DiffusionLoRA<B>, f32)],
+    method: LoRAMergeMethod,
+    backend: &B,
+) -> Result<DiffusionLoRA<B>> {
+    match method {
+        LoRAMergeMethod::WeightedSum => merge_weighted_sum(loras, backend),
+        LoRAMergeMethod::TIES { density } => merge_ties(loras, density, backend),
+        LoRAMergeMethod::DARE { drop_rate } => merge_dare(loras, drop_rate, backend),
+        LoRAMergeMethod::SVD { rank } => merge_svd(loras, rank, backend),
+    }
+}
+
+fn merge_weighted_sum<B: ComputeBackend>(
+    loras: &[(DiffusionLoRA<B>, f32)],
+    backend: &B,
+) -> Result<DiffusionLoRA<B>> {
+    let first = &loras[0].0
+    let mut merged_layers = Map::new()
+
+    for name in first.layers.keys() {
+        let mut merged_down = backend.zeros_like(&first.layers[name].lora_down)?
+        let mut merged_up = backend.zeros_like(&first.layers[name].lora_up)?
+
+        for (lora, weight) in loras.iter() {
+            if let Some(layer) = lora.layers.get(name) {
+                merged_down = merged_down + (layer.lora_down.clone() * *weight)
+                merged_up = merged_up + (layer.lora_up.clone() * *weight)
+            }
+        }
+
+        merged_layers.insert(name.clone(), DiffusionLoRALayer {
+            lora_down: merged_down,
+            lora_up: merged_up,
+            scale: first.config.scale(),
+            dropout: 0.0,
+            name: name.clone(),
+        })
+    }
+
+    Ok(DiffusionLoRA {
+        layers: merged_layers,
+        config: first.config.clone(),
+        num_params: first.num_params,
+    })
+}
+
+fn merge_ties<B: ComputeBackend>(
+    loras: &[(DiffusionLoRA<B>, f32)],
+    density: f32,
+    backend: &B,
+) -> Result<DiffusionLoRA<B>> {
+    // TIES: Trim, Elect, Sign merge
+    let first = &loras[0].0
+    let mut merged_layers = Map::new()
+
+    for name in first.layers.keys() {
+        // Collect all deltas
+        let deltas: Vec<Tensor<B>> = loras.iter()
+            φ{ |l| l.0.layers.get(name) }
+            τ{ |l| l.get_delta() }
+            .collect()
+
+        // Trim: keep only top-k% of values by magnitude
+        let trimmed: Vec<Tensor<B>> = deltas.iter()
+            τ{ |d| {
+                let threshold = d.abs().quantile(1.0 - density)
+                d.clone() * d.abs().ge(threshold).float()
+            }}
+            .collect()
+
+        // Elect: majority vote on sign
+        let signs! = trimmed.iter()
+            τ{ |d| d.sign() }
+            ρ+{ |acc, s| acc + s }
+        let elected_sign! = signs.sign()
+
+        // Merge: average magnitudes with elected sign
+        let magnitudes! = trimmed.iter()
+            τ{ |d| d.abs() }
+            ρ+{ |acc, m| acc + m } / (trimmed.len() as f32)
+
+        let merged_delta! = magnitudes * elected_sign
+
+        // Reconstruct LoRA matrices via SVD
+        let (u, s, v) = backend.svd(merged_delta)?
+        let rank = first.config.rank as usize
+
+        let sqrt_s = s[..rank].sqrt()
+        let merged_down = (v[..rank, ..].t() * sqrt_s.unsqueeze(1)).t()
+        let merged_up = u[.., ..rank] * sqrt_s.unsqueeze(0)
+
+        merged_layers.insert(name.clone(), DiffusionLoRALayer {
+            lora_down: merged_down,
+            lora_up: merged_up,
+            scale: first.config.scale(),
+            dropout: 0.0,
+            name: name.clone(),
+        })
+    }
+
+    Ok(DiffusionLoRA {
+        layers: merged_layers,
+        config: first.config.clone(),
+        num_params: first.num_params,
+    })
+}
+
+fn merge_dare<B: ComputeBackend>(
+    loras: &[(DiffusionLoRA<B>, f32)],
+    drop_rate: f32,
+    backend: &B,
+) -> Result<DiffusionLoRA<B>> {
+    // DARE: Drop And REscale
+    let first = &loras[0].0
+    let mut merged_layers = Map::new()
+
+    for name in first.layers.keys() {
+        let mut merged_down = backend.zeros_like(&first.layers[name].lora_down)?
+        let mut merged_up = backend.zeros_like(&first.layers[name].lora_up)?
+
+        for (lora, weight) in loras.iter() {
+            if let Some(layer) = lora.layers.get(name) {
+                // Random drop mask
+                let drop_mask_down = backend.bernoulli(layer.lora_down.shape(), 1.0 - drop_rate)?
+                let drop_mask_up = backend.bernoulli(layer.lora_up.shape(), 1.0 - drop_rate)?
+
+                // Rescale factor
+                let rescale = 1.0 / (1.0 - drop_rate)
+
+                merged_down = merged_down + (layer.lora_down.clone() * drop_mask_down * rescale * *weight)
+                merged_up = merged_up + (layer.lora_up.clone() * drop_mask_up * rescale * *weight)
+            }
+        }
+
+        merged_layers.insert(name.clone(), DiffusionLoRALayer {
+            lora_down: merged_down,
+            lora_up: merged_up,
+            scale: first.config.scale(),
+            dropout: 0.0,
+            name: name.clone(),
+        })
+    }
+
+    Ok(DiffusionLoRA {
+        layers: merged_layers,
+        config: first.config.clone(),
+        num_params: first.num_params,
+    })
+}
+
+fn merge_svd<B: ComputeBackend>(
+    loras: &[(DiffusionLoRA<B>, f32)],
+    target_rank: u32,
+    backend: &B,
+) -> Result<DiffusionLoRA<B>> {
+    // SVD-based compression/merging
+    let first = &loras[0].0
+    let mut merged_layers = Map::new()
+
+    for name in first.layers.keys() {
+        // Sum all deltas
+        let mut total_delta = backend.zeros([
+            first.layers[name].lora_up.shape()[0],
+            first.layers[name].lora_down.shape()[1],
+        ])?
+
+        for (lora, weight) in loras.iter() {
+            if let Some(layer) = lora.layers.get(name) {
+                total_delta = total_delta + (layer.get_delta() * *weight)
+            }
+        }
+
+        // SVD compression to target rank
+        let (u, s, v) = backend.svd(total_delta)?
+        let rank = target_rank as usize
+
+        let sqrt_s = s[..rank].sqrt()
+        let merged_down = (v[..rank, ..].t() * sqrt_s.unsqueeze(1)).t()
+        let merged_up = u[.., ..rank] * sqrt_s.unsqueeze(0)
+
+        merged_layers.insert(name.clone(), DiffusionLoRALayer {
+            lora_down: merged_down,
+            lora_up: merged_up,
+            scale: 1.0,  // Scale already absorbed
+            dropout: 0.0,
+            name: name.clone(),
+        })
+    }
+
+    let mut config = first.config.clone()
+    config.rank = target_rank
+
+    Ok(DiffusionLoRA {
+        layers: merged_layers,
+        config,
+        num_params: first.num_params,  // Approximate
+    })
+}
+
+// ============================================================================
+// DreamBooth Training
+// ============================================================================
+
+/// DreamBooth configuration for subject-specific fine-tuning
+pub struct DreamBoothConfig {
+    /// Instance prompt (e.g., "a photo of sks dog")
+    pub instance_prompt: str~,
+    /// Class prompt (e.g., "a photo of dog")
+    pub class_prompt: str~,
+    /// Use prior preservation loss
+    pub prior_preservation: bool,
+    /// Weight for prior preservation loss
+    pub prior_loss_weight: f32,
+    /// Number of class images to generate
+    pub num_class_images: u32,
+    /// Learning rate
+    pub learning_rate: f32,
+    /// Training steps
+    pub max_train_steps: u32,
+    /// Train text encoder
+    pub train_text_encoder: bool,
+    /// Use LoRA instead of full fine-tuning
+    pub use_lora: bool,
+    /// LoRA config (if use_lora is true)
+    pub lora_config: Option<DiffusionLoRAConfig>,
+}
+
+impl DreamBoothConfig {
+    /// Default config for subject training
+    pub fn default_subject() -> Self {
+        Self {
+            instance_prompt: "a photo of sks subject",
+            class_prompt: "a photo of subject",
+            prior_preservation: true,
+            prior_loss_weight: 1.0,
+            num_class_images: 200,
+            learning_rate: 1e-6,
+            max_train_steps: 800,
+            train_text_encoder: false,
+            use_lora: true,
+            lora_config: Some(DiffusionLoRAConfig::unet_attention()),
+        }
+    }
+
+    /// Config for style training
+    pub fn default_style() -> Self {
+        Self {
+            instance_prompt: "artwork in sks style",
+            class_prompt: "artwork",
+            prior_preservation: true,
+            prior_loss_weight: 0.5,
+            num_class_images: 100,
+            learning_rate: 5e-7,
+            max_train_steps: 1500,
+            train_text_encoder: true,
+            use_lora: true,
+            lora_config: Some(DiffusionLoRAConfig::sdxl()),
+        }
+    }
+}
+
+/// DreamBooth trainer
+pub struct DreamBoothTrainer<B: ComputeBackend> {
+    /// Pipeline to train
+    pipeline: DiffusionPipeline<B>,
+    /// Training configuration
+    config: DreamBoothConfig,
+    /// LoRA adapter (if using LoRA)
+    lora: Option<DiffusionLoRA<B>>,
+    /// Optimizer
+    optimizer: AdamW,
+    /// Learning rate scheduler
+    lr_scheduler: LRScheduler,
+    /// Class images for prior preservation
+    class_images: Vec<Tensor<B>>,
+    /// Instance images
+    instance_images: Vec<Tensor<B>>,
+}
+
+impl<B: ComputeBackend> DreamBoothTrainer<B> {
+    /// Create a new DreamBooth trainer
+    pub async fn new(
+        pipeline: DiffusionPipeline<B>,
+        instance_images~: Vec<ImageData>,
+        config: DreamBoothConfig,
+    ) -> Result<Self> {
+        // Preprocess instance images
+        let instance_tensors: Vec<Tensor<B>> = instance_images~
+            τ{ |img| pipeline.preprocess_image(img~)? }
+            .collect::<Result<_>>()?
+
+        // Generate class images if prior preservation enabled
+        let class_images = if config.prior_preservation {
+            Self::generate_class_images(&pipeline, &config).await?
+        } else {
+            vec![]
+        }
+
+        // Initialize LoRA if configured
+        let lora = if config.use_lora {
+            let lora_config = config.lora_config.clone()
+                .unwrap_or(DiffusionLoRAConfig::unet_attention())
+            Some(DiffusionLoRA::new(&pipeline.model_structure(), lora_config, pipeline.backend())?)
+        } else {
+            None
+        }
+
+        // Get trainable parameters
+        let params = if let Some(ref lora) = lora {
+            lora.parameters().to_vec()
+        } else {
+            pipeline.trainable_parameters()
+        }
+
+        let optimizer = AdamW::new(params, config.learning_rate, 0.9, 0.999, 1e-8, 0.01)
+        let lr_scheduler = LRScheduler::cosine(
+            config.learning_rate,
+            config.max_train_steps,
+            0,  // warmup steps
+        )
+
+        Ok(Self {
+            pipeline,
+            config,
+            lora,
+            optimizer,
+            lr_scheduler,
+            class_images,
+            instance_images: instance_tensors,
+        })
+    }
+
+    /// Generate class images for prior preservation
+    async fn generate_class_images(
+        pipeline: &DiffusionPipeline<B>,
+        config: &DreamBoothConfig,
+    ) -> Result<Vec<Tensor<B>>> {
+        let mut class_images = Vec::with_capacity(config.num_class_images as usize)
+
+        for _ in 0..config.num_class_images {
+            let output! = pipeline.generate(GenerationRequest {
+                prompt: config.class_prompt.clone(),
+                negative_prompt: None,
+                width: 512,
+                height: 512,
+                num_inference_steps: 25,
+                guidance_scale: 7.5,
+                ..Default::default()
+            }).await?
+
+            class_images.push(output.latents)
+        }
+
+        Ok(class_images)
+    }
+
+    /// Train one step
+    pub fn train_step(&mut self, step: u32) -> Result<TrainingMetrics!> {
+        // Sample random instance image
+        let instance_idx = rand::random::<usize>() % self.instance_images.len()
+        let instance_latents! = self.pipeline.encode_image(&self.instance_images[instance_idx])?
+
+        // Get text embeddings for instance
+        let instance_embeds! = self.pipeline.encode_prompt(&self.config.instance_prompt)?
+
+        // Sample random timestep
+        let timestep = rand::random::<u32>() % 1000
+
+        // Add noise
+        let noise = self.pipeline.backend().randn_like(&instance_latents)?
+        let noisy_latents! = self.pipeline.scheduler().add_noise(
+            &instance_latents,
+            &noise,
+            timestep,
+        )?
+
+        // Predict noise
+        let noise_pred! = self.forward_with_lora(&noisy_latents, timestep, &instance_embeds)?
+
+        // Compute MSE loss
+        let mut loss! = mse_loss(&noise_pred, &noise)
+
+        // Prior preservation loss
+        if self.config.prior_preservation && !self.class_images.is_empty() {
+            let class_idx = rand::random::<usize>() % self.class_images.len()
+            let class_latents! = &self.class_images[class_idx]
+
+            let class_embeds! = self.pipeline.encode_prompt(&self.config.class_prompt)?
+
+            let class_noise = self.pipeline.backend().randn_like(class_latents)?
+            let noisy_class! = self.pipeline.scheduler().add_noise(
+                class_latents,
+                &class_noise,
+                timestep,
+            )?
+
+            let class_pred! = self.forward_with_lora(&noisy_class, timestep, &class_embeds)?
+            let prior_loss! = mse_loss(&class_pred, &class_noise)
+
+            loss = loss + prior_loss * self.config.prior_loss_weight
+        }
+
+        // Backward pass
+        let grads! = loss.backward()?
+
+        // Update parameters
+        let lr = self.lr_scheduler.get_lr(step)
+        if let Some(ref mut lora) = self.lora {
+            self.optimizer.step(lora.parameters_mut(), &grads, lr)?
+        } else {
+            self.optimizer.step(self.pipeline.trainable_parameters_mut(), &grads, lr)?
+        }
+
+        Ok(TrainingMetrics {
+            step,
+            loss: loss.item(),
+            learning_rate: lr,
+        })
+    }
+
+    /// Forward pass with optional LoRA
+    fn forward_with_lora(
+        &self,
+        latents: &Tensor<B>,
+        timestep: u32,
+        text_embeds: &Tensor<B>,
+    ) -> Result<Tensor<B>!> {
+        if let Some(ref lora) = self.lora {
+            self.pipeline.forward_with_adapter(latents, timestep, text_embeds, lora)
+        } else {
+            self.pipeline.forward(latents, timestep, text_embeds)
+        }
+    }
+
+    /// Run full training
+    pub async fn train(&mut self, progress_callback: Option<fn(TrainingMetrics!)>) -> Result<()> {
+        for step in 0..self.config.max_train_steps {
+            let metrics! = self.train_step(step)?
+
+            if let Some(callback) = &progress_callback {
+                callback(metrics)
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Get trained LoRA (if using LoRA training)
+    pub fn get_lora(&self) -> Option<&DiffusionLoRA<B>> {
+        self.lora.as_ref()
+    }
+
+    /// Save trained model/LoRA
+    pub fn save(&self, path: str~) -> Result<()> {
+        if let Some(ref lora) = self.lora {
+            lora.save(path~)
+        } else {
+            self.pipeline.save(path~)
+        }
+    }
+}
+
+/// Training metrics
+pub struct TrainingMetrics {
+    pub step: u32,
+    pub loss: f32,
+    pub learning_rate: f32,
+}
+
+// ============================================================================
+// Textual Inversion
+// ============================================================================
+
+/// Textual Inversion configuration
+pub struct TextualInversionConfig {
+    /// Placeholder token (e.g., "<my-concept>")
+    pub placeholder_token: str~,
+    /// Initializer token (existing token to start from)
+    pub initializer_token: str~,
+    /// Number of vectors per token
+    pub num_vectors: u32,
+    /// Learning rate
+    pub learning_rate: f32,
+    /// Training steps
+    pub max_train_steps: u32,
+    /// Use template prompts
+    pub use_templates: bool,
+}
+
+impl TextualInversionConfig {
+    pub fn default() -> Self {
+        Self {
+            placeholder_token: "<my-concept>",
+            initializer_token: "object",
+            num_vectors: 1,
+            learning_rate: 5e-4,
+            max_train_steps: 3000,
+            use_templates: true,
+        }
+    }
+}
+
+/// Template prompts for textual inversion training
+const IMAGENET_TEMPLATES: [str; 67] = [
+    "a photo of a {}",
+    "a rendering of a {}",
+    "a cropped photo of the {}",
+    "the photo of a {}",
+    "a photo of a clean {}",
+    "a photo of a dirty {}",
+    "a dark photo of the {}",
+    "a photo of my {}",
+    "a photo of the cool {}",
+    "a close-up photo of a {}",
+    "a bright photo of the {}",
+    "a cropped photo of a {}",
+    "a photo of the {}",
+    "a good photo of the {}",
+    "a photo of one {}",
+    "a close-up photo of the {}",
+    "a rendition of the {}",
+    "a photo of the clean {}",
+    "a rendition of a {}",
+    "a photo of a nice {}",
+    "a good photo of a {}",
+    "a photo of the nice {}",
+    "a photo of the small {}",
+    "a photo of the weird {}",
+    "a photo of the large {}",
+    "a photo of a cool {}",
+    "a photo of a small {}",
+    // ... more templates
+]
+
+/// Textual inversion trainer
+pub struct TextualInversionTrainer<B: ComputeBackend> {
+    /// Text encoder to train
+    text_encoder: TextEncoder<B>,
+    /// Learned embeddings
+    learned_embeds: Tensor<B>,
+    /// Placeholder token id
+    placeholder_id: u32,
+    /// Configuration
+    config: TextualInversionConfig,
+    /// Optimizer
+    optimizer: AdamW,
+    /// Training images (as latents)
+    image_latents: Vec<Tensor<B>>,
+}
+
+impl<B: ComputeBackend> TextualInversionTrainer<B> {
+    /// Create a new textual inversion trainer
+    pub fn new(
+        text_encoder: TextEncoder<B>,
+        images~: Vec<ImageData>,
+        vae: &VAE<B>,
+        config: TextualInversionConfig,
+    ) -> Result<Self> {
+        // Add placeholder token to tokenizer
+        let placeholder_id = text_encoder.tokenizer_mut()
+            .add_token(&config.placeholder_token)?
+
+        // Initialize with existing token embedding
+        let init_id = text_encoder.tokenizer()
+            .encode(&config.initializer_token)?[0]
+        let init_embed = text_encoder.get_embedding(init_id)?
+
+        // Create learned embeddings (potentially multiple vectors)
+        let learned_embeds = if config.num_vectors > 1 {
+            init_embed.repeat([config.num_vectors as usize, 1])
+        } else {
+            init_embed.clone()
+        }
+
+        // Encode training images to latents
+        let image_latents: Vec<Tensor<B>> = images~
+            τ{ |img| vae.encode(&preprocess_image(img~)?)? }
+            .collect::<Result<_>>()?
+
+        let optimizer = AdamW::new(
+            vec![&learned_embeds],
+            config.learning_rate,
+            0.9, 0.999, 1e-8, 0.0,
+        )
+
+        Ok(Self {
+            text_encoder,
+            learned_embeds,
+            placeholder_id,
+            config,
+            optimizer,
+            image_latents,
+        })
+    }
+
+    /// Train one step
+    pub fn train_step(
+        &mut self,
+        unet: &UNet<B>,
+        scheduler: &NoiseScheduler,
+        step: u32,
+    ) -> Result<f32!> {
+        // Sample random image
+        let idx = rand::random::<usize>() % self.image_latents.len()
+        let latents = &self.image_latents[idx]
+
+        // Sample random template prompt
+        let template = if self.config.use_templates {
+            let tidx = rand::random::<usize>() % IMAGENET_TEMPLATES.len()
+            IMAGENET_TEMPLATES[tidx].replace("{}", &self.config.placeholder_token)
+        } else {
+            format!("a photo of {}", self.config.placeholder_token)
+        }
+
+        // Inject learned embedding
+        self.text_encoder.set_embedding(self.placeholder_id, &self.learned_embeds)?
+
+        // Encode prompt
+        let text_embeds! = self.text_encoder.encode(&template)?
+
+        // Sample timestep and add noise
+        let timestep = rand::random::<u32>() % 1000
+        let noise = self.text_encoder.backend().randn_like(latents)?
+        let noisy_latents! = scheduler.add_noise(latents, &noise, timestep)?
+
+        // Predict noise
+        let noise_pred! = unet.forward(&noisy_latents, timestep, &text_embeds)?
+
+        // MSE loss
+        let loss! = mse_loss(&noise_pred, &noise)
+
+        // Backward - only update learned_embeds
+        let grad! = loss.backward_for(&self.learned_embeds)?
+
+        // Update embeddings
+        self.optimizer.step_single(&mut self.learned_embeds, &grad)?
+
+        Ok(loss.item())
+    }
+
+    /// Get learned embeddings
+    pub fn get_embeddings(&self) -> &Tensor<B> {
+        &self.learned_embeds
+    }
+
+    /// Save learned embeddings
+    pub fn save(&self, path: str~) -> Result<()> {
+        let data = TextualInversionData {
+            placeholder_token: self.config.placeholder_token.clone(),
+            embeddings: self.learned_embeds.clone(),
+            num_vectors: self.config.num_vectors,
+        }
+        safetensors::save(data, path~)
+    }
+
+    /// Load learned embeddings
+    pub fn load(path: str~, text_encoder: &mut TextEncoder<B>) -> Result<u32> {
+        let data: TextualInversionData<B> = safetensors::load(path~)?
+
+        // Add token and set embedding
+        let token_id = text_encoder.tokenizer_mut()
+            .add_token(&data.placeholder_token)?
+        text_encoder.set_embedding(token_id, &data.embeddings)?
+
+        Ok(token_id)
+    }
+}
+
+/// Saved textual inversion data
+pub struct TextualInversionData<B: ComputeBackend> {
+    pub placeholder_token: str,
+    pub embeddings: Tensor<B>,
+    pub num_vectors: u32,
+}
+
+// ============================================================================
+// Utility Functions
+// ============================================================================
+
+/// MSE loss function
+fn mse_loss<B: ComputeBackend>(pred: &Tensor<B>, target: &Tensor<B>) -> Tensor<B>! {
+    let diff = pred - target
+    (diff * diff).mean()
+}
+
+/// Model structure for LoRA injection
+pub struct ModelStructure {
+    /// Layer name -> shape mapping
+    pub layers: Map<str, Vec<u32>>,
+}
+
+/// LoRA metadata for saving/loading
+pub struct LoRAMetadata {
+    pub rank: u32,
+    pub alpha: f32,
+    pub target_modules: Vec<str>,
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_lora_config_scale() {
+        let config = DiffusionLoRAConfig::unet_attention()
+        assert_eq!(config.scale(), 1.0)  // 32 / 32 = 1.0
+
+        let config2 = DiffusionLoRAConfig {
+            rank: 16,
+            alpha: 32.0,
+            ..DiffusionLoRAConfig::unet_attention()
+        }
+        assert_eq!(config2.scale(), 2.0)  // 32 / 16 = 2.0
+    }
+
+    #[test]
+    fn test_dreambooth_config() {
+        let config = DreamBoothConfig::default_subject()
+        assert!(config.prior_preservation)
+        assert!(config.use_lora)
+    }
+
+    #[test]
+    fn test_textual_inversion_config() {
+        let config = TextualInversionConfig::default()
+        assert_eq!(config.num_vectors, 1)
+        assert!(config.use_templates)
+    }
+}

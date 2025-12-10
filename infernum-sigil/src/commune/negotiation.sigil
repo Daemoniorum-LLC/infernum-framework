@@ -1,0 +1,217 @@
+//! Negotiation framework for agent agreements.
+
+use std::time::Instant
+
+/// A negotiator for reaching agreements.
+struct Negotiator {
+    agent_id: str,
+    strategy: NegotiationStrategy,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum NegotiationStrategy {
+    Cooperative,
+    Competitive,
+    Compromise,
+}
+
+/// An offer in negotiation.
+#[derive(Debug, Clone)]
+struct Offer {
+    id: str,
+    from: str,
+    terms: [Term],
+    valid_until: Instant,
+}
+
+/// A term in an offer.
+#[derive(Debug, Clone)]
+struct Term {
+    name: str,
+    value: serde_json::Value,
+    negotiable: bool,
+}
+
+/// A counter-offer.
+#[derive(Debug, Clone)]
+struct CounterOffer {
+    original_offer_id: str,
+    modified_terms: [Term],
+}
+
+/// A reached agreement.
+#[derive(Debug, Clone)]
+struct Agreement {
+    parties: [str],
+    terms: [Term],
+    created_at: Instant,
+}
+
+impl Negotiator {
+    fn new(agent_id: str) -> Negotiator {
+        Negotiator {
+            agent_id,
+            strategy: NegotiationStrategy::Cooperative,
+        }
+    }
+
+    fn with_strategy(mut self, strategy: NegotiationStrategy) -> Negotiator {
+        self.strategy = strategy;
+        self
+    }
+
+    fn is_cooperative(self) -> bool {
+        matches!(self.strategy, NegotiationStrategy::Cooperative)
+    }
+}
+
+impl Offer {
+    fn new(id: str, from: str) -> Offer {
+        Offer {
+            id,
+            from,
+            terms: [],
+            valid_until: Instant::now() + std::time::Duration::from_secs(3600),
+        }
+    }
+
+    fn add_term(mut self, term: Term) -> Offer {
+        self.terms.push(term);
+        self
+    }
+
+    fn is_valid(self) -> bool {
+        Instant::now() < self.valid_until
+    }
+}
+
+impl Term {
+    fn new(name: str, value: serde_json::Value) -> Term {
+        Term {
+            name,
+            value,
+            negotiable: true,
+        }
+    }
+
+    fn fixed(name: str, value: serde_json::Value) -> Term {
+        Term {
+            name,
+            value,
+            negotiable: false,
+        }
+    }
+}
+
+impl CounterOffer {
+    fn new(original_offer_id: str) -> CounterOffer {
+        CounterOffer {
+            original_offer_id,
+            modified_terms: [],
+        }
+    }
+
+    fn modify_term(mut self, term: Term) -> CounterOffer {
+        self.modified_terms.push(term);
+        self
+    }
+}
+
+impl Agreement {
+    fn new(parties: [str], terms: [Term]) -> Agreement {
+        Agreement {
+            parties,
+            terms,
+            created_at: Instant::now(),
+        }
+    }
+
+    fn party_count(self) -> usize {
+        self.parties.len()
+    }
+
+    fn has_party(self, party: &str) -> bool {
+        self.parties|∃{|p| p == party}
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_negotiator_creation() {
+        let n = Negotiator::new("agent-1");
+        assert_eq!(n.agent_id, "agent-1");
+        assert!(n.is_cooperative());
+    }
+
+    #[test]
+    fn test_negotiator_with_strategy() {
+        let n = Negotiator::new("agent-1")
+            .with_strategy(NegotiationStrategy::Competitive);
+
+        assert!(!n.is_cooperative());
+        assert!(matches!(n.strategy, NegotiationStrategy::Competitive));
+    }
+
+    #[test]
+    fn test_offer_creation() {
+        let o = Offer::new("offer-1", "agent-a");
+        assert_eq!(o.id, "offer-1");
+        assert_eq!(o.from, "agent-a");
+        assert!(o.terms.is_empty());
+        assert!(o.is_valid());
+    }
+
+    #[test]
+    fn test_offer_with_terms() {
+        let o = Offer::new("offer-1", "agent-a")
+            .add_term(Term::new("price", serde_json::json!(100)))
+            .add_term(Term::fixed("currency", serde_json::json!("USD")));
+
+        assert_eq!(o.terms.len(), 2);
+    }
+
+    #[test]
+    fn test_term_negotiable() {
+        let t1 = Term::new("quantity", serde_json::json!(50));
+        let t2 = Term::fixed("min_quantity", serde_json::json!(10));
+
+        assert!(t1.negotiable);
+        assert!(!t2.negotiable);
+    }
+
+    #[test]
+    fn test_counter_offer() {
+        let co = CounterOffer::new("offer-1")
+            .modify_term(Term::new("price", serde_json::json!(80)));
+
+        assert_eq!(co.original_offer_id, "offer-1");
+        assert_eq!(co.modified_terms.len(), 1);
+    }
+
+    #[test]
+    fn test_agreement_creation() {
+        let a = Agreement::new(
+            ["party-a".to_string(), "party-b".to_string()],
+            [Term::new("terms", serde_json::json!("agreed"))],
+        );
+
+        assert_eq!(a.party_count(), 2);
+        assert!(a.has_party("party-a"));
+        assert!(a.has_party("party-b"));
+        assert!(!a.has_party("party-c"));
+    }
+
+    #[test]
+    fn test_negotiation_strategies() {
+        assert!(matches!(NegotiationStrategy::Cooperative, NegotiationStrategy::Cooperative));
+        assert!(matches!(NegotiationStrategy::Competitive, NegotiationStrategy::Competitive));
+        assert!(matches!(NegotiationStrategy::Compromise, NegotiationStrategy::Compromise));
+    }
+}

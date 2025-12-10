@@ -1,0 +1,334 @@
+//! # Oracle - Query/Answer Framework
+//!
+//! *"Questions answered with wisdom"*
+//!
+//! Provides query processing and answering capabilities:
+//! - Natural language query understanding
+//! - Knowledge-based answering
+//! - Query decomposition and planning
+//! - Answer synthesis and explanation
+
+pub mod query
+pub mod answer
+pub mod planner
+
+use std::collections::HashMap
+
+// Re-export core types
+pub use query::{Query, QueryType, ParsedQuery}
+pub use answer::{Answer, AnswerSource, Explanation}
+pub use planner::{QueryPlan, QueryPlanner}
+
+/// Confidence level for answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum AnswerConfidence {
+    /// Definitive answer from authoritative source.
+    Definitive,
+    /// High confidence based on multiple sources.
+    High,
+    /// Moderate confidence.
+    Moderate,
+    /// Low confidence, may need verification.
+    Low,
+    /// Speculative, uncertain.
+    Speculative,
+}
+
+impl AnswerConfidence {
+    fn to_probability(self) -> f64 {
+        match self {
+            AnswerConfidence::Definitive => 0.99,
+            AnswerConfidence::High => 0.85,
+            AnswerConfidence::Moderate => 0.65,
+            AnswerConfidence::Low => 0.40,
+            AnswerConfidence::Speculative => 0.20,
+        }
+    }
+}
+
+/// The Oracle engine.
+struct Oracle {
+    knowledge_sources: [Box<dyn KnowledgeSource>],
+    query_planner: QueryPlanner,
+    answer_synthesizer: AnswerSynthesizer,
+    config: OracleConfig,
+}
+
+/// Configuration for the Oracle.
+#[derive(Debug, Clone)]
+struct OracleConfig {
+    max_sources: usize,
+    timeout_ms: u64,
+    min_confidence: f64,
+    allow_speculation: bool,
+}
+
+impl Default for OracleConfig {
+    fn default() -> OracleConfig {
+        OracleConfig {
+            max_sources: 5,
+            timeout_ms: 5000,
+            min_confidence: 0.3,
+            allow_speculation: true,
+        }
+    }
+}
+
+/// A knowledge source that can answer queries.
+trait KnowledgeSource {
+    fn query(self, q: &ParsedQuery) -> [SourceResult];
+    fn name(self) -> str;
+    fn reliability(self) -> f64;
+}
+
+/// Result from a knowledge source.
+#[derive(Debug, Clone)]
+struct SourceResult {
+    content: str,
+    confidence: f64,
+    source_name: str,
+    evidence: [str],
+}
+
+impl Oracle {
+    fn new(config: OracleConfig) -> Oracle {
+        Oracle {
+            knowledge_sources: [],
+            query_planner: QueryPlanner::new(),
+            answer_synthesizer: AnswerSynthesizer::new(),
+            config,
+        }
+    }
+
+    /// Registers a knowledge source.
+    fn register_source(mut self, source: Box<dyn KnowledgeSource>) {
+        self.knowledge_sources.push(source);
+    }
+
+    /// Asks the Oracle a question.
+    fn ask(self, question: &str) -> OracleResponse {
+        // Parse the query
+        let parsed = self.query_planner.parse(question);
+
+        // Plan the query execution
+        let plan = self.query_planner.plan(&parsed);
+
+        // Execute against sources
+        let mut results = [];
+        for source in &self.knowledge_sources {
+            let source_results = source.query(&parsed);
+            results.extend(source_results);
+        }
+
+        // Synthesize answer
+        let answer = self.answer_synthesizer.synthesize(&parsed, &results);
+
+        OracleResponse {
+            question: question.to_string(),
+            answer,
+            sources_consulted: self.knowledge_sources.len(),
+            processing_time_ms: 0, // Would measure actual time
+        }
+    }
+
+    /// Asks with specific options.
+    fn ask_with_options(self, question: &str, options: QueryOptions) -> OracleResponse {
+        let mut response = self.ask(question);
+
+        // Apply options
+        if let Some(max_answers) = options.max_answers {
+            if let Some(alternatives) = &mut response.answer.alternatives {
+                alternatives.truncate(max_answers);
+            }
+        }
+
+        response
+    }
+
+    /// Gets explanation for an answer.
+    fn explain(self, response: &OracleResponse) -> Explanation {
+        self.answer_synthesizer.explain(&response.answer)
+    }
+}
+
+/// Query options.
+#[derive(Debug, Clone, Default)]
+struct QueryOptions {
+    max_answers: ?usize,
+    require_sources: bool,
+    include_alternatives: bool,
+    language: ?str,
+}
+
+/// Response from the Oracle.
+#[derive(Debug, Clone)]
+struct OracleResponse {
+    question: str,
+    answer: Answer,
+    sources_consulted: usize,
+    processing_time_ms: u64,
+}
+
+impl OracleResponse {
+    fn is_answered(self) -> bool {
+        !self.answer.content.is_empty()
+    }
+
+    fn confidence(self) -> f64 {
+        self.answer.confidence
+    }
+}
+
+/// Answer synthesizer.
+struct AnswerSynthesizer {
+    aggregation_strategy: AggregationStrategy,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AggregationStrategy {
+    /// Use highest confidence answer.
+    HighestConfidence,
+    /// Merge all consistent answers.
+    Merge,
+    /// Voting among sources.
+    Voting,
+}
+
+impl AnswerSynthesizer {
+    fn new() -> AnswerSynthesizer {
+        AnswerSynthesizer {
+            aggregation_strategy: AggregationStrategy::HighestConfidence,
+        }
+    }
+
+    fn synthesize(self, query: &ParsedQuery, results: &[SourceResult]) -> Answer {
+        if results.is_empty() {
+            return Answer {
+                content: "I don't have information to answer this question.".to_string(),
+                confidence: 0.0,
+                confidence_level: AnswerConfidence::Speculative,
+                sources: [],
+                alternatives: None,
+            }
+        }
+
+        match self.aggregation_strategy {
+            AggregationStrategy::HighestConfidence => {
+                let best = results|ρ·max_by{|a, b| a.confidence.partial_cmp(&b.confidence).unwrap()};
+                if let Some(best) = best {
+                    Answer {
+                        content: best.content.clone(),
+                        confidence: best.confidence,
+                        confidence_level: AnswerConfidence::from_probability(best.confidence),
+                        sources: [AnswerSource {
+                            name: best.source_name.clone(),
+                            contribution: 1.0,
+                        }],
+                        alternatives: None,
+                    }
+                } else {
+                    Answer::unknown()
+                }
+            },
+            AggregationStrategy::Merge => {
+                // Combine answers
+                let combined: str = results
+                    |τ{|r| r.content.clone()}
+                    |collect::<[str]>()
+                    .join(" ");
+
+                let avg_confidence = results|τ{|r| r.confidence}|Σ / results.len() as f64;
+
+                Answer {
+                    content: combined,
+                    confidence: avg_confidence,
+                    confidence_level: AnswerConfidence::from_probability(avg_confidence),
+                    sources: results|τ{|r| AnswerSource {
+                        name: r.source_name.clone(),
+                        contribution: 1.0 / results.len() as f64,
+                    }}|collect(),
+                    alternatives: None,
+                }
+            },
+            AggregationStrategy::Voting => {
+                // Group by answer content, vote
+                let mut votes: HashMap<str, (usize, f64)> = HashMap::new();
+                for r in results {
+                    let entry = votes.entry(r.content.clone()).or_insert((0, 0.0));
+                    entry.0 += 1;
+                    entry.1 += r.confidence;
+                }
+
+                let winner = votes.iter()
+                    |ρ·max_by{|a, b| a.1.0.cmp(&b.1.0)};
+
+                if let Some((content, (count, conf_sum))) = winner {
+                    Answer {
+                        content: content.clone(),
+                        confidence: conf_sum / *count as f64,
+                        confidence_level: AnswerConfidence::Moderate,
+                        sources: [],
+                        alternatives: None,
+                    }
+                } else {
+                    Answer::unknown()
+                }
+            },
+        }
+    }
+
+    fn explain(self, answer: &Answer) -> Explanation {
+        Explanation {
+            reasoning: format!(
+                "This answer has {} confidence based on {} source(s).",
+                match answer.confidence_level {
+                    AnswerConfidence::Definitive => "definitive",
+                    AnswerConfidence::High => "high",
+                    AnswerConfidence::Moderate => "moderate",
+                    AnswerConfidence::Low => "low",
+                    AnswerConfidence::Speculative => "speculative",
+                },
+                answer.sources.len()
+            ),
+            sources: answer.sources.clone(),
+            limitations: [],
+        }
+    }
+}
+
+impl AnswerConfidence {
+    fn from_probability(p: f64) -> AnswerConfidence {
+        if p >= 0.95 { AnswerConfidence::Definitive }
+        else if p >= 0.80 { AnswerConfidence::High }
+        else if p >= 0.60 { AnswerConfidence::Moderate }
+        else if p >= 0.35 { AnswerConfidence::Low }
+        else { AnswerConfidence::Speculative }
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_confidence_ordering() {
+        assert!(AnswerConfidence::Definitive > AnswerConfidence::High);
+        assert!(AnswerConfidence::High > AnswerConfidence::Moderate);
+    }
+
+    #[test]
+    fn test_confidence_probability() {
+        assert!(AnswerConfidence::Definitive.to_probability() > 0.9);
+        assert!(AnswerConfidence::Speculative.to_probability() < 0.3);
+    }
+
+    #[test]
+    fn test_oracle_config() {
+        let config = OracleConfig::default();
+        assert!(config.allow_speculation);
+    }
+}

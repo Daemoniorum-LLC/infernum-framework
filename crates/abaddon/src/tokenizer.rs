@@ -132,18 +132,6 @@ impl Tokenizer {
         self.inner.id_to_token(id)
     }
 
-    /// Returns a reference to the inner tokenizers::Tokenizer.
-    #[must_use]
-    pub fn inner(&self) -> &tokenizers::Tokenizer {
-        &self.inner
-    }
-
-    /// Consumes self and returns the inner tokenizers::Tokenizer.
-    #[must_use]
-    pub fn into_inner(self) -> tokenizers::Tokenizer {
-        self.inner
-    }
-
     /// Applies the chat template to format messages.
     ///
     /// # Errors

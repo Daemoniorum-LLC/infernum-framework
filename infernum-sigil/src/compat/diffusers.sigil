@@ -1,0 +1,459 @@
+/// Diffusers Compatibility Layer
+///
+/// Import models from HuggingFace diffusers library.
+/// Supports all major diffusion models: SD, SDXL, SD3, Flux, etc.
+
+use crate::core::error::{InfernumError, Result}
+use crate::compat::pytorch::{StateDict, WeightMapper, PyTorchLoader}
+use crate::compat::safetensors::SafetensorsLoader
+use std::collections::HashMap
+use std::path::{Path, PathBuf}
+
+// ============================================================================
+// Diffusers Model Types
+// ============================================================================
+
+/// Supported diffusers model types
+#[derive(Clone, Debug, PartialEq)]
+pub enum DiffusersModelType {
+    StableDiffusion,
+    StableDiffusionXL,
+    StableDiffusion3,
+    Flux,
+    Kandinsky,
+    Wuerstchen,
+    PixArt,
+    DiT,
+    AnimateDiff,
+    StableVideoDiffusion,
+    CogVideoX,
+    Unknown,
+}
+
+impl DiffusersModelType {
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "stablediffusion" | "stable-diffusion" | "sd" | "sd1.5" | "sd2" => Self::StableDiffusion,
+            "stablediffusionxl" | "sdxl" => Self::StableDiffusionXL,
+            "stablediffusion3" | "sd3" => Self::StableDiffusion3,
+            "flux" | "flux.1" => Self::Flux,
+            "kandinsky" => Self::Kandinsky,
+            "wuerstchen" => Self::Wuerstchen,
+            "pixart" | "pixart-alpha" | "pixart-sigma" => Self::PixArt,
+            "dit" => Self::DiT,
+            "animatediff" | "animate-diff" => Self::AnimateDiff,
+            "stablevideodiffusion" | "svd" => Self::StableVideoDiffusion,
+            "cogvideox" | "cogvideo" => Self::CogVideoX,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn component_names(&self) -> Vec<&'static str> {
+        match self {
+            Self::StableDiffusion => vec!["vae", "unet", "text_encoder", "tokenizer", "scheduler"],
+            Self::StableDiffusionXL => vec!["vae", "unet", "text_encoder", "text_encoder_2", "tokenizer", "tokenizer_2", "scheduler"],
+            Self::StableDiffusion3 => vec!["vae", "transformer", "text_encoder", "text_encoder_2", "text_encoder_3", "tokenizer", "tokenizer_2", "tokenizer_3"],
+            Self::Flux => vec!["vae", "transformer", "text_encoder", "text_encoder_2", "tokenizer", "tokenizer_2", "scheduler"],
+            Self::AnimateDiff => vec!["vae", "unet", "motion_modules", "text_encoder", "tokenizer", "scheduler"],
+            Self::StableVideoDiffusion => vec!["vae", "unet", "image_encoder", "feature_extractor", "scheduler"],
+            Self::CogVideoX => vec!["vae", "transformer", "text_encoder", "tokenizer", "scheduler"],
+            _ => vec![],
+        }
+    }
+}
+
+// ============================================================================
+// Diffusers Model Index
+// ============================================================================
+
+/// Model index from model_index.json
+#[derive(Clone)]
+pub struct ModelIndex {
+    pub class_name: String,
+    pub diffusers_version: Option<String>,
+    pub components: HashMap<String, ComponentInfo>,
+}
+
+#[derive(Clone)]
+pub struct ComponentInfo {
+    pub library_name: String,
+    pub class_name: String,
+    pub subfolder: Option<String>,
+}
+
+impl ModelIndex {
+    /// Load from model_index.json
+    pub fn load(path: &Path) -> Result<Self!> {
+        let data! = std::fs::read_to_string(path)?
+        let json: serde_json::Value! = serde_json::from_str(&data)?
+
+        let class_name = json["_class_name"].as_str().unwrap_or("").to_string()
+        let diffusers_version = json["_diffusers_version"].as_str().map(|s| s.to_string())
+
+        let mut components = HashMap::new()
+
+        if let Some(obj) = json.as_object() {
+            for (key, value) in obj {
+                if key.starts_with('_') {
+                    continue
+                }
+
+                if let Some(arr) = value.as_array() {
+                    if arr.len() >= 2 {
+                        components.insert(key.clone(), ComponentInfo {
+                            library_name: arr[0].as_str().unwrap_or("").to_string(),
+                            class_name: arr[1].as_str().unwrap_or("").to_string(),
+                            subfolder: Some(key.clone()),
+                        })
+                    }
+                }
+            }
+        }
+
+        Ok(Self {
+            class_name,
+            diffusers_version,
+            components,
+        })
+    }
+
+    /// Detect model type from class name
+    pub fn model_type(&self) -> DiffusersModelType {
+        match self.class_name.as_str() {
+            "StableDiffusionPipeline" | "StableDiffusionImg2ImgPipeline" => DiffusersModelType::StableDiffusion,
+            "StableDiffusionXLPipeline" | "StableDiffusionXLImg2ImgPipeline" => DiffusersModelType::StableDiffusionXL,
+            "StableDiffusion3Pipeline" => DiffusersModelType::StableDiffusion3,
+            "FluxPipeline" => DiffusersModelType::Flux,
+            "AnimateDiffPipeline" => DiffusersModelType::AnimateDiff,
+            "StableVideoDiffusionPipeline" => DiffusersModelType::StableVideoDiffusion,
+            "CogVideoXPipeline" => DiffusersModelType::CogVideoX,
+            _ => DiffusersModelType::Unknown,
+        }
+    }
+}
+
+// ============================================================================
+// Component Loaders
+// ============================================================================
+
+/// UNet weight mapper for diffusers
+pub fn unet_mapper(model_type: DiffusersModelType) -> WeightMapper {
+    match model_type {
+        DiffusersModelType::StableDiffusion => {
+            WeightMapper::new()
+                .map_prefix("down_blocks.", "encoder.blocks.")
+                .map_prefix("mid_block.", "mid.")
+                .map_prefix("up_blocks.", "decoder.blocks.")
+                .map_prefix("conv_in.", "input_conv.")
+                .map_prefix("conv_out.", "output_conv.")
+                .map_prefix("time_embedding.", "time_embed.")
+        },
+        DiffusersModelType::StableDiffusionXL => {
+            WeightMapper::new()
+                .map_prefix("down_blocks.", "encoder.blocks.")
+                .map_prefix("mid_block.", "mid.")
+                .map_prefix("up_blocks.", "decoder.blocks.")
+                .map_prefix("add_embedding.", "add_embed.")
+        },
+        _ => WeightMapper::new(),
+    }
+}
+
+/// VAE weight mapper
+pub fn vae_mapper() -> WeightMapper {
+    WeightMapper::new()
+        .map_prefix("encoder.", "encoder.")
+        .map_prefix("decoder.", "decoder.")
+        .map_prefix("quant_conv.", "quant_conv.")
+        .map_prefix("post_quant_conv.", "post_quant_conv.")
+}
+
+/// Text encoder (CLIP) weight mapper
+pub fn text_encoder_mapper() -> WeightMapper {
+    WeightMapper::new()
+        .map_prefix("text_model.embeddings.", "embeddings.")
+        .map_prefix("text_model.encoder.layers.", "layers.")
+        .map_prefix("text_model.final_layer_norm.", "final_norm.")
+}
+
+/// DiT/Transformer weight mapper
+pub fn transformer_mapper() -> WeightMapper {
+    WeightMapper::new()
+        .map_prefix("transformer_blocks.", "blocks.")
+        .map_prefix("pos_embed.", "pos_embed.")
+        .map_prefix("x_embedder.", "input_embed.")
+        .map_prefix("t_embedder.", "time_embed.")
+        .map_prefix("final_layer.", "output.")
+}
+
+// ============================================================================
+// Diffusers Model Loader
+// ============================================================================
+
+/// Load complete diffusers model
+pub struct DiffusersLoader {
+    model_path: PathBuf,
+    model_index: Option<ModelIndex>,
+    use_safetensors: bool,
+}
+
+impl DiffusersLoader {
+    pub fn new(path: &Path) -> Result<Self!> {
+        let model_index_path = path.join("model_index.json")
+        let model_index = if model_index_path.exists() {
+            Some(ModelIndex::load(&model_index_path)?)
+        } else {
+            None
+        }
+
+        Ok(Self {
+            model_path: path.to_path_buf(),
+            model_index,
+            use_safetensors: true,
+        })
+    }
+
+    /// Prefer safetensors format
+    pub fn prefer_safetensors(mut self, prefer: bool) -> Self {
+        self.use_safetensors = prefer
+        self
+    }
+
+    /// Get model type
+    pub fn model_type(&self) -> DiffusersModelType {
+        self.model_index
+            .as_ref()
+            .map(|idx| idx.model_type())
+            .unwrap_or(DiffusersModelType::Unknown)
+    }
+
+    /// List available components
+    pub fn components(&self) -> Vec<String> {
+        self.model_index
+            .as_ref()
+            .map(|idx| idx.components.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Load specific component
+    pub fn load_component(&self, name: &str) -> Result<LoadedComponent!> {
+        let component_path = self.model_path.join(name)
+
+        if !component_path.exists() {
+            return Err(InfernumError::ComponentNotFound {
+                component: name.to_string(),
+                path: component_path.to_string_lossy().to_string(),
+            })
+        }
+
+        // Try safetensors first
+        let safetensors_path = component_path.join("model.safetensors")
+        let diffusion_pytorch_model = component_path.join("diffusion_pytorch_model.safetensors")
+        let pytorch_model = component_path.join("pytorch_model.bin")
+
+        let (weights, format) = if self.use_safetensors && safetensors_path.exists() {
+            (SafetensorsLoader::load(&safetensors_path)?, "safetensors")
+        } else if self.use_safetensors && diffusion_pytorch_model.exists() {
+            (SafetensorsLoader::load(&diffusion_pytorch_model)?, "safetensors")
+        } else if pytorch_model.exists() {
+            let loader = PyTorchLoader::new()
+            let loaded! = loader.load_weights(&pytorch_model)?
+            (loaded.weights.into_iter().map(|(k, v)| (k, v.data)).collect(), "pytorch")
+        } else {
+            return Err(InfernumError::NoWeightsFound {
+                path: component_path.to_string_lossy().to_string(),
+            })
+        }
+
+        // Load config
+        let config_path = component_path.join("config.json")
+        let config = if config_path.exists() {
+            let data! = std::fs::read_to_string(&config_path)?
+            Some(serde_json::from_str(&data)?)
+        } else {
+            None
+        }
+
+        Ok(LoadedComponent {
+            name: name.to_string(),
+            weights,
+            config,
+            format: format.to_string(),
+        })
+    }
+
+    /// Load all components
+    pub fn load_all(&self) -> Result<HashMap<String, LoadedComponent>!> {
+        let components = self.components()
+        let mut loaded = HashMap::new()
+
+        for name in components {
+            match self.load_component(&name) {
+                Ok(component) => {
+                    loaded.insert(name, component)
+                },
+                Err(e) => {
+                    // Log warning but continue
+                    println!("Warning: Failed to load {}: {:?}", name, e)
+                }
+            }
+        }
+
+        Ok(loaded)
+    }
+
+    /// Load UNet specifically
+    pub fn load_unet(&self) -> Result<LoadedComponent!> {
+        // Try different names
+        for name in &["unet", "transformer"] {
+            let path = self.model_path.join(name)
+            if path.exists() {
+                return self.load_component(name)
+            }
+        }
+
+        Err(InfernumError::ComponentNotFound {
+            component: "unet/transformer".to_string(),
+            path: self.model_path.to_string_lossy().to_string(),
+        })
+    }
+
+    /// Load VAE specifically
+    pub fn load_vae(&self) -> Result<LoadedComponent!> {
+        self.load_component("vae")
+    }
+
+    /// Load text encoder(s)
+    pub fn load_text_encoders(&self) -> Result<Vec<LoadedComponent>!> {
+        let mut encoders = Vec::new()
+
+        for name in &["text_encoder", "text_encoder_2", "text_encoder_3"] {
+            let path = self.model_path.join(name)
+            if path.exists() {
+                encoders.push(self.load_component(name)?)
+            }
+        }
+
+        if encoders.is_empty() {
+            return Err(InfernumError::ComponentNotFound {
+                component: "text_encoder".to_string(),
+                path: self.model_path.to_string_lossy().to_string(),
+            })
+        }
+
+        Ok(encoders)
+    }
+}
+
+pub struct LoadedComponent {
+    pub name: String,
+    pub weights: HashMap<String, Vec<u8>>,
+    pub config: Option<serde_json::Value>,
+    pub format: String,
+}
+
+impl LoadedComponent {
+    pub fn num_params(&self) -> usize {
+        self.weights.values().map(|w| w.len() / 4).sum()  // Assume FP32
+    }
+
+    pub fn size_mb(&self) -> f64 {
+        self.weights.values().map(|w| w.len()).sum::<usize>() as f64 / (1024.0 * 1024.0)
+    }
+}
+
+// ============================================================================
+// Config Parsing
+// ============================================================================
+
+/// UNet config
+#[derive(Clone)]
+pub struct UNetConfig {
+    pub in_channels: u32,
+    pub out_channels: u32,
+    pub block_out_channels: Vec<u32>,
+    pub down_block_types: Vec<String>,
+    pub up_block_types: Vec<String>,
+    pub cross_attention_dim: u32,
+    pub attention_head_dim: u32,
+    pub use_linear_projection: bool,
+    pub addition_embed_type: Option<String>,
+}
+
+impl UNetConfig {
+    pub fn from_json(json: &serde_json::Value) -> Self {
+        Self {
+            in_channels: json["in_channels"].as_u64().unwrap_or(4) as u32,
+            out_channels: json["out_channels"].as_u64().unwrap_or(4) as u32,
+            block_out_channels: json["block_out_channels"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_u64()).map(|v| v as u32).collect())
+                .unwrap_or_else(|| vec![320, 640, 1280, 1280]),
+            down_block_types: json["down_block_types"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str()).map(|s| s.to_string()).collect())
+                .unwrap_or_default(),
+            up_block_types: json["up_block_types"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str()).map(|s| s.to_string()).collect())
+                .unwrap_or_default(),
+            cross_attention_dim: json["cross_attention_dim"].as_u64().unwrap_or(768) as u32,
+            attention_head_dim: json["attention_head_dim"].as_u64().unwrap_or(8) as u32,
+            use_linear_projection: json["use_linear_projection"].as_bool().unwrap_or(false),
+            addition_embed_type: json["addition_embed_type"].as_str().map(|s| s.to_string()),
+        }
+    }
+
+    pub fn is_sdxl(&self) -> bool {
+        self.addition_embed_type.is_some()
+    }
+}
+
+/// VAE config
+#[derive(Clone)]
+pub struct VAEConfig {
+    pub in_channels: u32,
+    pub out_channels: u32,
+    pub latent_channels: u32,
+    pub block_out_channels: Vec<u32>,
+    pub scaling_factor: f32,
+}
+
+impl VAEConfig {
+    pub fn from_json(json: &serde_json::Value) -> Self {
+        Self {
+            in_channels: json["in_channels"].as_u64().unwrap_or(3) as u32,
+            out_channels: json["out_channels"].as_u64().unwrap_or(3) as u32,
+            latent_channels: json["latent_channels"].as_u64().unwrap_or(4) as u32,
+            block_out_channels: json["block_out_channels"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_u64()).map(|v| v as u32).collect())
+                .unwrap_or_else(|| vec![128, 256, 512, 512]),
+            scaling_factor: json["scaling_factor"].as_f64().unwrap_or(0.18215) as f32,
+        }
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_model_type_detection() {
+        assert_eq!(DiffusersModelType::from_str("sdxl"), DiffusersModelType::StableDiffusionXL)
+        assert_eq!(DiffusersModelType::from_str("flux"), DiffusersModelType::Flux)
+        assert_eq!(DiffusersModelType::from_str("sd3"), DiffusersModelType::StableDiffusion3)
+    }
+
+    #[test]
+    fn test_component_names() {
+        let sdxl = DiffusersModelType::StableDiffusionXL
+        let components = sdxl.component_names()
+        assert!(components.contains(&"unet"))
+        assert!(components.contains(&"text_encoder_2"))
+    }
+}

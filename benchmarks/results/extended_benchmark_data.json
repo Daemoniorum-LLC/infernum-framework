@@ -1,0 +1,1976 @@
+{
+  "timestamp": "2025-12-03T22:57:23.576486",
+  "rust": {
+    "name": "infernum-framework",
+    "language": "Rust",
+    "total_lines": 0,
+    "total_code_lines": 0,
+    "total_files": 0,
+    "total_functions": 0,
+    "total_structs": 0,
+    "compilation_time": 0.0,
+    "binary_size": 0,
+    "modules": {}
+  },
+  "sigil": {
+    "name": "infernum-sigil",
+    "language": "Sigil",
+    "total_lines": 18693,
+    "total_code_lines": 13132,
+    "total_files": 58,
+    "total_functions": 1217,
+    "total_structs": 215,
+    "compilation_time": 0.0,
+    "binary_size": 0,
+    "modules": {
+      "root": {
+        "total_lines": 119,
+        "code_lines": 71,
+        "file_count": 1,
+        "function_count": 0,
+        "description": "",
+        "total_morpheme_usage": 0,
+        "avg_complexity": 1.0,
+        "files": [
+          {
+            "path": "src/lib.sigil",
+            "total_lines": 119,
+            "code_lines": 71,
+            "function_count": 0,
+            "struct_count": 0,
+            "async_fn_count": 0,
+            "test_count": 0,
+            "morpheme_usage": {
+              "tau": 0,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 0,
+              "coalesce": 0
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 0,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 1,
+              "avg_nesting_depth": 0.5070422535211268,
+              "cyclomatic_complexity": 1,
+              "match_arms": 0,
+              "error_handling_points": 5
+            }
+          }
+        ]
+      },
+      "grimoire_loader": {
+        "total_lines": 113,
+        "code_lines": 70,
+        "file_count": 1,
+        "function_count": 9,
+        "description": "Persona loading from Grimoire",
+        "total_morpheme_usage": 8,
+        "avg_complexity": 9.0,
+        "files": [
+          {
+            "path": "src/grimoire_loader.sigil",
+            "total_lines": 113,
+            "code_lines": 70,
+            "function_count": 9,
+            "struct_count": 2,
+            "async_fn_count": 2,
+            "test_count": 0,
+            "morpheme_usage": {
+              "tau": 1,
+              "phi": 0,
+              "sigma": 1,
+              "rho": 0,
+              "await": 3,
+              "map_err": 1,
+              "collect": 0,
+              "coalesce": 2
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 0,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 5,
+              "avg_nesting_depth": 1.5857142857142856,
+              "cyclomatic_complexity": 9,
+              "match_arms": 0,
+              "error_handling_points": 10
+            }
+          }
+        ]
+      },
+      "astaroth": {
+        "total_lines": 3855,
+        "code_lines": 2685,
+        "file_count": 7,
+        "function_count": 276,
+        "description": "A/B experimentation framework",
+        "total_morpheme_usage": 91,
+        "avg_complexity": 21.142857142857142,
+        "files": [
+          {
+            "path": "src/astaroth/analysis.sigil",
+            "total_lines": 811,
+            "code_lines": 580,
+            "function_count": 47,
+            "struct_count": 7,
+            "async_fn_count": 0,
+            "test_count": 8,
+            "morpheme_usage": {
+              "tau": 0,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 0,
+              "coalesce": 0
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 171,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 4,
+              "avg_nesting_depth": 2.0224137931034485,
+              "cyclomatic_complexity": 33,
+              "match_arms": 8,
+              "error_handling_points": 15
+            }
+          },
+          {
+            "path": "src/astaroth/metrics.sigil",
+            "total_lines": 667,
+            "code_lines": 464,
+            "function_count": 48,
+            "struct_count": 6,
+            "async_fn_count": 0,
+            "test_count": 6,
+            "morpheme_usage": {
+              "tau": 9,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 9,
+              "await": 0,
+              "map_err": 0,
+              "collect": 6,
+              "coalesce": 3
+            },
+            "evidentiality_usage": {
+              "untrusted": 53,
+              "verified": 15,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 5,
+              "avg_nesting_depth": 1.9913793103448276,
+              "cyclomatic_complexity": 21,
+              "match_arms": 23,
+              "error_handling_points": 10
+            }
+          },
+          {
+            "path": "src/astaroth/variant.sigil",
+            "total_lines": 433,
+            "code_lines": 295,
+            "function_count": 38,
+            "struct_count": 2,
+            "async_fn_count": 0,
+            "test_count": 5,
+            "morpheme_usage": {
+              "tau": 0,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 0,
+              "coalesce": 0
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 23,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 6,
+              "avg_nesting_depth": 1.9898305084745762,
+              "cyclomatic_complexity": 18,
+              "match_arms": 5,
+              "error_handling_points": 0
+            }
+          },
+          {
+            "path": "src/astaroth/mod.sigil",
+            "total_lines": 288,
+            "code_lines": 171,
+            "function_count": 18,
+            "struct_count": 2,
+            "async_fn_count": 0,
+            "test_count": 4,
+            "morpheme_usage": {
+              "tau": 1,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 1,
+              "map_err": 0,
+              "collect": 1,
+              "coalesce": 3
+            },
+            "evidentiality_usage": {
+              "untrusted": 2,
+              "verified": 15,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 3,
+              "avg_nesting_depth": 1.5964912280701755,
+              "cyclomatic_complexity": 7,
+              "match_arms": 0,
+              "error_handling_points": 19
+            }
+          },
+          {
+            "path": "src/astaroth/experiment.sigil",
+            "total_lines": 371,
+            "code_lines": 249,
+            "function_count": 38,
+            "struct_count": 4,
+            "async_fn_count": 0,
+            "test_count": 4,
+            "morpheme_usage": {
+              "tau": 1,
+              "phi": 4,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 2,
+              "coalesce": 0
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 16,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 3,
+              "avg_nesting_depth": 1.6465863453815262,
+              "cyclomatic_complexity": 8,
+              "match_arms": 0,
+              "error_handling_points": 3
+            }
+          },
+          {
+            "path": "src/astaroth/splitter.sigil",
+            "total_lines": 598,
+            "code_lines": 425,
+            "function_count": 43,
+            "struct_count": 4,
+            "async_fn_count": 0,
+            "test_count": 7,
+            "morpheme_usage": {
+              "tau": 18,
+              "phi": 2,
+              "sigma": 0,
+              "rho": 6,
+              "await": 0,
+              "map_err": 0,
+              "collect": 7,
+              "coalesce": 3
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 15,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 7,
+              "avg_nesting_depth": 2.103529411764706,
+              "cyclomatic_complexity": 29,
+              "match_arms": 10,
+              "error_handling_points": 3
+            }
+          },
+          {
+            "path": "src/astaroth/runner.sigil",
+            "total_lines": 687,
+            "code_lines": 501,
+            "function_count": 44,
+            "struct_count": 4,
+            "async_fn_count": 0,
+            "test_count": 6,
+            "morpheme_usage": {
+              "tau": 5,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 2,
+              "coalesce": 8
+            },
+            "evidentiality_usage": {
+              "untrusted": 6,
+              "verified": 110,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 8,
+              "avg_nesting_depth": 2.2654690618762476,
+              "cyclomatic_complexity": 32,
+              "match_arms": 15,
+              "error_handling_points": 37
+            }
+          }
+        ]
+      },
+      "server": {
+        "total_lines": 693,
+        "code_lines": 536,
+        "file_count": 3,
+        "function_count": 27,
+        "description": "HTTP server with OpenAI API",
+        "total_morpheme_usage": 43,
+        "avg_complexity": 9.333333333333334,
+        "files": [
+          {
+            "path": "src/server/server.sigil",
+            "total_lines": 432,
+            "code_lines": 338,
+            "function_count": 24,
+            "struct_count": 8,
+            "async_fn_count": 10,
+            "test_count": 1,
+            "morpheme_usage": {
+              "tau": 8,
+              "phi": 0,
+              "sigma": 4,
+              "rho": 0,
+              "await": 18,
+              "map_err": 3,
+              "collect": 1,
+              "coalesce": 9
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 33,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 9,
+              "avg_nesting_depth": 2.044378698224852,
+              "cyclomatic_complexity": 26,
+              "match_arms": 24,
+              "error_handling_points": 32
+            }
+          },
+          {
+            "path": "src/server/mod.sigil",
+            "total_lines": 26,
+            "code_lines": 8,
+            "function_count": 0,
+            "struct_count": 0,
+            "async_fn_count": 0,
+            "test_count": 0,
+            "morpheme_usage": {
+              "tau": 0,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 0,
+              "coalesce": 0
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 0,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 1,
+              "avg_nesting_depth": 0.5,
+              "cyclomatic_complexity": 1,
+              "match_arms": 0,
+              "error_handling_points": 0
+            }
+          },
+          {
+            "path": "src/server/openai.sigil",
+            "total_lines": 235,
+            "code_lines": 190,
+            "function_count": 3,
+            "struct_count": 18,
+            "async_fn_count": 0,
+            "test_count": 2,
+            "morpheme_usage": {
+              "tau": 0,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 0,
+              "coalesce": 0
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 6,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 2,
+              "avg_nesting_depth": 0.8315789473684211,
+              "cyclomatic_complexity": 1,
+              "match_arms": 0,
+              "error_handling_points": 25
+            }
+          }
+        ]
+      },
+      "dantalion": {
+        "total_lines": 392,
+        "code_lines": 281,
+        "file_count": 4,
+        "function_count": 37,
+        "description": "Observability and tracing",
+        "total_morpheme_usage": 1,
+        "avg_complexity": 3.75,
+        "files": [
+          {
+            "path": "src/dantalion/metrics.sigil",
+            "total_lines": 61,
+            "code_lines": 41,
+            "function_count": 9,
+            "struct_count": 3,
+            "async_fn_count": 0,
+            "test_count": 0,
+            "morpheme_usage": {
+              "tau": 0,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 0,
+              "coalesce": 0
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 1,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 2,
+              "avg_nesting_depth": 0.975609756097561,
+              "cyclomatic_complexity": 1,
+              "match_arms": 0,
+              "error_handling_points": 0
+            }
+          },
+          {
+            "path": "src/dantalion/logging.sigil",
+            "total_lines": 27,
+            "code_lines": 17,
+            "function_count": 1,
+            "struct_count": 0,
+            "async_fn_count": 0,
+            "test_count": 0,
+            "morpheme_usage": {
+              "tau": 0,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 0,
+              "coalesce": 1
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 1,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 2,
+              "avg_nesting_depth": 1.411764705882353,
+              "cyclomatic_complexity": 2,
+              "match_arms": 0,
+              "error_handling_points": 1
+            }
+          },
+          {
+            "path": "src/dantalion/tracing_config.sigil",
+            "total_lines": 214,
+            "code_lines": 165,
+            "function_count": 20,
+            "struct_count": 4,
+            "async_fn_count": 0,
+            "test_count": 2,
+            "morpheme_usage": {
+              "tau": 0,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 0,
+              "coalesce": 0
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 14,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 4,
+              "avg_nesting_depth": 1.7212121212121212,
+              "cyclomatic_complexity": 11,
+              "match_arms": 0,
+              "error_handling_points": 8
+            }
+          },
+          {
+            "path": "src/dantalion/mod.sigil",
+            "total_lines": 90,
+            "code_lines": 58,
+            "function_count": 7,
+            "struct_count": 2,
+            "async_fn_count": 0,
+            "test_count": 0,
+            "morpheme_usage": {
+              "tau": 0,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 0,
+              "coalesce": 0
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 0,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 3,
+              "avg_nesting_depth": 1.3275862068965518,
+              "cyclomatic_complexity": 1,
+              "match_arms": 0,
+              "error_handling_points": 4
+            }
+          }
+        ]
+      },
+      "malphas": {
+        "total_lines": 922,
+        "code_lines": 656,
+        "file_count": 4,
+        "function_count": 77,
+        "description": "Request routing and scheduling",
+        "total_morpheme_usage": 63,
+        "avg_complexity": 11.25,
+        "files": [
+          {
+            "path": "src/malphas/scheduler.sigil",
+            "total_lines": 282,
+            "code_lines": 206,
+            "function_count": 21,
+            "struct_count": 5,
+            "async_fn_count": 2,
+            "test_count": 2,
+            "morpheme_usage": {
+              "tau": 1,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 1,
+              "await": 1,
+              "map_err": 0,
+              "collect": 0,
+              "coalesce": 0
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 4,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 4,
+              "avg_nesting_depth": 1.825242718446602,
+              "cyclomatic_complexity": 18,
+              "match_arms": 7,
+              "error_handling_points": 1
+            }
+          },
+          {
+            "path": "src/malphas/registry.sigil",
+            "total_lines": 241,
+            "code_lines": 172,
+            "function_count": 33,
+            "struct_count": 4,
+            "async_fn_count": 0,
+            "test_count": 2,
+            "morpheme_usage": {
+              "tau": 5,
+              "phi": 2,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 4,
+              "coalesce": 1
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 3,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 3,
+              "avg_nesting_depth": 1.4651162790697674,
+              "cyclomatic_complexity": 6,
+              "match_arms": 0,
+              "error_handling_points": 3
+            }
+          },
+          {
+            "path": "src/malphas/router.sigil",
+            "total_lines": 328,
+            "code_lines": 240,
+            "function_count": 17,
+            "struct_count": 1,
+            "async_fn_count": 0,
+            "test_count": 2,
+            "morpheme_usage": {
+              "tau": 13,
+              "phi": 6,
+              "sigma": 0,
+              "rho": 10,
+              "await": 0,
+              "map_err": 0,
+              "collect": 8,
+              "coalesce": 10
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 5,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 5,
+              "avg_nesting_depth": 2.2,
+              "cyclomatic_complexity": 19,
+              "match_arms": 14,
+              "error_handling_points": 26
+            }
+          },
+          {
+            "path": "src/malphas/mod.sigil",
+            "total_lines": 71,
+            "code_lines": 38,
+            "function_count": 6,
+            "struct_count": 1,
+            "async_fn_count": 1,
+            "test_count": 0,
+            "morpheme_usage": {
+              "tau": 0,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 1,
+              "map_err": 0,
+              "collect": 0,
+              "coalesce": 0
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 0,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 3,
+              "avg_nesting_depth": 1.236842105263158,
+              "cyclomatic_complexity": 2,
+              "match_arms": 0,
+              "error_handling_points": 3
+            }
+          }
+        ]
+      },
+      "stolas": {
+        "total_lines": 894,
+        "code_lines": 626,
+        "file_count": 5,
+        "function_count": 69,
+        "description": "RAG (Retrieval Augmented Generation)",
+        "total_morpheme_usage": 94,
+        "avg_complexity": 8.8,
+        "files": [
+          {
+            "path": "src/stolas/chunker.sigil",
+            "total_lines": 165,
+            "code_lines": 122,
+            "function_count": 7,
+            "struct_count": 2,
+            "async_fn_count": 0,
+            "test_count": 0,
+            "morpheme_usage": {
+              "tau": 1,
+              "phi": 1,
+              "sigma": 1,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 3,
+              "coalesce": 1
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 1,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 6,
+              "avg_nesting_depth": 2.6557377049180326,
+              "cyclomatic_complexity": 13,
+              "match_arms": 0,
+              "error_handling_points": 2
+            }
+          },
+          {
+            "path": "src/stolas/embedding.sigil",
+            "total_lines": 237,
+            "code_lines": 170,
+            "function_count": 29,
+            "struct_count": 4,
+            "async_fn_count": 7,
+            "test_count": 1,
+            "morpheme_usage": {
+              "tau": 10,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 6,
+              "await": 6,
+              "map_err": 1,
+              "collect": 4,
+              "coalesce": 2
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 5,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 6,
+              "avg_nesting_depth": 1.5176470588235293,
+              "cyclomatic_complexity": 13,
+              "match_arms": 0,
+              "error_handling_points": 14
+            }
+          },
+          {
+            "path": "src/stolas/mod.sigil",
+            "total_lines": 30,
+            "code_lines": 11,
+            "function_count": 0,
+            "struct_count": 0,
+            "async_fn_count": 0,
+            "test_count": 0,
+            "morpheme_usage": {
+              "tau": 0,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 0,
+              "coalesce": 0
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 0,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 1,
+              "avg_nesting_depth": 0.2727272727272727,
+              "cyclomatic_complexity": 1,
+              "match_arms": 0,
+              "error_handling_points": 1
+            }
+          },
+          {
+            "path": "src/stolas/store.sigil",
+            "total_lines": 169,
+            "code_lines": 115,
+            "function_count": 16,
+            "struct_count": 4,
+            "async_fn_count": 11,
+            "test_count": 0,
+            "morpheme_usage": {
+              "tau": 6,
+              "phi": 1,
+              "sigma": 1,
+              "rho": 4,
+              "await": 3,
+              "map_err": 0,
+              "collect": 2,
+              "coalesce": 2
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 3,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 4,
+              "avg_nesting_depth": 1.2869565217391303,
+              "cyclomatic_complexity": 6,
+              "match_arms": 0,
+              "error_handling_points": 17
+            }
+          },
+          {
+            "path": "src/stolas/rag.sigil",
+            "total_lines": 293,
+            "code_lines": 208,
+            "function_count": 17,
+            "struct_count": 4,
+            "async_fn_count": 8,
+            "test_count": 0,
+            "morpheme_usage": {
+              "tau": 9,
+              "phi": 0,
+              "sigma": 2,
+              "rho": 3,
+              "await": 14,
+              "map_err": 0,
+              "collect": 6,
+              "coalesce": 5
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 13,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 5,
+              "avg_nesting_depth": 1.9519230769230769,
+              "cyclomatic_complexity": 11,
+              "match_arms": 0,
+              "error_handling_points": 21
+            }
+          }
+        ]
+      },
+      "abaddon": {
+        "total_lines": 7307,
+        "code_lines": 4983,
+        "file_count": 16,
+        "function_count": 423,
+        "description": "Inference engine with LLM backends",
+        "total_morpheme_usage": 450,
+        "avg_complexity": 17.75,
+        "files": [
+          {
+            "path": "src/abaddon/scheduler.sigil",
+            "total_lines": 791,
+            "code_lines": 543,
+            "function_count": 34,
+            "struct_count": 7,
+            "async_fn_count": 13,
+            "test_count": 3,
+            "morpheme_usage": {
+              "tau": 5,
+              "phi": 6,
+              "sigma": 0,
+              "rho": 4,
+              "await": 36,
+              "map_err": 0,
+              "collect": 2,
+              "coalesce": 1
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 24,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 6,
+              "avg_nesting_depth": 2.3259668508287294,
+              "cyclomatic_complexity": 42,
+              "match_arms": 6,
+              "error_handling_points": 4
+            }
+          },
+          {
+            "path": "src/abaddon/config.sigil",
+            "total_lines": 228,
+            "code_lines": 166,
+            "function_count": 20,
+            "struct_count": 4,
+            "async_fn_count": 0,
+            "test_count": 3,
+            "morpheme_usage": {
+              "tau": 0,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 0,
+              "coalesce": 5
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 7,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 3,
+              "avg_nesting_depth": 1.5662650602409638,
+              "cyclomatic_complexity": 3,
+              "match_arms": 2,
+              "error_handling_points": 18
+            }
+          },
+          {
+            "path": "src/abaddon/loader.sigil",
+            "total_lines": 368,
+            "code_lines": 266,
+            "function_count": 19,
+            "struct_count": 3,
+            "async_fn_count": 0,
+            "test_count": 0,
+            "morpheme_usage": {
+              "tau": 20,
+              "phi": 3,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 9,
+              "collect": 7,
+              "coalesce": 7
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 24,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 4,
+              "avg_nesting_depth": 2.026315789473684,
+              "cyclomatic_complexity": 22,
+              "match_arms": 10,
+              "error_handling_points": 63
+            }
+          },
+          {
+            "path": "src/abaddon/kv_cache.sigil",
+            "total_lines": 183,
+            "code_lines": 127,
+            "function_count": 13,
+            "struct_count": 3,
+            "async_fn_count": 0,
+            "test_count": 3,
+            "morpheme_usage": {
+              "tau": 1,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 3,
+              "coalesce": 1
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 6,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 3,
+              "avg_nesting_depth": 1.7165354330708662,
+              "cyclomatic_complexity": 5,
+              "match_arms": 0,
+              "error_handling_points": 3
+            }
+          },
+          {
+            "path": "src/abaddon/engine.sigil",
+            "total_lines": 461,
+            "code_lines": 323,
+            "function_count": 19,
+            "struct_count": 2,
+            "async_fn_count": 7,
+            "test_count": 1,
+            "morpheme_usage": {
+              "tau": 3,
+              "phi": 1,
+              "sigma": 0,
+              "rho": 0,
+              "await": 1,
+              "map_err": 1,
+              "collect": 0,
+              "coalesce": 24
+            },
+            "evidentiality_usage": {
+              "untrusted": 6,
+              "verified": 1,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 6,
+              "avg_nesting_depth": 2.526315789473684,
+              "cyclomatic_complexity": 15,
+              "match_arms": 17,
+              "error_handling_points": 69
+            }
+          },
+          {
+            "path": "src/abaddon/sampler.sigil",
+            "total_lines": 211,
+            "code_lines": 137,
+            "function_count": 16,
+            "struct_count": 1,
+            "async_fn_count": 0,
+            "test_count": 4,
+            "morpheme_usage": {
+              "tau": 6,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 3,
+              "await": 0,
+              "map_err": 0,
+              "collect": 0,
+              "coalesce": 2
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 6,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 4,
+              "avg_nesting_depth": 1.927007299270073,
+              "cyclomatic_complexity": 12,
+              "match_arms": 2,
+              "error_handling_points": 3
+            }
+          },
+          {
+            "path": "src/abaddon/speculative.sigil",
+            "total_lines": 1001,
+            "code_lines": 695,
+            "function_count": 37,
+            "struct_count": 8,
+            "async_fn_count": 15,
+            "test_count": 3,
+            "morpheme_usage": {
+              "tau": 2,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 26,
+              "map_err": 0,
+              "collect": 1,
+              "coalesce": 5
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 7,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 6,
+              "avg_nesting_depth": 2.4071942446043164,
+              "cyclomatic_complexity": 53,
+              "match_arms": 7,
+              "error_handling_points": 94
+            }
+          },
+          {
+            "path": "src/abaddon/gguf.sigil",
+            "total_lines": 301,
+            "code_lines": 217,
+            "function_count": 11,
+            "struct_count": 3,
+            "async_fn_count": 0,
+            "test_count": 1,
+            "morpheme_usage": {
+              "tau": 9,
+              "phi": 2,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 2,
+              "collect": 2,
+              "coalesce": 21
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 26,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 7,
+              "avg_nesting_depth": 2.313364055299539,
+              "cyclomatic_complexity": 9,
+              "match_arms": 19,
+              "error_handling_points": 38
+            }
+          },
+          {
+            "path": "src/abaddon/kernels.sigil",
+            "total_lines": 755,
+            "code_lines": 480,
+            "function_count": 34,
+            "struct_count": 7,
+            "async_fn_count": 0,
+            "test_count": 4,
+            "morpheme_usage": {
+              "tau": 2,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 2,
+              "coalesce": 6
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 13,
+              "inferential": 2
+            },
+            "complexity": {
+              "max_nesting_depth": 5,
+              "avg_nesting_depth": 1.84375,
+              "cyclomatic_complexity": 19,
+              "match_arms": 0,
+              "error_handling_points": 146
+            }
+          },
+          {
+            "path": "src/abaddon/mod.sigil",
+            "total_lines": 66,
+            "code_lines": 28,
+            "function_count": 0,
+            "struct_count": 0,
+            "async_fn_count": 0,
+            "test_count": 0,
+            "morpheme_usage": {
+              "tau": 0,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 0,
+              "coalesce": 0
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 0,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 0,
+              "avg_nesting_depth": 0.0,
+              "cyclomatic_complexity": 1,
+              "match_arms": 0,
+              "error_handling_points": 0
+            }
+          },
+          {
+            "path": "src/abaddon/tokenizer.sigil",
+            "total_lines": 136,
+            "code_lines": 82,
+            "function_count": 11,
+            "struct_count": 1,
+            "async_fn_count": 0,
+            "test_count": 1,
+            "morpheme_usage": {
+              "tau": 2,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 3,
+              "collect": 0,
+              "coalesce": 6
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 1,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 4,
+              "avg_nesting_depth": 1.8170731707317074,
+              "cyclomatic_complexity": 3,
+              "match_arms": 4,
+              "error_handling_points": 18
+            }
+          },
+          {
+            "path": "src/abaddon/backend.sigil",
+            "total_lines": 831,
+            "code_lines": 597,
+            "function_count": 125,
+            "struct_count": 9,
+            "async_fn_count": 0,
+            "test_count": 7,
+            "morpheme_usage": {
+              "tau": 42,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 2,
+              "await": 0,
+              "map_err": 134,
+              "collect": 1,
+              "coalesce": 3
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 14,
+              "inferential": 2
+            },
+            "complexity": {
+              "max_nesting_depth": 4,
+              "avg_nesting_depth": 2.1993299832495814,
+              "cyclomatic_complexity": 23,
+              "match_arms": 15,
+              "error_handling_points": 168
+            }
+          },
+          {
+            "path": "src/abaddon/paged_attention.sigil",
+            "total_lines": 789,
+            "code_lines": 526,
+            "function_count": 30,
+            "struct_count": 8,
+            "async_fn_count": 0,
+            "test_count": 4,
+            "morpheme_usage": {
+              "tau": 3,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 3,
+              "coalesce": 8
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 14,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 6,
+              "avg_nesting_depth": 2.216730038022814,
+              "cyclomatic_complexity": 39,
+              "match_arms": 8,
+              "error_handling_points": 58
+            }
+          },
+          {
+            "path": "src/abaddon/quantization.sigil",
+            "total_lines": 784,
+            "code_lines": 515,
+            "function_count": 31,
+            "struct_count": 7,
+            "async_fn_count": 0,
+            "test_count": 5,
+            "morpheme_usage": {
+              "tau": 1,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 1,
+              "await": 0,
+              "map_err": 0,
+              "collect": 0,
+              "coalesce": 0
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 12,
+              "inferential": 2
+            },
+            "complexity": {
+              "max_nesting_depth": 5,
+              "avg_nesting_depth": 2.2135922330097086,
+              "cyclomatic_complexity": 26,
+              "match_arms": 19,
+              "error_handling_points": 111
+            }
+          },
+          {
+            "path": "src/abaddon/models/llama.sigil",
+            "total_lines": 396,
+            "code_lines": 279,
+            "function_count": 23,
+            "struct_count": 7,
+            "async_fn_count": 0,
+            "test_count": 0,
+            "morpheme_usage": {
+              "tau": 5,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 4,
+              "coalesce": 1
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 1,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 4,
+              "avg_nesting_depth": 1.6523297491039426,
+              "cyclomatic_complexity": 11,
+              "match_arms": 4,
+              "error_handling_points": 102
+            }
+          },
+          {
+            "path": "src/abaddon/models/mod.sigil",
+            "total_lines": 6,
+            "code_lines": 2,
+            "function_count": 0,
+            "struct_count": 0,
+            "async_fn_count": 0,
+            "test_count": 0,
+            "morpheme_usage": {
+              "tau": 0,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 0,
+              "coalesce": 0
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 0,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 0,
+              "avg_nesting_depth": 0.0,
+              "cyclomatic_complexity": 1,
+              "match_arms": 0,
+              "error_handling_points": 0
+            }
+          }
+        ]
+      },
+      "beleth": {
+        "total_lines": 2071,
+        "code_lines": 1570,
+        "file_count": 5,
+        "function_count": 137,
+        "description": "Agent framework with planning",
+        "total_morpheme_usage": 133,
+        "avg_complexity": 29.4,
+        "files": [
+          {
+            "path": "src/beleth/planner.sigil",
+            "total_lines": 874,
+            "code_lines": 655,
+            "function_count": 41,
+            "struct_count": 6,
+            "async_fn_count": 10,
+            "test_count": 2,
+            "morpheme_usage": {
+              "tau": 9,
+              "phi": 2,
+              "sigma": 10,
+              "rho": 1,
+              "await": 11,
+              "map_err": 0,
+              "collect": 8,
+              "coalesce": 9
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 37,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 6,
+              "avg_nesting_depth": 2.354198473282443,
+              "cyclomatic_complexity": 64,
+              "match_arms": 7,
+              "error_handling_points": 43
+            }
+          },
+          {
+            "path": "src/beleth/memory.sigil",
+            "total_lines": 337,
+            "code_lines": 261,
+            "function_count": 28,
+            "struct_count": 2,
+            "async_fn_count": 4,
+            "test_count": 4,
+            "morpheme_usage": {
+              "tau": 5,
+              "phi": 5,
+              "sigma": 1,
+              "rho": 2,
+              "await": 4,
+              "map_err": 0,
+              "collect": 10,
+              "coalesce": 3
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 21,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 5,
+              "avg_nesting_depth": 1.9425287356321839,
+              "cyclomatic_complexity": 20,
+              "match_arms": 10,
+              "error_handling_points": 13
+            }
+          },
+          {
+            "path": "src/beleth/mod.sigil",
+            "total_lines": 27,
+            "code_lines": 8,
+            "function_count": 0,
+            "struct_count": 0,
+            "async_fn_count": 0,
+            "test_count": 0,
+            "morpheme_usage": {
+              "tau": 0,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 0,
+              "coalesce": 0
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 0,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 0,
+              "avg_nesting_depth": 0.0,
+              "cyclomatic_complexity": 1,
+              "match_arms": 0,
+              "error_handling_points": 2
+            }
+          },
+          {
+            "path": "src/beleth/tool.sigil",
+            "total_lines": 428,
+            "code_lines": 335,
+            "function_count": 45,
+            "struct_count": 7,
+            "async_fn_count": 6,
+            "test_count": 2,
+            "morpheme_usage": {
+              "tau": 3,
+              "phi": 0,
+              "sigma": 6,
+              "rho": 0,
+              "await": 2,
+              "map_err": 0,
+              "collect": 4,
+              "coalesce": 9
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 31,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 6,
+              "avg_nesting_depth": 1.9313432835820896,
+              "cyclomatic_complexity": 35,
+              "match_arms": 21,
+              "error_handling_points": 53
+            }
+          },
+          {
+            "path": "src/beleth/agent.sigil",
+            "total_lines": 405,
+            "code_lines": 311,
+            "function_count": 23,
+            "struct_count": 5,
+            "async_fn_count": 3,
+            "test_count": 3,
+            "morpheme_usage": {
+              "tau": 5,
+              "phi": 0,
+              "sigma": 3,
+              "rho": 0,
+              "await": 4,
+              "map_err": 0,
+              "collect": 0,
+              "coalesce": 17
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 22,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 6,
+              "avg_nesting_depth": 2.2282958199356915,
+              "cyclomatic_complexity": 27,
+              "match_arms": 14,
+              "error_handling_points": 35
+            }
+          }
+        ]
+      },
+      "asmodeus": {
+        "total_lines": 788,
+        "code_lines": 587,
+        "file_count": 4,
+        "function_count": 51,
+        "description": "Fine-tuning with LoRA",
+        "total_morpheme_usage": 43,
+        "avg_complexity": 10.0,
+        "files": [
+          {
+            "path": "src/asmodeus/config.sigil",
+            "total_lines": 29,
+            "code_lines": 19,
+            "function_count": 0,
+            "struct_count": 2,
+            "async_fn_count": 0,
+            "test_count": 0,
+            "morpheme_usage": {
+              "tau": 0,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 0,
+              "coalesce": 0
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 0,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 1,
+              "avg_nesting_depth": 0.7368421052631579,
+              "cyclomatic_complexity": 1,
+              "match_arms": 0,
+              "error_handling_points": 1
+            }
+          },
+          {
+            "path": "src/asmodeus/lora.sigil",
+            "total_lines": 221,
+            "code_lines": 161,
+            "function_count": 15,
+            "struct_count": 3,
+            "async_fn_count": 0,
+            "test_count": 2,
+            "morpheme_usage": {
+              "tau": 3,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 1,
+              "await": 0,
+              "map_err": 2,
+              "collect": 1,
+              "coalesce": 4
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 10,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 4,
+              "avg_nesting_depth": 1.8695652173913044,
+              "cyclomatic_complexity": 12,
+              "match_arms": 7,
+              "error_handling_points": 31
+            }
+          },
+          {
+            "path": "src/asmodeus/trainer.sigil",
+            "total_lines": 514,
+            "code_lines": 401,
+            "function_count": 36,
+            "struct_count": 8,
+            "async_fn_count": 7,
+            "test_count": 2,
+            "morpheme_usage": {
+              "tau": 4,
+              "phi": 0,
+              "sigma": 1,
+              "rho": 0,
+              "await": 3,
+              "map_err": 16,
+              "collect": 5,
+              "coalesce": 3
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 16,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 6,
+              "avg_nesting_depth": 2.0199501246882794,
+              "cyclomatic_complexity": 26,
+              "match_arms": 2,
+              "error_handling_points": 60
+            }
+          },
+          {
+            "path": "src/asmodeus/mod.sigil",
+            "total_lines": 24,
+            "code_lines": 6,
+            "function_count": 0,
+            "struct_count": 0,
+            "async_fn_count": 0,
+            "test_count": 0,
+            "morpheme_usage": {
+              "tau": 0,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 0,
+              "coalesce": 0
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 0,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 0,
+              "avg_nesting_depth": 0.0,
+              "cyclomatic_complexity": 1,
+              "match_arms": 0,
+              "error_handling_points": 0
+            }
+          }
+        ]
+      },
+      "core": {
+        "total_lines": 1539,
+        "code_lines": 1067,
+        "file_count": 8,
+        "function_count": 111,
+        "description": "Core types, errors, requests, responses",
+        "total_morpheme_usage": 16,
+        "avg_complexity": 4.875,
+        "files": [
+          {
+            "path": "src/core/streaming.sigil",
+            "total_lines": 269,
+            "code_lines": 164,
+            "function_count": 19,
+            "struct_count": 5,
+            "async_fn_count": 5,
+            "test_count": 2,
+            "morpheme_usage": {
+              "tau": 7,
+              "phi": 2,
+              "sigma": 0,
+              "rho": 0,
+              "await": 6,
+              "map_err": 0,
+              "collect": 1,
+              "coalesce": 0
+            },
+            "evidentiality_usage": {
+              "untrusted": 13,
+              "verified": 13,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 3,
+              "avg_nesting_depth": 1.5426829268292683,
+              "cyclomatic_complexity": 3,
+              "match_arms": 0,
+              "error_handling_points": 15
+            }
+          },
+          {
+            "path": "src/core/response.sigil",
+            "total_lines": 134,
+            "code_lines": 94,
+            "function_count": 5,
+            "struct_count": 7,
+            "async_fn_count": 0,
+            "test_count": 3,
+            "morpheme_usage": {
+              "tau": 0,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 0,
+              "coalesce": 0
+            },
+            "evidentiality_usage": {
+              "untrusted": 2,
+              "verified": 4,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 3,
+              "avg_nesting_depth": 1.1595744680851063,
+              "cyclomatic_complexity": 3,
+              "match_arms": 4,
+              "error_handling_points": 7
+            }
+          },
+          {
+            "path": "src/core/request.sigil",
+            "total_lines": 216,
+            "code_lines": 156,
+            "function_count": 19,
+            "struct_count": 2,
+            "async_fn_count": 0,
+            "test_count": 3,
+            "morpheme_usage": {
+              "tau": 0,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 0,
+              "coalesce": 0
+            },
+            "evidentiality_usage": {
+              "untrusted": 11,
+              "verified": 8,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 3,
+              "avg_nesting_depth": 1.4487179487179487,
+              "cyclomatic_complexity": 7,
+              "match_arms": 4,
+              "error_handling_points": 4
+            }
+          },
+          {
+            "path": "src/core/model.sigil",
+            "total_lines": 307,
+            "code_lines": 235,
+            "function_count": 23,
+            "struct_count": 2,
+            "async_fn_count": 0,
+            "test_count": 3,
+            "morpheme_usage": {
+              "tau": 0,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 0,
+              "coalesce": 0
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 11,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 4,
+              "avg_nesting_depth": 1.5872340425531914,
+              "cyclomatic_complexity": 4,
+              "match_arms": 8,
+              "error_handling_points": 11
+            }
+          },
+          {
+            "path": "src/core/mod.sigil",
+            "total_lines": 10,
+            "code_lines": 7,
+            "function_count": 0,
+            "struct_count": 0,
+            "async_fn_count": 0,
+            "test_count": 0,
+            "morpheme_usage": {
+              "tau": 0,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 0,
+              "coalesce": 0
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 0,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 0,
+              "avg_nesting_depth": 0.0,
+              "cyclomatic_complexity": 1,
+              "match_arms": 0,
+              "error_handling_points": 0
+            }
+          },
+          {
+            "path": "src/core/sampling.sigil",
+            "total_lines": 239,
+            "code_lines": 159,
+            "function_count": 20,
+            "struct_count": 1,
+            "async_fn_count": 0,
+            "test_count": 7,
+            "morpheme_usage": {
+              "tau": 0,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 0,
+              "coalesce": 0
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 19,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 3,
+              "avg_nesting_depth": 1.830188679245283,
+              "cyclomatic_complexity": 9,
+              "match_arms": 0,
+              "error_handling_points": 4
+            }
+          },
+          {
+            "path": "src/core/error.sigil",
+            "total_lines": 172,
+            "code_lines": 111,
+            "function_count": 10,
+            "struct_count": 0,
+            "async_fn_count": 0,
+            "test_count": 4,
+            "morpheme_usage": {
+              "tau": 0,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 0,
+              "coalesce": 0
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 23,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 3,
+              "avg_nesting_depth": 1.8288288288288288,
+              "cyclomatic_complexity": 6,
+              "match_arms": 4,
+              "error_handling_points": 39
+            }
+          },
+          {
+            "path": "src/core/types.sigil",
+            "total_lines": 192,
+            "code_lines": 141,
+            "function_count": 15,
+            "struct_count": 4,
+            "async_fn_count": 0,
+            "test_count": 4,
+            "morpheme_usage": {
+              "tau": 0,
+              "phi": 0,
+              "sigma": 0,
+              "rho": 0,
+              "await": 0,
+              "map_err": 0,
+              "collect": 0,
+              "coalesce": 0
+            },
+            "evidentiality_usage": {
+              "untrusted": 0,
+              "verified": 9,
+              "inferential": 0
+            },
+            "complexity": {
+              "max_nesting_depth": 3,
+              "avg_nesting_depth": 1.049645390070922,
+              "cyclomatic_complexity": 6,
+              "match_arms": 0,
+              "error_handling_points": 4
+            }
+          }
+        ]
+      }
+    }
+  },
+  "performance": {
+    "compilation": {
+      "rust_release_time_s": 146.45,
+      "sigil_transpile_time_s": 12.3,
+      "rust_incremental_time_s": 8.5,
+      "sigil_incremental_time_s": 1.2
+    },
+    "memory": {
+      "rust_binary_mb": 15.2,
+      "sigil_binary_mb": 14.8
+    },
+    "developer_experience": {
+      "avg_chars_per_operation": {
+        "rust": {
+          "map_chain": 25,
+          "error_handling": 35,
+          "async_await": 12,
+          "option_unwrap": 22
+        },
+        "sigil": {
+          "map_chain": 8,
+          "error_handling": 15,
+          "async_await": 7,
+          "option_unwrap": 6
+        }
+      },
+      "estimated_typing_reduction": 0.42
+    }
+  }
+}

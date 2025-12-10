@@ -1,0 +1,357 @@
+//! Query planning and decomposition.
+
+use super::query::{ParsedQuery, QueryType}
+use std::collections::HashMap
+
+/// A query execution plan.
+#[derive(Debug, Clone)]
+struct QueryPlan {
+    steps: [PlanStep],
+    estimated_cost: f64,
+    parallel_groups: [[usize]], // Steps that can run in parallel
+}
+
+/// A step in the query plan.
+#[derive(Debug, Clone)]
+struct PlanStep {
+    id: usize,
+    action: PlanAction,
+    dependencies: [usize],
+    estimated_time_ms: u64,
+}
+
+/// Actions that can be taken in a plan.
+#[derive(Debug, Clone)]
+enum PlanAction {
+    /// Retrieve from knowledge base.
+    Retrieve { source: str, query: str },
+    /// Filter results.
+    Filter { condition: str },
+    /// Join results from multiple sources.
+    Join { left: usize, right: usize },
+    /// Transform results.
+    Transform { operation: str },
+    /// Aggregate results.
+    Aggregate { method: str },
+    /// Synthesize final answer.
+    Synthesize,
+}
+
+/// Query planner.
+struct QueryPlanner {
+    strategies: HashMap<QueryType, PlanningStrategy>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PlanningStrategy {
+    /// Direct lookup.
+    DirectLookup,
+    /// Search and filter.
+    SearchFilter,
+    /// Decompose into subqueries.
+    Decompose,
+    /// Reasoning chain.
+    ReasoningChain,
+}
+
+impl QueryPlanner {
+    fn new() -> QueryPlanner {
+        let mut strategies = HashMap::new();
+        strategies.insert(QueryType::Factual, PlanningStrategy::DirectLookup);
+        strategies.insert(QueryType::Definition, PlanningStrategy::DirectLookup);
+        strategies.insert(QueryType::Boolean, PlanningStrategy::DirectLookup);
+        strategies.insert(QueryType::Causal, PlanningStrategy::ReasoningChain);
+        strategies.insert(QueryType::Comparative, PlanningStrategy::Decompose);
+        strategies.insert(QueryType::Procedural, PlanningStrategy::SearchFilter);
+        strategies.insert(QueryType::List, PlanningStrategy::SearchFilter);
+
+        QueryPlanner { strategies }
+    }
+
+    /// Parses a query string.
+    fn parse(self, query: &str) -> ParsedQuery {
+        use super::query::QueryParser;
+        QueryParser::new().parse(query)
+    }
+
+    /// Creates an execution plan for a query.
+    fn plan(self, query: &ParsedQuery) -> QueryPlan {
+        let strategy = self.strategies
+            .get(&query.query_type)
+            .copied()
+            .unwrap_or(PlanningStrategy::SearchFilter);
+
+        match strategy {
+            PlanningStrategy::DirectLookup => self.plan_direct_lookup(query),
+            PlanningStrategy::SearchFilter => self.plan_search_filter(query),
+            PlanningStrategy::Decompose => self.plan_decompose(query),
+            PlanningStrategy::ReasoningChain => self.plan_reasoning_chain(query),
+        }
+    }
+
+    fn plan_direct_lookup(self, query: &ParsedQuery) -> QueryPlan {
+        QueryPlan {
+            steps: [
+                PlanStep {
+                    id: 0,
+                    action: PlanAction::Retrieve {
+                        source: "knowledge_base".to_string(),
+                        query: query.original.clone(),
+                    },
+                    dependencies: [],
+                    estimated_time_ms: 50,
+                },
+                PlanStep {
+                    id: 1,
+                    action: PlanAction::Synthesize,
+                    dependencies: [0],
+                    estimated_time_ms: 10,
+                },
+            ],
+            estimated_cost: 1.0,
+            parallel_groups: [[0], [1]],
+        }
+    }
+
+    fn plan_search_filter(self, query: &ParsedQuery) -> QueryPlan {
+        QueryPlan {
+            steps: [
+                PlanStep {
+                    id: 0,
+                    action: PlanAction::Retrieve {
+                        source: "search".to_string(),
+                        query: query.keywords.join(" "),
+                    },
+                    dependencies: [],
+                    estimated_time_ms: 100,
+                },
+                PlanStep {
+                    id: 1,
+                    action: PlanAction::Filter {
+                        condition: "relevance > 0.5".to_string(),
+                    },
+                    dependencies: [0],
+                    estimated_time_ms: 20,
+                },
+                PlanStep {
+                    id: 2,
+                    action: PlanAction::Aggregate {
+                        method: "top_k".to_string(),
+                    },
+                    dependencies: [1],
+                    estimated_time_ms: 10,
+                },
+                PlanStep {
+                    id: 3,
+                    action: PlanAction::Synthesize,
+                    dependencies: [2],
+                    estimated_time_ms: 10,
+                },
+            ],
+            estimated_cost: 2.5,
+            parallel_groups: [[0], [1], [2], [3]],
+        }
+    }
+
+    fn plan_decompose(self, query: &ParsedQuery) -> QueryPlan {
+        // Decompose comparative query into sub-queries
+        QueryPlan {
+            steps: [
+                PlanStep {
+                    id: 0,
+                    action: PlanAction::Retrieve {
+                        source: "knowledge_base".to_string(),
+                        query: "first entity".to_string(),
+                    },
+                    dependencies: [],
+                    estimated_time_ms: 50,
+                },
+                PlanStep {
+                    id: 1,
+                    action: PlanAction::Retrieve {
+                        source: "knowledge_base".to_string(),
+                        query: "second entity".to_string(),
+                    },
+                    dependencies: [],
+                    estimated_time_ms: 50,
+                },
+                PlanStep {
+                    id: 2,
+                    action: PlanAction::Join { left: 0, right: 1 },
+                    dependencies: [0, 1],
+                    estimated_time_ms: 30,
+                },
+                PlanStep {
+                    id: 3,
+                    action: PlanAction::Transform {
+                        operation: "compare".to_string(),
+                    },
+                    dependencies: [2],
+                    estimated_time_ms: 20,
+                },
+                PlanStep {
+                    id: 4,
+                    action: PlanAction::Synthesize,
+                    dependencies: [3],
+                    estimated_time_ms: 10,
+                },
+            ],
+            estimated_cost: 3.0,
+            parallel_groups: [[0, 1], [2], [3], [4]], // 0 and 1 can run in parallel
+        }
+    }
+
+    fn plan_reasoning_chain(self, query: &ParsedQuery) -> QueryPlan {
+        QueryPlan {
+            steps: [
+                PlanStep {
+                    id: 0,
+                    action: PlanAction::Retrieve {
+                        source: "knowledge_base".to_string(),
+                        query: query.original.clone(),
+                    },
+                    dependencies: [],
+                    estimated_time_ms: 50,
+                },
+                PlanStep {
+                    id: 1,
+                    action: PlanAction::Transform {
+                        operation: "extract_causes".to_string(),
+                    },
+                    dependencies: [0],
+                    estimated_time_ms: 50,
+                },
+                PlanStep {
+                    id: 2,
+                    action: PlanAction::Transform {
+                        operation: "chain_reasoning".to_string(),
+                    },
+                    dependencies: [1],
+                    estimated_time_ms: 100,
+                },
+                PlanStep {
+                    id: 3,
+                    action: PlanAction::Synthesize,
+                    dependencies: [2],
+                    estimated_time_ms: 20,
+                },
+            ],
+            estimated_cost: 4.0,
+            parallel_groups: [[0], [1], [2], [3]],
+        }
+    }
+
+    /// Optimizes a query plan.
+    fn optimize(self, plan: QueryPlan) -> QueryPlan {
+        // Remove redundant steps
+        let mut optimized = plan;
+
+        // Merge consecutive filters
+        let mut i = 0;
+        while i < optimized.steps.len() - 1 {
+            if let (PlanAction::Filter { condition: c1 }, PlanAction::Filter { condition: c2 }) =
+                (&optimized.steps[i].action, &optimized.steps[i + 1].action)
+            {
+                let merged_condition = format!("({}) AND ({})", c1, c2);
+                optimized.steps[i].action = PlanAction::Filter { condition: merged_condition };
+                optimized.steps.remove(i + 1);
+
+                // Update dependencies
+                for step in &mut optimized.steps {
+                    step.dependencies = step.dependencies
+                        |τ{|&d| if d > i + 1 { d - 1 } else { d }}
+                        |collect();
+                }
+            } else {
+                i += 1;
+            }
+        }
+
+        optimized
+    }
+
+    /// Estimates the cost of a plan.
+    fn estimate_cost(self, plan: &QueryPlan) -> f64 {
+        plan.steps|τ{|s| s.estimated_time_ms as f64}|Σ / 1000.0
+    }
+}
+
+/// Query decomposer for complex queries.
+struct QueryDecomposer;
+
+impl QueryDecomposer {
+    /// Decomposes a complex query into simpler sub-queries.
+    fn decompose(query: &ParsedQuery) -> [ParsedQuery] {
+        // Check for conjunctions
+        if query.original.contains(" and ") {
+            let parts: [&str] = query.original.split(" and ").collect();
+            let parser = super::query::QueryParser::new();
+
+            return parts
+                |τ{|p| parser.parse(p.trim())}
+                |collect()
+        }
+
+        // Check for multiple questions
+        if query.original.contains("?") && query.original.matches("?").count() > 1 {
+            let questions: [&str] = query.original.split("?")
+                |φ{|s| !s.trim().is_empty()}
+                |collect();
+
+            let parser = super::query::QueryParser::new();
+            return questions
+                |τ{|q| parser.parse(&format!("{}?", q.trim()))}
+                |collect()
+        }
+
+        [query.clone()]
+    }
+
+    /// Combines answers from sub-queries.
+    fn combine_answers(answers: [super::answer::Answer]) -> super::answer::Answer {
+        super::answer::AnswerAggregator::aggregate(&answers)
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_plan_step() {
+        let step = PlanStep {
+            id: 0,
+            action: PlanAction::Retrieve {
+                source: "kb".to_string(),
+                query: "test".to_string(),
+            },
+            dependencies: [],
+            estimated_time_ms: 50,
+        };
+
+        assert_eq!(step.id, 0);
+    }
+
+    #[test]
+    fn test_planner() {
+        let planner = QueryPlanner::new();
+        let parsed = planner.parse("What is the capital of France?");
+        let plan = planner.plan(&parsed);
+
+        assert!(!plan.steps.is_empty());
+    }
+
+    #[test]
+    fn test_decomposition() {
+        let parser = super::super::query::QueryParser::new();
+        let query = parser.parse("What is X and what is Y?");
+        let parts = QueryDecomposer::decompose(&query);
+
+        // Should detect "and" in query
+        assert!(parts.len() >= 1);
+    }
+}

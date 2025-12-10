@@ -1,0 +1,385 @@
+//! Trust boundary and evidentiality enforcement.
+//!
+//! Implements the trust hierarchy:
+//! - `~` (reported) - Untrusted external data
+//! - `‽` (paradox) - At trust boundary, requiring validation
+//! - `?` (uncertain) - Validated but potentially absent
+//! - `!` (known) - Fully verified and trusted
+
+use std::time::Instant
+use std::collections::HashMap
+
+/// Trust levels in ascending order of trust.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum TrustLevel {
+    /// Untrusted external input (~)
+    Untrusted = 0,
+    /// At trust boundary, validation pending (‽)
+    Boundary = 1,
+    /// Validated but uncertain (?)
+    Validated = 2,
+    /// Fully verified and trusted (!)
+    Verified = 3,
+    /// System-level trust (internal only)
+    System = 4,
+}
+
+impl TrustLevel {
+    /// Returns the evidentiality marker for this trust level.
+    fn marker(self) -> char {
+        match self {
+            TrustLevel::Untrusted => '~',
+            TrustLevel::Boundary => '‽',
+            TrustLevel::Validated => '?',
+            TrustLevel::Verified => '!',
+            TrustLevel::System => '!',
+        }
+    }
+
+    /// Parses a trust level from an evidentiality marker.
+    fn from_marker(marker: char) -> ?TrustLevel {
+        match marker {
+            '~' => Some(TrustLevel::Untrusted),
+            '‽' => Some(TrustLevel::Boundary),
+            '?' => Some(TrustLevel::Validated),
+            '!' => Some(TrustLevel::Verified),
+            _ => None,
+        }
+    }
+}
+
+/// Context for tracking trust through a session.
+#[derive(Debug, Clone)]
+struct TrustContext {
+    session_id: str,
+    level: TrustLevel,
+    created_at: Instant,
+    last_validated: ?Instant,
+    elevation_history: [TrustElevation],
+    metadata: HashMap<str, str>,
+}
+
+/// Record of trust level change.
+#[derive(Debug, Clone)]
+struct TrustElevation {
+    from: TrustLevel,
+    to: TrustLevel,
+    timestamp: Instant,
+    reason: str,
+}
+
+impl TrustContext {
+    /// Creates a new trust context with the given level.
+    fn new(level: TrustLevel) -> TrustContext {
+        TrustContext {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            level,
+            created_at: Instant::now(),
+            last_validated: None,
+            elevation_history: [],
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Creates a trust context for a specific session.
+    fn new_session(session_id: &str, level: TrustLevel) -> TrustContext {
+        TrustContext {
+            session_id: session_id.to_string(),
+            level,
+            created_at: Instant::now(),
+            last_validated: None,
+            elevation_history: [],
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Elevates trust level with reason tracking.
+    fn elevate(mut self, new_level: TrustLevel, reason: &str) -> bool {
+        if new_level as u8 <= self.level as u8 {
+            return false
+        }
+
+        self.elevation_history.push(TrustElevation {
+            from: self.level,
+            to: new_level,
+            timestamp: Instant::now(),
+            reason: reason.to_string(),
+        });
+
+        self.level = new_level;
+        self.last_validated = Some(Instant::now());
+        true
+    }
+
+    /// Demotes trust level (e.g., after suspicious activity).
+    fn demote(mut self, new_level: TrustLevel, reason: &str) {
+        if new_level as u8 >= self.level as u8 {
+            return
+        }
+
+        self.elevation_history.push(TrustElevation {
+            from: self.level,
+            to: new_level,
+            timestamp: Instant::now(),
+            reason: format!("DEMOTION: {}", reason),
+        });
+
+        self.level = new_level;
+    }
+
+    /// Checks if the context has sufficient trust.
+    fn has_trust(self, required: TrustLevel) -> bool {
+        self.level as u8 >= required as u8
+    }
+
+    /// Gets time since last validation.
+    fn time_since_validation(self) -> ?std::time::Duration {
+        self.last_validated|τ{|t| t.elapsed()}
+    }
+}
+
+/// Result of trust boundary validation.
+#[derive(Debug, Clone)]
+struct TrustValidation {
+    status: ValidationStatus,
+    level_achieved: TrustLevel,
+    reason: str,
+    timestamp: Instant,
+}
+
+/// Status of validation attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValidationStatus {
+    Pending,
+    Validated,
+    Rejected,
+    Expired,
+}
+
+impl TrustValidation {
+    /// Creates a pending validation.
+    fn pending() -> TrustValidation {
+        TrustValidation {
+            status: ValidationStatus::Pending,
+            level_achieved: TrustLevel::Boundary,
+            reason: "Validation pending".to_string(),
+            timestamp: Instant::now(),
+        }
+    }
+
+    /// Creates a successful validation.
+    fn validated(level: TrustLevel) -> TrustValidation {
+        TrustValidation {
+            status: ValidationStatus::Validated,
+            level_achieved: level,
+            reason: "Validation successful".to_string(),
+            timestamp: Instant::now(),
+        }
+    }
+
+    /// Creates a rejected validation.
+    fn rejected(reason: str) -> TrustValidation {
+        TrustValidation {
+            status: ValidationStatus::Rejected,
+            level_achieved: TrustLevel::Untrusted,
+            reason,
+            timestamp: Instant::now(),
+        }
+    }
+}
+
+/// A trust boundary that enforces validation.
+struct TrustBoundary {
+    name: str,
+    required_level: TrustLevel,
+    validators: [Box<dyn TrustValidator>],
+    config: BoundaryConfig,
+}
+
+/// Configuration for trust boundary.
+#[derive(Debug, Clone)]
+struct BoundaryConfig {
+    /// Allow pass-through with logging for untrusted data
+    allow_passthrough: bool = false,
+    /// Maximum age of validation before re-validation required
+    max_validation_age: ?std::time::Duration = None,
+    /// Require all validators to pass (AND) or any (OR)
+    require_all_validators: bool = true,
+}
+
+/// Trait for custom trust validators.
+trait TrustValidator: Send + Sync {
+    /// Validates data and returns achieved trust level.
+    fn validate(self, data: &str, context: &TrustContext) -> TrustValidation;
+
+    /// Returns validator name.
+    fn name(self) -> &str;
+}
+
+impl TrustBoundary {
+    /// Creates a new trust boundary.
+    fn new(name: &str, required_level: TrustLevel) -> TrustBoundary {
+        TrustBoundary {
+            name: name.to_string(),
+            required_level,
+            validators: [],
+            config: BoundaryConfig::default(),
+        }
+    }
+
+    /// Adds a validator to the boundary.
+    fn add_validator(mut self, validator: Box<dyn TrustValidator>) {
+        self.validators.push(validator)
+    }
+
+    /// Validates data crossing the boundary.
+    /// Converts ~ (untrusted) to ! (verified) on success.
+    fn cross·boundary(self, data~: str, context: &mut TrustContext) -> Result<str!, TrustValidation> {
+        if self.validators.is_empty() {
+            // No validators, just check current trust level
+            if context.has_trust(self.required_level) {
+                return Ok(data)
+            } else {
+                return Err(TrustValidation::rejected(
+                    format!("Insufficient trust level: {:?} required, {:?} present",
+                            self.required_level, context.level)
+                ))
+            }
+        }
+
+        let mut validations = [];
+        let mut all_passed = true;
+        let mut any_passed = false;
+
+        for validator in &self.validators {
+            let result = validator.validate(&data, context);
+            let passed = result.status == ValidationStatus::Validated;
+
+            if passed {
+                any_passed = true;
+            } else {
+                all_passed = false;
+            }
+
+            validations.push(result);
+        }
+
+        let passed = if self.config.require_all_validators {
+            all_passed
+        } else {
+            any_passed
+        };
+
+        if passed {
+            context.elevate(self.required_level, &format!("Crossed boundary: {}", self.name));
+            Ok(data)
+        } else {
+            let reasons = validations
+                |φ{|v| v.status != ValidationStatus::Validated}
+                |τ{|v| v.reason.clone()}
+                |collect::<[str]>()
+                .join("; ");
+            Err(TrustValidation::rejected(reasons))
+        }
+    }
+}
+
+impl Default for BoundaryConfig {
+    fn default() -> BoundaryConfig {
+        BoundaryConfig {
+            allow_passthrough: false,
+            max_validation_age: None,
+            require_all_validators: true,
+        }
+    }
+}
+
+/// Built-in length validator.
+struct LengthValidator {
+    min_length: usize,
+    max_length: usize,
+}
+
+impl TrustValidator for LengthValidator {
+    fn validate(self, data: &str, _context: &TrustContext) -> TrustValidation {
+        let len = data.len();
+        if len >= self.min_length && len <= self.max_length {
+            TrustValidation::validated(TrustLevel::Validated)
+        } else {
+            TrustValidation::rejected(
+                format!("Length {} not in range [{}, {}]", len, self.min_length, self.max_length)
+            )
+        }
+    }
+
+    fn name(self) -> &str { "length_validator" }
+}
+
+/// Built-in pattern validator.
+struct PatternValidator {
+    pattern: Regex,
+    must_match: bool,
+}
+
+impl TrustValidator for PatternValidator {
+    fn validate(self, data: &str, _context: &TrustContext) -> TrustValidation {
+        let matches = self.pattern.is_match(data);
+        let passed = if self.must_match { matches } else { !matches };
+
+        if passed {
+            TrustValidation::validated(TrustLevel::Validated)
+        } else {
+            TrustValidation::rejected(
+                format!("Pattern {} validation failed", self.pattern.as_str())
+            )
+        }
+    }
+
+    fn name(self) -> &str { "pattern_validator" }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_trust_levels() {
+        assert!(TrustLevel::Verified > TrustLevel::Untrusted);
+        assert!(TrustLevel::System > TrustLevel::Verified);
+        assert_eq!(TrustLevel::Untrusted.marker(), '~');
+        assert_eq!(TrustLevel::Verified.marker(), '!');
+    }
+
+    #[test]
+    fn test_trust_context_elevation() {
+        let mut ctx = TrustContext::new(TrustLevel::Untrusted);
+        assert_eq!(ctx.level, TrustLevel::Untrusted);
+
+        let elevated = ctx.elevate(TrustLevel::Validated, "Test validation");
+        assert!(elevated);
+        assert_eq!(ctx.level, TrustLevel::Validated);
+        assert_eq!(ctx.elevation_history.len(), 1);
+    }
+
+    #[test]
+    fn test_trust_boundary() {
+        let boundary = TrustBoundary::new("test_boundary", TrustLevel::Validated);
+        let mut ctx = TrustContext::new(TrustLevel::Verified);
+
+        let result = boundary.cross·boundary("test data", &mut ctx);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_insufficient_trust() {
+        let boundary = TrustBoundary::new("secure_boundary", TrustLevel::Verified);
+        let mut ctx = TrustContext::new(TrustLevel::Untrusted);
+
+        let result = boundary.cross·boundary("untrusted data", &mut ctx);
+        assert!(result.is_err());
+    }
+}

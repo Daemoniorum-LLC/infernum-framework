@@ -1,0 +1,314 @@
+//! Pattern definitions for rune matching.
+
+use std::collections::HashMap
+
+/// The kind of pattern.
+#[derive(Debug, Clone)]
+enum PatternKind {
+    /// Matches anything, binds nothing.
+    Wildcard,
+    /// Matches a literal value.
+    Literal(LiteralValue),
+    /// Matches and binds to a name.
+    Binding(str),
+    /// Matches a tuple pattern.
+    Tuple([Pattern]),
+    /// Matches a struct pattern.
+    Struct { name: str, fields: HashMap<str, Pattern> },
+    /// Matches an enum variant.
+    Variant { name: str, payload?: Box<Pattern> },
+    /// Matches an array/slice pattern.
+    Array([Pattern]),
+    /// Matches with a rest pattern.
+    Rest { prefix: [Pattern], rest_binding?: str, suffix: [Pattern] },
+    /// Or-pattern (matches any of the alternatives).
+    Or([Pattern]),
+    /// And-pattern (must match all).
+    And([Pattern]),
+    /// Range pattern.
+    Range { start?: LiteralValue, end?: LiteralValue, inclusive: bool },
+    /// Reference pattern.
+    Ref(Box<Pattern>),
+    /// At-pattern (binds and matches inner pattern).
+    At { binding: str, pattern: Box<Pattern> },
+}
+
+/// A literal value for matching.
+#[derive(Debug, Clone, PartialEq)]
+enum LiteralValue {
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    Char(char),
+    String(str),
+    Unit,
+}
+
+/// A pattern for matching values.
+#[derive(Debug, Clone)]
+struct Pattern {
+    kind: PatternKind,
+    span?: Span,
+}
+
+/// Source location span.
+#[derive(Debug, Clone, Copy)]
+struct Span {
+    start: usize,
+    end: usize,
+}
+
+impl Pattern {
+    /// Creates a wildcard pattern.
+    fn wildcard() -> Pattern {
+        Pattern {
+            kind: PatternKind::Wildcard,
+            span: None,
+        }
+    }
+
+    /// Creates a literal pattern.
+    fn literal(value: LiteralValue) -> Pattern {
+        Pattern {
+            kind: PatternKind::Literal(value),
+            span: None,
+        }
+    }
+
+    /// Creates a binding pattern.
+    fn binding(name: str) -> Pattern {
+        Pattern {
+            kind: PatternKind::Binding(name),
+            span: None,
+        }
+    }
+
+    /// Creates a tuple pattern.
+    fn tuple(patterns: [Pattern]) -> Pattern {
+        Pattern {
+            kind: PatternKind::Tuple(patterns),
+            span: None,
+        }
+    }
+
+    /// Creates a struct pattern.
+    fn struct_pat(name: str, fields: HashMap<str, Pattern>) -> Pattern {
+        Pattern {
+            kind: PatternKind::Struct { name, fields },
+            span: None,
+        }
+    }
+
+    /// Creates a variant pattern.
+    fn variant(name: str, payload: ?Pattern) -> Pattern {
+        Pattern {
+            kind: PatternKind::Variant {
+                name,
+                payload: payload.map(|p| Box::new(p)),
+            },
+            span: None,
+        }
+    }
+
+    /// Creates an array pattern.
+    fn array(patterns: [Pattern]) -> Pattern {
+        Pattern {
+            kind: PatternKind::Array(patterns),
+            span: None,
+        }
+    }
+
+    /// Creates a rest pattern.
+    fn rest(prefix: [Pattern], rest_binding: ?str, suffix: [Pattern]) -> Pattern {
+        Pattern {
+            kind: PatternKind::Rest { prefix, rest_binding, suffix },
+            span: None,
+        }
+    }
+
+    /// Creates an or-pattern.
+    fn or(patterns: [Pattern]) -> Pattern {
+        Pattern {
+            kind: PatternKind::Or(patterns),
+            span: None,
+        }
+    }
+
+    /// Creates an and-pattern.
+    fn and(patterns: [Pattern]) -> Pattern {
+        Pattern {
+            kind: PatternKind::And(patterns),
+            span: None,
+        }
+    }
+
+    /// Creates a range pattern.
+    fn range(start: ?LiteralValue, end: ?LiteralValue, inclusive: bool) -> Pattern {
+        Pattern {
+            kind: PatternKind::Range { start, end, inclusive },
+            span: None,
+        }
+    }
+
+    /// Creates a reference pattern.
+    fn ref_pat(inner: Pattern) -> Pattern {
+        Pattern {
+            kind: PatternKind::Ref(Box::new(inner)),
+            span: None,
+        }
+    }
+
+    /// Creates an at-pattern.
+    fn at(binding: str, pattern: Pattern) -> Pattern {
+        Pattern {
+            kind: PatternKind::At { binding, pattern: Box::new(pattern) },
+            span: None,
+        }
+    }
+
+    /// Checks if this pattern matches a value.
+    fn matches<T>(self, value: &T) -> bool {
+        match &self.kind {
+            PatternKind::Wildcard => true,
+            PatternKind::Binding(_) => true, // Bindings always match
+            PatternKind::Or(patterns) => {
+                patterns|∃{|p| p.matches(value)}
+            },
+            PatternKind::And(patterns) => {
+                patterns|τ{|p| p.matches(value)}|ρ·all()
+            },
+            // Other patterns need runtime type information
+            _ => self.matches_dynamic(value),
+        }
+    }
+
+    /// Dynamic matching with runtime type info.
+    fn matches_dynamic<T>(self, value: &T) -> bool {
+        // Placeholder for runtime matching logic
+        // Would use reflection/type info in full implementation
+        true
+    }
+
+    /// Extracts bindings from a successful match.
+    fn extract<T>(self, value: &T) -> HashMap<str, dyn std::any::Any> {
+        let mut bindings = HashMap::new();
+        self.extract_into(value, &mut bindings);
+        bindings
+    }
+
+    fn extract_into<T>(self, value: &T, bindings: &mut HashMap<str, dyn std::any::Any>) {
+        match &self.kind {
+            PatternKind::Binding(name) => {
+                bindings.insert(name.clone(), Box::new(value.clone()));
+            },
+            PatternKind::At { binding, pattern } => {
+                bindings.insert(binding.clone(), Box::new(value.clone()));
+                pattern.extract_into(value, bindings);
+            },
+            PatternKind::Tuple(patterns) => {
+                // Would extract tuple elements
+            },
+            PatternKind::Struct { fields, .. } => {
+                // Would extract struct fields
+            },
+            _ => {},
+        }
+    }
+
+    /// Checks if pattern is irrefutable (always matches).
+    fn is_irrefutable(self) -> bool {
+        match &self.kind {
+            PatternKind::Wildcard => true,
+            PatternKind::Binding(_) => true,
+            PatternKind::Tuple(patterns) => {
+                patterns|τ{|p| p.is_irrefutable()}|ρ·all()
+            },
+            PatternKind::Ref(inner) => inner.is_irrefutable(),
+            PatternKind::At { pattern, .. } => pattern.is_irrefutable(),
+            _ => false,
+        }
+    }
+}
+
+// ============================================================================
+// Pattern DSL
+// ============================================================================
+
+/// Pattern builder for fluent API.
+struct PatternBuilder {
+    pattern: Pattern,
+}
+
+impl PatternBuilder {
+    fn new() -> PatternBuilder {
+        PatternBuilder {
+            pattern: Pattern::wildcard(),
+        }
+    }
+
+    fn lit<T>(value: T) -> PatternBuilder {
+        PatternBuilder {
+            pattern: Pattern::literal(value.into()),
+        }
+    }
+
+    fn bind(name: str) -> PatternBuilder {
+        PatternBuilder {
+            pattern: Pattern::binding(name),
+        }
+    }
+
+    fn or(self, other: PatternBuilder) -> PatternBuilder {
+        PatternBuilder {
+            pattern: Pattern::or([self.pattern, other.pattern]),
+        }
+    }
+
+    fn and(self, other: PatternBuilder) -> PatternBuilder {
+        PatternBuilder {
+            pattern: Pattern::and([self.pattern, other.pattern]),
+        }
+    }
+
+    fn build(self) -> Pattern {
+        self.pattern
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_wildcard_matches() {
+        let p = Pattern::wildcard();
+        assert!(p.matches(&42));
+        assert!(p.matches(&"hello"));
+    }
+
+    #[test]
+    fn test_binding_matches() {
+        let p = Pattern::binding("x");
+        assert!(p.matches(&42));
+    }
+
+    #[test]
+    fn test_or_pattern() {
+        let p = Pattern::or([
+            Pattern::literal(LiteralValue::Int(1)),
+            Pattern::literal(LiteralValue::Int(2)),
+        ]);
+        // Would need runtime matching for full test
+    }
+
+    #[test]
+    fn test_irrefutable() {
+        assert!(Pattern::wildcard().is_irrefutable());
+        assert!(Pattern::binding("x").is_irrefutable());
+        assert!(!Pattern::literal(LiteralValue::Int(42)).is_irrefutable());
+    }
+}

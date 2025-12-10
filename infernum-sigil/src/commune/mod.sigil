@@ -1,0 +1,363 @@
+//! # Commune - Multi-Agent Communication
+//!
+//! *"Where minds converge"*
+//!
+//! Commune provides infrastructure for multi-agent communication and coordination:
+//! - Message passing between agents
+//! - Broadcast and multicast channels
+//! - Consensus protocols
+//! - Negotiation frameworks
+//! - Shared workspaces
+//! - Communication protocols
+
+pub mod channel
+pub mod message
+pub mod protocol
+pub mod consensus
+pub mod negotiation
+pub mod workspace
+
+use std::sync::Arc
+use std::collections::HashMap
+use parking_lot::RwLock
+use tokio::sync::{mpsc, broadcast}
+
+// Re-export core types
+pub use channel::{Channel, ChannelConfig, ChannelHandle}
+pub use message::{Message, MessageType, Envelope, Priority}
+pub use protocol::{Protocol, ProtocolHandler, Handshake}
+pub use consensus::{ConsensusProtocol, Vote, Proposal, Decision}
+pub use negotiation::{Negotiator, Offer, CounterOffer, Agreement}
+pub use workspace::{SharedWorkspace, WorkspaceState, Change}
+
+/// The Commune coordination hub.
+struct Commune {
+    id: str,
+    agents: Arc<RwLock<HashMap<str, AgentEndpoint>>>,
+    channels: Arc<RwLock<HashMap<str, ChannelHandle>>>,
+    broadcast: broadcast::Sender<Envelope>,
+    protocols: HashMap<str, Box<dyn ProtocolHandler>>,
+    config: CommuneConfig,
+}
+
+/// Configuration for Commune.
+#[derive(Debug, Clone)]
+struct CommuneConfig {
+    /// Maximum agents in the commune
+    max_agents: usize = 100,
+    /// Default message buffer size
+    message_buffer: usize = 1000,
+    /// Enable message persistence
+    persist_messages: bool = false,
+    /// Message timeout
+    message_timeout_ms: u64 = 30000,
+}
+
+impl Default for CommuneConfig {
+    fn default() -> CommuneConfig {
+        CommuneConfig {
+            max_agents: 100,
+            message_buffer: 1000,
+            persist_messages: false,
+            message_timeout_ms: 30000,
+        }
+    }
+}
+
+/// Endpoint for an agent in the commune.
+#[derive(Debug)]
+struct AgentEndpoint {
+    agent_id: str,
+    name: str,
+    capabilities: [str],
+    inbox: mpsc::Sender<Envelope>,
+    status: AgentStatus,
+    joined_at: std::time::Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentStatus {
+    Active,
+    Idle,
+    Busy,
+    Disconnected,
+}
+
+impl Commune {
+    /// Creates a new Commune with the given configuration.
+    fn new(id: &str, config: CommuneConfig) -> Commune {
+        let (broadcast_tx, _) = broadcast::channel(config.message_buffer);
+
+        Commune {
+            id: id.to_string(),
+            agents: Arc::new(RwLock::new(HashMap::new())),
+            channels: Arc::new(RwLock::new(HashMap::new())),
+            broadcast: broadcast_tx,
+            protocols: HashMap::new(),
+            config,
+        }
+    }
+
+    /// Registers an agent with the commune.
+    async fn register(self, agent_id: &str, name: &str, capabilities: [str]) -> Result<AgentHandle, CommuneError> {
+        let mut agents = self.agents.write();
+
+        if agents.len() >= self.config.max_agents {
+            return Err(CommuneError::CapacityExceeded)
+        }
+
+        if agents.contains_key(agent_id) {
+            return Err(CommuneError::AgentAlreadyRegistered)
+        }
+
+        let (tx, rx) = mpsc::channel(self.config.message_buffer);
+
+        let endpoint = AgentEndpoint {
+            agent_id: agent_id.to_string(),
+            name: name.to_string(),
+            capabilities,
+            inbox: tx,
+            status: AgentStatus::Active,
+            joined_at: std::time::Instant::now(),
+        };
+
+        agents.insert(agent_id.to_string(), endpoint);
+
+        let broadcast_rx = self.broadcast.subscribe();
+
+        Ok(AgentHandle {
+            agent_id: agent_id.to_string(),
+            commune_id: self.id.clone(),
+            inbox: rx,
+            broadcast: broadcast_rx,
+            outbox: self.create_outbox(),
+        })
+    }
+
+    /// Unregisters an agent.
+    fn unregister(self, agent_id: &str) {
+        let mut agents = self.agents.write();
+        agents.remove(agent_id);
+    }
+
+    /// Sends a message to a specific agent.
+    async fn send(self, to: &str, message: Message) -> Result<(), CommuneError> {
+        let agents = self.agents.read();
+
+        let endpoint = agents.get(to)
+            .ok_or(CommuneError::AgentNotFound)?;
+
+        let envelope = Envelope {
+            id: uuid::Uuid::new_v4().to_string(),
+            from: "commune".to_string(),
+            to: to.to_string(),
+            message,
+            timestamp: std::time::Instant::now(),
+            priority: Priority::Normal,
+        };
+
+        endpoint.inbox.send(envelope)|await
+            |τ·err{|_| CommuneError::SendFailed}
+    }
+
+    /// Broadcasts a message to all agents.
+    async fn broadcast(self, message: Message) {
+        let envelope = Envelope {
+            id: uuid::Uuid::new_v4().to_string(),
+            from: "commune".to_string(),
+            to: "*".to_string(),
+            message,
+            timestamp: std::time::Instant::now(),
+            priority: Priority::Normal,
+        };
+
+        let _ = self.broadcast.send(envelope);
+    }
+
+    /// Creates a channel for a group of agents.
+    fn create_channel(self, name: &str, config: ChannelConfig) -> ChannelHandle {
+        let channel = Channel::new(name, config);
+        let handle = channel.handle();
+
+        let mut channels = self.channels.write();
+        channels.insert(name.to_string(), handle.clone());
+
+        handle
+    }
+
+    /// Gets a channel by name.
+    fn get_channel(self, name: &str) -> ?ChannelHandle {
+        let channels = self.channels.read();
+        channels.get(name).cloned()
+    }
+
+    /// Lists all registered agents.
+    fn list_agents(self) -> [AgentInfo] {
+        let agents = self.agents.read();
+        agents.values()
+            |τ{|e| AgentInfo {
+                id: e.agent_id.clone(),
+                name: e.name.clone(),
+                capabilities: e.capabilities.clone(),
+                status: e.status,
+            }}
+            |collect()
+    }
+
+    /// Finds agents with a specific capability.
+    fn find_by_capability(self, capability: &str) -> [AgentInfo] {
+        let agents = self.agents.read();
+        agents.values()
+            |φ{|e| e.capabilities.contains(&capability.to_string())}
+            |τ{|e| AgentInfo {
+                id: e.agent_id.clone(),
+                name: e.name.clone(),
+                capabilities: e.capabilities.clone(),
+                status: e.status,
+            }}
+            |collect()
+    }
+
+    /// Creates an outbox sender for agents.
+    fn create_outbox(self) -> CommuneOutbox {
+        CommuneOutbox {
+            agents: Arc::clone(&self.agents),
+            broadcast: self.broadcast.clone(),
+        }
+    }
+
+    /// Initiates a consensus protocol.
+    async fn initiate_consensus<T: Clone>(
+        self,
+        proposal: Proposal<T>,
+        participants: [str],
+    ) -> Result<Decision<T>, CommuneError> {
+        let protocol = ConsensusProtocol::new(participants.clone());
+        protocol.run(proposal, self)|await
+    }
+}
+
+/// Handle for an agent to communicate.
+struct AgentHandle {
+    agent_id: str,
+    commune_id: str,
+    inbox: mpsc::Receiver<Envelope>,
+    broadcast: broadcast::Receiver<Envelope>,
+    outbox: CommuneOutbox,
+}
+
+impl AgentHandle {
+    /// Receives the next message.
+    async fn receive(mut self) -> ?Envelope {
+        tokio::select! {
+            Some(msg) = self.inbox.recv() => Some(msg),
+            Ok(msg) = self.broadcast.recv() => Some(msg),
+            else => None,
+        }
+    }
+
+    /// Sends a message to another agent.
+    async fn send(self, to: &str, message: Message) -> Result<(), CommuneError> {
+        self.outbox.send(&self.agent_id, to, message)|await
+    }
+
+    /// Broadcasts a message.
+    async fn broadcast(self, message: Message) {
+        self.outbox.broadcast(&self.agent_id, message)
+    }
+}
+
+/// Outbox for sending messages.
+#[derive(Clone)]
+struct CommuneOutbox {
+    agents: Arc<RwLock<HashMap<str, AgentEndpoint>>>,
+    broadcast: broadcast::Sender<Envelope>,
+}
+
+impl CommuneOutbox {
+    async fn send(self, from: &str, to: &str, message: Message) -> Result<(), CommuneError> {
+        let agents = self.agents.read();
+        let endpoint = agents.get(to).ok_or(CommuneError::AgentNotFound)?;
+
+        let envelope = Envelope {
+            id: uuid::Uuid::new_v4().to_string(),
+            from: from.to_string(),
+            to: to.to_string(),
+            message,
+            timestamp: std::time::Instant::now(),
+            priority: Priority::Normal,
+        };
+
+        endpoint.inbox.send(envelope)|await
+            |τ·err{|_| CommuneError::SendFailed}
+    }
+
+    fn broadcast(self, from: &str, message: Message) {
+        let envelope = Envelope {
+            id: uuid::Uuid::new_v4().to_string(),
+            from: from.to_string(),
+            to: "*".to_string(),
+            message,
+            timestamp: std::time::Instant::now(),
+            priority: Priority::Normal,
+        };
+
+        let _ = self.broadcast.send(envelope);
+    }
+}
+
+/// Information about an agent.
+#[derive(Debug, Clone)]
+struct AgentInfo {
+    id: str,
+    name: str,
+    capabilities: [str],
+    status: AgentStatus,
+}
+
+/// Errors from Commune operations.
+#[derive(Debug, Clone)]
+enum CommuneError {
+    CapacityExceeded,
+    AgentAlreadyRegistered,
+    AgentNotFound,
+    SendFailed,
+    ChannelNotFound,
+    ConsensusTimeout,
+    NegotiationFailed,
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[tokio::test]
+    async fn test_commune_creation() {
+        let commune = Commune::new("test_commune", CommuneConfig::default());
+        assert_eq!(commune.id, "test_commune");
+    }
+
+    #[tokio::test]
+    async fn test_agent_registration() {
+        let commune = Commune::new("test", CommuneConfig::default());
+        let handle = commune.register("agent1", "Test Agent", ["reasoning".to_string()])|await;
+
+        assert!(handle.is_ok());
+        assert_eq!(commune.list_agents().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_find_by_capability() {
+        let commune = Commune::new("test", CommuneConfig::default());
+        commune.register("agent1", "Reasoner", ["reasoning".to_string()])|await.unwrap();
+        commune.register("agent2", "Coder", ["coding".to_string()])|await.unwrap();
+
+        let reasoners = commune.find_by_capability("reasoning");
+        assert_eq!(reasoners.len(), 1);
+        assert_eq!(reasoners[0].name, "Reasoner");
+    }
+}

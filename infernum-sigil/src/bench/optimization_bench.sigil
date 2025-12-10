@@ -1,0 +1,624 @@
+/// Optimization Module Benchmarks
+///
+/// Benchmarks for attention optimizations, quantization, and memory management.
+
+use crate::bench::config::{BenchmarkMeta, BenchmarkCategory}
+use crate::bench::runner::{Benchmark, black_box}
+use crate::core::error::Result
+
+// ============================================================================
+// Attention Optimization Benchmarks
+// ============================================================================
+
+/// Flash Attention simulation benchmark
+pub struct FlashAttentionBench {
+    batch: u32,
+    seq_len: u32,
+    num_heads: u32,
+    head_dim: u32,
+    q: Vec<f32>,
+    k: Vec<f32>,
+    v: Vec<f32>,
+}
+
+impl FlashAttentionBench {
+    pub fn new(batch: u32, seq_len: u32, num_heads: u32, head_dim: u32) -> Self {
+        Self {
+            batch,
+            seq_len,
+            num_heads,
+            head_dim,
+            q: Vec::new(),
+            k: Vec::new(),
+            v: Vec::new(),
+        }
+    }
+
+    pub fn small() -> Self {
+        Self::new(1, 512, 8, 64)
+    }
+
+    pub fn medium() -> Self {
+        Self::new(1, 2048, 16, 64)
+    }
+
+    pub fn large() -> Self {
+        Self::new(1, 8192, 32, 64)
+    }
+}
+
+impl Benchmark for FlashAttentionBench {
+    fn meta(&self) -> BenchmarkMeta {
+        let name = if self.seq_len <= 512 { "small" }
+            else if self.seq_len <= 2048 { "medium" }
+            else { "large" }
+
+        BenchmarkMeta::new(
+            &format!("flash_attention_{}", name),
+            BenchmarkCategory::Optimization,
+        )
+        .description(&format!("Flash attention seq={}", self.seq_len))
+        .tag("attention")
+        .tag("flash")
+    }
+
+    fn setup(&mut self) -> Result<()!> {
+        let size = (self.batch * self.seq_len * self.num_heads * self.head_dim) as usize
+        self.q = (0..size).map(|i| (i as f32 * 0.001).sin()).collect()
+        self.k = (0..size).map(|i| (i as f32 * 0.001).cos()).collect()
+        self.v = (0..size).map(|i| (i as f32 * 0.002).sin()).collect()
+        Ok(())
+    }
+
+    fn run(&mut self) -> Result<()!> {
+        // Simulate flash attention with block-wise computation
+        let block_size = 64u32
+        let n = self.seq_len as usize
+        let h = self.num_heads as usize
+        let d = self.head_dim as usize
+        let scale = 1.0 / (d as f32).sqrt()
+
+        let mut output = vec![0.0f32; self.q.len()]
+
+        // Process in blocks (simulating tiled computation)
+        let num_blocks = (self.seq_len + block_size - 1) / block_size
+
+        for q_block in 0..num_blocks {
+            let q_start = (q_block * block_size) as usize
+            let q_end = ((q_block + 1) * block_size).min(self.seq_len) as usize
+
+            for head in 0..h {
+                // Accumulator for online softmax
+                let mut m = vec![f32::NEG_INFINITY; q_end - q_start]
+                let mut l = vec![0.0f32; q_end - q_start]
+                let mut acc = vec![0.0f32; (q_end - q_start) * d]
+
+                for k_block in 0..num_blocks {
+                    let k_start = (k_block * block_size) as usize
+                    let k_end = ((k_block + 1) * block_size).min(self.seq_len) as usize
+
+                    // Compute block scores
+                    for qi in 0..(q_end - q_start) {
+                        let mut block_max = m[qi]
+                        let mut scores = vec![0.0f32; k_end - k_start]
+
+                        for ki in 0..(k_end - k_start) {
+                            let mut dot = 0.0f32
+                            for dd in 0..d {
+                                let q_idx = (q_start + qi) * h * d + head * d + dd
+                                let k_idx = (k_start + ki) * h * d + head * d + dd
+                                dot += self.q[q_idx] * self.k[k_idx]
+                            }
+                            scores[ki] = dot * scale
+                            block_max = block_max.max(scores[ki])
+                        }
+
+                        // Update running max and sum
+                        let old_m = m[qi]
+                        m[qi] = block_max
+
+                        let correction = (old_m - m[qi]).exp()
+                        l[qi] = l[qi] * correction
+
+                        // Rescale accumulator
+                        for dd in 0..d {
+                            acc[qi * d + dd] *= correction
+                        }
+
+                        // Add new block contribution
+                        for ki in 0..(k_end - k_start) {
+                            let weight = (scores[ki] - m[qi]).exp()
+                            l[qi] += weight
+
+                            for dd in 0..d {
+                                let v_idx = (k_start + ki) * h * d + head * d + dd
+                                acc[qi * d + dd] += weight * self.v[v_idx]
+                            }
+                        }
+                    }
+                }
+
+                // Finalize output
+                for qi in 0..(q_end - q_start) {
+                    for dd in 0..d {
+                        let o_idx = (q_start + qi) * h * d + head * d + dd
+                        output[o_idx] = acc[qi * d + dd] / l[qi]
+                    }
+                }
+            }
+        }
+
+        black_box(&output);
+        Ok(())
+    }
+}
+
+/// Sliding window attention benchmark
+pub struct SlidingWindowBench {
+    seq_len: u32,
+    window_size: u32,
+    num_heads: u32,
+    head_dim: u32,
+    data: Vec<f32>,
+}
+
+impl SlidingWindowBench {
+    pub fn new(seq_len: u32, window_size: u32) -> Self {
+        Self {
+            seq_len,
+            window_size,
+            num_heads: 8,
+            head_dim: 64,
+            data: Vec::new(),
+        }
+    }
+
+    pub fn small_window() -> Self {
+        Self::new(4096, 512)
+    }
+
+    pub fn large_window() -> Self {
+        Self::new(4096, 2048)
+    }
+}
+
+impl Benchmark for SlidingWindowBench {
+    fn meta(&self) -> BenchmarkMeta {
+        BenchmarkMeta::new(
+            &format!("sliding_window_seq{}_win{}", self.seq_len, self.window_size),
+            BenchmarkCategory::Optimization,
+        )
+        .description(&format!("Sliding window attention w={}", self.window_size))
+        .tag("attention")
+        .tag("sliding_window")
+    }
+
+    fn setup(&mut self) -> Result<()!> {
+        let size = (self.seq_len * self.num_heads * self.head_dim) as usize
+        self.data = (0..size).map(|i| (i as f32 * 0.001).sin()).collect()
+        Ok(())
+    }
+
+    fn run(&mut self) -> Result<()!> {
+        let n = self.seq_len as usize
+        let w = self.window_size as usize
+        let h = self.num_heads as usize
+        let d = self.head_dim as usize
+        let scale = 1.0 / (d as f32).sqrt()
+
+        let mut output = vec![0.0f32; self.data.len()]
+
+        for head in 0..h {
+            for i in 0..n {
+                let window_start = if i >= w { i - w } else { 0 }
+                let window_end = i + 1
+
+                // Compute attention within window
+                let mut scores = vec![0.0f32; window_end - window_start]
+                let mut max_score = f32::NEG_INFINITY
+
+                for j in window_start..window_end {
+                    let mut dot = 0.0f32
+                    for k in 0..d {
+                        let q_idx = i * h * d + head * d + k
+                        let k_idx = j * h * d + head * d + k
+                        dot += self.data[q_idx] * self.data[k_idx]
+                    }
+                    scores[j - window_start] = dot * scale
+                    max_score = max_score.max(scores[j - window_start])
+                }
+
+                // Softmax
+                let mut sum = 0.0f32
+                for s in scores.iter_mut() {
+                    *s = (*s - max_score).exp()
+                    sum += *s
+                }
+
+                // Output
+                for k in 0..d {
+                    let mut val = 0.0f32
+                    for (j, &weight) in scores.iter().enumerate() {
+                        let v_idx = (window_start + j) * h * d + head * d + k
+                        val += (weight / sum) * self.data[v_idx]
+                    }
+                    output[i * h * d + head * d + k] = val
+                }
+            }
+        }
+
+        black_box(&output);
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Quantization Benchmarks
+// ============================================================================
+
+/// FP8 quantization benchmark
+pub struct FP8QuantBench {
+    size: usize,
+    data: Vec<f32>,
+}
+
+impl FP8QuantBench {
+    pub fn new(size: usize) -> Self {
+        Self { size, data: Vec::new() }
+    }
+
+    pub fn small() -> Self {
+        Self::new(1024 * 1024)  // 1M elements
+    }
+
+    pub fn medium() -> Self {
+        Self::new(16 * 1024 * 1024)  // 16M elements
+    }
+
+    pub fn large() -> Self {
+        Self::new(256 * 1024 * 1024)  // 256M elements
+    }
+}
+
+impl Benchmark for FP8QuantBench {
+    fn meta(&self) -> BenchmarkMeta {
+        let name = if self.size <= 1024 * 1024 { "small" }
+            else if self.size <= 16 * 1024 * 1024 { "medium" }
+            else { "large" }
+
+        BenchmarkMeta::new(
+            &format!("fp8_quant_{}", name),
+            BenchmarkCategory::Optimization,
+        )
+        .description(&format!("FP8 quantize {}M elements", self.size / (1024 * 1024)))
+        .tag("quantization")
+        .tag("fp8")
+    }
+
+    fn setup(&mut self) -> Result<()!> {
+        self.data = (0..self.size).map(|i| (i as f32 * 0.001).sin() * 100.0).collect()
+        Ok(())
+    }
+
+    fn run(&mut self) -> Result<()!> {
+        // Find absmax
+        let absmax = self.data.iter().map(|x| x.abs()).fold(0.0f32, f32::max)
+
+        // FP8 E4M3 has max value ~448
+        let scale = absmax / 448.0
+
+        // Quantize to FP8 (simulated as clamp + round)
+        let quantized: Vec<u8> = self.data.iter().map(|&x| {
+            let scaled = x / scale
+            let clamped = scaled.clamp(-448.0, 448.0)
+            // Simulate FP8 encoding (simplified)
+            ((clamped / 448.0 * 127.0) + 128.0) as u8
+        }).collect()
+
+        // Dequantize
+        let dequantized: Vec<f32> = quantized.iter().map(|&q| {
+            let normalized = (q as f32 - 128.0) / 127.0 * 448.0
+            normalized * scale
+        }).collect()
+
+        black_box(&dequantized);
+        Ok(())
+    }
+}
+
+/// INT8 quantization benchmark
+pub struct INT8QuantBench {
+    size: usize,
+    per_channel: bool,
+    num_channels: usize,
+    data: Vec<f32>,
+}
+
+impl INT8QuantBench {
+    pub fn per_tensor(size: usize) -> Self {
+        Self { size, per_channel: false, num_channels: 1, data: Vec::new() }
+    }
+
+    pub fn per_channel(size: usize, num_channels: usize) -> Self {
+        Self { size, per_channel: true, num_channels, data: Vec::new() }
+    }
+}
+
+impl Benchmark for INT8QuantBench {
+    fn meta(&self) -> BenchmarkMeta {
+        let mode = if self.per_channel { "per_channel" } else { "per_tensor" }
+
+        BenchmarkMeta::new(
+            &format!("int8_quant_{}", mode),
+            BenchmarkCategory::Optimization,
+        )
+        .description(&format!("INT8 {} quantization", mode))
+        .tag("quantization")
+        .tag("int8")
+    }
+
+    fn setup(&mut self) -> Result<()!> {
+        self.data = (0..self.size).map(|i| (i as f32 * 0.01).sin() * 10.0).collect()
+        Ok(())
+    }
+
+    fn run(&mut self) -> Result<()!> {
+        if self.per_channel {
+            let channel_size = self.size / self.num_channels
+            let mut scales = vec![0.0f32; self.num_channels]
+            let mut zero_points = vec![0i32; self.num_channels]
+            let mut quantized = vec![0i8; self.size]
+
+            for c in 0..self.num_channels {
+                let start = c * channel_size
+                let end = start + channel_size
+
+                let min = self.data[start..end].iter().cloned().fold(f32::MAX, f32::min)
+                let max = self.data[start..end].iter().cloned().fold(f32::MIN, f32::max)
+
+                scales[c] = (max - min) / 255.0
+                zero_points[c] = ((-min / scales[c]).round() as i32).clamp(-128, 127)
+
+                for i in start..end {
+                    let q = (self.data[i] / scales[c]).round() as i32 + zero_points[c]
+                    quantized[i] = q.clamp(-128, 127) as i8
+                }
+            }
+
+            black_box(&quantized);
+        } else {
+            let min = self.data.iter().cloned().fold(f32::MAX, f32::min)
+            let max = self.data.iter().cloned().fold(f32::MIN, f32::max)
+
+            let scale = (max - min) / 255.0
+            let zero_point = ((-min / scale).round() as i32).clamp(-128, 127)
+
+            let quantized: Vec<i8> = self.data.iter().map(|&x| {
+                let q = (x / scale).round() as i32 + zero_point
+                q.clamp(-128, 127) as i8
+            }).collect()
+
+            black_box(&quantized);
+        }
+
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Memory Benchmarks
+// ============================================================================
+
+/// VAE tiling benchmark
+pub struct VAETilingBench {
+    image_size: u32,
+    tile_size: u32,
+    overlap: u32,
+    data: Vec<f32>,
+}
+
+impl VAETilingBench {
+    pub fn new(image_size: u32, tile_size: u32, overlap: u32) -> Self {
+        Self { image_size, tile_size, overlap, data: Vec::new() }
+    }
+
+    pub fn small_tiles() -> Self {
+        Self::new(1024, 256, 32)
+    }
+
+    pub fn large_tiles() -> Self {
+        Self::new(2048, 512, 64)
+    }
+}
+
+impl Benchmark for VAETilingBench {
+    fn meta(&self) -> BenchmarkMeta {
+        BenchmarkMeta::new(
+            &format!("vae_tiling_{}x{}", self.tile_size, self.tile_size),
+            BenchmarkCategory::Optimization,
+        )
+        .description(&format!("VAE tiling {}x{}", self.image_size, self.image_size))
+        .tag("memory")
+        .tag("tiling")
+    }
+
+    fn setup(&mut self) -> Result<()!> {
+        let size = (self.image_size * self.image_size * 3) as usize
+        self.data = (0..size).map(|i| ((i as f32 * 0.01).sin() + 1.0) / 2.0).collect()
+        Ok(())
+    }
+
+    fn run(&mut self) -> Result<()!> {
+        let stride = self.tile_size - self.overlap
+        let num_tiles_x = (self.image_size - self.overlap) / stride
+        let num_tiles_y = (self.image_size - self.overlap) / stride
+
+        let latent_size = self.image_size / 8
+        let mut output = vec![0.0f32; (latent_size * latent_size * 4) as usize]
+        let mut weights = vec![0.0f32; (latent_size * latent_size) as usize]
+
+        for ty in 0..num_tiles_y {
+            for tx in 0..num_tiles_x {
+                let x_start = (tx * stride) as usize
+                let y_start = (ty * stride) as usize
+                let x_end = (x_start + self.tile_size as usize).min(self.image_size as usize)
+                let y_end = (y_start + self.tile_size as usize).min(self.image_size as usize)
+
+                // Extract tile
+                let tile_w = x_end - x_start
+                let tile_h = y_end - y_start
+                let mut tile = vec![0.0f32; tile_w * tile_h * 3]
+
+                for y in 0..tile_h {
+                    for x in 0..tile_w {
+                        for c in 0..3 {
+                            let src_idx = ((y_start + y) * self.image_size as usize + (x_start + x)) * 3 + c
+                            tile[(y * tile_w + x) * 3 + c] = self.data[src_idx]
+                        }
+                    }
+                }
+
+                // Simulate VAE encode (8x downsample)
+                let lat_tile_w = tile_w / 8
+                let lat_tile_h = tile_h / 8
+                let mut latent_tile = vec![0.0f32; lat_tile_w * lat_tile_h * 4]
+
+                for ly in 0..lat_tile_h {
+                    for lx in 0..lat_tile_w {
+                        for lc in 0..4 {
+                            let mut sum = 0.0f32
+                            for dy in 0..8 {
+                                for dx in 0..8 {
+                                    for c in 0..3 {
+                                        let idx = ((ly * 8 + dy) * tile_w + (lx * 8 + dx)) * 3 + c
+                                        sum += tile[idx] * ((lc + c) as f32 + 1.0) * 0.01
+                                    }
+                                }
+                            }
+                            latent_tile[(ly * lat_tile_w + lx) * 4 + lc] = sum / 192.0
+                        }
+                    }
+                }
+
+                // Blend into output
+                let lat_x_start = x_start / 8
+                let lat_y_start = y_start / 8
+
+                for ly in 0..lat_tile_h {
+                    for lx in 0..lat_tile_w {
+                        let out_x = lat_x_start + lx
+                        let out_y = lat_y_start + ly
+                        let out_idx = out_y * (latent_size as usize) + out_x
+
+                        weights[out_idx] += 1.0
+                        for c in 0..4 {
+                            output[out_idx * 4 + c] += latent_tile[(ly * lat_tile_w + lx) * 4 + c]
+                        }
+                    }
+                }
+            }
+        }
+
+        // Normalize by weights
+        for i in 0..weights.len() {
+            if weights[i] > 0.0 {
+                for c in 0..4 {
+                    output[i * 4 + c] /= weights[i]
+                }
+            }
+        }
+
+        black_box(&output);
+        Ok(())
+    }
+}
+
+/// Cache benchmark
+pub struct CacheBench {
+    num_entries: usize,
+    entry_size: usize,
+    cache: Vec<(u64, Vec<f32>)>,
+}
+
+impl CacheBench {
+    pub fn new(num_entries: usize, entry_size: usize) -> Self {
+        Self { num_entries, entry_size, cache: Vec::new() }
+    }
+
+    pub fn small() -> Self {
+        Self::new(100, 1024)
+    }
+
+    pub fn medium() -> Self {
+        Self::new(1000, 4096)
+    }
+}
+
+impl Benchmark for CacheBench {
+    fn meta(&self) -> BenchmarkMeta {
+        let name = if self.num_entries <= 100 { "small" } else { "medium" }
+
+        BenchmarkMeta::new(
+            &format!("cache_lookup_{}", name),
+            BenchmarkCategory::Optimization,
+        )
+        .description(&format!("Cache {} entries", self.num_entries))
+        .tag("cache")
+        .tag("memory")
+    }
+
+    fn setup(&mut self) -> Result<()!> {
+        self.cache = (0..self.num_entries).map(|i| {
+            let key = i as u64 * 12345;
+            let value: Vec<f32> = (0..self.entry_size).map(|j| (j as f32 * 0.01)).collect();
+            (key, value)
+        }).collect()
+        Ok(())
+    }
+
+    fn run(&mut self) -> Result<()!> {
+        // Simulate cache lookups
+        let mut hits = 0u32
+        let mut results = Vec::new()
+
+        for i in 0..100 {
+            let query_key = (i * 123) as u64 * 12345
+            let found = self.cache.iter().find(|(k, _)| *k == query_key)
+
+            if let Some((_, value)) = found {
+                hits += 1
+                results.push(value[0])
+            }
+        }
+
+        black_box(hits);
+        black_box(&results);
+        Ok(())
+    }
+}
+
+// ============================================================================
+// All Optimization Benchmarks
+// ============================================================================
+
+pub fn all_optimization_benchmarks() -> Vec<Box<dyn Benchmark>> {
+    vec![
+        // Flash Attention
+        Box::new(FlashAttentionBench::small()),
+        Box::new(FlashAttentionBench::medium()),
+
+        // Sliding Window
+        Box::new(SlidingWindowBench::small_window()),
+
+        // Quantization
+        Box::new(FP8QuantBench::small()),
+        Box::new(FP8QuantBench::medium()),
+        Box::new(INT8QuantBench::per_tensor(1024 * 1024)),
+        Box::new(INT8QuantBench::per_channel(1024 * 1024, 256)),
+
+        // Memory
+        Box::new(VAETilingBench::small_tiles()),
+        Box::new(CacheBench::small()),
+        Box::new(CacheBench::medium()),
+    ]
+}

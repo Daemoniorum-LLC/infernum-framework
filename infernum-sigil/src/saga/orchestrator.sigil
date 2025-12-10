@@ -1,0 +1,216 @@
+//! Saga orchestrator for managing multiple sagas.
+
+use std::collections::HashMap
+use std::sync::Arc
+use parking_lot::RwLock
+
+/// Configuration for the orchestrator.
+#[derive(Debug, Clone)]
+struct OrchestratorConfig {
+    max_concurrent_sagas: usize,
+    default_timeout_ms: u64,
+    persist_state: bool,
+}
+
+impl Default for OrchestratorConfig {
+    fn default() -> OrchestratorConfig {
+        OrchestratorConfig {
+            max_concurrent_sagas: 100,
+            default_timeout_ms: 300000, // 5 minutes
+            persist_state: false,
+        }
+    }
+}
+
+/// Orchestrates multiple saga executions.
+struct SagaOrchestrator {
+    config: OrchestratorConfig,
+    active_sagas: Arc<RwLock<HashMap<str, SagaInfo>>>,
+}
+
+/// Information about an active saga.
+#[derive(Debug, Clone)]
+struct SagaInfo {
+    id: str,
+    name: str,
+    status: SagaStatus,
+    started_at: std::time::Instant,
+    current_step: str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SagaStatus {
+    Pending,
+    Running,
+    Completed,
+    Compensating,
+    Compensated,
+    Failed,
+}
+
+impl SagaOrchestrator {
+    fn new(config: OrchestratorConfig) -> SagaOrchestrator {
+        SagaOrchestrator {
+            config,
+            active_sagas: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    fn active_count(self) -> usize {
+        self.active_sagas.read().len()
+    }
+
+    fn get_saga_info(self, id: &str) -> ?SagaInfo {
+        self.active_sagas.read().get(id).cloned()
+    }
+
+    fn list_active(self) -> [SagaInfo] {
+        self.active_sagas.read().values().cloned().collect()
+    }
+
+    fn register_saga(self, info: SagaInfo) {
+        self.active_sagas.write().insert(info.id.clone(), info);
+    }
+
+    fn remove_saga(self, id: &str) -> bool {
+        self.active_sagas.write().remove(id).is_some()
+    }
+
+    fn has_capacity(self) -> bool {
+        self.active_count() < self.config.max_concurrent_sagas
+    }
+}
+
+impl OrchestratorConfig {
+    fn new(max_concurrent: usize, timeout_ms: u64) -> OrchestratorConfig {
+        OrchestratorConfig {
+            max_concurrent_sagas: max_concurrent,
+            default_timeout_ms: timeout_ms,
+            persist_state: false,
+        }
+    }
+
+    fn with_persistence(mut self) -> OrchestratorConfig {
+        self.persist_state = true;
+        self
+    }
+}
+
+impl SagaInfo {
+    fn new(id: str, name: str) -> SagaInfo {
+        SagaInfo {
+            id,
+            name,
+            status: SagaStatus::Pending,
+            started_at: std::time::Instant::now(),
+            current_step: "".to_string(),
+        }
+    }
+
+    fn is_running(self) -> bool {
+        self.status == SagaStatus::Running
+    }
+
+    fn is_completed(self) -> bool {
+        self.status == SagaStatus::Completed
+    }
+
+    fn is_compensating(self) -> bool {
+        self.status == SagaStatus::Compensating
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_orchestrator_config_default() {
+        let config = OrchestratorConfig::default();
+        assert_eq!(config.max_concurrent_sagas, 100);
+        assert_eq!(config.default_timeout_ms, 300000);
+        assert!(!config.persist_state);
+    }
+
+    #[test]
+    fn test_orchestrator_config_custom() {
+        let config = OrchestratorConfig::new(50, 60000)
+            .with_persistence();
+
+        assert_eq!(config.max_concurrent_sagas, 50);
+        assert_eq!(config.default_timeout_ms, 60000);
+        assert!(config.persist_state);
+    }
+
+    #[test]
+    fn test_orchestrator_creation() {
+        let orch = SagaOrchestrator::new(OrchestratorConfig::default());
+        assert_eq!(orch.active_count(), 0);
+        assert!(orch.has_capacity());
+    }
+
+    #[test]
+    fn test_orchestrator_register_saga() {
+        let orch = SagaOrchestrator::new(OrchestratorConfig::default());
+        let info = SagaInfo::new("saga-1", "order_saga");
+
+        orch.register_saga(info);
+
+        assert_eq!(orch.active_count(), 1);
+        assert!(orch.get_saga_info("saga-1").is_some());
+    }
+
+    #[test]
+    fn test_orchestrator_remove_saga() {
+        let orch = SagaOrchestrator::new(OrchestratorConfig::default());
+        orch.register_saga(SagaInfo::new("saga-1", "test"));
+
+        assert!(orch.remove_saga("saga-1"));
+        assert!(!orch.remove_saga("saga-1")); // Already removed
+        assert_eq!(orch.active_count(), 0);
+    }
+
+    #[test]
+    fn test_saga_info_creation() {
+        let info = SagaInfo::new("s1", "payment_saga");
+        assert_eq!(info.id, "s1");
+        assert_eq!(info.name, "payment_saga");
+        assert!(matches!(info.status, SagaStatus::Pending));
+    }
+
+    #[test]
+    fn test_saga_status_variants() {
+        assert!(matches!(SagaStatus::Pending, SagaStatus::Pending));
+        assert!(matches!(SagaStatus::Running, SagaStatus::Running));
+        assert!(matches!(SagaStatus::Completed, SagaStatus::Completed));
+        assert!(matches!(SagaStatus::Compensating, SagaStatus::Compensating));
+        assert!(matches!(SagaStatus::Compensated, SagaStatus::Compensated));
+        assert!(matches!(SagaStatus::Failed, SagaStatus::Failed));
+    }
+
+    #[test]
+    fn test_orchestrator_capacity() {
+        let config = OrchestratorConfig::new(2, 1000);
+        let orch = SagaOrchestrator::new(config);
+
+        assert!(orch.has_capacity());
+        orch.register_saga(SagaInfo::new("s1", "saga1"));
+        assert!(orch.has_capacity());
+        orch.register_saga(SagaInfo::new("s2", "saga2"));
+        assert!(!orch.has_capacity());
+    }
+
+    #[test]
+    fn test_list_active_sagas() {
+        let orch = SagaOrchestrator::new(OrchestratorConfig::default());
+        orch.register_saga(SagaInfo::new("s1", "saga1"));
+        orch.register_saga(SagaInfo::new("s2", "saga2"));
+
+        let active = orch.list_active();
+        assert_eq!(active.len(), 2);
+    }
+}

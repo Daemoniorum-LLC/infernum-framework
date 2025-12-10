@@ -1,0 +1,498 @@
+/// Flash Attention and Memory-Efficient Attention
+///
+/// High-performance attention implementations for diffusion models.
+
+use crate::core::error::{InfernumError, Result}
+use crate::abaddon::backend::{Tensor, TensorOps, ComputeBackend}
+use crate::optimization::config::{AttentionBackend, AttentionConfig}
+
+// ============================================================================
+// Flash Attention
+// ============================================================================
+
+/// Flash Attention 2 configuration
+pub struct FlashAttentionConfig {
+    /// Softmax scale (1/sqrt(head_dim) if None)
+    pub softmax_scale: Option<f32>,
+    /// Use causal masking
+    pub causal: bool,
+    /// Dropout probability (training only)
+    pub dropout: f32,
+    /// Window size for sliding window attention
+    pub window_size: Option<(u32, u32)>,
+    /// Return softmax LSE for backward
+    pub return_softmax_lse: bool,
+    /// Deterministic mode (slower but reproducible)
+    pub deterministic: bool,
+}
+
+impl FlashAttentionConfig {
+    pub fn default() -> Self {
+        Self {
+            softmax_scale: None,
+            causal: false,
+            dropout: 0.0,
+            window_size: None,
+            return_softmax_lse: false,
+            deterministic: false,
+        }
+    }
+
+    pub fn causal() -> Self {
+        Self {
+            causal: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn with_window(left: u32, right: u32) -> Self {
+        Self {
+            window_size: Some((left, right)),
+            ..Self::default()
+        }
+    }
+}
+
+/// Flash Attention 2 implementation
+pub struct FlashAttention<B: ComputeBackend> {
+    config: FlashAttentionConfig,
+    _backend: std::marker::PhantomData<B>,
+}
+
+impl<B: ComputeBackend> FlashAttention<B> {
+    pub fn new(config: FlashAttentionConfig) -> Self {
+        Self {
+            config,
+            _backend: std::marker::PhantomData,
+        }
+    }
+
+    /// Forward pass
+    /// Q, K, V: [batch, seqlen, num_heads, head_dim]
+    /// Returns: [batch, seqlen, num_heads, head_dim]
+    pub fn forward(
+        &self,
+        q: &Tensor<B>,
+        k: &Tensor<B>,
+        v: &Tensor<B>,
+        attention_mask: Option<&Tensor<B>>,
+    ) -> Result<Tensor<B>!> {
+        let (batch, seq_q, num_heads, head_dim) = q.shape4()
+        let seq_kv = k.shape()[1]
+
+        // Compute softmax scale
+        let scale = self.config.softmax_scale
+            .unwrap_or(1.0 / (head_dim as f32).sqrt())
+
+        // Call optimized kernel
+        flash_attention_forward(
+            q, k, v,
+            scale,
+            self.config.causal,
+            self.config.window_size,
+            attention_mask,
+            self.config.dropout,
+        )
+    }
+
+    /// Check if Flash Attention is available
+    pub fn is_available(backend: &B) -> bool {
+        // Check for CUDA compute capability >= 8.0 (Ampere+)
+        if let Some(cc) = backend.cuda_compute_capability() {
+            cc >= (8, 0)
+        } else {
+            false
+        }
+    }
+}
+
+/// Flash Attention forward kernel (would be implemented in backend)
+fn flash_attention_forward<B: ComputeBackend>(
+    q: &Tensor<B>,
+    k: &Tensor<B>,
+    v: &Tensor<B>,
+    scale: f32,
+    causal: bool,
+    window_size: Option<(u32, u32)>,
+    attention_mask: Option<&Tensor<B>>,
+    dropout: f32,
+) -> Result<Tensor<B>!> {
+    // This would call into the actual Flash Attention kernel
+    // Placeholder implementation using standard attention as fallback
+
+    let (batch, seq_q, num_heads, head_dim) = q.shape4()
+    let seq_kv = k.shape()[1]
+
+    // Transpose to [batch, heads, seq, dim]
+    let q = q.permute([0, 2, 1, 3])?
+    let k = k.permute([0, 2, 1, 3])?
+    let v = v.permute([0, 2, 1, 3])?
+
+    // Compute attention scores
+    let scores! = (q @ k.transpose(-2, -1)?) * scale
+
+    // Apply causal mask
+    let scores! = if causal {
+        let mask = create_causal_mask(seq_q, seq_kv)?
+        scores + mask
+    } else {
+        scores
+    }
+
+    // Apply window mask
+    let scores! = if let Some((left, right)) = window_size {
+        let mask = create_window_mask(seq_q, seq_kv, left, right)?
+        scores + mask
+    } else {
+        scores
+    }
+
+    // Apply attention mask
+    let scores! = if let Some(mask) = attention_mask {
+        scores + mask
+    } else {
+        scores
+    }
+
+    // Softmax
+    let attn! = scores.softmax(-1)?
+
+    // Apply dropout (training only)
+    let attn! = if dropout > 0.0 {
+        dropout_forward(&attn, dropout)?
+    } else {
+        attn
+    }
+
+    // Output
+    let out! = attn @ v
+
+    // Transpose back
+    out.permute([0, 2, 1, 3])
+}
+
+// ============================================================================
+// Memory-Efficient Attention
+// ============================================================================
+
+/// Memory-efficient attention (xformers-style)
+pub struct MemoryEfficientAttention<B: ComputeBackend> {
+    /// Block size for chunked computation
+    block_size: u32,
+    /// Use query chunking
+    chunk_query: bool,
+    _backend: std::marker::PhantomData<B>,
+}
+
+impl<B: ComputeBackend> MemoryEfficientAttention<B> {
+    pub fn new(block_size: u32) -> Self {
+        Self {
+            block_size,
+            chunk_query: true,
+            _backend: std::marker::PhantomData,
+        }
+    }
+
+    /// Forward pass with O(sqrt(n)) memory
+    pub fn forward(
+        &self,
+        q: &Tensor<B>,
+        k: &Tensor<B>,
+        v: &Tensor<B>,
+        attention_mask: Option<&Tensor<B>>,
+    ) -> Result<Tensor<B>!> {
+        let (batch, seq_q, num_heads, head_dim) = q.shape4()
+        let seq_kv = k.shape()[1]
+
+        let scale = 1.0 / (head_dim as f32).sqrt()
+
+        // Transpose to [batch, heads, seq, dim]
+        let q = q.permute([0, 2, 1, 3])?
+        let k = k.permute([0, 2, 1, 3])?
+        let v = v.permute([0, 2, 1, 3])?
+
+        // Process in blocks to save memory
+        let mut output_chunks: Vec<Tensor<B>> = Vec::new()
+
+        let num_q_blocks = (seq_q + self.block_size - 1) / self.block_size
+
+        for q_block_idx in 0..num_q_blocks {
+            let q_start = q_block_idx * self.block_size
+            let q_end = (q_start + self.block_size).min(seq_q)
+
+            let q_chunk = q.slice([.., .., q_start..q_end, ..])?
+
+            // Accumulate softmax numerator and denominator
+            let mut acc! = q.backend().zeros([batch, num_heads, q_end - q_start, head_dim])?
+            let mut lse! = q.backend().full([batch, num_heads, q_end - q_start], f32::NEG_INFINITY)?
+
+            let num_kv_blocks = (seq_kv + self.block_size - 1) / self.block_size
+
+            for kv_block_idx in 0..num_kv_blocks {
+                let kv_start = kv_block_idx * self.block_size
+                let kv_end = (kv_start + self.block_size).min(seq_kv)
+
+                let k_chunk = k.slice([.., .., kv_start..kv_end, ..])?
+                let v_chunk = v.slice([.., .., kv_start..kv_end, ..])?
+
+                // Compute block attention scores
+                let scores! = (q_chunk.clone() @ k_chunk.transpose(-2, -1)?) * scale
+
+                // Apply mask if present
+                let scores! = if let Some(mask) = attention_mask {
+                    let mask_chunk = mask.slice([.., .., q_start..q_end, kv_start..kv_end])?
+                    scores + mask_chunk
+                } else {
+                    scores
+                }
+
+                // Online softmax update
+                let block_max! = scores.max(-1, true)?
+                let new_max! = lse.clone().maximum(&block_max.squeeze(-1)?)?
+
+                // Update accumulator with rescaling
+                let old_scale! = (lse.clone() - new_max.clone()).exp()
+                let new_scale! = (block_max.squeeze(-1)? - new_max.clone()).exp()
+
+                let attn! = (scores - block_max).exp()
+                let block_out! = attn @ v_chunk
+
+                acc = acc * old_scale.unsqueeze(-1)? + block_out * new_scale.unsqueeze(-1)?
+                lse = new_max + (old_scale + attn.sum(-1)?).ln()
+            }
+
+            // Normalize by softmax denominator
+            let output_chunk! = acc / lse.unsqueeze(-1)?.exp()
+            output_chunks.push(output_chunk)
+        }
+
+        // Concatenate output chunks
+        let output! = concat_along_dim(&output_chunks, 2)?
+
+        // Transpose back
+        output.permute([0, 2, 1, 3])
+    }
+}
+
+// ============================================================================
+// Sliding Window Attention
+// ============================================================================
+
+/// Sliding window attention for long sequences
+pub struct SlidingWindowAttention<B: ComputeBackend> {
+    /// Window size (tokens to left and right)
+    window_size: u32,
+    /// Use causal masking within window
+    causal: bool,
+    _backend: std::marker::PhantomData<B>,
+}
+
+impl<B: ComputeBackend> SlidingWindowAttention<B> {
+    pub fn new(window_size: u32, causal: bool) -> Self {
+        Self {
+            window_size,
+            causal,
+            _backend: std::marker::PhantomData,
+        }
+    }
+
+    /// Forward pass with O(n * w) complexity
+    pub fn forward(
+        &self,
+        q: &Tensor<B>,
+        k: &Tensor<B>,
+        v: &Tensor<B>,
+    ) -> Result<Tensor<B>!> {
+        let (batch, seq_len, num_heads, head_dim) = q.shape4()
+        let scale = 1.0 / (head_dim as f32).sqrt()
+
+        // Create sliding window mask
+        let window_mask = create_window_mask(
+            seq_len,
+            seq_len,
+            if self.causal { 0 } else { self.window_size },
+            self.window_size,
+        )?
+
+        // Apply causal mask if needed
+        let mask! = if self.causal {
+            let causal_mask = create_causal_mask(seq_len, seq_len)?
+            window_mask + causal_mask
+        } else {
+            window_mask
+        }
+
+        // Standard attention with mask
+        let q = q.permute([0, 2, 1, 3])?
+        let k = k.permute([0, 2, 1, 3])?
+        let v = v.permute([0, 2, 1, 3])?
+
+        let scores! = (q @ k.transpose(-2, -1)?) * scale + mask
+        let attn! = scores.softmax(-1)?
+        let out! = attn @ v
+
+        out.permute([0, 2, 1, 3])
+    }
+}
+
+// ============================================================================
+// Backend Selection
+// ============================================================================
+
+/// Select best attention backend for device
+pub fn select_attention_backend<B: ComputeBackend>(
+    backend: &B,
+    seq_len: u32,
+    head_dim: u32,
+) -> AttentionBackend {
+    // Check Flash Attention availability
+    if let Some(cc) = backend.cuda_compute_capability() {
+        if cc >= (8, 0) && head_dim <= 256 {
+            return AttentionBackend::FlashAttention
+        }
+    }
+
+    // Check SDPA availability
+    if backend.supports_sdpa() {
+        return AttentionBackend::SDPA
+    }
+
+    // Use memory-efficient for long sequences
+    if seq_len > 4096 {
+        return AttentionBackend::MemoryEfficient
+    }
+
+    AttentionBackend::Naive
+}
+
+/// Apply attention with auto-selected backend
+pub fn apply_attention<B: ComputeBackend>(
+    q: &Tensor<B>,
+    k: &Tensor<B>,
+    v: &Tensor<B>,
+    config: &AttentionConfig,
+    backend: &B,
+) -> Result<Tensor<B>!> {
+    let actual_backend = match config.backend {
+        AttentionBackend::Auto => select_attention_backend(
+            backend,
+            q.shape()[1] as u32,
+            config.head_dim,
+        ),
+        other => other,
+    }
+
+    match actual_backend {
+        AttentionBackend::FlashAttention => {
+            let flash = FlashAttention::new(FlashAttentionConfig {
+                causal: config.causal,
+                window_size: config.window_size.map(|w| (w, w)),
+                dropout: config.dropout,
+                ..FlashAttentionConfig::default()
+            })
+            flash.forward(q, k, v, None)
+        },
+        AttentionBackend::MemoryEfficient => {
+            let mem_eff = MemoryEfficientAttention::new(256)
+            mem_eff.forward(q, k, v, None)
+        },
+        AttentionBackend::SDPA => {
+            scaled_dot_product_attention(q, k, v, config.causal)
+        },
+        AttentionBackend::Naive | AttentionBackend::Auto => {
+            naive_attention(q, k, v, config.causal)
+        },
+    }
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+fn create_causal_mask<B: ComputeBackend>(seq_q: u32, seq_kv: u32) -> Result<Tensor<B>!> {
+    // Returns mask where future positions are -inf
+    unimplemented!()
+}
+
+fn create_window_mask<B: ComputeBackend>(
+    seq_q: u32,
+    seq_kv: u32,
+    left: u32,
+    right: u32,
+) -> Result<Tensor<B>!> {
+    // Returns mask where positions outside window are -inf
+    unimplemented!()
+}
+
+fn dropout_forward<B: ComputeBackend>(x: &Tensor<B>, p: f32) -> Result<Tensor<B>!> {
+    unimplemented!()
+}
+
+fn concat_along_dim<B: ComputeBackend>(tensors: &[Tensor<B>], dim: u32) -> Result<Tensor<B>!> {
+    unimplemented!()
+}
+
+fn scaled_dot_product_attention<B: ComputeBackend>(
+    q: &Tensor<B>,
+    k: &Tensor<B>,
+    v: &Tensor<B>,
+    causal: bool,
+) -> Result<Tensor<B>!> {
+    // PyTorch SDPA implementation
+    unimplemented!()
+}
+
+fn naive_attention<B: ComputeBackend>(
+    q: &Tensor<B>,
+    k: &Tensor<B>,
+    v: &Tensor<B>,
+    causal: bool,
+) -> Result<Tensor<B>!> {
+    let (batch, seq_q, num_heads, head_dim) = q.shape4()
+    let scale = 1.0 / (head_dim as f32).sqrt()
+
+    let q = q.permute([0, 2, 1, 3])?
+    let k = k.permute([0, 2, 1, 3])?
+    let v = v.permute([0, 2, 1, 3])?
+
+    let scores! = (q @ k.transpose(-2, -1)?) * scale
+
+    let scores! = if causal {
+        let mask = create_causal_mask(seq_q, k.shape()[2] as u32)?
+        scores + mask
+    } else {
+        scores
+    }
+
+    let attn! = scores.softmax(-1)?
+    let out! = attn @ v
+
+    out.permute([0, 2, 1, 3])
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_flash_attention_config() {
+        let config = FlashAttentionConfig::causal()
+        assert!(config.causal)
+        assert!(config.window_size.is_none())
+    }
+
+    #[test]
+    fn test_window_config() {
+        let config = FlashAttentionConfig::with_window(128, 128)
+        assert_eq!(config.window_size, Some((128, 128)))
+    }
+
+    #[test]
+    fn test_backend_selection() {
+        // Would need actual backend to test
+    }
+}

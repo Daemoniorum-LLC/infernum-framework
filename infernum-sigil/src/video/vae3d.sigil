@@ -1,0 +1,1063 @@
+/// 3D Variational Autoencoder for Video
+///
+/// Implements spatiotemporal compression for video diffusion models.
+/// Supports both causal (autoregressive) and non-causal architectures.
+
+use crate::core::error::{InfernumError, Result}
+use crate::abaddon::backend::{Tensor, TensorOps, ComputeBackend}
+use crate::video::types::{VideoTensor, LatentVideo, VideoConfig}
+
+// ============================================================================
+// VAE3D Configuration
+// ============================================================================
+
+/// 3D VAE configuration
+pub struct VAE3DConfig {
+    /// Input channels (3 for RGB)
+    pub in_channels: u32,
+    /// Output channels (3 for RGB)
+    pub out_channels: u32,
+    /// Latent channels
+    pub latent_channels: u32,
+    /// Block output channels
+    pub block_out_channels: [u32],
+    /// Layers per block
+    pub layers_per_block: u32,
+    /// Temporal downsample factor
+    pub temporal_downsample: u32,
+    /// Spatial downsample factor
+    pub spatial_downsample: u32,
+    /// Use causal convolutions
+    pub causal: bool,
+    /// Latent scaling factor
+    pub scaling_factor: f32,
+    /// Use tiling for memory efficiency
+    pub use_tiling: bool,
+    /// Tile size for spatial dimension
+    pub tile_size: u32,
+    /// Tile overlap
+    pub tile_overlap: u32,
+}
+
+impl VAE3DConfig {
+    /// SVD VAE config (spatial only, temporal handled by U-Net)
+    pub fn svd() -> Self {
+        Self {
+            in_channels: 3,
+            out_channels: 3,
+            latent_channels: 4,
+            block_out_channels: [128, 256, 512, 512],
+            layers_per_block: 2,
+            temporal_downsample: 1,  // No temporal compression
+            spatial_downsample: 8,
+            causal: false,
+            scaling_factor: 0.18215,
+            use_tiling: true,
+            tile_size: 512,
+            tile_overlap: 64,
+        }
+    }
+
+    /// CogVideoX VAE config (4x temporal, 8x spatial)
+    pub fn cogvideox() -> Self {
+        Self {
+            in_channels: 3,
+            out_channels: 3,
+            latent_channels: 16,
+            block_out_channels: [128, 256, 256, 512],
+            layers_per_block: 2,
+            temporal_downsample: 4,
+            spatial_downsample: 8,
+            causal: true,
+            scaling_factor: 0.7,
+            use_tiling: true,
+            tile_size: 256,
+            tile_overlap: 32,
+        }
+    }
+
+    /// Mochi VAE config (6x temporal, 8x spatial)
+    pub fn mochi() -> Self {
+        Self {
+            in_channels: 3,
+            out_channels: 3,
+            latent_channels: 12,
+            block_out_channels: [128, 256, 512, 768],
+            layers_per_block: 2,
+            temporal_downsample: 6,
+            spatial_downsample: 8,
+            causal: true,
+            scaling_factor: 0.5,
+            use_tiling: true,
+            tile_size: 256,
+            tile_overlap: 32,
+        }
+    }
+
+    /// LTX-Video VAE config (8x temporal, 8x spatial, high latent dim)
+    pub fn ltx_video() -> Self {
+        Self {
+            in_channels: 3,
+            out_channels: 3,
+            latent_channels: 128,
+            block_out_channels: [256, 512, 512, 512],
+            layers_per_block: 2,
+            temporal_downsample: 8,
+            spatial_downsample: 8,
+            causal: true,
+            scaling_factor: 1.0,
+            use_tiling: true,
+            tile_size: 192,
+            tile_overlap: 24,
+        }
+    }
+}
+
+// ============================================================================
+// VAE3D
+// ============================================================================
+
+/// 3D VAE for video encoding/decoding
+pub struct VAE3D<B: ComputeBackend> {
+    /// Encoder
+    pub encoder: VAE3DEncoder<B>,
+    /// Decoder
+    pub decoder: VAE3DDecoder<B>,
+    /// Configuration
+    pub config: VAE3DConfig,
+    /// Backend
+    backend: B,
+}
+
+impl<B: ComputeBackend> VAE3D<B> {
+    /// Create new VAE3D
+    pub fn new(config: VAE3DConfig, backend: B) -> Result<Self> {
+        let encoder = VAE3DEncoder::new(&config, backend.clone())?
+        let decoder = VAE3DDecoder::new(&config, backend.clone())?
+
+        Ok(Self { encoder, decoder, config, backend })
+    }
+
+    /// Encode video to latents
+    pub fn encode(&self, video~: &VideoTensor<B>) -> Result<LatentDistribution3D<B>!> {
+        if self.config.use_tiling {
+            self.encode_tiled(video~)
+        } else {
+            self.encoder.forward(video~)
+        }
+    }
+
+    /// Decode latents to video
+    pub fn decode(&self, latents~: &LatentVideo<B>) -> Result<VideoTensor<B>!> {
+        // Scale latents
+        let scaled! = latents~ / self.config.scaling_factor
+
+        if self.config.use_tiling {
+            self.decode_tiled(&scaled)
+        } else {
+            self.decoder.forward(&scaled)
+        }
+    }
+
+    /// Encode with tiling for memory efficiency
+    fn encode_tiled(&self, video~: &VideoTensor<B>) -> Result<LatentDistribution3D<B>!> {
+        let (batch, frames, channels, height, width) = video~.shape5()
+        let tile_size = self.config.tile_size
+        let overlap = self.config.tile_overlap
+        let stride = tile_size - overlap
+
+        let latent_h = height / self.config.spatial_downsample
+        let latent_w = width / self.config.spatial_downsample
+        let latent_t = frames / self.config.temporal_downsample
+
+        let mut mean! = self.backend.zeros([batch, self.config.latent_channels, latent_t, latent_h, latent_w])?
+        let mut logvar! = self.backend.zeros([batch, self.config.latent_channels, latent_t, latent_h, latent_w])?
+        let mut count! = self.backend.zeros([batch, 1, latent_t, latent_h, latent_w])?
+
+        // Process spatial tiles
+        let mut y = 0
+        while y < height {
+            let mut x = 0
+            while x < width {
+                let y_end = (y + tile_size).min(height)
+                let x_end = (x + tile_size).min(width)
+
+                // Extract tile
+                let tile! = video~.slice([.., .., .., y..y_end, x..x_end])?
+
+                // Encode tile
+                let tile_dist! = self.encoder.forward(&tile)?
+
+                // Calculate output positions
+                let ly = y / self.config.spatial_downsample
+                let lx = x / self.config.spatial_downsample
+                let ly_end = y_end / self.config.spatial_downsample
+                let lx_end = x_end / self.config.spatial_downsample
+
+                // Accumulate with blending weights
+                let weight = create_blend_weight(tile_dist.mean.shape(), overlap / self.config.spatial_downsample, &self.backend)?
+
+                mean = paste_tile(&mean, &(tile_dist.mean * weight.clone()), ly, lx)?
+                logvar = paste_tile(&logvar, &(tile_dist.logvar * weight.clone()), ly, lx)?
+                count = paste_tile(&count, &weight, ly, lx)?
+
+                x += stride
+            }
+            y += stride
+        }
+
+        // Normalize by count
+        mean = mean / count.clone().clamp_min(1e-8)
+        logvar = logvar / count.clamp_min(1e-8)
+
+        Ok(LatentDistribution3D { mean, logvar })
+    }
+
+    /// Decode with tiling
+    fn decode_tiled(&self, latents~: &LatentVideo<B>) -> Result<VideoTensor<B>!> {
+        let (batch, channels, frames, latent_h, latent_w) = latents~.shape5()
+
+        let output_h = latent_h * self.config.spatial_downsample
+        let output_w = latent_w * self.config.spatial_downsample
+        let output_t = frames * self.config.temporal_downsample
+
+        let tile_size = self.config.tile_size / self.config.spatial_downsample
+        let overlap = self.config.tile_overlap / self.config.spatial_downsample
+        let stride = tile_size - overlap
+
+        let mut output! = self.backend.zeros([batch, output_t, 3, output_h, output_w])?
+        let mut count! = self.backend.zeros([batch, output_t, 1, output_h, output_w])?
+
+        let mut y = 0
+        while y < latent_h {
+            let mut x = 0
+            while x < latent_w {
+                let y_end = (y + tile_size).min(latent_h)
+                let x_end = (x + tile_size).min(latent_w)
+
+                // Extract latent tile
+                let tile! = latents~.slice([.., .., .., y..y_end, x..x_end])?
+
+                // Decode tile
+                let decoded! = self.decoder.forward(&tile)?
+
+                // Calculate output positions
+                let oy = y * self.config.spatial_downsample
+                let ox = x * self.config.spatial_downsample
+                let oy_end = y_end * self.config.spatial_downsample
+                let ox_end = x_end * self.config.spatial_downsample
+
+                // Blending weight
+                let weight = create_blend_weight(decoded.shape(), self.config.tile_overlap, &self.backend)?
+
+                output = paste_tile_decoded(&output, &(decoded * weight.clone()), oy, ox)?
+                count = paste_tile_decoded(&count, &weight, oy, ox)?
+
+                x += stride
+            }
+            y += stride
+        }
+
+        Ok(output / count.clamp_min(1e-8))
+    }
+
+    /// Load from checkpoint
+    pub fn load(path: str~, config: VAE3DConfig, backend: B) -> Result<Self> {
+        let state_dict = safetensors::load(path~)?
+        let mut model = Self::new(config, backend)?
+        model.load_state_dict(state_dict)?
+        Ok(model)
+    }
+
+    fn load_state_dict(&mut self, state_dict: Map<str, Tensor<B>>) -> Result<()> {
+        self.encoder.load_state_dict(&state_dict, "encoder")?
+        self.decoder.load_state_dict(&state_dict, "decoder")?
+        Ok(())
+    }
+}
+
+// ============================================================================
+// VAE3D Encoder
+// ============================================================================
+
+/// 3D VAE Encoder
+pub struct VAE3DEncoder<B: ComputeBackend> {
+    /// Input convolution
+    conv_in: CausalConv3d<B>,
+    /// Down blocks
+    down_blocks: Vec<DownBlock3D<B>>,
+    /// Mid block
+    mid_block: MidBlock3D<B>,
+    /// Output convolution
+    conv_out: CausalConv3d<B>,
+    /// Quant conv (to latent distribution)
+    quant_conv: CausalConv3d<B>,
+    /// Config
+    config: VAE3DConfig,
+}
+
+impl<B: ComputeBackend> VAE3DEncoder<B> {
+    pub fn new(config: &VAE3DConfig, backend: B) -> Result<Self> {
+        let conv_in = CausalConv3d::new(
+            config.in_channels,
+            config.block_out_channels[0],
+            3,
+            config.causal,
+            backend.clone(),
+        )?
+
+        let mut down_blocks = Vec::new()
+        let mut in_channels = config.block_out_channels[0]
+
+        for (i, &out_channels) in config.block_out_channels.iter().enumerate() {
+            let is_last = i == config.block_out_channels.len() - 1
+
+            // Determine temporal downsample for this block
+            let temporal_down = if i < 2 && config.temporal_downsample > 1 {
+                2  // Downsample in first blocks
+            } else {
+                1
+            }
+
+            let block = DownBlock3D::new(
+                in_channels,
+                out_channels,
+                config.layers_per_block,
+                !is_last,  // add downsampler
+                temporal_down,
+                config.causal,
+                backend.clone(),
+            )?
+            down_blocks.push(block)
+            in_channels = out_channels
+        }
+
+        let mid_block = MidBlock3D::new(in_channels, config.causal, backend.clone())?
+
+        let conv_out = CausalConv3d::new(
+            in_channels,
+            in_channels,
+            3,
+            config.causal,
+            backend.clone(),
+        )?
+
+        // Output 2x latent channels for mean and logvar
+        let quant_conv = CausalConv3d::new(
+            in_channels,
+            config.latent_channels * 2,
+            1,
+            config.causal,
+            backend,
+        )?
+
+        Ok(Self {
+            conv_in,
+            down_blocks,
+            mid_block,
+            conv_out,
+            quant_conv,
+            config: config.clone(),
+        })
+    }
+
+    pub fn forward(&self, x~: &VideoTensor<B>) -> Result<LatentDistribution3D<B>!> {
+        // x: [batch, frames, channels, height, width]
+        // Rearrange to [batch, channels, frames, height, width] for 3D conv
+        let x! = x~.permute([0, 2, 1, 3, 4])?
+
+        let mut h! = self.conv_in.forward(&x)?
+
+        for block in self.down_blocks.iter() {
+            h = block.forward(&h)?
+        }
+
+        h = self.mid_block.forward(&h)?
+        h = self.conv_out.forward(&h)?
+
+        // Get mean and logvar
+        let moments! = self.quant_conv.forward(&h)?
+        let (mean!, logvar!) = moments.chunk(2, 1)?
+
+        Ok(LatentDistribution3D { mean, logvar })
+    }
+
+    pub fn load_state_dict(&mut self, state_dict: &Map<str, Tensor<B>>, prefix: &str) -> Result<()> {
+        self.conv_in.load_state_dict(state_dict, &format!("{}.conv_in", prefix))?
+        for (i, block) in self.down_blocks.iter_mut().enumerate() {
+            block.load_state_dict(state_dict, &format!("{}.down_blocks.{}", prefix, i))?
+        }
+        self.mid_block.load_state_dict(state_dict, &format!("{}.mid_block", prefix))?
+        self.conv_out.load_state_dict(state_dict, &format!("{}.conv_norm_out", prefix))?
+        self.quant_conv.load_state_dict(state_dict, &format!("{}.quant_conv", prefix))?
+        Ok(())
+    }
+}
+
+// ============================================================================
+// VAE3D Decoder
+// ============================================================================
+
+/// 3D VAE Decoder
+pub struct VAE3DDecoder<B: ComputeBackend> {
+    /// Post-quant conv
+    post_quant_conv: CausalConv3d<B>,
+    /// Input conv
+    conv_in: CausalConv3d<B>,
+    /// Mid block
+    mid_block: MidBlock3D<B>,
+    /// Up blocks
+    up_blocks: Vec<UpBlock3D<B>>,
+    /// Output norm
+    conv_norm_out: GroupNorm3D<B>,
+    /// Output conv
+    conv_out: CausalConv3d<B>,
+    /// Config
+    config: VAE3DConfig,
+}
+
+impl<B: ComputeBackend> VAE3DDecoder<B> {
+    pub fn new(config: &VAE3DConfig, backend: B) -> Result<Self> {
+        let reversed_channels: Vec<u32> = config.block_out_channels.iter().rev().cloned().collect()
+
+        let post_quant_conv = CausalConv3d::new(
+            config.latent_channels,
+            reversed_channels[0],
+            1,
+            config.causal,
+            backend.clone(),
+        )?
+
+        let conv_in = CausalConv3d::new(
+            reversed_channels[0],
+            reversed_channels[0],
+            3,
+            config.causal,
+            backend.clone(),
+        )?
+
+        let mid_block = MidBlock3D::new(reversed_channels[0], config.causal, backend.clone())?
+
+        let mut up_blocks = Vec::new()
+        let mut in_channels = reversed_channels[0]
+
+        for (i, &out_channels) in reversed_channels.iter().enumerate() {
+            let is_last = i == reversed_channels.len() - 1
+
+            // Determine temporal upsample for this block
+            let temporal_up = if i >= reversed_channels.len() - 2 && config.temporal_downsample > 1 {
+                2  // Upsample in last blocks
+            } else {
+                1
+            }
+
+            let block = UpBlock3D::new(
+                in_channels,
+                out_channels,
+                config.layers_per_block,
+                !is_last,  // add upsampler
+                temporal_up,
+                config.causal,
+                backend.clone(),
+            )?
+            up_blocks.push(block)
+            in_channels = out_channels
+        }
+
+        let conv_norm_out = GroupNorm3D::new(32, in_channels, backend.clone())?
+        let conv_out = CausalConv3d::new(
+            in_channels,
+            config.out_channels,
+            3,
+            config.causal,
+            backend,
+        )?
+
+        Ok(Self {
+            post_quant_conv,
+            conv_in,
+            mid_block,
+            up_blocks,
+            conv_norm_out,
+            conv_out,
+            config: config.clone(),
+        })
+    }
+
+    pub fn forward(&self, z~: &LatentVideo<B>) -> Result<VideoTensor<B>!> {
+        let mut h! = self.post_quant_conv.forward(z~)?
+        h = self.conv_in.forward(&h)?
+        h = self.mid_block.forward(&h)?
+
+        for block in self.up_blocks.iter() {
+            h = block.forward(&h)?
+        }
+
+        h = self.conv_norm_out.forward(&h)?
+        h = h.silu()
+        h = self.conv_out.forward(&h)?
+
+        // Rearrange back to [batch, frames, channels, height, width]
+        h.permute([0, 2, 1, 3, 4])
+    }
+
+    pub fn load_state_dict(&mut self, state_dict: &Map<str, Tensor<B>>, prefix: &str) -> Result<()> {
+        self.post_quant_conv.load_state_dict(state_dict, &format!("{}.post_quant_conv", prefix))?
+        self.conv_in.load_state_dict(state_dict, &format!("{}.conv_in", prefix))?
+        self.mid_block.load_state_dict(state_dict, &format!("{}.mid_block", prefix))?
+        for (i, block) in self.up_blocks.iter_mut().enumerate() {
+            block.load_state_dict(state_dict, &format!("{}.up_blocks.{}", prefix, i))?
+        }
+        self.conv_norm_out.load_state_dict(state_dict, &format!("{}.conv_norm_out", prefix))?
+        self.conv_out.load_state_dict(state_dict, &format!("{}.conv_out", prefix))?
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Latent Distribution
+// ============================================================================
+
+/// 3D Latent distribution (Gaussian)
+pub struct LatentDistribution3D<B: ComputeBackend> {
+    /// Mean of distribution
+    pub mean!: LatentVideo<B>,
+    /// Log variance
+    pub logvar!: LatentVideo<B>,
+}
+
+impl<B: ComputeBackend> LatentDistribution3D<B> {
+    /// Sample using reparameterization trick
+    pub fn sample(&self, backend: &B) -> Result<LatentVideo<B>!> {
+        let std = (self.logvar.clone() * 0.5).exp()
+        let noise = backend.randn_like(&self.mean)?
+        Ok(self.mean.clone() + std * noise)
+    }
+
+    /// Get mode (mean)
+    pub fn mode(&self) -> LatentVideo<B> {
+        self.mean.clone()
+    }
+
+    /// KL divergence from standard normal
+    pub fn kl_divergence(&self) -> Tensor<B>! {
+        // KL = -0.5 * sum(1 + log_var - mean^2 - exp(log_var))
+        let kl = -0.5 * (1.0 + self.logvar.clone() - self.mean.clone().square() - self.logvar.clone().exp())
+        kl.sum()
+    }
+}
+
+// ============================================================================
+// Causal Conv3D
+// ============================================================================
+
+/// Causal 3D convolution for temporal modeling
+pub struct CausalConv3d<B: ComputeBackend> {
+    /// Convolution weights
+    weight: Tensor<B>,
+    /// Bias
+    bias: Option<Tensor<B>>,
+    /// Kernel size
+    kernel_size: (u32, u32, u32),
+    /// Stride
+    stride: (u32, u32, u32),
+    /// Padding
+    padding: (u32, u32, u32),
+    /// Use causal padding
+    causal: bool,
+}
+
+impl<B: ComputeBackend> CausalConv3d<B> {
+    pub fn new(
+        in_channels: u32,
+        out_channels: u32,
+        kernel_size: u32,
+        causal: bool,
+        backend: B,
+    ) -> Result<Self> {
+        let k = kernel_size
+        let weight = backend.randn([out_channels, in_channels, k, k, k])?
+            * (2.0 / (in_channels * k * k * k) as f32).sqrt()
+
+        let bias = Some(backend.zeros([out_channels])?)
+
+        let spatial_pad = (k - 1) / 2
+        let temporal_pad = if causal { k - 1 } else { (k - 1) / 2 }
+
+        Ok(Self {
+            weight,
+            bias,
+            kernel_size: (k, k, k),
+            stride: (1, 1, 1),
+            padding: (temporal_pad, spatial_pad, spatial_pad),
+            causal,
+        })
+    }
+
+    pub fn forward(&self, x: &Tensor<B>) -> Result<Tensor<B>!> {
+        let mut padded! = if self.causal {
+            // Causal padding: pad only at the beginning of temporal dimension
+            let (t_pad, h_pad, w_pad) = self.padding
+            pad_3d(x, [t_pad, 0, h_pad, h_pad, w_pad, w_pad])?
+        } else {
+            // Symmetric padding
+            let (t_pad, h_pad, w_pad) = self.padding
+            pad_3d(x, [t_pad, t_pad, h_pad, h_pad, w_pad, w_pad])?
+        }
+
+        let out! = conv3d(&padded, &self.weight, self.stride)?
+
+        if let Some(ref bias) = self.bias {
+            Ok(out + bias.reshape([1, -1, 1, 1, 1])?)
+        } else {
+            Ok(out)
+        }
+    }
+
+    pub fn load_state_dict(&mut self, state_dict: &Map<str, Tensor<B>>, prefix: &str) -> Result<()> {
+        if let Some(w) = state_dict.get(&format!("{}.weight", prefix)) {
+            self.weight = w.clone()
+        }
+        if let Some(b) = state_dict.get(&format!("{}.bias", prefix)) {
+            self.bias = Some(b.clone())
+        }
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Temporal Compressor
+// ============================================================================
+
+/// Temporal compression module
+pub struct TemporalCompressor<B: ComputeBackend> {
+    /// Compression convolutions
+    compress_convs: Vec<CausalConv3d<B>>,
+    /// Compression factor
+    factor: u32,
+}
+
+impl<B: ComputeBackend> TemporalCompressor<B> {
+    pub fn new(channels: u32, factor: u32, causal: bool, backend: B) -> Result<Self> {
+        let num_layers = (factor as f32).log2() as u32
+
+        let compress_convs: Vec<CausalConv3d<B>> = (0..num_layers)
+            τ{ |_| CausalConv3d::new(channels, channels, 3, causal, backend.clone()) }
+            .collect::<Result<_>>()?
+
+        Ok(Self { compress_convs, factor })
+    }
+
+    /// Compress temporal dimension
+    pub fn compress(&self, x: &Tensor<B>) -> Result<Tensor<B>!> {
+        let mut h! = x.clone()
+
+        for conv in self.compress_convs.iter() {
+            h = conv.forward(&h)?
+            // Temporal stride 2
+            h = h.slice([.., .., ::2, .., ..])?
+        }
+
+        Ok(h)
+    }
+
+    /// Decompress temporal dimension
+    pub fn decompress(&self, x: &Tensor<B>) -> Result<Tensor<B>!> {
+        let mut h! = x.clone()
+
+        for conv in self.compress_convs.iter().rev() {
+            // Temporal upsample
+            h = upsample_temporal(&h, 2)?
+            h = conv.forward(&h)?
+        }
+
+        Ok(h)
+    }
+}
+
+// ============================================================================
+// Helper Blocks
+// ============================================================================
+
+/// 3D Down block
+pub struct DownBlock3D<B: ComputeBackend> {
+    resnets: Vec<ResBlock3D<B>>,
+    downsampler: Option<Downsample3D<B>>,
+}
+
+impl<B: ComputeBackend> DownBlock3D<B> {
+    pub fn new(
+        in_channels: u32,
+        out_channels: u32,
+        num_layers: u32,
+        add_downsample: bool,
+        temporal_downsample: u32,
+        causal: bool,
+        backend: B,
+    ) -> Result<Self> {
+        let mut resnets = Vec::new()
+        for i in 0..num_layers {
+            let in_ch = if i == 0 { in_channels } else { out_channels }
+            resnets.push(ResBlock3D::new(in_ch, out_channels, causal, backend.clone())?)
+        }
+
+        let downsampler = if add_downsample {
+            Some(Downsample3D::new(out_channels, temporal_downsample, backend)?)
+        } else {
+            None
+        }
+
+        Ok(Self { resnets, downsampler })
+    }
+
+    pub fn forward(&self, x: &Tensor<B>) -> Result<Tensor<B>!> {
+        let mut h! = x.clone()
+        for resnet in self.resnets.iter() {
+            h = resnet.forward(&h)?
+        }
+        if let Some(ref down) = self.downsampler {
+            h = down.forward(&h)?
+        }
+        Ok(h)
+    }
+
+    pub fn load_state_dict(&mut self, state_dict: &Map<str, Tensor<B>>, prefix: &str) -> Result<()> {
+        for (i, resnet) in self.resnets.iter_mut().enumerate() {
+            resnet.load_state_dict(state_dict, &format!("{}.resnets.{}", prefix, i))?
+        }
+        if let Some(ref mut down) = self.downsampler {
+            down.load_state_dict(state_dict, &format!("{}.downsamplers.0", prefix))?
+        }
+        Ok(())
+    }
+}
+
+/// 3D Up block
+pub struct UpBlock3D<B: ComputeBackend> {
+    resnets: Vec<ResBlock3D<B>>,
+    upsampler: Option<Upsample3D<B>>,
+}
+
+impl<B: ComputeBackend> UpBlock3D<B> {
+    pub fn new(
+        in_channels: u32,
+        out_channels: u32,
+        num_layers: u32,
+        add_upsample: bool,
+        temporal_upsample: u32,
+        causal: bool,
+        backend: B,
+    ) -> Result<Self> {
+        let mut resnets = Vec::new()
+        for i in 0..num_layers {
+            let in_ch = if i == 0 { in_channels } else { out_channels }
+            resnets.push(ResBlock3D::new(in_ch, out_channels, causal, backend.clone())?)
+        }
+
+        let upsampler = if add_upsample {
+            Some(Upsample3D::new(out_channels, temporal_upsample, backend)?)
+        } else {
+            None
+        }
+
+        Ok(Self { resnets, upsampler })
+    }
+
+    pub fn forward(&self, x: &Tensor<B>) -> Result<Tensor<B>!> {
+        let mut h! = x.clone()
+        for resnet in self.resnets.iter() {
+            h = resnet.forward(&h)?
+        }
+        if let Some(ref up) = self.upsampler {
+            h = up.forward(&h)?
+        }
+        Ok(h)
+    }
+
+    pub fn load_state_dict(&mut self, state_dict: &Map<str, Tensor<B>>, prefix: &str) -> Result<()> {
+        for (i, resnet) in self.resnets.iter_mut().enumerate() {
+            resnet.load_state_dict(state_dict, &format!("{}.resnets.{}", prefix, i))?
+        }
+        if let Some(ref mut up) = self.upsampler {
+            up.load_state_dict(state_dict, &format!("{}.upsamplers.0", prefix))?
+        }
+        Ok(())
+    }
+}
+
+/// 3D Mid block
+pub struct MidBlock3D<B: ComputeBackend> {
+    resnet_1: ResBlock3D<B>,
+    attn: SpatialAttention3D<B>,
+    resnet_2: ResBlock3D<B>,
+}
+
+impl<B: ComputeBackend> MidBlock3D<B> {
+    pub fn new(channels: u32, causal: bool, backend: B) -> Result<Self> {
+        Ok(Self {
+            resnet_1: ResBlock3D::new(channels, channels, causal, backend.clone())?,
+            attn: SpatialAttention3D::new(channels, backend.clone())?,
+            resnet_2: ResBlock3D::new(channels, channels, causal, backend)?,
+        })
+    }
+
+    pub fn forward(&self, x: &Tensor<B>) -> Result<Tensor<B>!> {
+        let h! = self.resnet_1.forward(x)?
+        let h! = self.attn.forward(&h)?
+        self.resnet_2.forward(&h)
+    }
+
+    pub fn load_state_dict(&mut self, state_dict: &Map<str, Tensor<B>>, prefix: &str) -> Result<()> {
+        self.resnet_1.load_state_dict(state_dict, &format!("{}.resnets.0", prefix))?
+        self.attn.load_state_dict(state_dict, &format!("{}.attentions.0", prefix))?
+        self.resnet_2.load_state_dict(state_dict, &format!("{}.resnets.1", prefix))?
+        Ok(())
+    }
+}
+
+/// 3D ResNet block
+struct ResBlock3D<B: ComputeBackend> {
+    norm1: GroupNorm3D<B>,
+    conv1: CausalConv3d<B>,
+    norm2: GroupNorm3D<B>,
+    conv2: CausalConv3d<B>,
+    skip: Option<CausalConv3d<B>>,
+}
+
+impl<B: ComputeBackend> ResBlock3D<B> {
+    fn new(in_channels: u32, out_channels: u32, causal: bool, backend: B) -> Result<Self> {
+        let skip = if in_channels != out_channels {
+            Some(CausalConv3d::new(in_channels, out_channels, 1, causal, backend.clone())?)
+        } else {
+            None
+        }
+
+        Ok(Self {
+            norm1: GroupNorm3D::new(32, in_channels, backend.clone())?,
+            conv1: CausalConv3d::new(in_channels, out_channels, 3, causal, backend.clone())?,
+            norm2: GroupNorm3D::new(32, out_channels, backend.clone())?,
+            conv2: CausalConv3d::new(out_channels, out_channels, 3, causal, backend)?,
+            skip,
+        })
+    }
+
+    fn forward(&self, x: &Tensor<B>) -> Result<Tensor<B>!> {
+        let h! = self.norm1.forward(x)?.silu()
+        let h! = self.conv1.forward(&h)?
+        let h! = self.norm2.forward(&h)?.silu()
+        let h! = self.conv2.forward(&h)?
+
+        let skip! = if let Some(ref s) = self.skip {
+            s.forward(x)?
+        } else {
+            x.clone()
+        }
+
+        Ok(h + skip)
+    }
+
+    fn load_state_dict(&mut self, state_dict: &Map<str, Tensor<B>>, prefix: &str) -> Result<()> {
+        self.norm1.load_state_dict(state_dict, &format!("{}.norm1", prefix))?
+        self.conv1.load_state_dict(state_dict, &format!("{}.conv1", prefix))?
+        self.norm2.load_state_dict(state_dict, &format!("{}.norm2", prefix))?
+        self.conv2.load_state_dict(state_dict, &format!("{}.conv2", prefix))?
+        if let Some(ref mut s) = self.skip {
+            s.load_state_dict(state_dict, &format!("{}.conv_shortcut", prefix))?
+        }
+        Ok(())
+    }
+}
+
+/// Spatial attention for 3D
+struct SpatialAttention3D<B: ComputeBackend> {
+    norm: GroupNorm3D<B>,
+    qkv: CausalConv3d<B>,
+    proj: CausalConv3d<B>,
+    num_heads: u32,
+}
+
+impl<B: ComputeBackend> SpatialAttention3D<B> {
+    fn new(channels: u32, backend: B) -> Result<Self> {
+        let num_heads = channels / 64
+        Ok(Self {
+            norm: GroupNorm3D::new(32, channels, backend.clone())?,
+            qkv: CausalConv3d::new(channels, channels * 3, 1, false, backend.clone())?,
+            proj: CausalConv3d::new(channels, channels, 1, false, backend)?,
+            num_heads,
+        })
+    }
+
+    fn forward(&self, x: &Tensor<B>) -> Result<Tensor<B>!> {
+        let residual = x.clone()
+        let h! = self.norm.forward(x)?
+
+        let (batch, c, t, h_dim, w) = h.shape5()
+        let head_dim = c / self.num_heads
+
+        // Apply attention per frame (spatial attention)
+        let qkv! = self.qkv.forward(&h)?
+        let (q, k, v) = qkv.chunk(3, 1)?
+
+        // Reshape for attention: [batch*t, heads, h*w, head_dim]
+        let q = q.reshape([batch * t, self.num_heads, h_dim * w, head_dim])?
+        let k = k.reshape([batch * t, self.num_heads, h_dim * w, head_dim])?
+        let v = v.reshape([batch * t, self.num_heads, h_dim * w, head_dim])?
+
+        // Scaled dot-product attention
+        let scale = (head_dim as f32).sqrt()
+        let attn! = (q @ k.transpose(-2, -1)?) / scale
+        let attn! = attn.softmax(-1)?
+        let out! = attn @ v
+
+        // Reshape back
+        let out = out.reshape([batch, c, t, h_dim, w])?
+        let out! = self.proj.forward(&out)?
+
+        Ok(out + residual)
+    }
+
+    fn load_state_dict(&mut self, state_dict: &Map<str, Tensor<B>>, prefix: &str) -> Result<()> {
+        self.norm.load_state_dict(state_dict, &format!("{}.group_norm", prefix))?
+        self.qkv.load_state_dict(state_dict, &format!("{}.to_qkv", prefix))?
+        self.proj.load_state_dict(state_dict, &format!("{}.to_out", prefix))?
+        Ok(())
+    }
+}
+
+/// 3D Downsample
+struct Downsample3D<B: ComputeBackend> {
+    conv: CausalConv3d<B>,
+    temporal_factor: u32,
+}
+
+impl<B: ComputeBackend> Downsample3D<B> {
+    fn new(channels: u32, temporal_factor: u32, backend: B) -> Result<Self> {
+        Ok(Self {
+            conv: CausalConv3d::new(channels, channels, 3, false, backend)?,
+            temporal_factor,
+        })
+    }
+
+    fn forward(&self, x: &Tensor<B>) -> Result<Tensor<B>!> {
+        // Spatial downsample with stride 2
+        let h! = self.conv.forward(x)?
+        let h! = h.slice([.., .., .., ::2, ::2])?  // Spatial stride 2
+
+        // Temporal downsample if needed
+        if self.temporal_factor > 1 {
+            Ok(h.slice([.., .., ::self.temporal_factor, .., ..])?)
+        } else {
+            Ok(h)
+        }
+    }
+
+    fn load_state_dict(&mut self, state_dict: &Map<str, Tensor<B>>, prefix: &str) -> Result<()> {
+        self.conv.load_state_dict(state_dict, &format!("{}.conv", prefix))
+    }
+}
+
+/// 3D Upsample
+struct Upsample3D<B: ComputeBackend> {
+    conv: CausalConv3d<B>,
+    temporal_factor: u32,
+}
+
+impl<B: ComputeBackend> Upsample3D<B> {
+    fn new(channels: u32, temporal_factor: u32, backend: B) -> Result<Self> {
+        Ok(Self {
+            conv: CausalConv3d::new(channels, channels, 3, false, backend)?,
+            temporal_factor,
+        })
+    }
+
+    fn forward(&self, x: &Tensor<B>) -> Result<Tensor<B>!> {
+        let (batch, c, t, h, w) = x.shape5()
+
+        // Temporal upsample if needed
+        let h! = if self.temporal_factor > 1 {
+            upsample_temporal(x, self.temporal_factor)?
+        } else {
+            x.clone()
+        }
+
+        // Spatial upsample with nearest-neighbor then conv
+        let h! = interpolate_3d(&h, h * 2, w * 2)?
+        self.conv.forward(&h)
+    }
+
+    fn load_state_dict(&mut self, state_dict: &Map<str, Tensor<B>>, prefix: &str) -> Result<()> {
+        self.conv.load_state_dict(state_dict, &format!("{}.conv", prefix))
+    }
+}
+
+/// 3D Group normalization
+struct GroupNorm3D<B: ComputeBackend> {
+    weight: Tensor<B>,
+    bias: Tensor<B>,
+    num_groups: u32,
+    num_channels: u32,
+    eps: f32,
+}
+
+impl<B: ComputeBackend> GroupNorm3D<B> {
+    fn new(num_groups: u32, num_channels: u32, backend: B) -> Result<Self> {
+        Ok(Self {
+            weight: backend.ones([num_channels])?,
+            bias: backend.zeros([num_channels])?,
+            num_groups,
+            num_channels,
+            eps: 1e-5,
+        })
+    }
+
+    fn forward(&self, x: &Tensor<B>) -> Result<Tensor<B>!> {
+        // Group norm over channels
+        group_norm_3d(x, self.num_groups, &self.weight, &self.bias, self.eps)
+    }
+
+    fn load_state_dict(&mut self, state_dict: &Map<str, Tensor<B>>, prefix: &str) -> Result<()> {
+        if let Some(w) = state_dict.get(&format!("{}.weight", prefix)) {
+            self.weight = w.clone()
+        }
+        if let Some(b) = state_dict.get(&format!("{}.bias", prefix)) {
+            self.bias = b.clone()
+        }
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+fn pad_3d<B: ComputeBackend>(x: &Tensor<B>, padding: [u32; 6]) -> Result<Tensor<B>!> { unimplemented!() }
+fn conv3d<B: ComputeBackend>(x: &Tensor<B>, w: &Tensor<B>, stride: (u32, u32, u32)) -> Result<Tensor<B>!> { unimplemented!() }
+fn upsample_temporal<B: ComputeBackend>(x: &Tensor<B>, factor: u32) -> Result<Tensor<B>!> { unimplemented!() }
+fn interpolate_3d<B: ComputeBackend>(x: &Tensor<B>, h: u32, w: u32) -> Result<Tensor<B>!> { unimplemented!() }
+fn group_norm_3d<B: ComputeBackend>(x: &Tensor<B>, groups: u32, w: &Tensor<B>, b: &Tensor<B>, eps: f32) -> Result<Tensor<B>!> { unimplemented!() }
+fn create_blend_weight<B: ComputeBackend>(shape: &[u32], overlap: u32, backend: &B) -> Result<Tensor<B>!> { unimplemented!() }
+fn paste_tile<B: ComputeBackend>(canvas: &Tensor<B>, tile: &Tensor<B>, y: u32, x: u32) -> Result<Tensor<B>!> { unimplemented!() }
+fn paste_tile_decoded<B: ComputeBackend>(canvas: &Tensor<B>, tile: &Tensor<B>, y: u32, x: u32) -> Result<Tensor<B>!> { unimplemented!() }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_vae3d_config() {
+        let config = VAE3DConfig::cogvideox()
+        assert_eq!(config.temporal_downsample, 4)
+        assert_eq!(config.latent_channels, 16)
+    }
+
+    #[test]
+    fn test_vae3d_config_mochi() {
+        let config = VAE3DConfig::mochi()
+        assert_eq!(config.temporal_downsample, 6)
+        assert_eq!(config.latent_channels, 12)
+    }
+}

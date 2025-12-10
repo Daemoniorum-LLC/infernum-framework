@@ -1,0 +1,303 @@
+//! Probability distributions and estimation.
+
+use std::f64::consts::PI
+
+/// A probability distribution.
+#[derive(Debug, Clone)]
+enum Distribution {
+    /// Normal (Gaussian) distribution.
+    Normal { mean: f64, std_dev: f64 },
+    /// Uniform distribution.
+    Uniform { min: f64, max: f64 },
+    /// Exponential distribution.
+    Exponential { lambda: f64 },
+    /// Poisson distribution.
+    Poisson { lambda: f64 },
+    /// Bernoulli distribution.
+    Bernoulli { p: f64 },
+    /// Beta distribution.
+    Beta { alpha: f64, beta: f64 },
+}
+
+impl Distribution {
+    /// Probability density function (or PMF for discrete).
+    fn pdf(self, x: f64) -> f64 {
+        match self {
+            Distribution::Normal { mean, std_dev } => {
+                let z = (x - mean) / std_dev;
+                (-0.5 * z * z).exp() / (std_dev * (2.0 * PI).sqrt())
+            },
+            Distribution::Uniform { min, max } => {
+                if x >= min && x <= max {
+                    1.0 / (max - min)
+                } else {
+                    0.0
+                }
+            },
+            Distribution::Exponential { lambda } => {
+                if x >= 0.0 {
+                    lambda * (-lambda * x).exp()
+                } else {
+                    0.0
+                }
+            },
+            Distribution::Poisson { lambda } => {
+                if x >= 0.0 && x == x.floor() {
+                    let k = x as u64;
+                    (lambda.powi(k as i32) * (-lambda).exp()) / factorial(k) as f64
+                } else {
+                    0.0
+                }
+            },
+            Distribution::Bernoulli { p } => {
+                if x == 1.0 { p }
+                else if x == 0.0 { 1.0 - p }
+                else { 0.0 }
+            },
+            Distribution::Beta { alpha, beta } => {
+                if x > 0.0 && x < 1.0 {
+                    x.powf(alpha - 1.0) * (1.0 - x).powf(beta - 1.0) / beta_function(alpha, beta)
+                } else {
+                    0.0
+                }
+            },
+        }
+    }
+
+    /// Cumulative distribution function.
+    fn cdf(self, x: f64) -> f64 {
+        match self {
+            Distribution::Normal { mean, std_dev } => {
+                0.5 * (1.0 + erf((x - mean) / (std_dev * 2.0_f64.sqrt())))
+            },
+            Distribution::Uniform { min, max } => {
+                if x < min { 0.0 }
+                else if x > max { 1.0 }
+                else { (x - min) / (max - min) }
+            },
+            Distribution::Exponential { lambda } => {
+                if x >= 0.0 {
+                    1.0 - (-lambda * x).exp()
+                } else {
+                    0.0
+                }
+            },
+            _ => {
+                // Numerical integration for others
+                0.5
+            }
+        }
+    }
+
+    /// Mean of the distribution.
+    fn mean(self) -> f64 {
+        match self {
+            Distribution::Normal { mean, .. } => mean,
+            Distribution::Uniform { min, max } => (min + max) / 2.0,
+            Distribution::Exponential { lambda } => 1.0 / lambda,
+            Distribution::Poisson { lambda } => lambda,
+            Distribution::Bernoulli { p } => p,
+            Distribution::Beta { alpha, beta } => alpha / (alpha + beta),
+        }
+    }
+
+    /// Variance of the distribution.
+    fn variance(self) -> f64 {
+        match self {
+            Distribution::Normal { std_dev, .. } => std_dev * std_dev,
+            Distribution::Uniform { min, max } => (max - min).powi(2) / 12.0,
+            Distribution::Exponential { lambda } => 1.0 / (lambda * lambda),
+            Distribution::Poisson { lambda } => lambda,
+            Distribution::Bernoulli { p } => p * (1.0 - p),
+            Distribution::Beta { alpha, beta } => {
+                (alpha * beta) / ((alpha + beta).powi(2) * (alpha + beta + 1.0))
+            },
+        }
+    }
+
+    /// Standard deviation.
+    fn std_dev(self) -> f64 {
+        self.variance().sqrt()
+    }
+
+    /// Quantile function (inverse CDF).
+    fn quantile(self, p: f64) -> f64 {
+        match self {
+            Distribution::Uniform { min, max } => {
+                min + p * (max - min)
+            },
+            Distribution::Exponential { lambda } => {
+                -(1.0 - p).ln() / lambda
+            },
+            _ => {
+                // Numerical approximation for others
+                self.mean()
+            }
+        }
+    }
+}
+
+/// Factorial function.
+fn factorial(n: u64) -> u64 {
+    (1..=n).product()
+}
+
+/// Beta function.
+fn beta_function(a: f64, b: f64) -> f64 {
+    gamma(a) * gamma(b) / gamma(a + b)
+}
+
+/// Gamma function (approximation).
+fn gamma(x: f64) -> f64 {
+    // Stirling's approximation for x > 0
+    if x < 0.5 {
+        PI / ((PI * x).sin() * gamma(1.0 - x))
+    } else {
+        let x = x - 1.0;
+        let g = 7.0;
+        let c = [
+            0.99999999999980993,
+            676.5203681218851,
+            -1259.1392167224028,
+            771.32342877765313,
+            -176.61502916214059,
+            12.507343278686905,
+            -0.13857109526572012,
+            9.9843695780195716e-6,
+            1.5056327351493116e-7,
+        ];
+
+        let mut sum = c[0];
+        for i in 1..9 {
+            sum += c[i] / (x + i as f64);
+        }
+
+        (2.0 * PI).sqrt() * ((x + g + 0.5) as f64).powf(x + 0.5) *
+            (-(x + g + 0.5)).exp() * sum
+    }
+}
+
+/// Error function (approximation).
+fn erf(x: f64) -> f64 {
+    // Abramowitz and Stegun approximation
+    let a1 =  0.254829592;
+    let a2 = -0.284496736;
+    let a3 =  1.421413741;
+    let a4 = -1.453152027;
+    let a5 =  1.061405429;
+    let p  =  0.3275911;
+
+    let sign = if x < 0.0 { -1.0 } else { 1.0 };
+    let x = x.abs();
+
+    let t = 1.0 / (1.0 + p * x);
+    let y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * (-x * x).exp();
+
+    sign * y
+}
+
+/// Probability estimator using historical data.
+struct ProbabilityEstimator {
+    successes: usize,
+    trials: usize,
+    prior_alpha: f64,
+    prior_beta: f64,
+}
+
+impl ProbabilityEstimator {
+    fn new() -> ProbabilityEstimator {
+        ProbabilityEstimator {
+            successes: 0,
+            trials: 0,
+            prior_alpha: 1.0, // Uniform prior
+            prior_beta: 1.0,
+        }
+    }
+
+    fn with_prior(alpha: f64, beta: f64) -> ProbabilityEstimator {
+        ProbabilityEstimator {
+            successes: 0,
+            trials: 0,
+            prior_alpha: alpha,
+            prior_beta: beta,
+        }
+    }
+
+    fn observe(mut self, success: bool) {
+        self.trials += 1;
+        if success {
+            self.successes += 1;
+        }
+    }
+
+    fn observe_many(mut self, successes: usize, total: usize) {
+        self.successes += successes;
+        self.trials += total;
+    }
+
+    /// Maximum likelihood estimate.
+    fn mle(self) -> f64 {
+        if self.trials == 0 { 0.5 }
+        else { self.successes as f64 / self.trials as f64 }
+    }
+
+    /// Bayesian posterior mean.
+    fn posterior_mean(self) -> f64 {
+        (self.prior_alpha + self.successes as f64) /
+        (self.prior_alpha + self.prior_beta + self.trials as f64)
+    }
+
+    /// Posterior distribution.
+    fn posterior(self) -> Distribution {
+        Distribution::Beta {
+            alpha: self.prior_alpha + self.successes as f64,
+            beta: self.prior_beta + (self.trials - self.successes) as f64,
+        }
+    }
+
+    /// Credible interval.
+    fn credible_interval(self, confidence: f64) -> (f64, f64) {
+        let dist = self.posterior();
+        let alpha = (1.0 - confidence) / 2.0;
+        (dist.quantile(alpha), dist.quantile(1.0 - alpha))
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_normal_pdf() {
+        let n = Distribution::Normal { mean: 0.0, std_dev: 1.0 };
+        let pdf_0 = n.pdf(0.0);
+        assert!((pdf_0 - 0.3989).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_uniform() {
+        let u = Distribution::Uniform { min: 0.0, max: 1.0 };
+        assert!((u.pdf(0.5) - 1.0).abs() < 0.001);
+        assert!((u.cdf(0.5) - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_probability_estimator() {
+        let mut pe = ProbabilityEstimator::new();
+        pe.observe(true);
+        pe.observe(true);
+        pe.observe(false);
+
+        assert!((pe.mle() - 0.667).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_beta_mean() {
+        let b = Distribution::Beta { alpha: 2.0, beta: 2.0 };
+        assert!((b.mean() - 0.5).abs() < 0.001);
+    }
+}

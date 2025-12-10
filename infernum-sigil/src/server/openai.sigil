@@ -1,0 +1,234 @@
+//! OpenAI-compatible API types.
+//!
+//! These types mirror the OpenAI API specification for drop-in compatibility.
+//!
+//! Ported from: infernum-framework/crates/infernum-server/src/openai.rs (381 LOC)
+//! Sigil LOC: ~220 (42% reduction)
+
+use std::collections::HashMap
+use serde::{Deserialize, Serialize}
+
+// === Chat Completions ===
+
+#[derive(Debug, Clone, Deserialize)]
+struct ChatCompletionRequest {
+    model: str,
+    messages: [ChatMessage],
+    #[serde(default)]
+    temperature: ?f32 = None,
+    #[serde(default)]
+    top_p: ?f32 = None,
+    #[serde(default)]
+    n: ?u32 = None,
+    #[serde(default)]
+    stream: ?bool = None,
+    #[serde(default)]
+    stop: ?[str] = None,
+    #[serde(default)]
+    max_tokens: ?u32 = None,
+    #[serde(default)]
+    presence_penalty: ?f32 = None,
+    #[serde(default)]
+    frequency_penalty: ?f32 = None,
+    #[serde(default)]
+    user: ?str = None,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ChatMessage {
+    role: str,
+    content: str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: ?str = None,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ChatCompletionResponse {
+    id: str,
+    object: str,
+    created: i64,
+    model: str,
+    choices: [ChatChoice],
+    usage: Usage,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ChatChoice {
+    index: u32,
+    message: ChatMessage,
+    finish_reason: str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ChatCompletionChunk {
+    id: str,
+    object: str,
+    created: i64,
+    model: str,
+    choices: [ChatChunkChoice],
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ChatChunkChoice {
+    index: u32,
+    delta: ChatDelta,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    finish_reason: ?str = None,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+struct ChatDelta {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: ?str = None,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: ?str = None,
+}
+
+// === Text Completions ===
+
+#[derive(Debug, Clone, Deserialize)]
+struct CompletionRequest {
+    model: str,
+    prompt: str,
+    #[serde(default)]
+    temperature: ?f32 = None,
+    #[serde(default)]
+    top_p: ?f32 = None,
+    #[serde(default)]
+    n: ?u32 = None,
+    #[serde(default)]
+    stream: ?bool = None,
+    #[serde(default)]
+    stop: ?[str] = None,
+    #[serde(default)]
+    max_tokens: ?u32 = None,
+    #[serde(default)]
+    logprobs: ?u32 = None,
+    #[serde(default)]
+    echo: ?bool = None,
+    #[serde(default)]
+    suffix: ?str = None,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CompletionResponse {
+    id: str,
+    object: str,
+    created: i64,
+    model: str,
+    choices: [CompletionChoice],
+    usage: Usage,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CompletionChoice {
+    text: str,
+    index: u32,
+    finish_reason: str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    logprobs: ?LogProbs = None,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LogProbs {
+    tokens: [str],
+    token_logprobs: [f32],
+    top_logprobs: [HashMap<str, f32>],
+    text_offset: [u32],
+}
+
+// === Embeddings ===
+
+#[derive(Debug, Clone, Deserialize)]
+struct EmbeddingRequest {
+    model: str,
+    input: EmbeddingInput,
+    #[serde(default)]
+    encoding_format: ?str = None,
+    #[serde(default)]
+    dimensions: ?u32 = None,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum EmbeddingInput {
+    Single(str),
+    Multiple([str]),
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct EmbeddingResponse {
+    object: str,
+    data: [EmbeddingData],
+    model: str,
+    usage: EmbeddingUsage,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct EmbeddingData {
+    object: str,
+    index: u32,
+    embedding: [f32],
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct EmbeddingUsage {
+    prompt_tokens: u32,
+    total_tokens: u32,
+}
+
+// === Models ===
+
+#[derive(Debug, Clone, Serialize)]
+struct ModelsResponse {
+    object: str,
+    data: [ModelObject],
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ModelObject {
+    id: str,
+    object: str,
+    created: i64,
+    owned_by: str,
+}
+
+// === Common ===
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct Usage {
+    prompt_tokens: u32 = 0,
+    completion_tokens: u32 = 0,
+    total_tokens: u32 = 0,
+}
+
+impl Usage {
+    fn new(prompt_tokens: u32, completion_tokens: u32) -> Usage {
+        Usage { prompt_tokens, completion_tokens, total_tokens: prompt_tokens + completion_tokens }
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_chat_request_deserialization() {
+        let json = r#"{"model": "gpt-4", "messages": [{"role": "user", "content": "Hello!"}], "temperature": 0.7}"#
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap()
+        assert_eq!(req.model, "gpt-4")
+        assert_eq!(req.messages.len(), 1)
+    }
+
+    #[test]
+    fn test_usage() {
+        let usage = Usage::new(100, 50)
+        assert_eq!(usage.prompt_tokens, 100)
+        assert_eq!(usage.completion_tokens, 50)
+        assert_eq!(usage.total_tokens, 150)
+    }
+}

@@ -1,0 +1,16 @@
+/// Ecosystem Compatibility Layer
+///
+/// Bridges to PyTorch, diffusers, HuggingFace, and other ML ecosystems.
+/// Enables importing models, weights, and configs from the broader ecosystem.
+
+pub mod pytorch
+pub mod diffusers
+pub mod huggingface
+pub mod safetensors
+pub mod gguf
+pub mod onnx
+
+pub use pytorch::*
+pub use diffusers::*
+pub use huggingface::*
+pub use safetensors::*

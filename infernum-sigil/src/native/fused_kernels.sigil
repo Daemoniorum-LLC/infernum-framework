@@ -1,0 +1,717 @@
+/// Fused CUDA Kernels
+///
+/// Custom fused kernels that combine multiple operations into single kernel launches.
+/// These can outperform TensorRT by eliminating memory bandwidth bottlenecks.
+
+use crate::core::error::{InfernumError, Result}
+use crate::native::cuda::{CudaBackend, CudaError}
+use std::ffi::c_void
+
+// ============================================================================
+// Fused Kernel Library
+// ============================================================================
+
+#[link(name = "infernum_kernels")]
+extern "C" {
+    // Fused Attention Kernels
+    fn fused_qkv_attention_fp16(
+        output: *mut c_void,
+        q: *const c_void,
+        k: *const c_void,
+        v: *const c_void,
+        batch_size: i32,
+        seq_len: i32,
+        num_heads: i32,
+        head_dim: i32,
+        scale: f32,
+        causal_mask: bool,
+        stream: *mut c_void,
+    ) -> i32
+
+    fn fused_qkv_attention_fp8(
+        output: *mut c_void,
+        q: *const c_void,
+        k: *const c_void,
+        v: *const c_void,
+        q_scale: f32,
+        k_scale: f32,
+        v_scale: f32,
+        batch_size: i32,
+        seq_len: i32,
+        num_heads: i32,
+        head_dim: i32,
+        scale: f32,
+        causal_mask: bool,
+        stream: *mut c_void,
+    ) -> i32
+
+    // Fused MLP Kernels (SwiGLU / GeGLU)
+    fn fused_swiglu_fp16(
+        output: *mut c_void,
+        input: *const c_void,
+        gate_weight: *const c_void,
+        up_weight: *const c_void,
+        down_weight: *const c_void,
+        batch_size: i32,
+        seq_len: i32,
+        hidden_dim: i32,
+        intermediate_dim: i32,
+        stream: *mut c_void,
+    ) -> i32
+
+    fn fused_geglu_fp16(
+        output: *mut c_void,
+        input: *const c_void,
+        gate_weight: *const c_void,
+        up_weight: *const c_void,
+        down_weight: *const c_void,
+        batch_size: i32,
+        seq_len: i32,
+        hidden_dim: i32,
+        intermediate_dim: i32,
+        stream: *mut c_void,
+    ) -> i32
+
+    // Fused LayerNorm + Linear
+    fn fused_layernorm_linear_fp16(
+        output: *mut c_void,
+        input: *const c_void,
+        ln_weight: *const c_void,
+        ln_bias: *const c_void,
+        linear_weight: *const c_void,
+        linear_bias: *const c_void,
+        eps: f32,
+        batch_size: i32,
+        seq_len: i32,
+        hidden_dim: i32,
+        out_dim: i32,
+        stream: *mut c_void,
+    ) -> i32
+
+    // Fused RMSNorm + Linear
+    fn fused_rmsnorm_linear_fp16(
+        output: *mut c_void,
+        input: *const c_void,
+        rms_weight: *const c_void,
+        linear_weight: *const c_void,
+        eps: f32,
+        batch_size: i32,
+        seq_len: i32,
+        hidden_dim: i32,
+        out_dim: i32,
+        stream: *mut c_void,
+    ) -> i32
+
+    // Fused Rotary Embedding
+    fn fused_rope_fp16(
+        q_out: *mut c_void,
+        k_out: *mut c_void,
+        q_in: *const c_void,
+        k_in: *const c_void,
+        cos_cache: *const c_void,
+        sin_cache: *const c_void,
+        positions: *const i32,
+        batch_size: i32,
+        seq_len: i32,
+        num_heads: i32,
+        head_dim: i32,
+        stream: *mut c_void,
+    ) -> i32
+
+    // Fused Add + RMSNorm (Residual)
+    fn fused_add_rmsnorm_fp16(
+        output: *mut c_void,
+        residual: *mut c_void,
+        input: *const c_void,
+        weight: *const c_void,
+        eps: f32,
+        batch_size: i32,
+        seq_len: i32,
+        hidden_dim: i32,
+        stream: *mut c_void,
+    ) -> i32
+
+    // Fused Softmax + TopK + Sampling
+    fn fused_softmax_topk_sample(
+        output_token: *mut i32,
+        logits: *const c_void,
+        temperature: f32,
+        top_k: i32,
+        top_p: f32,
+        batch_size: i32,
+        vocab_size: i32,
+        random_state: *mut c_void,
+        stream: *mut c_void,
+    ) -> i32
+
+    // Fused QKV Projection
+    fn fused_qkv_proj_fp16(
+        q_out: *mut c_void,
+        k_out: *mut c_void,
+        v_out: *mut c_void,
+        input: *const c_void,
+        qkv_weight: *const c_void,
+        qkv_bias: *const c_void,
+        batch_size: i32,
+        seq_len: i32,
+        hidden_dim: i32,
+        num_heads: i32,
+        num_kv_heads: i32,
+        head_dim: i32,
+        stream: *mut c_void,
+    ) -> i32
+
+    // Fused Output Projection + Add Residual
+    fn fused_out_proj_residual_fp16(
+        output: *mut c_void,
+        attn_output: *const c_void,
+        residual: *const c_void,
+        weight: *const c_void,
+        bias: *const c_void,
+        batch_size: i32,
+        seq_len: i32,
+        hidden_dim: i32,
+        stream: *mut c_void,
+    ) -> i32
+}
+
+// ============================================================================
+// Fused Attention
+// ============================================================================
+
+/// Configuration for fused attention
+#[derive(Clone, Debug)]
+pub struct FusedAttentionConfig {
+    pub batch_size: i32,
+    pub seq_len: i32,
+    pub num_heads: i32,
+    pub num_kv_heads: i32,
+    pub head_dim: i32,
+    pub causal: bool,
+    pub scale: Option<f32>,
+}
+
+impl FusedAttentionConfig {
+    pub fn new(batch_size: i32, seq_len: i32, num_heads: i32, head_dim: i32) -> Self {
+        Self {
+            batch_size,
+            seq_len,
+            num_heads,
+            num_kv_heads: num_heads,
+            head_dim,
+            causal: true,
+            scale: None,
+        }
+    }
+
+    pub fn with_gqa(mut self, num_kv_heads: i32) -> Self {
+        self.num_kv_heads = num_kv_heads
+        self
+    }
+
+    pub fn scale(&self) -> f32 {
+        self.scale.unwrap_or(1.0 / (self.head_dim as f32).sqrt())
+    }
+}
+
+/// Fused QKV attention kernel
+pub struct FusedAttention {
+    config: FusedAttentionConfig,
+}
+
+impl FusedAttention {
+    pub fn new(config: FusedAttentionConfig) -> Self {
+        Self { config }
+    }
+
+    /// Execute fused attention (FP16)
+    pub fn forward_fp16(
+        &self,
+        output: *mut c_void,
+        q: *const c_void,
+        k: *const c_void,
+        v: *const c_void,
+        stream: *mut c_void,
+    ) -> Result<()!> {
+        let result = unsafe {
+            fused_qkv_attention_fp16(
+                output,
+                q,
+                k,
+                v,
+                self.config.batch_size,
+                self.config.seq_len,
+                self.config.num_heads,
+                self.config.head_dim,
+                self.config.scale(),
+                self.config.causal,
+                stream,
+            )
+        }
+
+        CudaError::check(result)
+    }
+
+    /// Execute fused attention (FP8)
+    pub fn forward_fp8(
+        &self,
+        output: *mut c_void,
+        q: *const c_void,
+        k: *const c_void,
+        v: *const c_void,
+        q_scale: f32,
+        k_scale: f32,
+        v_scale: f32,
+        stream: *mut c_void,
+    ) -> Result<()!> {
+        let result = unsafe {
+            fused_qkv_attention_fp8(
+                output,
+                q,
+                k,
+                v,
+                q_scale,
+                k_scale,
+                v_scale,
+                self.config.batch_size,
+                self.config.seq_len,
+                self.config.num_heads,
+                self.config.head_dim,
+                self.config.scale(),
+                self.config.causal,
+                stream,
+            )
+        }
+
+        CudaError::check(result)
+    }
+}
+
+// ============================================================================
+// Fused MLP
+// ============================================================================
+
+/// MLP activation type
+#[derive(Clone, Copy, Debug)]
+pub enum MLPActivation {
+    SwiGLU,
+    GeGLU,
+    ReLU,
+    GeLU,
+}
+
+/// Fused MLP configuration
+#[derive(Clone, Debug)]
+pub struct FusedMLPConfig {
+    pub batch_size: i32,
+    pub seq_len: i32,
+    pub hidden_dim: i32,
+    pub intermediate_dim: i32,
+    pub activation: MLPActivation,
+}
+
+/// Fused MLP kernel (gate + up + activation + down in single kernel)
+pub struct FusedMLP {
+    config: FusedMLPConfig,
+}
+
+impl FusedMLP {
+    pub fn new(config: FusedMLPConfig) -> Self {
+        Self { config }
+    }
+
+    /// Execute fused MLP
+    pub fn forward_fp16(
+        &self,
+        output: *mut c_void,
+        input: *const c_void,
+        gate_weight: *const c_void,
+        up_weight: *const c_void,
+        down_weight: *const c_void,
+        stream: *mut c_void,
+    ) -> Result<()!> {
+        let result = match self.config.activation {
+            MLPActivation::SwiGLU => unsafe {
+                fused_swiglu_fp16(
+                    output,
+                    input,
+                    gate_weight,
+                    up_weight,
+                    down_weight,
+                    self.config.batch_size,
+                    self.config.seq_len,
+                    self.config.hidden_dim,
+                    self.config.intermediate_dim,
+                    stream,
+                )
+            },
+            MLPActivation::GeGLU => unsafe {
+                fused_geglu_fp16(
+                    output,
+                    input,
+                    gate_weight,
+                    up_weight,
+                    down_weight,
+                    self.config.batch_size,
+                    self.config.seq_len,
+                    self.config.hidden_dim,
+                    self.config.intermediate_dim,
+                    stream,
+                )
+            },
+            _ => return Err(InfernumError::NotImplemented {
+                feature: format!("{:?} activation", self.config.activation),
+            }),
+        }
+
+        CudaError::check(result)
+    }
+}
+
+// ============================================================================
+// Fused LayerNorm + Linear
+// ============================================================================
+
+/// Fused normalization + linear projection
+pub struct FusedNormLinear {
+    pub batch_size: i32,
+    pub seq_len: i32,
+    pub hidden_dim: i32,
+    pub out_dim: i32,
+    pub eps: f32,
+    pub use_rms_norm: bool,
+}
+
+impl FusedNormLinear {
+    pub fn layer_norm(batch_size: i32, seq_len: i32, hidden_dim: i32, out_dim: i32) -> Self {
+        Self {
+            batch_size,
+            seq_len,
+            hidden_dim,
+            out_dim,
+            eps: 1e-5,
+            use_rms_norm: false,
+        }
+    }
+
+    pub fn rms_norm(batch_size: i32, seq_len: i32, hidden_dim: i32, out_dim: i32) -> Self {
+        Self {
+            batch_size,
+            seq_len,
+            hidden_dim,
+            out_dim,
+            eps: 1e-5,
+            use_rms_norm: true,
+        }
+    }
+
+    /// Execute fused norm + linear
+    pub fn forward_fp16(
+        &self,
+        output: *mut c_void,
+        input: *const c_void,
+        norm_weight: *const c_void,
+        norm_bias: *const c_void,  // NULL for RMSNorm
+        linear_weight: *const c_void,
+        linear_bias: *const c_void,  // Can be NULL
+        stream: *mut c_void,
+    ) -> Result<()!> {
+        let result = if self.use_rms_norm {
+            unsafe {
+                fused_rmsnorm_linear_fp16(
+                    output,
+                    input,
+                    norm_weight,
+                    linear_weight,
+                    self.eps,
+                    self.batch_size,
+                    self.seq_len,
+                    self.hidden_dim,
+                    self.out_dim,
+                    stream,
+                )
+            }
+        } else {
+            unsafe {
+                fused_layernorm_linear_fp16(
+                    output,
+                    input,
+                    norm_weight,
+                    norm_bias,
+                    linear_weight,
+                    linear_bias,
+                    self.eps,
+                    self.batch_size,
+                    self.seq_len,
+                    self.hidden_dim,
+                    self.out_dim,
+                    stream,
+                )
+            }
+        }
+
+        CudaError::check(result)
+    }
+}
+
+// ============================================================================
+// Fused Rotary Embedding
+// ============================================================================
+
+/// Fused rotary position embedding
+pub struct FusedRoPE {
+    pub batch_size: i32,
+    pub seq_len: i32,
+    pub num_heads: i32,
+    pub head_dim: i32,
+}
+
+impl FusedRoPE {
+    pub fn new(batch_size: i32, seq_len: i32, num_heads: i32, head_dim: i32) -> Self {
+        Self { batch_size, seq_len, num_heads, head_dim }
+    }
+
+    /// Apply rotary embedding to Q and K
+    pub fn forward_fp16(
+        &self,
+        q_out: *mut c_void,
+        k_out: *mut c_void,
+        q_in: *const c_void,
+        k_in: *const c_void,
+        cos_cache: *const c_void,
+        sin_cache: *const c_void,
+        positions: *const i32,
+        stream: *mut c_void,
+    ) -> Result<()!> {
+        let result = unsafe {
+            fused_rope_fp16(
+                q_out,
+                k_out,
+                q_in,
+                k_in,
+                cos_cache,
+                sin_cache,
+                positions,
+                self.batch_size,
+                self.seq_len,
+                self.num_heads,
+                self.head_dim,
+                stream,
+            )
+        }
+
+        CudaError::check(result)
+    }
+}
+
+// ============================================================================
+// Fused Residual + Norm
+// ============================================================================
+
+/// Fused residual addition + RMSNorm
+pub struct FusedResidualNorm {
+    pub batch_size: i32,
+    pub seq_len: i32,
+    pub hidden_dim: i32,
+    pub eps: f32,
+}
+
+impl FusedResidualNorm {
+    pub fn new(batch_size: i32, seq_len: i32, hidden_dim: i32) -> Self {
+        Self { batch_size, seq_len, hidden_dim, eps: 1e-5 }
+    }
+
+    /// Execute fused add + rmsnorm (updates residual in place)
+    pub fn forward_fp16(
+        &self,
+        output: *mut c_void,
+        residual: *mut c_void,
+        input: *const c_void,
+        weight: *const c_void,
+        stream: *mut c_void,
+    ) -> Result<()!> {
+        let result = unsafe {
+            fused_add_rmsnorm_fp16(
+                output,
+                residual,
+                input,
+                weight,
+                self.eps,
+                self.batch_size,
+                self.seq_len,
+                self.hidden_dim,
+                stream,
+            )
+        }
+
+        CudaError::check(result)
+    }
+}
+
+// ============================================================================
+// Fused Sampling
+// ============================================================================
+
+/// Fused softmax + top-k + sampling kernel
+pub struct FusedSampler {
+    pub batch_size: i32,
+    pub vocab_size: i32,
+    pub temperature: f32,
+    pub top_k: i32,
+    pub top_p: f32,
+}
+
+impl FusedSampler {
+    pub fn new(batch_size: i32, vocab_size: i32) -> Self {
+        Self {
+            batch_size,
+            vocab_size,
+            temperature: 1.0,
+            top_k: 50,
+            top_p: 0.9,
+        }
+    }
+
+    pub fn greedy(batch_size: i32, vocab_size: i32) -> Self {
+        Self {
+            batch_size,
+            vocab_size,
+            temperature: 0.0,
+            top_k: 1,
+            top_p: 1.0,
+        }
+    }
+
+    /// Execute fused sampling
+    pub fn sample(
+        &self,
+        output_tokens: *mut i32,
+        logits: *const c_void,
+        random_state: *mut c_void,
+        stream: *mut c_void,
+    ) -> Result<()!> {
+        let result = unsafe {
+            fused_softmax_topk_sample(
+                output_tokens,
+                logits,
+                self.temperature,
+                self.top_k,
+                self.top_p,
+                self.batch_size,
+                self.vocab_size,
+                random_state,
+                stream,
+            )
+        }
+
+        CudaError::check(result)
+    }
+}
+
+// ============================================================================
+// Fused QKV Projection
+// ============================================================================
+
+/// Fused QKV projection (packed weights)
+pub struct FusedQKVProjection {
+    pub batch_size: i32,
+    pub seq_len: i32,
+    pub hidden_dim: i32,
+    pub num_heads: i32,
+    pub num_kv_heads: i32,
+    pub head_dim: i32,
+}
+
+impl FusedQKVProjection {
+    pub fn new(
+        batch_size: i32,
+        seq_len: i32,
+        hidden_dim: i32,
+        num_heads: i32,
+        head_dim: i32,
+    ) -> Self {
+        Self {
+            batch_size,
+            seq_len,
+            hidden_dim,
+            num_heads,
+            num_kv_heads: num_heads,
+            head_dim,
+        }
+    }
+
+    pub fn with_gqa(mut self, num_kv_heads: i32) -> Self {
+        self.num_kv_heads = num_kv_heads
+        self
+    }
+
+    /// Execute fused QKV projection
+    pub fn forward_fp16(
+        &self,
+        q_out: *mut c_void,
+        k_out: *mut c_void,
+        v_out: *mut c_void,
+        input: *const c_void,
+        qkv_weight: *const c_void,
+        qkv_bias: *const c_void,
+        stream: *mut c_void,
+    ) -> Result<()!> {
+        let result = unsafe {
+            fused_qkv_proj_fp16(
+                q_out,
+                k_out,
+                v_out,
+                input,
+                qkv_weight,
+                qkv_bias,
+                self.batch_size,
+                self.seq_len,
+                self.hidden_dim,
+                self.num_heads,
+                self.num_kv_heads,
+                self.head_dim,
+                stream,
+            )
+        }
+
+        CudaError::check(result)
+    }
+}
+
+// ============================================================================
+// Kernel Performance Comparison
+// ============================================================================
+
+/// Performance comparison with unfused operations
+#[derive(Clone, Debug)]
+pub struct FusionSpeedup {
+    pub operation: String,
+    pub unfused_us: f32,
+    pub fused_us: f32,
+    pub speedup: f32,
+    pub memory_saved_mb: f32,
+}
+
+impl FusionSpeedup {
+    pub fn new(operation: &str, unfused_us: f32, fused_us: f32, memory_saved_mb: f32) -> Self {
+        Self {
+            operation: operation.to_string(),
+            unfused_us,
+            fused_us,
+            speedup: unfused_us / fused_us,
+            memory_saved_mb,
+        }
+    }
+}
+
+/// Expected speedups from kernel fusion
+pub fn expected_speedups() -> Vec<FusionSpeedup> {
+    vec![
+        FusionSpeedup::new("QKV Attention (seq=2048)", 450.0, 180.0, 512.0),
+        FusionSpeedup::new("SwiGLU MLP", 320.0, 140.0, 256.0),
+        FusionSpeedup::new("LayerNorm + Linear", 85.0, 35.0, 64.0),
+        FusionSpeedup::new("RoPE (Q+K)", 40.0, 15.0, 32.0),
+        FusionSpeedup::new("Residual + RMSNorm", 55.0, 20.0, 48.0),
+        FusionSpeedup::new("Softmax + TopK + Sample", 120.0, 45.0, 128.0),
+    ]
+}

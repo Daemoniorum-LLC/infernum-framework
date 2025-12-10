@@ -1,0 +1,990 @@
+/// Text Encoders for Diffusion Models
+///
+/// Implements text encoding for conditioning diffusion models:
+/// - CLIP: OpenAI CLIP text encoder (SD 1.x)
+/// - OpenCLIP: Open-source CLIP variants (SD 2.x, SDXL)
+/// - T5: Google T5-XXL encoder (SD3, Flux)
+///
+/// Sigil features:
+/// - `data~` for user prompts (untrusted input)
+/// - `computed!` for encoded embeddings
+/// - `τ{}` morpheme for token processing
+
+use core::tensor::{Tensor, DType, Device}
+use core::error::Result
+use candle_nn::{Linear, Embedding, Module, VarBuilder}
+
+// ============================================================================
+// Text Encoder Configuration
+// ============================================================================
+
+/// Text encoder type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextEncoderType {
+    /// OpenAI CLIP ViT-L/14 (SD 1.x)
+    CLIPViTL14,
+    /// OpenCLIP ViT-H/14 (SD 2.x)
+    OpenCLIPViTH14,
+    /// OpenCLIP ViT-bigG/14 (SDXL second encoder)
+    OpenCLIPViTBigG,
+    /// Google T5-XXL (SD3, Flux)
+    T5XXL,
+    /// Google T5-Large
+    T5Large,
+}
+
+impl TextEncoderType {
+    /// Get hidden dimension
+    pub fn hidden_size(self) -> u32 {
+        match self {
+            Self::CLIPViTL14 => 768,
+            Self::OpenCLIPViTH14 => 1024,
+            Self::OpenCLIPViTBigG => 1280,
+            Self::T5XXL => 4096,
+            Self::T5Large => 1024,
+        }
+    }
+
+    /// Get number of layers
+    pub fn num_layers(self) -> u32 {
+        match self {
+            Self::CLIPViTL14 => 12,
+            Self::OpenCLIPViTH14 => 24,
+            Self::OpenCLIPViTBigG => 32,
+            Self::T5XXL => 24,
+            Self::T5Large => 24,
+        }
+    }
+
+    /// Get vocabulary size
+    pub fn vocab_size(self) -> u32 {
+        match self {
+            Self::CLIPViTL14 | Self::OpenCLIPViTH14 | Self::OpenCLIPViTBigG => 49408,
+            Self::T5XXL | Self::T5Large => 32128,
+        }
+    }
+
+    /// Get max sequence length
+    pub fn max_seq_len(self) -> u32 {
+        match self {
+            Self::CLIPViTL14 | Self::OpenCLIPViTH14 | Self::OpenCLIPViTBigG => 77,
+            Self::T5XXL | Self::T5Large => 512,
+        }
+    }
+}
+
+/// Text encoder configuration
+#[derive(Debug, Clone)]
+pub struct TextEncoderConfig {
+    /// Encoder type
+    pub encoder_type: TextEncoderType,
+
+    /// Hidden size
+    pub hidden_size: u32,
+
+    /// Intermediate size
+    pub intermediate_size: u32,
+
+    /// Number of attention heads
+    pub num_attention_heads: u32,
+
+    /// Number of layers
+    pub num_layers: u32,
+
+    /// Vocabulary size
+    pub vocab_size: u32,
+
+    /// Max position embeddings
+    pub max_position_embeddings: u32,
+
+    /// Layer norm epsilon
+    pub layer_norm_eps: f64,
+
+    /// Whether to output pooled embedding
+    pub output_pooled: bool,
+}
+
+impl TextEncoderConfig {
+    /// Config for CLIP ViT-L/14
+    pub fn clip_vit_l_14() -> Self {
+        Self {
+            encoder_type: TextEncoderType::CLIPViTL14,
+            hidden_size: 768,
+            intermediate_size: 3072,
+            num_attention_heads: 12,
+            num_layers: 12,
+            vocab_size: 49408,
+            max_position_embeddings: 77,
+            layer_norm_eps: 1e-5,
+            output_pooled: true,
+        }
+    }
+
+    /// Config for OpenCLIP ViT-H/14
+    pub fn openclip_vit_h_14() -> Self {
+        Self {
+            encoder_type: TextEncoderType::OpenCLIPViTH14,
+            hidden_size: 1024,
+            intermediate_size: 4096,
+            num_attention_heads: 16,
+            num_layers: 24,
+            vocab_size: 49408,
+            max_position_embeddings: 77,
+            layer_norm_eps: 1e-5,
+            output_pooled: true,
+        }
+    }
+
+    /// Config for OpenCLIP ViT-bigG/14 (SDXL)
+    pub fn openclip_vit_bigg_14() -> Self {
+        Self {
+            encoder_type: TextEncoderType::OpenCLIPViTBigG,
+            hidden_size: 1280,
+            intermediate_size: 5120,
+            num_attention_heads: 20,
+            num_layers: 32,
+            vocab_size: 49408,
+            max_position_embeddings: 77,
+            layer_norm_eps: 1e-5,
+            output_pooled: true,
+        }
+    }
+
+    /// Config for T5-XXL
+    pub fn t5_xxl() -> Self {
+        Self {
+            encoder_type: TextEncoderType::T5XXL,
+            hidden_size: 4096,
+            intermediate_size: 10240,
+            num_attention_heads: 64,
+            num_layers: 24,
+            vocab_size: 32128,
+            max_position_embeddings: 512,
+            layer_norm_eps: 1e-6,
+            output_pooled: false,
+        }
+    }
+
+    /// Head dimension
+    pub fn head_dim(self) -> u32 {
+        self.hidden_size / self.num_attention_heads
+    }
+}
+
+// ============================================================================
+// Text Embeddings Output
+// ============================================================================
+
+/// Output from text encoder
+#[derive(Debug, Clone)]
+pub struct TextEmbeddings! {
+    /// Sequence embeddings [batch, seq_len, hidden_size]
+    pub last_hidden_state!: Tensor,
+
+    /// Pooled embedding [batch, hidden_size] (if available)
+    pub pooled_output!: Tensor?,
+
+    /// All hidden states (if requested)
+    pub hidden_states!: [Tensor]?,
+}
+
+/// Pooled text embeddings (for SDXL/SD3)
+#[derive(Debug, Clone)]
+pub struct PooledEmbeddings! {
+    /// Pooled embedding from first text encoder
+    pub pooled_1!: Tensor,
+
+    /// Pooled embedding from second text encoder (SDXL)
+    pub pooled_2!: Tensor?,
+
+    /// Combined pooled embeddings
+    pub combined!: Tensor,
+}
+
+// ============================================================================
+// CLIP Text Encoder
+// ============================================================================
+
+/// CLIP Text Encoder
+pub struct CLIPTextEncoder {
+    config: TextEncoderConfig,
+    token_embedding: Embedding,
+    position_embedding: Embedding,
+    layers: [CLIPEncoderLayer],
+    final_layer_norm: LayerNorm,
+}
+
+impl CLIPTextEncoder {
+    pub fn new(config: TextEncoderConfig, vb: VarBuilder) -> Result<Self> {
+        let token_embedding = Embedding::new(
+            config.vocab_size as usize,
+            config.hidden_size as usize,
+            vb.pp("embeddings.token_embedding")
+        )?
+
+        let position_embedding = Embedding::new(
+            config.max_position_embeddings as usize,
+            config.hidden_size as usize,
+            vb.pp("embeddings.position_embedding")
+        )?
+
+        let layers = (0..config.num_layers)
+            τ{ |i| CLIPEncoderLayer::new(&config, vb.pp(format!("encoder.layers.{}", i)))? }
+            |collect::<Result<[_]>>?
+
+        let final_layer_norm = LayerNorm::new(
+            config.hidden_size,
+            config.layer_norm_eps,
+            vb.pp("final_layer_norm")
+        )?
+
+        Ok(Self {
+            config, token_embedding, position_embedding,
+            layers, final_layer_norm,
+        })
+    }
+
+    /// Encode text tokens
+    /// `input_ids~` is untrusted user input
+    pub fn forward(self, input_ids~: &Tensor) -> Result<TextEmbeddings!> {
+        let (batch, seq_len) = input_ids~.dims2()?
+
+        // Get embeddings
+        let token_emb = self.token_embedding.forward(input_ids~)?
+        let position_ids = Tensor::arange(0, seq_len as i64, input_ids~.device())?
+            .unsqueeze(0)?
+            .expand([batch, seq_len])?
+        let position_emb = self.position_embedding.forward(&position_ids)?
+
+        let mut hidden_state = (token_emb + position_emb)?
+
+        // Create causal mask
+        let causal_mask = create_causal_mask(seq_len, input_ids~.device(), input_ids~.dtype())?
+
+        // Apply encoder layers
+        for layer in &self.layers {
+            hidden_state = layer.forward(&hidden_state, Some(&causal_mask))?
+        }
+
+        // Final layer norm
+        let last_hidden_state! = self.final_layer_norm.forward(&hidden_state)?
+
+        // Get pooled output (from EOS token position)
+        let pooled_output! = if self.config.output_pooled {
+            // Find EOS token position (typically last non-padding)
+            let eos_indices = find_eos_positions(input_ids~)?
+            let pooled = gather_at_positions(&last_hidden_state!, &eos_indices)?
+            Some(pooled)
+        } else {
+            None
+        }
+
+        Ok(TextEmbeddings! {
+            last_hidden_state!,
+            pooled_output!,
+            hidden_states!: None,
+        })
+    }
+}
+
+/// CLIP encoder layer
+pub struct CLIPEncoderLayer {
+    self_attn: CLIPAttention,
+    layer_norm1: LayerNorm,
+    mlp: CLIPMLP,
+    layer_norm2: LayerNorm,
+}
+
+impl CLIPEncoderLayer {
+    pub fn new(config: &TextEncoderConfig, vb: VarBuilder) -> Result<Self> {
+        let self_attn = CLIPAttention::new(config, vb.pp("self_attn"))?
+        let layer_norm1 = LayerNorm::new(config.hidden_size, config.layer_norm_eps, vb.pp("layer_norm1"))?
+        let mlp = CLIPMLP::new(config, vb.pp("mlp"))?
+        let layer_norm2 = LayerNorm::new(config.hidden_size, config.layer_norm_eps, vb.pp("layer_norm2"))?
+
+        Ok(Self { self_attn, layer_norm1, mlp, layer_norm2 })
+    }
+
+    pub fn forward(self, x: &Tensor, mask?: &Tensor) -> Result<Tensor!> {
+        // Self-attention with residual
+        let residual = x
+        let x = self.layer_norm1.forward(x)?
+        let x = self.self_attn.forward(&x, mask)?
+        let x = (x + residual)?
+
+        // MLP with residual
+        let residual = &x
+        let x = self.layer_norm2.forward(&x)?
+        let x = self.mlp.forward(&x)?
+        (x + residual)!
+    }
+}
+
+/// CLIP self-attention
+pub struct CLIPAttention {
+    q_proj: Linear,
+    k_proj: Linear,
+    v_proj: Linear,
+    out_proj: Linear,
+    num_heads: u32,
+    head_dim: u32,
+    scale: f32,
+}
+
+impl CLIPAttention {
+    pub fn new(config: &TextEncoderConfig, vb: VarBuilder) -> Result<Self> {
+        let head_dim = config.head_dim()
+        let q_proj = Linear::new(config.hidden_size, config.hidden_size, vb.pp("q_proj"))?
+        let k_proj = Linear::new(config.hidden_size, config.hidden_size, vb.pp("k_proj"))?
+        let v_proj = Linear::new(config.hidden_size, config.hidden_size, vb.pp("v_proj"))?
+        let out_proj = Linear::new(config.hidden_size, config.hidden_size, vb.pp("out_proj"))?
+
+        let scale = (head_dim as f32).sqrt().recip()
+
+        Ok(Self {
+            q_proj, k_proj, v_proj, out_proj,
+            num_heads: config.num_attention_heads,
+            head_dim, scale,
+        })
+    }
+
+    pub fn forward(self, x: &Tensor, mask?: &Tensor) -> Result<Tensor!> {
+        let (batch, seq, _) = x.dims3()?
+
+        let q = self.q_proj.forward(x)?
+        let k = self.k_proj.forward(x)?
+        let v = self.v_proj.forward(x)?
+
+        // Reshape to multi-head
+        let q = q.reshape([batch, seq, self.num_heads as usize, self.head_dim as usize])?
+            .transpose(1, 2)?
+        let k = k.reshape([batch, seq, self.num_heads as usize, self.head_dim as usize])?
+            .transpose(1, 2)?
+        let v = v.reshape([batch, seq, self.num_heads as usize, self.head_dim as usize])?
+            .transpose(1, 2)?
+
+        // Attention scores
+        let mut attn = (q.matmul(&k.transpose(-1, -2)?)? * self.scale)?
+
+        // Apply causal mask
+        if let Some(m) = mask {
+            attn = (attn + m)?
+        }
+
+        let attn = attn.softmax(-1)?
+        let out = attn.matmul(&v)?
+
+        // Reshape back
+        let out = out.transpose(1, 2)?.reshape([batch, seq, self.num_heads as usize * self.head_dim as usize])?
+
+        self.out_proj.forward(&out)!
+    }
+}
+
+/// CLIP MLP (QuickGELU activation)
+pub struct CLIPMLP {
+    fc1: Linear,
+    fc2: Linear,
+}
+
+impl CLIPMLP {
+    pub fn new(config: &TextEncoderConfig, vb: VarBuilder) -> Result<Self> {
+        let fc1 = Linear::new(config.hidden_size, config.intermediate_size, vb.pp("fc1"))?
+        let fc2 = Linear::new(config.intermediate_size, config.hidden_size, vb.pp("fc2"))?
+        Ok(Self { fc1, fc2 })
+    }
+}
+
+impl Module for CLIPMLP {
+    fn forward(self, x: &Tensor) -> Result<Tensor> {
+        let x = self.fc1.forward(x)?
+        let x = quick_gelu(&x)?  // CLIP uses QuickGELU
+        self.fc2.forward(&x)
+    }
+}
+
+// ============================================================================
+// OpenCLIP Text Encoder
+// ============================================================================
+
+/// OpenCLIP Text Encoder (similar to CLIP with some differences)
+pub struct OpenCLIPEncoder {
+    inner: CLIPTextEncoder,
+    text_projection?: Linear,
+}
+
+impl OpenCLIPEncoder {
+    pub fn new(config: TextEncoderConfig, vb: VarBuilder) -> Result<Self> {
+        let inner = CLIPTextEncoder::new(config.clone(), vb.pp("text_model"))?
+
+        let text_projection = if config.output_pooled {
+            Some(Linear::new(config.hidden_size, config.hidden_size, vb.pp("text_projection"))?)
+        } else {
+            None
+        }
+
+        Ok(Self { inner, text_projection })
+    }
+
+    pub fn forward(self, input_ids~: &Tensor) -> Result<TextEmbeddings!> {
+        let mut output! = self.inner.forward(input_ids~)?
+
+        // Apply text projection to pooled output
+        if let (Some(proj), Some(pooled!)) = (&self.text_projection, &output!.pooled_output!) {
+            output!.pooled_output! = Some(proj.forward(pooled!)?)
+        }
+
+        Ok(output!)
+    }
+}
+
+// ============================================================================
+// T5 Text Encoder
+// ============================================================================
+
+/// T5 Encoder configuration
+#[derive(Debug, Clone)]
+pub struct T5Config {
+    /// Vocabulary size
+    pub vocab_size: u32 = 32128,
+
+    /// Model dimension
+    pub d_model: u32 = 4096,
+
+    /// Key/value dimension
+    pub d_kv: u32 = 64,
+
+    /// FFN dimension
+    pub d_ff: u32 = 10240,
+
+    /// Number of layers
+    pub num_layers: u32 = 24,
+
+    /// Number of attention heads
+    pub num_heads: u32 = 64,
+
+    /// Relative attention num buckets
+    pub relative_attention_num_buckets: u32 = 32,
+
+    /// Relative attention max distance
+    pub relative_attention_max_distance: u32 = 128,
+
+    /// Dropout rate
+    pub dropout_rate: f32 = 0.0,
+
+    /// Layer norm epsilon
+    pub layer_norm_epsilon: f64 = 1e-6,
+}
+
+impl T5Config {
+    pub fn t5_xxl() -> Self {
+        Self {
+            vocab_size: 32128,
+            d_model: 4096,
+            d_kv: 64,
+            d_ff: 10240,
+            num_layers: 24,
+            num_heads: 64,
+            relative_attention_num_buckets: 32,
+            relative_attention_max_distance: 128,
+            dropout_rate: 0.0,
+            layer_norm_epsilon: 1e-6,
+        }
+    }
+}
+
+/// T5 Text Encoder
+pub struct T5Encoder {
+    config: T5Config,
+    embed_tokens: Embedding,
+    blocks: [T5Block],
+    final_layer_norm: T5LayerNorm,
+}
+
+impl T5Encoder {
+    pub fn new(config: T5Config, vb: VarBuilder) -> Result<Self> {
+        let embed_tokens = Embedding::new(
+            config.vocab_size as usize,
+            config.d_model as usize,
+            vb.pp("embed_tokens")
+        )?
+
+        let blocks = (0..config.num_layers)
+            τ{ |i| T5Block::new(&config, i == 0, vb.pp(format!("block.{}", i)))? }
+            |collect::<Result<[_]>>?
+
+        let final_layer_norm = T5LayerNorm::new(config.d_model, config.layer_norm_epsilon, vb.pp("final_layer_norm"))?
+
+        Ok(Self { config, embed_tokens, blocks, final_layer_norm })
+    }
+
+    /// Encode text
+    /// `input_ids~` is untrusted user input
+    pub fn forward(self, input_ids~: &Tensor) -> Result<TextEmbeddings!> {
+        let hidden_states = self.embed_tokens.forward(input_ids~)?
+
+        let mut hidden_states = hidden_states
+        for block in &self.blocks {
+            hidden_states = block.forward(&hidden_states)?
+        }
+
+        let last_hidden_state! = self.final_layer_norm.forward(&hidden_states)?
+
+        Ok(TextEmbeddings! {
+            last_hidden_state!,
+            pooled_output!: None, // T5 doesn't produce pooled output
+            hidden_states!: None,
+        })
+    }
+}
+
+/// T5 encoder block
+pub struct T5Block {
+    layer_norm: T5LayerNorm,
+    self_attn: T5Attention,
+    ff_layer_norm: T5LayerNorm,
+    ff: T5DenseGatedActDense,
+}
+
+impl T5Block {
+    pub fn new(config: &T5Config, has_relative_bias: bool, vb: VarBuilder) -> Result<Self> {
+        let layer_norm = T5LayerNorm::new(config.d_model, config.layer_norm_epsilon, vb.pp("layer.0.layer_norm"))?
+        let self_attn = T5Attention::new(config, has_relative_bias, vb.pp("layer.0.SelfAttention"))?
+        let ff_layer_norm = T5LayerNorm::new(config.d_model, config.layer_norm_epsilon, vb.pp("layer.1.layer_norm"))?
+        let ff = T5DenseGatedActDense::new(config, vb.pp("layer.1.DenseReluDense"))?
+
+        Ok(Self { layer_norm, self_attn, ff_layer_norm, ff })
+    }
+
+    pub fn forward(self, x: &Tensor) -> Result<Tensor!> {
+        // Self-attention with residual
+        let normed = self.layer_norm.forward(x)?
+        let attn_out = self.self_attn.forward(&normed)?
+        let x = (x + attn_out)?
+
+        // FFN with residual
+        let normed = self.ff_layer_norm.forward(&x)?
+        let ff_out = self.ff.forward(&normed)?
+        (x + ff_out)!
+    }
+}
+
+/// T5 attention
+pub struct T5Attention {
+    q: Linear,
+    k: Linear,
+    v: Linear,
+    o: Linear,
+    relative_attention_bias?: Embedding,
+    num_heads: u32,
+    d_kv: u32,
+    scale: f32,
+}
+
+impl T5Attention {
+    pub fn new(config: &T5Config, has_relative_bias: bool, vb: VarBuilder) -> Result<Self> {
+        let inner_dim = config.num_heads * config.d_kv
+
+        let q = Linear::new(config.d_model, inner_dim, vb.pp("q"))?
+        let k = Linear::new(config.d_model, inner_dim, vb.pp("k"))?
+        let v = Linear::new(config.d_model, inner_dim, vb.pp("v"))?
+        let o = Linear::new(inner_dim, config.d_model, vb.pp("o"))?
+
+        let relative_attention_bias = if has_relative_bias {
+            Some(Embedding::new(
+                config.relative_attention_num_buckets as usize,
+                config.num_heads as usize,
+                vb.pp("relative_attention_bias")
+            )?)
+        } else {
+            None
+        }
+
+        let scale = (config.d_kv as f32).sqrt().recip()
+
+        Ok(Self {
+            q, k, v, o, relative_attention_bias,
+            num_heads: config.num_heads,
+            d_kv: config.d_kv,
+            scale,
+        })
+    }
+
+    pub fn forward(self, x: &Tensor) -> Result<Tensor!> {
+        let (batch, seq, _) = x.dims3()?
+
+        let q = self.q.forward(x)?
+        let k = self.k.forward(x)?
+        let v = self.v.forward(x)?
+
+        // Reshape
+        let q = q.reshape([batch, seq, self.num_heads as usize, self.d_kv as usize])?
+            .transpose(1, 2)?
+        let k = k.reshape([batch, seq, self.num_heads as usize, self.d_kv as usize])?
+            .transpose(1, 2)?
+        let v = v.reshape([batch, seq, self.num_heads as usize, self.d_kv as usize])?
+            .transpose(1, 2)?
+
+        // Attention
+        let mut attn = (q.matmul(&k.transpose(-1, -2)?)? * self.scale)?
+
+        // Add relative position bias
+        if let Some(bias_embed) = &self.relative_attention_bias {
+            let bias = compute_relative_position_bias(seq, seq, bias_embed)?
+            attn = (attn + bias.unsqueeze(0)?)?
+        }
+
+        let attn = attn.softmax(-1)?
+        let out = attn.matmul(&v)?
+
+        // Reshape back
+        let out = out.transpose(1, 2)?.reshape([batch, seq, self.num_heads as usize * self.d_kv as usize])?
+
+        self.o.forward(&out)!
+    }
+}
+
+/// T5 feed-forward with gated activation
+pub struct T5DenseGatedActDense {
+    wi_0: Linear,
+    wi_1: Linear,
+    wo: Linear,
+}
+
+impl T5DenseGatedActDense {
+    pub fn new(config: &T5Config, vb: VarBuilder) -> Result<Self> {
+        let wi_0 = Linear::new(config.d_model, config.d_ff, vb.pp("wi_0"))?
+        let wi_1 = Linear::new(config.d_model, config.d_ff, vb.pp("wi_1"))?
+        let wo = Linear::new(config.d_ff, config.d_model, vb.pp("wo"))?
+        Ok(Self { wi_0, wi_1, wo })
+    }
+}
+
+impl Module for T5DenseGatedActDense {
+    fn forward(self, x: &Tensor) -> Result<Tensor> {
+        let gate = self.wi_0.forward(x)?.gelu()?
+        let hidden = self.wi_1.forward(x)?
+        let hidden = (gate * hidden)?
+        self.wo.forward(&hidden)
+    }
+}
+
+/// T5 RMS Layer Normalization
+pub struct T5LayerNorm {
+    weight: Tensor,
+    eps: f64,
+}
+
+impl T5LayerNorm {
+    pub fn new(dim: u32, eps: f64, vb: VarBuilder) -> Result<Self> {
+        let weight = vb.get(dim as usize, "weight")?
+        Ok(Self { weight, eps })
+    }
+}
+
+impl Module for T5LayerNorm {
+    fn forward(self, x: &Tensor) -> Result<Tensor> {
+        let variance = x.sqr()?.mean_keepdim(-1)?
+        let x = x.broadcast_div(&(variance + self.eps)?.sqrt()?)?
+        x.broadcast_mul(&self.weight)
+    }
+}
+
+// ============================================================================
+// Combined Text Encoder
+// ============================================================================
+
+/// Generic text encoder wrapper
+pub enum TextEncoder {
+    CLIP(CLIPTextEncoder),
+    OpenCLIP(OpenCLIPEncoder),
+    T5(T5Encoder),
+}
+
+impl TextEncoder {
+    /// Create CLIP encoder
+    pub fn clip(vb: VarBuilder) -> Result<Self> {
+        let config = TextEncoderConfig::clip_vit_l_14()
+        Ok(Self::CLIP(CLIPTextEncoder::new(config, vb)?))
+    }
+
+    /// Create OpenCLIP encoder
+    pub fn openclip_h(vb: VarBuilder) -> Result<Self> {
+        let config = TextEncoderConfig::openclip_vit_h_14()
+        Ok(Self::OpenCLIP(OpenCLIPEncoder::new(config, vb)?))
+    }
+
+    /// Create OpenCLIP bigG encoder (SDXL)
+    pub fn openclip_bigg(vb: VarBuilder) -> Result<Self> {
+        let config = TextEncoderConfig::openclip_vit_bigg_14()
+        Ok(Self::OpenCLIP(OpenCLIPEncoder::new(config, vb)?))
+    }
+
+    /// Create T5-XXL encoder
+    pub fn t5_xxl(vb: VarBuilder) -> Result<Self> {
+        let config = T5Config::t5_xxl()
+        Ok(Self::T5(T5Encoder::new(config, vb)?))
+    }
+
+    /// Encode text
+    pub fn encode(self, input_ids~: &Tensor) -> Result<TextEmbeddings!> {
+        match self {
+            Self::CLIP(enc) => enc.forward(input_ids~),
+            Self::OpenCLIP(enc) => enc.forward(input_ids~),
+            Self::T5(enc) => enc.forward(input_ids~),
+        }
+    }
+
+    /// Get hidden size
+    pub fn hidden_size(self) -> u32 {
+        match self {
+            Self::CLIP(enc) => enc.config.hidden_size,
+            Self::OpenCLIP(enc) => enc.inner.config.hidden_size,
+            Self::T5(enc) => enc.config.d_model,
+        }
+    }
+}
+
+// ============================================================================
+// Dual Text Encoder (SDXL)
+// ============================================================================
+
+/// Dual text encoder for SDXL
+pub struct DualTextEncoder {
+    text_encoder_1: TextEncoder,
+    text_encoder_2: TextEncoder,
+}
+
+impl DualTextEncoder {
+    /// Create SDXL dual encoder (CLIP + OpenCLIP)
+    pub fn sdxl(vb: VarBuilder) -> Result<Self> {
+        let text_encoder_1 = TextEncoder::clip(vb.pp("text_encoder"))?
+        let text_encoder_2 = TextEncoder::openclip_bigg(vb.pp("text_encoder_2"))?
+        Ok(Self { text_encoder_1, text_encoder_2 })
+    }
+
+    /// Encode with both encoders
+    pub fn encode(
+        self,
+        input_ids_1~: &Tensor,
+        input_ids_2~: &Tensor,
+    ) -> Result<(TextEmbeddings!, PooledEmbeddings!)> {
+        let emb_1! = self.text_encoder_1.encode(input_ids_1~)?
+        let emb_2! = self.text_encoder_2.encode(input_ids_2~)?
+
+        // Concatenate hidden states
+        let combined_hidden! = Tensor::cat(&[
+            emb_1!.last_hidden_state!.clone(),
+            emb_2!.last_hidden_state!.clone(),
+        ], -1)?
+
+        // Combine pooled outputs
+        let pooled_1! = emb_1!.pooled_output!.clone().unwrap_or_else(||
+            Tensor::zeros([1, self.text_encoder_1.hidden_size() as usize], emb_1!.last_hidden_state!.device(), emb_1!.last_hidden_state!.dtype()).unwrap()
+        )
+        let pooled_2! = emb_2!.pooled_output!.clone()
+
+        let combined_pooled! = Tensor::cat(&[
+            pooled_1!.clone(),
+            pooled_2!.clone().unwrap_or(pooled_1!.clone()),
+        ], -1)?
+
+        let pooled! = PooledEmbeddings! {
+            pooled_1!,
+            pooled_2!,
+            combined!: combined_pooled!,
+        }
+
+        let combined! = TextEmbeddings! {
+            last_hidden_state!: combined_hidden!,
+            pooled_output!: Some(combined_pooled!),
+            hidden_states!: None,
+        }
+
+        Ok((combined!, pooled!))
+    }
+}
+
+/// Triple text encoder for SD3
+pub struct TripleTextEncoder {
+    clip_l: TextEncoder,
+    clip_g: TextEncoder,
+    t5: TextEncoder,
+}
+
+impl TripleTextEncoder {
+    /// Create SD3 triple encoder
+    pub fn sd3(vb: VarBuilder) -> Result<Self> {
+        let clip_l = TextEncoder::clip(vb.pp("text_encoder"))?
+        let clip_g = TextEncoder::openclip_bigg(vb.pp("text_encoder_2"))?
+        let t5 = TextEncoder::t5_xxl(vb.pp("text_encoder_3"))?
+        Ok(Self { clip_l, clip_g, t5 })
+    }
+
+    /// Encode with all three encoders
+    pub fn encode(
+        self,
+        input_ids_1~: &Tensor,
+        input_ids_2~: &Tensor,
+        input_ids_3~: &Tensor,
+    ) -> Result<(TextEmbeddings!, PooledEmbeddings!)> {
+        let emb_l! = self.clip_l.encode(input_ids_1~)?
+        let emb_g! = self.clip_g.encode(input_ids_2~)?
+        let emb_t5! = self.t5.encode(input_ids_3~)?
+
+        // Combine pooled from CLIP encoders
+        let pooled_l! = emb_l!.pooled_output!.clone().unwrap()
+        let pooled_g! = emb_g!.pooled_output!.clone().unwrap()
+        let combined_pooled! = Tensor::cat(&[pooled_l!.clone(), pooled_g!.clone()], -1)?
+
+        // T5 provides main sequence embeddings
+        let combined! = TextEmbeddings! {
+            last_hidden_state!: emb_t5!.last_hidden_state!,
+            pooled_output!: Some(combined_pooled!.clone()),
+            hidden_states!: None,
+        }
+
+        let pooled! = PooledEmbeddings! {
+            pooled_1!: pooled_l!,
+            pooled_2!: Some(pooled_g!),
+            combined!: combined_pooled!,
+        }
+
+        Ok((combined!, pooled!))
+    }
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Create causal attention mask
+fn create_causal_mask(seq_len: usize, device: &Device, dtype: DType) -> Result<Tensor> {
+    let mask = Tensor::ones([seq_len, seq_len], device, dtype)?
+    let mask = mask.triu(1)?  // Upper triangular with diagonal offset 1
+    (mask * f32::NEG_INFINITY)
+}
+
+/// QuickGELU activation (used by CLIP)
+fn quick_gelu(x: &Tensor) -> Result<Tensor> {
+    x.broadcast_mul(&(x * 1.702)?.sigmoid()?)
+}
+
+/// Find EOS token positions
+fn find_eos_positions(input_ids~: &Tensor) -> Result<Tensor> {
+    // Typically EOS is at the end or marked by a special token
+    // For simplicity, assume last position
+    let (batch, seq) = input_ids~.dims2()?
+    Tensor::full(seq as i64 - 1, [batch], input_ids~.device(), DType::I64)
+}
+
+/// Gather hidden states at specific positions
+fn gather_at_positions(hidden_states: &Tensor, positions: &Tensor) -> Result<Tensor> {
+    let (batch, seq, hidden) = hidden_states.dims3()?
+    let positions = positions.unsqueeze(1)?.unsqueeze(2)?
+    let positions = positions.expand([batch, 1, hidden])?
+    hidden_states.gather(&positions, 1)?.squeeze(1)
+}
+
+/// Compute relative position bias for T5
+fn compute_relative_position_bias(
+    query_len: usize,
+    key_len: usize,
+    bias_embed: &Embedding,
+) -> Result<Tensor> {
+    let context_position = Tensor::arange(0, query_len as i64, bias_embed.embeddings().device())?
+        .unsqueeze(1)?
+    let memory_position = Tensor::arange(0, key_len as i64, bias_embed.embeddings().device())?
+        .unsqueeze(0)?
+
+    let relative_position = (memory_position - context_position)?
+
+    // Bucket the relative positions
+    let relative_buckets = relative_position_bucket(&relative_position, 32, 128)?
+
+    // Get bias values
+    let bias = bias_embed.forward(&relative_buckets)?
+    bias.permute([2, 0, 1])
+}
+
+/// Bucket relative positions (T5 style)
+fn relative_position_bucket(
+    relative_position: &Tensor,
+    num_buckets: u32,
+    max_distance: u32,
+) -> Result<Tensor> {
+    let half_buckets = num_buckets / 2
+
+    let neg_mask = relative_position.lt(0.0)?
+    let relative_position = relative_position.abs()?
+
+    let max_exact = half_buckets / 2
+    let is_small = relative_position.lt(max_exact as f64)?
+
+    let val_if_large = ((relative_position.to_dtype(DType::F32)? / max_exact as f32)?.log()?
+        / (max_distance as f32 / max_exact as f32).ln()
+        * (half_buckets - max_exact) as f32)?
+        .to_dtype(DType::I64)?
+        .clamp(0, (half_buckets - 1) as i64)?
+    let val_if_large = (val_if_large + max_exact as i64)?
+
+    let relative_buckets = is_small.where_cond(&relative_position.to_dtype(DType::I64)?, &val_if_large)?
+
+    // Offset negative positions
+    let offset = neg_mask.where_cond(
+        &Tensor::full(half_buckets as i64, relative_buckets.shape(), relative_buckets.device(), DType::I64)?,
+        &Tensor::zeros(relative_buckets.shape(), relative_buckets.device(), DType::I64)?,
+    )?
+
+    (relative_buckets + offset)
+}
+
+/// Layer normalization
+pub struct LayerNorm {
+    weight: Tensor,
+    bias: Tensor,
+    eps: f64,
+}
+
+impl LayerNorm {
+    pub fn new(dim: u32, eps: f64, vb: VarBuilder) -> Result<Self> {
+        let weight = vb.get(dim as usize, "weight")?
+        let bias = vb.get(dim as usize, "bias")?
+        Ok(Self { weight, bias, eps })
+    }
+}
+
+impl Module for LayerNorm {
+    fn forward(self, x: &Tensor) -> Result<Tensor> {
+        x.layer_norm(&self.weight, &self.bias, self.eps)
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_text_encoder_config() {
+        let config = TextEncoderConfig::clip_vit_l_14()
+        assert_eq!(config.hidden_size, 768)
+        assert_eq!(config.num_layers, 12)
+    }
+
+    #[test]
+    fn test_t5_config() {
+        let config = T5Config::t5_xxl()
+        assert_eq!(config.d_model, 4096)
+        assert_eq!(config.num_heads, 64)
+    }
+
+    #[test]
+    fn test_causal_mask() {
+        let mask = create_causal_mask(5, &Device::Cpu, DType::F32)?
+        assert_eq!(mask.dims(), &[5, 5])
+    }
+}

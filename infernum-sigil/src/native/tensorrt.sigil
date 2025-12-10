@@ -1,0 +1,831 @@
+/// TensorRT Integration
+///
+/// Direct TensorRT API bindings for maximum inference performance.
+/// Provides engine building, optimization, and execution.
+
+use crate::core::error::{InfernumError, Result}
+use crate::native::ffi::NativeLibrary
+use crate::native::cuda::{CudaBackend, CudaError}
+use std::collections::HashMap
+use std::path::Path
+use std::ffi::c_void
+
+// ============================================================================
+// TensorRT FFI Bindings
+// ============================================================================
+
+#[link(name = "nvinfer")]
+extern "C" {
+    // Logger
+    fn createInferRuntime(logger: *mut c_void) -> *mut c_void
+
+    // Builder
+    fn nvinfer1_createInferBuilder(logger: *mut c_void) -> *mut c_void
+    fn nvinfer1_IBuilder_createNetworkV2(builder: *mut c_void, flags: u32) -> *mut c_void
+    fn nvinfer1_IBuilder_createBuilderConfig(builder: *mut c_void) -> *mut c_void
+    fn nvinfer1_IBuilder_buildSerializedNetwork(
+        builder: *mut c_void,
+        network: *mut c_void,
+        config: *mut c_void
+    ) -> *mut c_void
+
+    // Config
+    fn nvinfer1_IBuilderConfig_setMemoryPoolLimit(
+        config: *mut c_void,
+        pool: i32,
+        size: u64
+    )
+    fn nvinfer1_IBuilderConfig_setFlag(config: *mut c_void, flag: i32)
+    fn nvinfer1_IBuilderConfig_clearFlag(config: *mut c_void, flag: i32)
+    fn nvinfer1_IBuilderConfig_setInt8Calibrator(
+        config: *mut c_void,
+        calibrator: *mut c_void
+    )
+
+    // Network
+    fn nvinfer1_INetworkDefinition_addInput(
+        network: *mut c_void,
+        name: *const i8,
+        dtype: i32,
+        dims: *const i32,
+        num_dims: i32
+    ) -> *mut c_void
+    fn nvinfer1_INetworkDefinition_markOutput(network: *mut c_void, tensor: *mut c_void)
+    fn nvinfer1_INetworkDefinition_addConvolutionNd(
+        network: *mut c_void,
+        input: *mut c_void,
+        num_output_maps: i32,
+        kernel_size: *const i32,
+        kernel_weights: *const c_void,
+        bias_weights: *const c_void
+    ) -> *mut c_void
+    fn nvinfer1_INetworkDefinition_addMatrixMultiply(
+        network: *mut c_void,
+        input0: *mut c_void,
+        op0: i32,
+        input1: *mut c_void,
+        op1: i32
+    ) -> *mut c_void
+    fn nvinfer1_INetworkDefinition_addSoftMax(
+        network: *mut c_void,
+        input: *mut c_void,
+        axis: i32
+    ) -> *mut c_void
+
+    // Engine
+    fn nvinfer1_ICudaEngine_createExecutionContext(engine: *mut c_void) -> *mut c_void
+    fn nvinfer1_ICudaEngine_getNbIOTensors(engine: *mut c_void) -> i32
+    fn nvinfer1_ICudaEngine_getIOTensorName(engine: *mut c_void, index: i32) -> *const i8
+    fn nvinfer1_ICudaEngine_getTensorShape(
+        engine: *mut c_void,
+        name: *const i8,
+        dims: *mut i32
+    ) -> i32
+    fn nvinfer1_ICudaEngine_serialize(engine: *mut c_void) -> *mut c_void
+
+    // Execution Context
+    fn nvinfer1_IExecutionContext_setTensorAddress(
+        context: *mut c_void,
+        name: *const i8,
+        data: *mut c_void
+    ) -> bool
+    fn nvinfer1_IExecutionContext_enqueueV3(
+        context: *mut c_void,
+        stream: *mut c_void
+    ) -> bool
+
+    // Host Memory
+    fn nvinfer1_IHostMemory_data(mem: *mut c_void) -> *const c_void
+    fn nvinfer1_IHostMemory_size(mem: *mut c_void) -> u64
+    fn nvinfer1_IHostMemory_destroy(mem: *mut c_void)
+
+    // Runtime deserialization
+    fn nvinfer1_IRuntime_deserializeCudaEngine(
+        runtime: *mut c_void,
+        blob: *const c_void,
+        size: u64
+    ) -> *mut c_void
+}
+
+// ============================================================================
+// TensorRT Types
+// ============================================================================
+
+/// TensorRT data types
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TrtDataType {
+    Float = 0,
+    Half = 1,
+    Int8 = 2,
+    Int32 = 3,
+    Bool = 4,
+    Uint8 = 5,
+    Fp8 = 6,
+    Bf16 = 7,
+    Int64 = 8,
+    Int4 = 9,
+}
+
+/// TensorRT builder flags
+#[derive(Clone, Copy, Debug)]
+pub enum BuilderFlag {
+    Fp16 = 0,
+    Int8 = 1,
+    Debug = 2,
+    GpuFallback = 3,
+    StrictTypes = 4,
+    Refit = 5,
+    DisableTimingCache = 6,
+    TfWCores = 7,
+    Obey = 8,
+    PreferPrecisionConstraints = 9,
+    DirectIo = 10,
+    RejectEmptyAlgorithms = 11,
+    EnableTactics = 12,
+    Bf16 = 13,
+    VersionCompatible = 14,
+    ExcludeLeanRuntime = 15,
+    Fp8 = 16,
+    ErrorOnTimingCacheMiss = 17,
+    Bf16Weights = 18,
+    Fp16Weights = 19,
+    Int4 = 20,
+}
+
+/// TensorRT memory pool types
+#[derive(Clone, Copy, Debug)]
+pub enum MemoryPoolType {
+    Workspace = 0,
+    DlaManagedSram = 1,
+    DlaLocalDram = 2,
+    DlaGlobalDram = 3,
+    Tactic = 4,
+}
+
+/// Optimization profile for dynamic shapes
+#[derive(Clone, Debug)]
+pub struct OptProfile {
+    pub name: String,
+    pub min_dims: Vec<i32>,
+    pub opt_dims: Vec<i32>,
+    pub max_dims: Vec<i32>,
+}
+
+// ============================================================================
+// TensorRT Logger
+// ============================================================================
+
+/// TensorRT logger severity levels
+#[derive(Clone, Copy, Debug)]
+pub enum LogSeverity {
+    InternalError = 0,
+    Error = 1,
+    Warning = 2,
+    Info = 3,
+    Verbose = 4,
+}
+
+/// Simple logger for TensorRT
+pub struct TrtLogger {
+    severity: LogSeverity,
+}
+
+impl TrtLogger {
+    pub fn new(severity: LogSeverity) -> Self {
+        Self { severity }
+    }
+
+    pub fn info() -> Self {
+        Self::new(LogSeverity::Info)
+    }
+
+    pub fn warning() -> Self {
+        Self::new(LogSeverity::Warning)
+    }
+
+    pub fn verbose() -> Self {
+        Self::new(LogSeverity::Verbose)
+    }
+}
+
+// ============================================================================
+// TensorRT Builder
+// ============================================================================
+
+/// TensorRT engine builder configuration
+#[derive(Clone, Debug)]
+pub struct TrtBuilderConfig {
+    /// Enable FP16 precision
+    pub fp16: bool,
+    /// Enable INT8 quantization
+    pub int8: bool,
+    /// Enable BF16 precision
+    pub bf16: bool,
+    /// Enable FP8 precision
+    pub fp8: bool,
+    /// Maximum workspace size in bytes
+    pub workspace_size: u64,
+    /// Maximum batch size
+    pub max_batch_size: u32,
+    /// DLA core (-1 for GPU)
+    pub dla_core: i32,
+    /// Allow GPU fallback from DLA
+    pub gpu_fallback: bool,
+    /// Optimization profiles for dynamic shapes
+    pub profiles: Vec<OptProfile>,
+    /// Builder optimization level (0-5)
+    pub builder_optimization_level: u32,
+    /// Enable timing cache
+    pub timing_cache: bool,
+    /// Path to timing cache file
+    pub timing_cache_path: Option<String>,
+}
+
+impl Default for TrtBuilderConfig {
+    fn default() -> Self {
+        Self {
+            fp16: true,
+            int8: false,
+            bf16: false,
+            fp8: false,
+            workspace_size: 1 << 30,  // 1GB
+            max_batch_size: 1,
+            dla_core: -1,
+            gpu_fallback: true,
+            profiles: Vec::new(),
+            builder_optimization_level: 3,
+            timing_cache: true,
+            timing_cache_path: None,
+        }
+    }
+}
+
+impl TrtBuilderConfig {
+    pub fn fp16() -> Self {
+        Self {
+            fp16: true,
+            ..Default::default()
+        }
+    }
+
+    pub fn int8() -> Self {
+        Self {
+            fp16: true,
+            int8: true,
+            ..Default::default()
+        }
+    }
+
+    pub fn fp8() -> Self {
+        Self {
+            fp16: true,
+            fp8: true,
+            ..Default::default()
+        }
+    }
+
+    pub fn with_workspace(mut self, size: u64) -> Self {
+        self.workspace_size = size
+        self
+    }
+
+    pub fn with_batch_size(mut self, size: u32) -> Self {
+        self.max_batch_size = size
+        self
+    }
+
+    pub fn add_profile(mut self, profile: OptProfile) -> Self {
+        self.profiles.push(profile)
+        self
+    }
+}
+
+// ============================================================================
+// TensorRT Network Builder
+// ============================================================================
+
+/// Network definition for TensorRT
+pub struct TrtNetworkBuilder {
+    builder: *mut c_void,
+    network: *mut c_void,
+    config: *mut c_void,
+    tensors: HashMap<String, *mut c_void>,
+}
+
+impl TrtNetworkBuilder {
+    /// Create a new network builder
+    pub fn new(logger: &TrtLogger) -> Result<Self!> {
+        // Create builder (simplified - real impl needs proper logger vtable)
+        let builder = unsafe { nvinfer1_createInferBuilder(std::ptr::null_mut()) }
+        if builder.is_null() {
+            return Err(InfernumError::TensorRTError {
+                message: "Failed to create TensorRT builder".to_string(),
+            })
+        }
+
+        // Create network with explicit batch
+        let network = unsafe { nvinfer1_IBuilder_createNetworkV2(builder, 1) }  // EXPLICIT_BATCH
+        if network.is_null() {
+            return Err(InfernumError::TensorRTError {
+                message: "Failed to create network".to_string(),
+            })
+        }
+
+        // Create builder config
+        let config = unsafe { nvinfer1_IBuilder_createBuilderConfig(builder) }
+        if config.is_null() {
+            return Err(InfernumError::TensorRTError {
+                message: "Failed to create builder config".to_string(),
+            })
+        }
+
+        Ok(Self {
+            builder,
+            network,
+            config,
+            tensors: HashMap::new(),
+        })
+    }
+
+    /// Add input tensor
+    pub fn add_input(&mut self, name: &str, dtype: TrtDataType, dims: &[i32]) -> Result<()!> {
+        let name_cstr = std::ffi::CString::new(name).unwrap()
+
+        let tensor = unsafe {
+            nvinfer1_INetworkDefinition_addInput(
+                self.network,
+                name_cstr.as_ptr(),
+                dtype as i32,
+                dims.as_ptr(),
+                dims.len() as i32,
+            )
+        }
+
+        if tensor.is_null() {
+            return Err(InfernumError::TensorRTError {
+                message: format!("Failed to add input: {}", name),
+            })
+        }
+
+        self.tensors.insert(name.to_string(), tensor)
+        Ok(())
+    }
+
+    /// Mark tensor as output
+    pub fn mark_output(&mut self, name: &str) -> Result<()!> {
+        let tensor = self.tensors.get(name).ok_or_else(|| InfernumError::NotFound {
+            what: format!("Tensor: {}", name),
+        })?
+
+        unsafe { nvinfer1_INetworkDefinition_markOutput(self.network, *tensor) }
+        Ok(())
+    }
+
+    /// Add matrix multiply layer
+    pub fn add_matmul(
+        &mut self,
+        name: &str,
+        input_a: &str,
+        input_b: &str,
+        transpose_a: bool,
+        transpose_b: bool,
+    ) -> Result<()!> {
+        let tensor_a = *self.tensors.get(input_a).ok_or_else(|| InfernumError::NotFound {
+            what: format!("Tensor: {}", input_a),
+        })?
+
+        let tensor_b = *self.tensors.get(input_b).ok_or_else(|| InfernumError::NotFound {
+            what: format!("Tensor: {}", input_b),
+        })?
+
+        let op_a = if transpose_a { 1 } else { 0 }  // kTRANSPOSE : kNONE
+        let op_b = if transpose_b { 1 } else { 0 }
+
+        let layer = unsafe {
+            nvinfer1_INetworkDefinition_addMatrixMultiply(
+                self.network,
+                tensor_a,
+                op_a,
+                tensor_b,
+                op_b,
+            )
+        }
+
+        if layer.is_null() {
+            return Err(InfernumError::TensorRTError {
+                message: format!("Failed to add matmul: {}", name),
+            })
+        }
+
+        // Get output tensor from layer and store it
+        // (simplified - real impl would get output tensor)
+        self.tensors.insert(name.to_string(), layer)
+        Ok(())
+    }
+
+    /// Add softmax layer
+    pub fn add_softmax(&mut self, name: &str, input: &str, axis: i32) -> Result<()!> {
+        let input_tensor = *self.tensors.get(input).ok_or_else(|| InfernumError::NotFound {
+            what: format!("Tensor: {}", input),
+        })?
+
+        let layer = unsafe {
+            nvinfer1_INetworkDefinition_addSoftMax(self.network, input_tensor, axis)
+        }
+
+        if layer.is_null() {
+            return Err(InfernumError::TensorRTError {
+                message: format!("Failed to add softmax: {}", name),
+            })
+        }
+
+        self.tensors.insert(name.to_string(), layer)
+        Ok(())
+    }
+
+    /// Configure precision
+    pub fn set_precision(&mut self, config: &TrtBuilderConfig) {
+        unsafe {
+            // Set workspace
+            nvinfer1_IBuilderConfig_setMemoryPoolLimit(
+                self.config,
+                MemoryPoolType::Workspace as i32,
+                config.workspace_size,
+            )
+
+            // Set precision flags
+            if config.fp16 {
+                nvinfer1_IBuilderConfig_setFlag(self.config, BuilderFlag::Fp16 as i32)
+            }
+            if config.int8 {
+                nvinfer1_IBuilderConfig_setFlag(self.config, BuilderFlag::Int8 as i32)
+            }
+            if config.bf16 {
+                nvinfer1_IBuilderConfig_setFlag(self.config, BuilderFlag::Bf16 as i32)
+            }
+            if config.fp8 {
+                nvinfer1_IBuilderConfig_setFlag(self.config, BuilderFlag::Fp8 as i32)
+            }
+        }
+    }
+
+    /// Build serialized engine
+    pub fn build(&self) -> Result<Vec<u8>!> {
+        let serialized = unsafe {
+            nvinfer1_IBuilder_buildSerializedNetwork(self.builder, self.network, self.config)
+        }
+
+        if serialized.is_null() {
+            return Err(InfernumError::TensorRTError {
+                message: "Failed to build engine".to_string(),
+            })
+        }
+
+        let data = unsafe { nvinfer1_IHostMemory_data(serialized) }
+        let size = unsafe { nvinfer1_IHostMemory_size(serialized) }
+
+        let mut result = vec![0u8; size as usize]
+        unsafe {
+            std::ptr::copy_nonoverlapping(data as *const u8, result.as_mut_ptr(), size as usize)
+            nvinfer1_IHostMemory_destroy(serialized)
+        }
+
+        Ok(result)
+    }
+}
+
+// ============================================================================
+// TensorRT Engine
+// ============================================================================
+
+/// Compiled TensorRT engine
+pub struct TrtEngine {
+    runtime: *mut c_void,
+    engine: *mut c_void,
+    context: *mut c_void,
+    bindings: HashMap<String, TensorBinding>,
+}
+
+/// Tensor binding info
+#[derive(Clone, Debug)]
+pub struct TensorBinding {
+    pub name: String,
+    pub is_input: bool,
+    pub dtype: TrtDataType,
+    pub dims: Vec<i32>,
+    pub size_bytes: u64,
+}
+
+impl TrtEngine {
+    /// Load engine from serialized bytes
+    pub fn load(data: &[u8]) -> Result<Self!> {
+        // Create runtime
+        let runtime = unsafe { createInferRuntime(std::ptr::null_mut()) }
+        if runtime.is_null() {
+            return Err(InfernumError::TensorRTError {
+                message: "Failed to create runtime".to_string(),
+            })
+        }
+
+        // Deserialize engine
+        let engine = unsafe {
+            nvinfer1_IRuntime_deserializeCudaEngine(
+                runtime,
+                data.as_ptr() as *const c_void,
+                data.len() as u64,
+            )
+        }
+
+        if engine.is_null() {
+            return Err(InfernumError::TensorRTError {
+                message: "Failed to deserialize engine".to_string(),
+            })
+        }
+
+        // Create execution context
+        let context = unsafe { nvinfer1_ICudaEngine_createExecutionContext(engine) }
+        if context.is_null() {
+            return Err(InfernumError::TensorRTError {
+                message: "Failed to create execution context".to_string(),
+            })
+        }
+
+        // Get bindings
+        let num_io = unsafe { nvinfer1_ICudaEngine_getNbIOTensors(engine) }
+        let mut bindings = HashMap::new()
+
+        for i in 0..num_io {
+            let name_ptr = unsafe { nvinfer1_ICudaEngine_getIOTensorName(engine, i) }
+            let name = unsafe { std::ffi::CStr::from_ptr(name_ptr).to_string_lossy().to_string() }
+
+            // Get tensor shape
+            let mut dims = [0i32; 8]
+            let num_dims = unsafe {
+                nvinfer1_ICudaEngine_getTensorShape(
+                    engine,
+                    name_ptr,
+                    dims.as_mut_ptr(),
+                )
+            }
+
+            let dims: Vec<i32> = dims[..num_dims as usize].to_vec()
+            let size_bytes = dims.iter().product::<i32>() as u64 * 4  // Assume float32
+
+            bindings.insert(name.clone(), TensorBinding {
+                name: name.clone(),
+                is_input: i < num_io / 2,  // Simplified assumption
+                dtype: TrtDataType::Float,
+                dims,
+                size_bytes,
+            })
+        }
+
+        Ok(Self {
+            runtime,
+            engine,
+            context,
+            bindings,
+        })
+    }
+
+    /// Load engine from file
+    pub fn load_file<P: AsRef<Path>>(path: P) -> Result<Self!> {
+        let data = std::fs::read(path.as_ref()).map_err(|e| InfernumError::IoError {
+            message: format!("Failed to read engine file: {}", e),
+        })?
+
+        Self::load(&data)
+    }
+
+    /// Save engine to file
+    pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<()!> {
+        let serialized = unsafe { nvinfer1_ICudaEngine_serialize(self.engine) }
+        if serialized.is_null() {
+            return Err(InfernumError::TensorRTError {
+                message: "Failed to serialize engine".to_string(),
+            })
+        }
+
+        let data = unsafe { nvinfer1_IHostMemory_data(serialized) }
+        let size = unsafe { nvinfer1_IHostMemory_size(serialized) }
+
+        let slice = unsafe { std::slice::from_raw_parts(data as *const u8, size as usize) }
+
+        std::fs::write(path.as_ref(), slice).map_err(|e| InfernumError::IoError {
+            message: format!("Failed to write engine file: {}", e),
+        })?
+
+        unsafe { nvinfer1_IHostMemory_destroy(serialized) }
+
+        Ok(())
+    }
+
+    /// Get binding info
+    pub fn binding(&self, name: &str) -> Option<&TensorBinding> {
+        self.bindings.get(name)
+    }
+
+    /// Get all bindings
+    pub fn bindings(&self) -> &HashMap<String, TensorBinding> {
+        &self.bindings
+    }
+
+    /// Set tensor address for execution
+    pub fn set_tensor(&mut self, name: &str, ptr: *mut c_void) -> Result<()!> {
+        let name_cstr = std::ffi::CString::new(name).unwrap()
+
+        let success = unsafe {
+            nvinfer1_IExecutionContext_setTensorAddress(
+                self.context,
+                name_cstr.as_ptr(),
+                ptr,
+            )
+        }
+
+        if !success {
+            return Err(InfernumError::TensorRTError {
+                message: format!("Failed to set tensor: {}", name),
+            })
+        }
+
+        Ok(())
+    }
+
+    /// Execute inference on stream
+    pub fn execute(&mut self, stream: *mut c_void) -> Result<()!> {
+        let success = unsafe {
+            nvinfer1_IExecutionContext_enqueueV3(self.context, stream)
+        }
+
+        if !success {
+            return Err(InfernumError::TensorRTError {
+                message: "Inference execution failed".to_string(),
+            })
+        }
+
+        Ok(())
+    }
+}
+
+// ============================================================================
+// INT8 Calibration
+// ============================================================================
+
+/// INT8 calibration data source
+pub trait CalibrationData {
+    /// Get next batch of calibration data
+    fn next_batch(&mut self) -> Option<HashMap<String, Vec<f32>>>
+
+    /// Get batch size
+    fn batch_size(&self) -> usize
+
+    /// Reset to beginning
+    fn reset(&mut self)
+}
+
+/// INT8 calibrator
+pub struct Int8Calibrator {
+    data_source: Box<dyn CalibrationData>,
+    cache_file: Option<String>,
+    current_batch: usize,
+}
+
+impl Int8Calibrator {
+    pub fn new(data_source: Box<dyn CalibrationData>) -> Self {
+        Self {
+            data_source,
+            cache_file: None,
+            current_batch: 0,
+        }
+    }
+
+    pub fn with_cache(mut self, path: &str) -> Self {
+        self.cache_file = Some(path.to_string())
+        self
+    }
+
+    /// Write calibration cache
+    pub fn write_cache(&self, data: &[u8]) -> Result<()!> {
+        if let Some(ref path) = self.cache_file {
+            std::fs::write(path, data).map_err(|e| InfernumError::IoError {
+                message: format!("Failed to write calibration cache: {}", e),
+            })?
+        }
+        Ok(())
+    }
+
+    /// Read calibration cache
+    pub fn read_cache(&self) -> Option<Vec<u8>> {
+        self.cache_file.as_ref().and_then(|path| {
+            std::fs::read(path).ok()
+        })
+    }
+}
+
+// ============================================================================
+// High-Level Pipeline
+// ============================================================================
+
+/// TensorRT optimization pipeline
+pub struct TrtPipeline {
+    config: TrtBuilderConfig,
+    calibrator: Option<Int8Calibrator>,
+}
+
+impl TrtPipeline {
+    pub fn new(config: TrtBuilderConfig) -> Self {
+        Self {
+            config,
+            calibrator: None,
+        }
+    }
+
+    pub fn fp16() -> Self {
+        Self::new(TrtBuilderConfig::fp16())
+    }
+
+    pub fn int8(calibrator: Int8Calibrator) -> Self {
+        Self {
+            config: TrtBuilderConfig::int8(),
+            calibrator: Some(calibrator),
+        }
+    }
+
+    /// Build engine from ONNX model
+    pub fn build_from_onnx<P: AsRef<Path>>(&self, onnx_path: P) -> Result<TrtEngine!> {
+        // This would use TensorRT's ONNX parser
+        // Simplified implementation
+        Err(InfernumError::NotImplemented {
+            feature: "ONNX to TensorRT conversion".to_string(),
+        })
+    }
+
+    /// Build engine from network definition
+    pub fn build(&self, builder: TrtNetworkBuilder) -> Result<TrtEngine!> {
+        let data! = builder.build()?
+        TrtEngine::load(&data)
+    }
+}
+
+// ============================================================================
+// Benchmarking
+// ============================================================================
+
+/// TensorRT benchmark result
+#[derive(Clone, Debug)]
+pub struct TrtBenchResult {
+    pub latency_ms: f32,
+    pub throughput: f32,
+    pub gpu_compute_time_ms: f32,
+    pub memory_mb: f32,
+}
+
+/// Benchmark a TensorRT engine
+pub fn benchmark_engine(
+    engine: &mut TrtEngine,
+    iterations: u32,
+    warmup: u32,
+) -> Result<TrtBenchResult!> {
+    // Allocate buffers
+    let backend = CudaBackend::new(0)
+    let mut buffers: HashMap<String, *mut c_void> = HashMap::new()
+
+    for (name, binding) in engine.bindings() {
+        let ptr! = backend.malloc(binding.size_bytes)?
+        buffers.insert(name.clone(), ptr)
+        engine.set_tensor(name, ptr)?
+    }
+
+    // Warmup
+    for _ in 0..warmup {
+        engine.execute(std::ptr::null_mut())?
+    }
+
+    backend.synchronize()?
+
+    // Benchmark
+    let start = std::time::Instant::now()
+
+    for _ in 0..iterations {
+        engine.execute(std::ptr::null_mut())?
+    }
+
+    backend.synchronize()?
+
+    let elapsed = start.elapsed()
+    let total_ms = elapsed.as_secs_f32() * 1000.0
+    let latency_ms = total_ms / iterations as f32
+    let throughput = 1000.0 / latency_ms
+
+    // Cleanup
+    for (_, ptr) in buffers {
+        backend.free_ptr(ptr)?
+    }
+
+    Ok(TrtBenchResult {
+        latency_ms,
+        throughput,
+        gpu_compute_time_ms: latency_ms,  // Simplified
+        memory_mb: 0.0,  // Would need to query
+    })
+}

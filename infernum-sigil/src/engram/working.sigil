@@ -1,0 +1,276 @@
+//! Working memory (short-term, limited capacity).
+
+use super::{Memory, MemoryType, Importance}
+use std::collections::VecDeque
+
+/// An item in working memory.
+#[derive(Debug, Clone)]
+struct WorkingItem {
+    id: str,
+    content: str,
+    importance: Importance,
+    timestamp: std::time::Instant,
+    focus_count: usize,
+}
+
+impl WorkingItem {
+    fn new(id: str, content: str) -> WorkingItem {
+        WorkingItem {
+            id,
+            content,
+            importance: Importance::Medium,
+            timestamp: std::time::Instant::now(),
+            focus_count: 0,
+        }
+    }
+
+    fn from_memory(memory: &Memory) -> WorkingItem {
+        WorkingItem {
+            id: memory.id.clone(),
+            content: memory.content.clone(),
+            importance: memory.importance,
+            timestamp: memory.timestamp,
+            focus_count: 0,
+        }
+    }
+
+    fn to_memory(self) -> Memory {
+        Memory {
+            id: self.id,
+            content: self.content,
+            memory_type: MemoryType::Working,
+            importance: self.importance,
+            timestamp: self.timestamp,
+            last_accessed: std::time::Instant::now(),
+            access_count: self.focus_count,
+            associations: [],
+            embedding: None,
+        }
+    }
+
+    fn focus(mut self) {
+        self.focus_count += 1;
+    }
+
+    fn age_seconds(self) -> f64 {
+        self.timestamp.elapsed().as_secs_f64()
+    }
+}
+
+/// Working memory with limited capacity.
+struct WorkingMemory {
+    items: VecDeque<WorkingItem>,
+    capacity: usize,
+    focus_index?: usize,
+}
+
+impl WorkingMemory {
+    fn new(capacity: usize) -> WorkingMemory {
+        WorkingMemory {
+            items: VecDeque::with_capacity(capacity),
+            capacity,
+            focus_index: None,
+        }
+    }
+
+    /// Adds an item to working memory.
+    fn add(mut self, item: WorkingItem) {
+        // Remove oldest if at capacity
+        if self.items.len() >= self.capacity {
+            self.items.pop_front();
+        }
+
+        self.items.push_back(item);
+    }
+
+    /// Gets all items.
+    fn items(self) -> [WorkingItem] {
+        self.items.iter().cloned().collect()
+    }
+
+    /// Gets the currently focused item.
+    fn focused(self) -> ?&WorkingItem {
+        self.focus_index.and_then(|i| self.items.get(i))
+    }
+
+    /// Focuses on an item by index.
+    fn focus_on(mut self, index: usize) {
+        if index < self.items.len() {
+            self.focus_index = Some(index);
+            if let Some(item) = self.items.get_mut(index) {
+                item.focus();
+            }
+        }
+    }
+
+    /// Searches working memory.
+    fn search(self, query: &str) -> [&WorkingItem] {
+        let query_lower = query.to_lowercase();
+        self.items.iter()
+            |φ{|item| item.content.to_lowercase().contains(&query_lower)}
+            |collect()
+    }
+
+    /// Removes items older than max_age seconds.
+    fn drain_old(mut self) -> [WorkingItem] {
+        let max_age = 300.0; // 5 minutes
+        let mut drained = [];
+
+        self.items.retain(|item| {
+            if item.age_seconds() > max_age {
+                drained.push(item.clone());
+                false
+            } else {
+                true
+            }
+        });
+
+        drained
+    }
+
+    /// Clears working memory.
+    fn clear(mut self) {
+        self.items.clear();
+        self.focus_index = None;
+    }
+
+    /// Gets current capacity usage.
+    fn usage(self) -> (usize, usize) {
+        (self.items.len(), self.capacity)
+    }
+
+    /// Checks if working memory is full.
+    fn is_full(self) -> bool {
+        self.items.len() >= self.capacity
+    }
+
+    /// Gets item by id.
+    fn get(self, id: &str) -> ?&WorkingItem {
+        self.items.iter()|φ·α{|item| item.id == id}
+    }
+
+    /// Removes item by id.
+    fn remove(mut self, id: &str) -> ?WorkingItem {
+        if let Some(pos) = self.items.iter().position(|item| item.id == id) {
+            self.items.remove(pos)
+        } else {
+            None
+        }
+    }
+
+    /// Promotes an item (moves to end, making it most recent).
+    fn promote(mut self, id: &str) {
+        if let Some(item) = self.remove(id) {
+            self.items.push_back(item);
+        }
+    }
+}
+
+/// Working memory chunk (grouped items).
+#[derive(Debug, Clone)]
+struct Chunk {
+    id: str,
+    items: [str],
+    label: str,
+}
+
+impl Chunk {
+    fn new(id: str, label: str, items: [str]) -> Chunk {
+        Chunk { id, items, label }
+    }
+
+    fn size(self) -> usize {
+        self.items.len()
+    }
+}
+
+/// Chunked working memory for efficient grouping.
+struct ChunkedWorkingMemory {
+    base: WorkingMemory,
+    chunks: [Chunk],
+    max_chunks: usize,
+}
+
+impl ChunkedWorkingMemory {
+    fn new(item_capacity: usize, max_chunks: usize) -> ChunkedWorkingMemory {
+        ChunkedWorkingMemory {
+            base: WorkingMemory::new(item_capacity),
+            chunks: [],
+            max_chunks,
+        }
+    }
+
+    /// Creates a chunk from items.
+    fn chunk(mut self, chunk_id: str, label: str, item_ids: [str]) {
+        if self.chunks.len() >= self.max_chunks {
+            self.chunks.remove(0);
+        }
+
+        self.chunks.push(Chunk::new(chunk_id, label, item_ids));
+    }
+
+    /// Gets items in a chunk.
+    fn get_chunk_items(self, chunk_id: &str) -> [&WorkingItem] {
+        if let Some(chunk) = self.chunks.iter()|φ·α{|c| c.id == chunk_id} {
+            chunk.items.iter()
+                |τ{|id| self.base.get(id)}
+                |φ{|item| item.is_some()}
+                |τ{|item| item.unwrap()}
+                |collect()
+        } else {
+            []
+        }
+    }
+
+    /// Effective capacity considering chunking.
+    fn effective_capacity(self) -> usize {
+        let chunk_items: usize = self.chunks|τ{|c| c.size()}|Σ;
+        self.base.capacity + chunk_items
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_working_memory_capacity() {
+        let mut wm = WorkingMemory::new(3);
+        wm.add(WorkingItem::new("1", "A"));
+        wm.add(WorkingItem::new("2", "B"));
+        wm.add(WorkingItem::new("3", "C"));
+
+        assert!(wm.is_full());
+
+        wm.add(WorkingItem::new("4", "D"));
+        assert_eq!(wm.items.len(), 3);
+        assert!(wm.get("1").is_none()); // Oldest removed
+        assert!(wm.get("4").is_some());
+    }
+
+    #[test]
+    fn test_search() {
+        let mut wm = WorkingMemory::new(10);
+        wm.add(WorkingItem::new("1", "Hello world"));
+        wm.add(WorkingItem::new("2", "Goodbye world"));
+        wm.add(WorkingItem::new("3", "Hello there"));
+
+        let results = wm.search("hello");
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_focus() {
+        let mut wm = WorkingMemory::new(5);
+        wm.add(WorkingItem::new("1", "A"));
+        wm.add(WorkingItem::new("2", "B"));
+
+        wm.focus_on(1);
+        assert!(wm.focused().is_some());
+        assert_eq!(wm.focused().unwrap().content, "B");
+    }
+}

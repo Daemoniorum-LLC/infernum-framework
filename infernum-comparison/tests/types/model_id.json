@@ -1,0 +1,31 @@
+{
+  "name": "ModelId Type Tests",
+  "description": "Tests for the ModelId identifier type",
+  "cases": [
+    {
+      "name": "create_from_string",
+      "action": "ModelId::new(\"llama-3.2-3b\")",
+      "expected": {
+        "value": "llama-3.2-3b",
+        "display": "llama-3.2-3b"
+      }
+    },
+    {
+      "name": "create_from_str_ref",
+      "action": "ModelId::from(\"gpt-4\")",
+      "expected": {
+        "value": "gpt-4"
+      }
+    },
+    {
+      "name": "equality_check",
+      "action": "ModelId::new(\"test\") == ModelId::new(\"test\")",
+      "expected": true
+    },
+    {
+      "name": "inequality_check",
+      "action": "ModelId::new(\"model-a\") == ModelId::new(\"model-b\")",
+      "expected": false
+    }
+  ]
+}

@@ -1,0 +1,1037 @@
+/// Diffusion Pipeline - High-Level Image Generation API
+///
+/// Provides complete text-to-image and image-to-image generation pipelines:
+/// - StableDiffusionPipeline: SD 1.x/2.x
+/// - SDXLPipeline: Stable Diffusion XL
+/// - SD3Pipeline: Stable Diffusion 3
+/// - FluxPipeline: Black Forest Labs FLUX.1
+///
+/// Sigil features:
+/// - `data~` for all user inputs (prompts, images)
+/// - `computed!` for generated outputs
+/// - `τ{}` morpheme for batch processing
+/// - Async inference with streaming support
+
+use std::time::Instant
+use core::tensor::{Tensor, DType, Device}
+use core::error::Result
+use candle_nn::VarBuilder
+
+use diffusion::types::{
+    LatentTensor, NoisePrediction, DiffusionTimestep, GuidanceScale,
+    DiffusionConfig, DiffusionArchitecture, GenerationOutput, GenerationMetadata,
+    GenerationTiming, PromptInput, ImageInput,
+}
+use diffusion::vae::{VAE, VAEConfig}
+use diffusion::scheduler::{
+    NoiseScheduler, SchedulerConfig, SchedulerType,
+    DDIMScheduler, EulerScheduler, DPMSolverScheduler, FlowMatchScheduler,
+}
+use diffusion::unet::{UNet2D, UNet2DConfig, UNetXL, UNetXLConfig, AddedCondKwargs}
+use diffusion::dit::{DiT, DiTConfig, MMDiT, MMDiTConfig}
+use diffusion::text_encoder::{
+    TextEncoder, DualTextEncoder, TripleTextEncoder,
+    TextEmbeddings, PooledEmbeddings,
+}
+
+// ============================================================================
+// Generation Request & Parameters
+// ============================================================================
+
+/// Image generation request
+#[derive(Debug, Clone)]
+pub struct GenerationRequest~ {
+    /// Text prompt (untrusted user input)
+    pub prompt~: PromptInput~,
+
+    /// Image dimensions
+    pub width: u32 = 1024,
+    pub height: u32 = 1024,
+
+    /// Number of inference steps
+    pub num_inference_steps: u32 = 50,
+
+    /// Guidance scale (CFG)
+    pub guidance_scale: f32 = 7.5,
+
+    /// Random seed (None for random)
+    pub seed?: u64,
+
+    /// Number of images to generate
+    pub num_images: u32 = 1,
+
+    /// Scheduler type
+    pub scheduler: SchedulerType = SchedulerType::EulerAncestral,
+
+    /// Input image for img2img (optional)
+    pub image~?: ImageInput~,
+}
+
+impl GenerationRequest~ {
+    /// Create text-to-image request
+    pub fn text_to_image(prompt~: impl Into<str>) -> Self {
+        Self {
+            prompt~: PromptInput~::new(prompt~),
+            width: 1024,
+            height: 1024,
+            num_inference_steps: 50,
+            guidance_scale: 7.5,
+            seed: None,
+            num_images: 1,
+            scheduler: SchedulerType::EulerAncestral,
+            image~: None,
+        }
+    }
+
+    /// Create image-to-image request
+    pub fn image_to_image(
+        prompt~: impl Into<str>,
+        image~: Tensor,
+        strength: f32,
+    ) -> Self {
+        Self {
+            prompt~: PromptInput~::new(prompt~),
+            width: 1024,
+            height: 1024,
+            num_inference_steps: 50,
+            guidance_scale: 7.5,
+            seed: None,
+            num_images: 1,
+            scheduler: SchedulerType::EulerAncestral,
+            image~: Some(ImageInput~::new(image~, strength)),
+        }
+    }
+
+    /// Set dimensions
+    pub fn with_size(mut self, width: u32, height: u32) -> Self {
+        self.width = width
+        self.height = height
+        self
+    }
+
+    /// Set number of steps
+    pub fn with_steps(mut self, steps: u32) -> Self {
+        self.num_inference_steps = steps
+        self
+    }
+
+    /// Set guidance scale
+    pub fn with_guidance(mut self, scale: f32) -> Self {
+        self.guidance_scale = scale
+        self
+    }
+
+    /// Set seed
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = Some(seed)
+        self
+    }
+
+    /// Set negative prompt
+    pub fn with_negative(mut self, negative~: impl Into<str>) -> Self {
+        self.prompt~ = self.prompt~.with_negative(negative~)
+        self
+    }
+
+    /// Set scheduler
+    pub fn with_scheduler(mut self, scheduler: SchedulerType) -> Self {
+        self.scheduler = scheduler
+        self
+    }
+}
+
+/// Generation parameters (resolved from request)
+#[derive(Debug, Clone)]
+pub struct GenerationParams! {
+    pub width!: u32,
+    pub height!: u32,
+    pub latent_height!: u32,
+    pub latent_width!: u32,
+    pub num_steps!: u32,
+    pub guidance!: GuidanceScale,
+    pub seed!: u64,
+    pub num_images!: u32,
+}
+
+impl GenerationParams! {
+    pub fn from_request(request~: &GenerationRequest~, spatial_scale: u32) -> Self {
+        let seed = request~.seed.unwrap_or_else(|| rand::random())
+
+        Self {
+            width!: request~.width,
+            height!: request~.height,
+            latent_height!: request~.height / spatial_scale,
+            latent_width!: request~.width / spatial_scale,
+            num_steps!: request~.num_inference_steps,
+            guidance!: GuidanceScale::new(request~.guidance_scale),
+            seed!: seed,
+            num_images!: request~.num_images,
+        }
+    }
+}
+
+// ============================================================================
+// Image Output
+// ============================================================================
+
+/// Generated image output
+#[derive(Debug, Clone)]
+pub struct ImageOutput! {
+    /// Generated images as tensors [batch, channels, height, width]
+    pub images!: Tensor,
+
+    /// Images as byte arrays (PNG encoded)
+    pub image_bytes!: [[u8]]?,
+
+    /// Generation seed used
+    pub seed!: u64,
+
+    /// Timing information
+    pub timing!: GenerationTiming!,
+}
+
+impl ImageOutput! {
+    /// Get number of images
+    pub fn num_images(self) -> usize {
+        self.images!.dim(0).unwrap_or(0)
+    }
+
+    /// Get single image tensor
+    pub fn get_image(self, idx: usize) -> Result<Tensor!> {
+        Ok(self.images!.get(idx)?)
+    }
+
+    /// Convert to PIL-compatible format [height, width, channels]
+    pub fn to_hwc(self) -> Result<Tensor!> {
+        self.images!.permute([0, 2, 3, 1])!
+    }
+
+    /// Scale to 0-255 uint8
+    pub fn to_uint8(self) -> Result<Tensor!> {
+        (self.images!.clone() * 255.0)?.to_dtype(DType::U8)!
+    }
+}
+
+// ============================================================================
+// Diffusion Pipeline Trait
+// ============================================================================
+
+/// Common interface for all diffusion pipelines
+#[async_trait]
+pub trait DiffusionPipeline: Send + Sync {
+    /// Generate images from text prompt
+    async fn generate(self, request~: GenerationRequest~) -> Result<ImageOutput!>
+
+    /// Generate with progress callback
+    async fn generate_with_progress(
+        self,
+        request~: GenerationRequest~,
+        callback: impl Fn(ProgressInfo!) + Send,
+    ) -> Result<ImageOutput!>
+
+    /// Get model info
+    fn model_info(self) -> PipelineInfo
+}
+
+/// Progress information during generation
+#[derive(Debug, Clone)]
+pub struct ProgressInfo! {
+    pub step!: u32,
+    pub total_steps!: u32,
+    pub timestep!: f32,
+    pub latents!: Tensor?,
+}
+
+/// Pipeline information
+#[derive(Debug, Clone)]
+pub struct PipelineInfo {
+    pub architecture: DiffusionArchitecture,
+    pub default_resolution: (u32, u32),
+    pub supports_img2img: bool,
+    pub supports_inpainting: bool,
+}
+
+// ============================================================================
+// Stable Diffusion Pipeline
+// ============================================================================
+
+/// Stable Diffusion 1.x/2.x Pipeline
+pub struct StableDiffusionPipeline {
+    vae: VAE,
+    text_encoder: TextEncoder,
+    unet: UNet2D,
+    scheduler: Box<dyn NoiseScheduler>,
+    tokenizer: Tokenizer,
+    device: Device,
+    dtype: DType,
+    architecture: DiffusionArchitecture,
+}
+
+impl StableDiffusionPipeline {
+    /// Load SD 1.5 pipeline
+    pub fn sd_1_5(model_path: &str, device: Device, dtype: DType) -> Result<Self> {
+        let vb = load_weights(model_path)?
+
+        let vae = VAE::new(VAEConfig::sd_vae(), device.clone(), dtype, vb.pp("vae"))?
+        let text_encoder = TextEncoder::clip(vb.pp("text_encoder"))?
+        let unet = UNet2D::new(UNet2DConfig::sd_1x(), vb.pp("unet"))?
+        let scheduler = Box::new(EulerScheduler::new(SchedulerConfig::sd_1x(), &device)?)
+        let tokenizer = Tokenizer::from_file(&format!("{}/tokenizer/tokenizer.json", model_path))?
+
+        Ok(Self {
+            vae, text_encoder, unet, scheduler, tokenizer,
+            device, dtype, architecture: DiffusionArchitecture::SD_1_5,
+        })
+    }
+
+    /// Load SD 2.1 pipeline
+    pub fn sd_2_1(model_path: &str, device: Device, dtype: DType) -> Result<Self> {
+        let vb = load_weights(model_path)?
+
+        let vae = VAE::new(VAEConfig::sd_vae(), device.clone(), dtype, vb.pp("vae"))?
+        let text_encoder = TextEncoder::openclip_h(vb.pp("text_encoder"))?
+        let unet = UNet2D::new(UNet2DConfig::sd_2x(), vb.pp("unet"))?
+        let scheduler = Box::new(EulerScheduler::new(SchedulerConfig::sd_2x(), &device)?)
+        let tokenizer = Tokenizer::from_file(&format!("{}/tokenizer/tokenizer.json", model_path))?
+
+        Ok(Self {
+            vae, text_encoder, unet, scheduler, tokenizer,
+            device, dtype, architecture: DiffusionArchitecture::SD_2_1,
+        })
+    }
+
+    /// Encode prompt to embeddings
+    fn encode_prompt(self, prompt~: &PromptInput~, do_classifier_free_guidance: bool) -> Result<Tensor!> {
+        // Tokenize
+        let tokens = self.tokenizer.encode(&prompt~.prompt~, 77)?
+        let input_ids~ = Tensor::new(tokens.as_slice(), &self.device)?
+            .unsqueeze(0)?
+
+        // Encode
+        let prompt_embeds! = self.text_encoder.encode(&input_ids~)?
+
+        // Classifier-free guidance: concatenate unconditional embeddings
+        if do_classifier_free_guidance {
+            let negative_tokens = self.tokenizer.encode(prompt~.get_negative(), 77)?
+            let negative_ids~ = Tensor::new(negative_tokens.as_slice(), &self.device)?
+                .unsqueeze(0)?
+
+            let negative_embeds! = self.text_encoder.encode(&negative_ids~)?
+
+            // Concat: [uncond, cond]
+            Tensor::cat(&[
+                negative_embeds!.last_hidden_state!,
+                prompt_embeds!.last_hidden_state!,
+            ], 0)!
+        } else {
+            Ok(prompt_embeds!.last_hidden_state!)
+        }
+    }
+
+    /// Run the denoising loop
+    async fn denoise(
+        self,
+        latents!: LatentTensor!,
+        prompt_embeds!: &Tensor,
+        params!: &GenerationParams!,
+        callback?: impl Fn(ProgressInfo!),
+    ) -> Result<LatentTensor!> {
+        let do_cfg = params!.guidance!.cfg_scale > 1.0
+
+        self.scheduler.set_timesteps(params!.num_steps!, &self.device)
+        let timesteps = self.scheduler.timesteps()
+
+        let mut latents! = latents!
+
+        for (i, timestep) in timesteps.iter().enumerate() {
+            // Expand latents for CFG
+            let latent_model_input! = if do_cfg {
+                Tensor::cat(&[latents!.tensor!.clone(), latents!.tensor!.clone()], 0)?
+            } else {
+                latents!.tensor!.clone()
+            }
+
+            // Scale input
+            let latent_model_input! = self.scheduler.scale_model_input(&latent_model_input!, timestep)
+
+            // Predict noise
+            let noise_pred! = self.unet.forward(&latent_model_input!, timestep, prompt_embeds!)?
+
+            // CFG
+            let noise_pred! = if do_cfg {
+                let (uncond!, cond!) = noise_pred!.noise!.chunk(2, 0)?
+                params!.guidance!.apply(&cond!, &uncond!, i as u32)
+            } else {
+                noise_pred!.noise!
+            }
+
+            // Scheduler step
+            let scheduler_output! = self.scheduler.step(
+                &NoisePrediction!::noise_only(noise_pred!),
+                timestep,
+                &latents!.tensor!,
+                None,
+            )?
+
+            latents!.tensor! = scheduler_output!.prev_sample!
+
+            // Progress callback
+            if let Some(cb) = &callback {
+                cb(ProgressInfo! {
+                    step!: i as u32 + 1,
+                    total_steps!: params!.num_steps!,
+                    timestep!: timestep.t,
+                    latents!: Some(latents!.tensor!.clone()),
+                })
+            }
+        }
+
+        Ok(latents!)
+    }
+}
+
+#[async_trait]
+impl DiffusionPipeline for StableDiffusionPipeline {
+    async fn generate(self, request~: GenerationRequest~) -> Result<ImageOutput!> {
+        self.generate_with_progress(request~, |_| {}).await
+    }
+
+    async fn generate_with_progress(
+        self,
+        request~: GenerationRequest~,
+        callback: impl Fn(ProgressInfo!) + Send,
+    ) -> Result<ImageOutput!> {
+        let start_time = Instant::now()
+        let mut timing! = GenerationTiming!::default()
+
+        // Resolve parameters
+        let spatial_scale = self.architecture.spatial_scale()
+        let params! = GenerationParams!::from_request(&request~, spatial_scale)
+
+        // Encode prompt
+        let text_start = Instant::now()
+        let do_cfg = params!.guidance!.cfg_scale > 1.0
+        let prompt_embeds! = self.encode_prompt(&request~.prompt~, do_cfg)?
+        timing!.text_encode_ms! = text_start.elapsed().as_secs_f64() * 1000.0
+
+        // Create initial latents
+        let latent_channels = self.architecture.latent_channels()
+
+        let latents! = if let Some(image~) = &request~.image~ {
+            // Img2img: encode input image
+            let vae_start = Instant::now()
+            let init_latents! = self.vae.encode(&image~.image~)?
+
+            // Add noise based on strength
+            let noise! = LatentTensor!::randn(
+                params!.num_images!,
+                latent_channels,
+                params!.latent_height!,
+                params!.latent_width!,
+                &self.device,
+                self.dtype,
+                Some(params!.seed!),
+            )
+
+            // Calculate start timestep
+            let start_step = ((1.0 - image~.strength~) * params!.num_steps! as f32) as u32
+            let timestep = self.scheduler.timesteps()[start_step as usize]
+
+            let noisy_latents! = self.scheduler.add_noise(
+                &init_latents!.tensor!,
+                &noise!.tensor!,
+                &timestep,
+            )
+            timing!.vae_encode_ms! = vae_start.elapsed().as_secs_f64() * 1000.0
+
+            LatentTensor!::new(noisy_latents!, init_latents!.scale_factor!)
+        } else {
+            // Txt2img: random noise
+            LatentTensor!::randn(
+                params!.num_images!,
+                latent_channels,
+                params!.latent_height!,
+                params!.latent_width!,
+                &self.device,
+                self.dtype,
+                Some(params!.seed!),
+            ).scale(self.architecture.vae_scale_factor())
+        }
+
+        // Denoise
+        let diffusion_start = Instant::now()
+        let latents! = self.denoise(latents!, &prompt_embeds!, &params!, Some(callback)).await?
+        timing!.diffusion_ms! = diffusion_start.elapsed().as_secs_f64() * 1000.0
+
+        // Decode
+        let decode_start = Instant::now()
+        let images! = self.vae.decode(&latents!)?
+        timing!.vae_decode_ms! = decode_start.elapsed().as_secs_f64() * 1000.0
+
+        timing!.total_ms! = start_time.elapsed().as_secs_f64() * 1000.0
+
+        Ok(ImageOutput! {
+            images!,
+            image_bytes!: None,
+            seed!: params!.seed!,
+            timing!,
+        })
+    }
+
+    fn model_info(self) -> PipelineInfo {
+        PipelineInfo {
+            architecture: self.architecture,
+            default_resolution: self.architecture.default_resolution(),
+            supports_img2img: true,
+            supports_inpainting: false,
+        }
+    }
+}
+
+// ============================================================================
+// SDXL Pipeline
+// ============================================================================
+
+/// Stable Diffusion XL Pipeline
+pub struct SDXLPipeline {
+    vae: VAE,
+    text_encoders: DualTextEncoder,
+    unet: UNetXL,
+    scheduler: Box<dyn NoiseScheduler>,
+    tokenizer_1: Tokenizer,
+    tokenizer_2: Tokenizer,
+    device: Device,
+    dtype: DType,
+}
+
+impl SDXLPipeline {
+    /// Load SDXL pipeline
+    pub fn load(model_path: &str, device: Device, dtype: DType) -> Result<Self> {
+        let vb = load_weights(model_path)?
+
+        let vae = VAE::new(VAEConfig::sdxl_vae(), device.clone(), dtype, vb.pp("vae"))?
+        let text_encoders = DualTextEncoder::sdxl(vb.clone())?
+        let unet = UNetXL::new(UNetXLConfig::sdxl(), vb.pp("unet"))?
+        let scheduler = Box::new(EulerScheduler::new(SchedulerConfig::sdxl(), &device)?)
+
+        let tokenizer_1 = Tokenizer::from_file(&format!("{}/tokenizer/tokenizer.json", model_path))?
+        let tokenizer_2 = Tokenizer::from_file(&format!("{}/tokenizer_2/tokenizer.json", model_path))?
+
+        Ok(Self {
+            vae, text_encoders, unet, scheduler,
+            tokenizer_1, tokenizer_2, device, dtype,
+        })
+    }
+
+    /// Encode SDXL prompts
+    fn encode_prompt(
+        self,
+        prompt~: &PromptInput~,
+        do_classifier_free_guidance: bool,
+    ) -> Result<(Tensor!, PooledEmbeddings!)> {
+        // Tokenize for both encoders
+        let tokens_1 = self.tokenizer_1.encode(&prompt~.prompt~, 77)?
+        let tokens_2 = self.tokenizer_2.encode(prompt~.get_prompt_2(), 77)?
+
+        let input_ids_1~ = Tensor::new(tokens_1.as_slice(), &self.device)?.unsqueeze(0)?
+        let input_ids_2~ = Tensor::new(tokens_2.as_slice(), &self.device)?.unsqueeze(0)?
+
+        // Encode
+        let (embeds!, pooled!) = self.text_encoders.encode(&input_ids_1~, &input_ids_2~)?
+
+        if do_classifier_free_guidance {
+            // Encode negative prompts
+            let neg_tokens_1 = self.tokenizer_1.encode(prompt~.get_negative(), 77)?
+            let neg_tokens_2 = self.tokenizer_2.encode(
+                prompt~.negative_prompt_2~.as_deref().unwrap_or(prompt~.get_negative()),
+                77
+            )?
+
+            let neg_ids_1~ = Tensor::new(neg_tokens_1.as_slice(), &self.device)?.unsqueeze(0)?
+            let neg_ids_2~ = Tensor::new(neg_tokens_2.as_slice(), &self.device)?.unsqueeze(0)?
+
+            let (neg_embeds!, neg_pooled!) = self.text_encoders.encode(&neg_ids_1~, &neg_ids_2~)?
+
+            let combined_embeds! = Tensor::cat(&[
+                neg_embeds!.last_hidden_state!,
+                embeds!.last_hidden_state!,
+            ], 0)?
+
+            let combined_pooled! = PooledEmbeddings! {
+                pooled_1!: Tensor::cat(&[neg_pooled!.pooled_1!, pooled!.pooled_1!], 0)?,
+                pooled_2!: Some(Tensor::cat(&[
+                    neg_pooled!.pooled_2!.unwrap(),
+                    pooled!.pooled_2!.unwrap()
+                ], 0)?),
+                combined!: Tensor::cat(&[neg_pooled!.combined!, pooled!.combined!], 0)?,
+            }
+
+            Ok((combined_embeds!, combined_pooled!))
+        } else {
+            Ok((embeds!.last_hidden_state!, pooled!))
+        }
+    }
+
+    /// Create time IDs for SDXL conditioning
+    fn get_time_ids(self, params!: &GenerationParams!) -> Tensor {
+        // [original_height, original_width, crop_top, crop_left, target_height, target_width]
+        Tensor::new(&[
+            params!.height! as f32,
+            params!.width! as f32,
+            0.0, 0.0, // No cropping
+            params!.height! as f32,
+            params!.width! as f32,
+        ], &self.device).unwrap()
+    }
+}
+
+#[async_trait]
+impl DiffusionPipeline for SDXLPipeline {
+    async fn generate(self, request~: GenerationRequest~) -> Result<ImageOutput!> {
+        self.generate_with_progress(request~, |_| {}).await
+    }
+
+    async fn generate_with_progress(
+        self,
+        request~: GenerationRequest~,
+        callback: impl Fn(ProgressInfo!) + Send,
+    ) -> Result<ImageOutput!> {
+        let start_time = Instant::now()
+        let mut timing! = GenerationTiming!::default()
+
+        let params! = GenerationParams!::from_request(&request~, 8)
+        let do_cfg = params!.guidance!.cfg_scale > 1.0
+
+        // Encode prompts
+        let text_start = Instant::now()
+        let (prompt_embeds!, pooled!) = self.encode_prompt(&request~.prompt~, do_cfg)?
+        timing!.text_encode_ms! = text_start.elapsed().as_secs_f64() * 1000.0
+
+        // Time IDs
+        let time_ids~ = self.get_time_ids(&params!)
+        let time_ids~ = if do_cfg {
+            Tensor::cat(&[time_ids~.clone(), time_ids~], 0)?
+        } else {
+            time_ids~
+        }
+
+        let added_cond~ = AddedCondKwargs~ {
+            text_embeds~: pooled!.combined!,
+            time_ids~,
+        }
+
+        // Create latents
+        let latents! = LatentTensor!::randn(
+            params!.num_images!,
+            4, // SDXL uses 4-channel latents
+            params!.latent_height!,
+            params!.latent_width!,
+            &self.device,
+            self.dtype,
+            Some(params!.seed!),
+        ).scale(0.18215)
+
+        // Denoise
+        let diffusion_start = Instant::now()
+        self.scheduler.set_timesteps(params!.num_steps!, &self.device)
+
+        let mut latents! = latents!
+        for (i, timestep) in self.scheduler.timesteps().iter().enumerate() {
+            let latent_input! = if do_cfg {
+                Tensor::cat(&[latents!.tensor!.clone(), latents!.tensor!.clone()], 0)?
+            } else {
+                latents!.tensor!.clone()
+            }
+
+            let latent_input! = self.scheduler.scale_model_input(&latent_input!, timestep)
+
+            let noise_pred! = self.unet.forward(
+                &latent_input!,
+                timestep,
+                &prompt_embeds!,
+                &added_cond~,
+            )?
+
+            let noise_pred! = if do_cfg {
+                let (uncond!, cond!) = noise_pred!.noise!.chunk(2, 0)?
+                params!.guidance!.apply(&cond!, &uncond!, i as u32)
+            } else {
+                noise_pred!.noise!
+            }
+
+            let output! = self.scheduler.step(
+                &NoisePrediction!::noise_only(noise_pred!),
+                timestep,
+                &latents!.tensor!,
+                None,
+            )?
+
+            latents!.tensor! = output!.prev_sample!
+
+            callback(ProgressInfo! {
+                step!: i as u32 + 1,
+                total_steps!: params!.num_steps!,
+                timestep!: timestep.t,
+                latents!: Some(latents!.tensor!.clone()),
+            })
+        }
+        timing!.diffusion_ms! = diffusion_start.elapsed().as_secs_f64() * 1000.0
+
+        // Decode
+        let decode_start = Instant::now()
+        let images! = self.vae.decode(&latents!)?
+        timing!.vae_decode_ms! = decode_start.elapsed().as_secs_f64() * 1000.0
+
+        timing!.total_ms! = start_time.elapsed().as_secs_f64() * 1000.0
+
+        Ok(ImageOutput! {
+            images!,
+            image_bytes!: None,
+            seed!: params!.seed!,
+            timing!,
+        })
+    }
+
+    fn model_info(self) -> PipelineInfo {
+        PipelineInfo {
+            architecture: DiffusionArchitecture::SDXL,
+            default_resolution: (1024, 1024),
+            supports_img2img: true,
+            supports_inpainting: false,
+        }
+    }
+}
+
+// ============================================================================
+// SD3 Pipeline
+// ============================================================================
+
+/// Stable Diffusion 3 Pipeline (MMDiT architecture)
+pub struct SD3Pipeline {
+    vae: VAE,
+    text_encoders: TripleTextEncoder,
+    transformer: MMDiT,
+    scheduler: FlowMatchScheduler,
+    tokenizer_clip: Tokenizer,
+    tokenizer_t5: Tokenizer,
+    device: Device,
+    dtype: DType,
+}
+
+impl SD3Pipeline {
+    /// Load SD3 pipeline
+    pub fn load(model_path: &str, device: Device, dtype: DType) -> Result<Self> {
+        let vb = load_weights(model_path)?
+
+        let vae = VAE::new(VAEConfig::sd3_vae(), device.clone(), dtype, vb.pp("vae"))?
+        let text_encoders = TripleTextEncoder::sd3(vb.clone())?
+        let transformer = MMDiT::new(MMDiTConfig::sd3_medium(), vb.pp("transformer"))?
+        let scheduler = FlowMatchScheduler::new(SchedulerConfig::flow_matching(), &device)?
+
+        let tokenizer_clip = Tokenizer::from_file(&format!("{}/tokenizer/tokenizer.json", model_path))?
+        let tokenizer_t5 = Tokenizer::from_file(&format!("{}/tokenizer_3/tokenizer.json", model_path))?
+
+        Ok(Self {
+            vae, text_encoders, transformer, scheduler,
+            tokenizer_clip, tokenizer_t5, device, dtype,
+        })
+    }
+}
+
+#[async_trait]
+impl DiffusionPipeline for SD3Pipeline {
+    async fn generate(self, request~: GenerationRequest~) -> Result<ImageOutput!> {
+        self.generate_with_progress(request~, |_| {}).await
+    }
+
+    async fn generate_with_progress(
+        self,
+        request~: GenerationRequest~,
+        callback: impl Fn(ProgressInfo!) + Send,
+    ) -> Result<ImageOutput!> {
+        let start_time = Instant::now()
+        let mut timing! = GenerationTiming!::default()
+
+        let params! = GenerationParams!::from_request(&request~, 8)
+
+        // Encode prompts with triple encoder
+        let text_start = Instant::now()
+        let tokens_clip = self.tokenizer_clip.encode(&request~.prompt~.prompt~, 77)?
+        let tokens_t5 = self.tokenizer_t5.encode(&request~.prompt~.prompt~, 256)?
+
+        let clip_ids~ = Tensor::new(tokens_clip.as_slice(), &self.device)?.unsqueeze(0)?
+        let t5_ids~ = Tensor::new(tokens_t5.as_slice(), &self.device)?.unsqueeze(0)?
+
+        let (text_embeds!, pooled!) = self.text_encoders.encode(&clip_ids~, &clip_ids~, &t5_ids~)?
+        timing!.text_encode_ms! = text_start.elapsed().as_secs_f64() * 1000.0
+
+        // Create latents (16 channels for SD3)
+        let latents! = LatentTensor!::randn(
+            params!.num_images!,
+            16,
+            params!.latent_height!,
+            params!.latent_width!,
+            &self.device,
+            self.dtype,
+            Some(params!.seed!),
+        )
+
+        // Flow matching denoising
+        let diffusion_start = Instant::now()
+        self.scheduler.set_timesteps(params!.num_steps!, &self.device)
+
+        let mut latents! = latents!
+        for (i, timestep) in self.scheduler.timesteps().iter().enumerate() {
+            let t = Tensor::new(&[timestep.t], &self.device)?
+
+            let noise_pred! = self.transformer.forward(
+                &latents!.tensor!,
+                &t,
+                &text_embeds!.last_hidden_state!,
+                &pooled!.combined!,
+            )?
+
+            let output! = self.scheduler.step(
+                &noise_pred!,
+                timestep,
+                &latents!.tensor!,
+                None,
+            )?
+
+            latents!.tensor! = output!.prev_sample!
+
+            callback(ProgressInfo! {
+                step!: i as u32 + 1,
+                total_steps!: params!.num_steps!,
+                timestep!: timestep.t,
+                latents!: Some(latents!.tensor!.clone()),
+            })
+        }
+        timing!.diffusion_ms! = diffusion_start.elapsed().as_secs_f64() * 1000.0
+
+        // Decode
+        let decode_start = Instant::now()
+        let images! = self.vae.decode(&latents!)?
+        timing!.vae_decode_ms! = decode_start.elapsed().as_secs_f64() * 1000.0
+
+        timing!.total_ms! = start_time.elapsed().as_secs_f64() * 1000.0
+
+        Ok(ImageOutput! {
+            images!,
+            image_bytes!: None,
+            seed!: params!.seed!,
+            timing!,
+        })
+    }
+
+    fn model_info(self) -> PipelineInfo {
+        PipelineInfo {
+            architecture: DiffusionArchitecture::SD3,
+            default_resolution: (1024, 1024),
+            supports_img2img: true,
+            supports_inpainting: false,
+        }
+    }
+}
+
+// ============================================================================
+// Flux Pipeline
+// ============================================================================
+
+/// FLUX.1 Pipeline
+pub struct FluxPipeline {
+    vae: VAE,
+    text_encoder_clip: TextEncoder,
+    text_encoder_t5: TextEncoder,
+    transformer: MMDiT,
+    scheduler: FlowMatchScheduler,
+    tokenizer_clip: Tokenizer,
+    tokenizer_t5: Tokenizer,
+    device: Device,
+    dtype: DType,
+}
+
+impl FluxPipeline {
+    /// Load Flux pipeline
+    pub fn load(model_path: &str, device: Device, dtype: DType) -> Result<Self> {
+        let vb = load_weights(model_path)?
+
+        let vae = VAE::new(VAEConfig::sd3_vae(), device.clone(), dtype, vb.pp("vae"))?
+        let text_encoder_clip = TextEncoder::clip(vb.pp("text_encoder"))?
+        let text_encoder_t5 = TextEncoder::t5_xxl(vb.pp("text_encoder_2"))?
+        let transformer = MMDiT::new(MMDiTConfig::flux_1(), vb.pp("transformer"))?
+        let scheduler = FlowMatchScheduler::new(SchedulerConfig::flow_matching(), &device)?
+            .with_shift(3.0) // Flux uses shift=3
+
+        let tokenizer_clip = Tokenizer::from_file(&format!("{}/tokenizer/tokenizer.json", model_path))?
+        let tokenizer_t5 = Tokenizer::from_file(&format!("{}/tokenizer_2/tokenizer.json", model_path))?
+
+        Ok(Self {
+            vae, text_encoder_clip, text_encoder_t5, transformer, scheduler,
+            tokenizer_clip, tokenizer_t5, device, dtype,
+        })
+    }
+}
+
+#[async_trait]
+impl DiffusionPipeline for FluxPipeline {
+    async fn generate(self, request~: GenerationRequest~) -> Result<ImageOutput!> {
+        self.generate_with_progress(request~, |_| {}).await
+    }
+
+    async fn generate_with_progress(
+        self,
+        request~: GenerationRequest~,
+        callback: impl Fn(ProgressInfo!) + Send,
+    ) -> Result<ImageOutput!> {
+        let start_time = Instant::now()
+        let mut timing! = GenerationTiming!::default()
+
+        // Flux default: 28 steps, no CFG needed for dev model
+        let num_steps = if request~.num_inference_steps == 50 { 28 } else { request~.num_inference_steps }
+        let params! = GenerationParams! {
+            num_steps!: num_steps,
+            guidance!: GuidanceScale::new(1.0), // Flux dev doesn't need CFG
+            ..GenerationParams!::from_request(&request~, 8)
+        }
+
+        // Encode prompts
+        let text_start = Instant::now()
+        let clip_tokens = self.tokenizer_clip.encode(&request~.prompt~.prompt~, 77)?
+        let t5_tokens = self.tokenizer_t5.encode(&request~.prompt~.prompt~, 512)?
+
+        let clip_ids~ = Tensor::new(clip_tokens.as_slice(), &self.device)?.unsqueeze(0)?
+        let t5_ids~ = Tensor::new(t5_tokens.as_slice(), &self.device)?.unsqueeze(0)?
+
+        let clip_embeds! = self.text_encoder_clip.encode(&clip_ids~)?
+        let t5_embeds! = self.text_encoder_t5.encode(&t5_ids~)?
+
+        let pooled! = clip_embeds!.pooled_output!.unwrap()
+        let context! = t5_embeds!.last_hidden_state!
+
+        timing!.text_encode_ms! = text_start.elapsed().as_secs_f64() * 1000.0
+
+        // Create latents
+        let latents! = LatentTensor!::randn(
+            params!.num_images!,
+            16,
+            params!.latent_height!,
+            params!.latent_width!,
+            &self.device,
+            self.dtype,
+            Some(params!.seed!),
+        )
+
+        // Flow matching denoising
+        let diffusion_start = Instant::now()
+        self.scheduler.set_timesteps(params!.num_steps!, &self.device)
+
+        let mut latents! = latents!
+        for (i, timestep) in self.scheduler.timesteps().iter().enumerate() {
+            let t = Tensor::new(&[timestep.t], &self.device)?
+
+            let noise_pred! = self.transformer.forward(
+                &latents!.tensor!,
+                &t,
+                &context!,
+                &pooled!,
+            )?
+
+            let output! = self.scheduler.step(
+                &noise_pred!,
+                timestep,
+                &latents!.tensor!,
+                None,
+            )?
+
+            latents!.tensor! = output!.prev_sample!
+
+            callback(ProgressInfo! {
+                step!: i as u32 + 1,
+                total_steps!: params!.num_steps!,
+                timestep!: timestep.t,
+                latents!: Some(latents!.tensor!.clone()),
+            })
+        }
+        timing!.diffusion_ms! = diffusion_start.elapsed().as_secs_f64() * 1000.0
+
+        // Decode
+        let decode_start = Instant::now()
+        let images! = self.vae.decode(&latents!)?
+        timing!.vae_decode_ms! = decode_start.elapsed().as_secs_f64() * 1000.0
+
+        timing!.total_ms! = start_time.elapsed().as_secs_f64() * 1000.0
+
+        Ok(ImageOutput! {
+            images!,
+            image_bytes!: None,
+            seed!: params!.seed!,
+            timing!,
+        })
+    }
+
+    fn model_info(self) -> PipelineInfo {
+        PipelineInfo {
+            architecture: DiffusionArchitecture::Flux,
+            default_resolution: (1024, 1024),
+            supports_img2img: true,
+            supports_inpainting: false,
+        }
+    }
+}
+
+// ============================================================================
+// Helper Types
+// ============================================================================
+
+extern struct Tokenizer {
+    fn from_file(path: &str) -> Result<Tokenizer>
+    fn encode(self, text: &str, max_len: usize) -> Result<[u32]>
+}
+
+extern fn load_weights(path: &str) -> Result<VarBuilder>
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_generation_request() {
+        let request~ = GenerationRequest~::text_to_image("a photo of a cat")
+            .with_size(512, 512)
+            .with_steps(20)
+            .with_guidance(7.5)
+            .with_seed(42)
+
+        assert_eq!(request~.width, 512)
+        assert_eq!(request~.num_inference_steps, 20)
+        assert_eq!(request~.seed, Some(42))
+    }
+
+    #[test]
+    fn test_generation_params() {
+        let request~ = GenerationRequest~::text_to_image("test")
+            .with_size(1024, 1024)
+
+        let params! = GenerationParams!::from_request(&request~, 8)
+
+        assert_eq!(params!.latent_height!, 128)
+        assert_eq!(params!.latent_width!, 128)
+    }
+
+    #[test]
+    fn test_pipeline_info() {
+        let info = PipelineInfo {
+            architecture: DiffusionArchitecture::SDXL,
+            default_resolution: (1024, 1024),
+            supports_img2img: true,
+            supports_inpainting: false,
+        }
+
+        assert!(info.supports_img2img)
+    }
+}

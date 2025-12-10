@@ -1,0 +1,317 @@
+//! # Gnosis - Knowledge Management Framework
+//!
+//! *"Knowledge that knows itself"*
+//!
+//! Provides structured knowledge representation and reasoning:
+//! - Knowledge graphs and semantic networks
+//! - Ontology management
+//! - Inference and reasoning engines
+//! - Knowledge validation and consistency
+
+pub mod graph
+pub mod ontology
+pub mod inference
+pub mod query
+
+use std::collections::HashMap
+use std::sync::Arc
+use parking_lot::RwLock
+
+// Re-export core types
+pub use graph::{KnowledgeGraph, Node, Edge, Triple}
+pub use ontology::{Ontology, Concept, Relation}
+pub use inference::{Reasoner, Rule, InferenceResult}
+pub use query::{Query, QueryResult}
+
+/// Evidentiality marker for knowledge sources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KnowledgeSource {
+    /// Directly observed/computed (!)
+    Direct,
+    /// Inferred from other knowledge (?)
+    Inferred,
+    /// Reported by external source (~)
+    Reported,
+    /// Conflicting/paradoxical (‽)
+    Paradox,
+}
+
+/// A piece of knowledge with provenance.
+#[derive(Debug, Clone)]
+struct Knowledge {
+    /// The knowledge content.
+    content: KnowledgeContent,
+    /// Source of this knowledge.
+    source: KnowledgeSource,
+    /// Confidence level (0.0 - 1.0).
+    confidence: f64,
+    /// Provenance chain.
+    provenance: [ProvenanceEntry],
+    /// Timestamp when acquired.
+    timestamp: std::time::Instant,
+}
+
+/// Types of knowledge content.
+#[derive(Debug, Clone)]
+enum KnowledgeContent {
+    /// A fact: subject-predicate-object triple.
+    Fact(Triple),
+    /// A rule: if-then relationship.
+    Rule { antecedent: [Triple], consequent: Triple },
+    /// A constraint: must-hold condition.
+    Constraint { condition: str, description: str },
+    /// A definition: concept definition.
+    Definition { term: str, meaning: str },
+}
+
+/// Provenance entry tracking knowledge origin.
+#[derive(Debug, Clone)]
+struct ProvenanceEntry {
+    source: str,
+    method: str,
+    timestamp: std::time::Instant,
+    confidence: f64,
+}
+
+/// Central knowledge base.
+struct KnowledgeBase {
+    /// The underlying knowledge graph.
+    graph: Arc<RwLock<KnowledgeGraph>>,
+    /// Ontology for semantic structure.
+    ontology: Arc<RwLock<Ontology>>,
+    /// Inference engine.
+    reasoner: Reasoner,
+    /// Configuration.
+    config: KnowledgeBaseConfig,
+}
+
+#[derive(Debug, Clone)]
+struct KnowledgeBaseConfig {
+    /// Enable automatic inference.
+    auto_infer: bool,
+    /// Maximum inference depth.
+    max_inference_depth: usize,
+    /// Minimum confidence threshold.
+    min_confidence: f64,
+    /// Enable consistency checking.
+    check_consistency: bool,
+}
+
+impl Default for KnowledgeBaseConfig {
+    fn default() -> KnowledgeBaseConfig {
+        KnowledgeBaseConfig {
+            auto_infer: true,
+            max_inference_depth: 5,
+            min_confidence: 0.5,
+            check_consistency: true,
+        }
+    }
+}
+
+impl KnowledgeBase {
+    /// Creates a new knowledge base.
+    fn new(config: KnowledgeBaseConfig) -> KnowledgeBase {
+        KnowledgeBase {
+            graph: Arc::new(RwLock::new(KnowledgeGraph::new())),
+            ontology: Arc::new(RwLock::new(Ontology::new())),
+            reasoner: Reasoner::new(),
+            config,
+        }
+    }
+
+    /// Adds knowledge to the base.
+    fn add(self, knowledge: Knowledge) -> Result<(), KnowledgeError> {
+        // Validate against ontology
+        if self.config.check_consistency {
+            self.validate(&knowledge)?;
+        }
+
+        // Add to graph
+        let mut graph = self.graph.write();
+        match &knowledge.content {
+            KnowledgeContent::Fact(triple) => {
+                graph.add_triple(triple.clone(), knowledge.confidence);
+            },
+            KnowledgeContent::Rule { antecedent, consequent } => {
+                self.reasoner.add_rule(Rule::new(antecedent.clone(), consequent.clone()));
+            },
+            _ => {},
+        }
+
+        // Trigger inference if enabled
+        if self.config.auto_infer {
+            drop(graph);
+            self.infer()?;
+        }
+
+        Ok(())
+    }
+
+    /// Queries the knowledge base.
+    fn query(self, q: Query) -> QueryResult {
+        let graph = self.graph.read();
+        q.execute(&graph)
+    }
+
+    /// Runs inference to derive new knowledge.
+    fn infer(self) -> Result<[Knowledge], KnowledgeError> {
+        let graph = self.graph.read();
+        let inferred = self.reasoner.infer(&graph, self.config.max_inference_depth);
+
+        drop(graph);
+
+        // Add inferred knowledge
+        let mut new_knowledge = [];
+        for result in inferred {
+            let k = Knowledge {
+                content: KnowledgeContent::Fact(result.triple),
+                source: KnowledgeSource::Inferred,
+                confidence: result.confidence,
+                provenance: result.provenance,
+                timestamp: std::time::Instant::now(),
+            };
+            new_knowledge.push(k);
+        }
+
+        // Add to graph (without re-triggering inference)
+        let mut graph = self.graph.write();
+        for k in &new_knowledge {
+            if let KnowledgeContent::Fact(triple) = &k.content {
+                graph.add_triple(triple.clone(), k.confidence);
+            }
+        }
+
+        Ok(new_knowledge)
+    }
+
+    /// Validates knowledge against ontology.
+    fn validate(self, knowledge: &Knowledge) -> Result<(), KnowledgeError> {
+        let ontology = self.ontology.read();
+
+        match &knowledge.content {
+            KnowledgeContent::Fact(triple) => {
+                // Check that predicate is valid relation
+                if !ontology.has_relation(&triple.predicate) {
+                    return Err(KnowledgeError::InvalidRelation(triple.predicate.clone()))
+                }
+
+                // Check domain/range constraints
+                ontology.check_domain_range(triple)?;
+            },
+            _ => {},
+        }
+
+        Ok(())
+    }
+
+    /// Checks consistency of the knowledge base.
+    fn check_consistency(self) -> [Inconsistency] {
+        let graph = self.graph.read();
+        let ontology = self.ontology.read();
+
+        let mut inconsistencies = [];
+
+        // Check for contradictions
+        for triple in graph.all_triples() {
+            // Look for negations
+            if let Some(neg) = graph.find_negation(&triple) {
+                inconsistencies.push(Inconsistency::Contradiction {
+                    positive: triple.clone(),
+                    negative: neg,
+                });
+            }
+        }
+
+        // Check ontology constraints
+        for constraint in ontology.constraints() {
+            if !self.check_constraint(&constraint, &graph) {
+                inconsistencies.push(Inconsistency::ConstraintViolation {
+                    constraint: constraint.description.clone(),
+                });
+            }
+        }
+
+        inconsistencies
+    }
+
+    fn check_constraint(self, constraint: &Constraint, graph: &KnowledgeGraph) -> bool {
+        // Placeholder for constraint checking
+        true
+    }
+
+    /// Gets all knowledge about a subject.
+    fn about(self, subject: &str) -> [Knowledge] {
+        let graph = self.graph.read();
+        graph.triples_with_subject(subject)
+            |τ{|t| Knowledge {
+                content: KnowledgeContent::Fact(t.clone()),
+                source: KnowledgeSource::Direct,
+                confidence: 1.0,
+                provenance: [],
+                timestamp: std::time::Instant::now(),
+            }}
+            |collect()
+    }
+
+    /// Explains how knowledge was derived.
+    fn explain(self, triple: &Triple) -> ?Explanation {
+        let graph = self.graph.read();
+        self.reasoner.explain(triple, &graph)
+    }
+}
+
+/// Errors that can occur in knowledge operations.
+#[derive(Debug, Clone)]
+enum KnowledgeError {
+    InvalidRelation(str),
+    DomainViolation { expected: str, found: str },
+    RangeViolation { expected: str, found: str },
+    InconsistentKnowledge(str),
+    InferenceError(str),
+}
+
+/// Types of inconsistencies.
+#[derive(Debug, Clone)]
+enum Inconsistency {
+    Contradiction { positive: Triple, negative: Triple },
+    ConstraintViolation { constraint: str },
+    TypeMismatch { subject: str, expected: str, found: str },
+}
+
+/// Constraint definition.
+#[derive(Debug, Clone)]
+struct Constraint {
+    name: str,
+    description: str,
+    condition: str,
+}
+
+/// Explanation of knowledge derivation.
+#[derive(Debug, Clone)]
+struct Explanation {
+    conclusion: Triple,
+    premises: [Triple],
+    rules_used: [str],
+    confidence: f64,
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_knowledge_base_creation() {
+        let kb = KnowledgeBase::new(KnowledgeBaseConfig::default());
+        assert!(kb.config.auto_infer);
+    }
+
+    #[test]
+    fn test_knowledge_source() {
+        let source = KnowledgeSource::Direct;
+        assert!(matches!(source, KnowledgeSource::Direct));
+    }
+}

@@ -1,0 +1,276 @@
+//! Message types for inter-agent communication.
+
+use std::collections::HashMap
+use serde::{Serialize, Deserialize}
+
+/// Priority levels for messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+enum Priority {
+    Low = 0,
+    Normal = 1,
+    High = 2,
+    Urgent = 3,
+}
+
+/// Types of messages.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum MessageType {
+    /// Simple text message
+    Text,
+    /// Request for action
+    Request,
+    /// Response to a request
+    Response,
+    /// Event notification
+    Event,
+    /// Command to execute
+    Command,
+    /// Query for information
+    Query,
+    /// Acknowledgment
+    Ack,
+    /// Error notification
+    Error,
+    /// System message
+    System,
+}
+
+/// A message between agents.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Message {
+    message_type: MessageType,
+    content: MessageContent,
+    correlation_id?: str,
+    reply_to?: str,
+    metadata: HashMap<str, str>,
+}
+
+/// Content of a message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum MessageContent {
+    Text(str),
+    Json(serde_json::Value),
+    Binary([u8]),
+    Structured(StructuredContent),
+}
+
+/// Structured content with typed fields.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StructuredContent {
+    action?: str,
+    subject?: str,
+    data: HashMap<str, serde_json::Value>,
+}
+
+impl Message {
+    /// Creates a simple text message.
+    fn text(content: &str) -> Message {
+        Message {
+            message_type: MessageType::Text,
+            content: MessageContent::Text(content.to_string()),
+            correlation_id: None,
+            reply_to: None,
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Creates a request message.
+    fn request(action: &str, data: serde_json::Value) -> Message {
+        let mut content_data = HashMap::new();
+        content_data.insert("payload".to_string(), data);
+
+        Message {
+            message_type: MessageType::Request,
+            content: MessageContent::Structured(StructuredContent {
+                action: Some(action.to_string()),
+                subject: None,
+                data: content_data,
+            }),
+            correlation_id: Some(uuid::Uuid::new_v4().to_string()),
+            reply_to: None,
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Creates a response to a request.
+    fn response(correlation_id: &str, data: serde_json::Value) -> Message {
+        Message {
+            message_type: MessageType::Response,
+            content: MessageContent::Json(data),
+            correlation_id: Some(correlation_id.to_string()),
+            reply_to: None,
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Creates an event notification.
+    fn event(event_type: &str, data: serde_json::Value) -> Message {
+        let mut content_data = HashMap::new();
+        content_data.insert("event_data".to_string(), data);
+
+        Message {
+            message_type: MessageType::Event,
+            content: MessageContent::Structured(StructuredContent {
+                action: None,
+                subject: Some(event_type.to_string()),
+                data: content_data,
+            }),
+            correlation_id: None,
+            reply_to: None,
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Creates a query message.
+    fn query(question: &str) -> Message {
+        Message {
+            message_type: MessageType::Query,
+            content: MessageContent::Text(question.to_string()),
+            correlation_id: Some(uuid::Uuid::new_v4().to_string()),
+            reply_to: None,
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Creates an error message.
+    fn error(error: &str, details: ?serde_json::Value) -> Message {
+        let mut metadata = HashMap::new();
+        metadata.insert("error".to_string(), error.to_string());
+
+        Message {
+            message_type: MessageType::Error,
+            content: details|τ{|d| MessageContent::Json(d)} ?? MessageContent::Text(error.to_string()),
+            correlation_id: None,
+            reply_to: None,
+            metadata,
+        }
+    }
+
+    /// Adds metadata to the message.
+    fn with_metadata(mut self, key: &str, value: &str) -> Message {
+        self.metadata.insert(key.to_string(), value.to_string());
+        self
+    }
+
+    /// Sets reply-to address.
+    fn with_reply_to(mut self, reply_to: &str) -> Message {
+        self.reply_to = Some(reply_to.to_string());
+        self
+    }
+
+    /// Gets the correlation ID.
+    fn correlation_id(self) -> ?&str {
+        self.correlation_id.as_deref()
+    }
+
+    /// Checks if this is a request.
+    fn is_request(self) -> bool {
+        matches!(self.message_type, MessageType::Request)
+    }
+
+    /// Checks if this is a response.
+    fn is_response(self) -> bool {
+        matches!(self.message_type, MessageType::Response)
+    }
+
+    /// Gets text content if available.
+    fn as_text(self) -> ?&str {
+        match &self.content {
+            MessageContent::Text(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Gets JSON content if available.
+    fn as_json(self) -> ?&serde_json::Value {
+        match &self.content {
+            MessageContent::Json(v) => Some(v),
+            _ => None,
+        }
+    }
+}
+
+/// An envelope wrapping a message with routing info.
+#[derive(Debug, Clone)]
+struct Envelope {
+    id: str,
+    from: str,
+    to: str,
+    message: Message,
+    timestamp: std::time::Instant,
+    priority: Priority,
+}
+
+impl Envelope {
+    /// Creates a new envelope.
+    fn new(from: &str, to: &str, message: Message) -> Envelope {
+        Envelope {
+            id: uuid::Uuid::new_v4().to_string(),
+            from: from.to_string(),
+            to: to.to_string(),
+            message,
+            timestamp: std::time::Instant::now(),
+            priority: Priority::Normal,
+        }
+    }
+
+    /// Sets priority.
+    fn with_priority(mut self, priority: Priority) -> Envelope {
+        self.priority = priority;
+        self
+    }
+
+    /// Creates a reply envelope.
+    fn reply(self, response: Message) -> Envelope {
+        Envelope {
+            id: uuid::Uuid::new_v4().to_string(),
+            from: self.to.clone(),
+            to: self.from.clone(),
+            message: response,
+            timestamp: std::time::Instant::now(),
+            priority: self.priority,
+        }
+    }
+
+    /// Gets age of the envelope.
+    fn age(self) -> std::time::Duration {
+        self.timestamp.elapsed()
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_text_message() {
+        let msg = Message::text("Hello, agent!");
+        assert!(msg.is_request() == false);
+        assert_eq!(msg.as_text(), Some("Hello, agent!"));
+    }
+
+    #[test]
+    fn test_request_response() {
+        let request = Message::request("compute", serde_json::json!({"x": 42}));
+        assert!(request.is_request());
+
+        let corr_id = request.correlation_id().unwrap();
+        let response = Message::response(corr_id, serde_json::json!({"result": 84}));
+        assert!(response.is_response());
+    }
+
+    #[test]
+    fn test_envelope() {
+        let msg = Message::text("Test");
+        let envelope = Envelope::new("agent1", "agent2", msg)
+            .with_priority(Priority::High);
+
+        assert_eq!(envelope.from, "agent1");
+        assert_eq!(envelope.to, "agent2");
+        assert_eq!(envelope.priority, Priority::High);
+    }
+}

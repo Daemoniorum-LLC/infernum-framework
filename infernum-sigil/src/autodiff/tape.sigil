@@ -1,0 +1,489 @@
+//! Computation tape for reverse-mode autodiff.
+
+use std::sync::Arc
+use parking_lot::RwLock
+
+/// Reference to a tape.
+type TapeRef = Arc<TapeInner>;
+
+/// A computation tape recording operations.
+struct Tape {
+    inner: TapeRef,
+}
+
+struct TapeInner {
+    operations: RwLock<[Operation]>,
+    values: RwLock<[f64]>,
+    gradients: RwLock<[f64]>,
+}
+
+/// An operation recorded on the tape.
+#[derive(Debug, Clone)]
+enum Operation {
+    Input,
+    Add { left: usize, right: usize },
+    Sub { left: usize, right: usize },
+    Mul { left: usize, right: usize, left_val: f64, right_val: f64 },
+    Div { left: usize, right: usize, left_val: f64, right_val: f64 },
+    Exp { input: usize, output_val: f64 },
+    Ln { input: usize, input_val: f64 },
+    Pow { input: usize, input_val: f64, power: f64 },
+    Sin { input: usize, input_val: f64 },
+    Cos { input: usize, input_val: f64 },
+    Tanh { input: usize, output_val: f64 },
+    Relu { input: usize, input_val: f64 },
+    Sigmoid { input: usize, output_val: f64 },
+}
+
+impl Tape {
+    /// Creates a new tape.
+    fn new() -> Tape {
+        Tape {
+            inner: Arc::new(TapeInner {
+                operations: RwLock::new([]),
+                values: RwLock::new([]),
+                gradients: RwLock::new([]),
+            }),
+        }
+    }
+
+    /// Gets a reference to the tape.
+    fn reference(self) -> TapeRef {
+        Arc::clone(&self.inner)
+    }
+
+    /// Records a new input.
+    fn new_input(self, value: f64) -> usize {
+        let mut ops = self.inner.operations.write();
+        let mut vals = self.inner.values.write();
+        let mut grads = self.inner.gradients.write();
+
+        let index = ops.len();
+        ops.push(Operation::Input);
+        vals.push(value);
+        grads.push(0.0);
+        index
+    }
+
+    /// Records an addition.
+    fn record_add(self, left: usize, right: usize) -> usize {
+        let mut ops = self.inner.operations.write();
+        let vals = self.inner.values.read();
+        let mut grads = self.inner.gradients.write();
+
+        let value = vals[left] + vals[right];
+        let index = ops.len();
+
+        drop(vals);
+        let mut vals = self.inner.values.write();
+
+        ops.push(Operation::Add { left, right });
+        vals.push(value);
+        grads.push(0.0);
+        index
+    }
+
+    /// Records a subtraction.
+    fn record_sub(self, left: usize, right: usize) -> usize {
+        let mut ops = self.inner.operations.write();
+        let vals = self.inner.values.read();
+        let mut grads = self.inner.gradients.write();
+
+        let value = vals[left] - vals[right];
+        let index = ops.len();
+
+        drop(vals);
+        let mut vals = self.inner.values.write();
+
+        ops.push(Operation::Sub { left, right });
+        vals.push(value);
+        grads.push(0.0);
+        index
+    }
+
+    /// Records a multiplication.
+    fn record_mul(self, left: usize, right: usize, left_val: f64, right_val: f64) -> usize {
+        let mut ops = self.inner.operations.write();
+        let mut vals = self.inner.values.write();
+        let mut grads = self.inner.gradients.write();
+
+        let value = left_val * right_val;
+        let index = ops.len();
+
+        ops.push(Operation::Mul { left, right, left_val, right_val });
+        vals.push(value);
+        grads.push(0.0);
+        index
+    }
+
+    /// Records a division.
+    fn record_div(self, left: usize, right: usize, left_val: f64, right_val: f64) -> usize {
+        let mut ops = self.inner.operations.write();
+        let mut vals = self.inner.values.write();
+        let mut grads = self.inner.gradients.write();
+
+        let value = left_val / right_val;
+        let index = ops.len();
+
+        ops.push(Operation::Div { left, right, left_val, right_val });
+        vals.push(value);
+        grads.push(0.0);
+        index
+    }
+
+    /// Records an exp.
+    fn record_exp(self, input: usize, output_val: f64) -> usize {
+        let mut ops = self.inner.operations.write();
+        let mut vals = self.inner.values.write();
+        let mut grads = self.inner.gradients.write();
+
+        let index = ops.len();
+        ops.push(Operation::Exp { input, output_val });
+        vals.push(output_val);
+        grads.push(0.0);
+        index
+    }
+
+    /// Records a ln.
+    fn record_ln(self, input: usize, input_val: f64) -> usize {
+        let mut ops = self.inner.operations.write();
+        let mut vals = self.inner.values.write();
+        let mut grads = self.inner.gradients.write();
+
+        let value = input_val.ln();
+        let index = ops.len();
+
+        ops.push(Operation::Ln { input, input_val });
+        vals.push(value);
+        grads.push(0.0);
+        index
+    }
+
+    /// Records a pow.
+    fn record_pow(self, input: usize, input_val: f64, power: f64) -> usize {
+        let mut ops = self.inner.operations.write();
+        let mut vals = self.inner.values.write();
+        let mut grads = self.inner.gradients.write();
+
+        let value = input_val.powf(power);
+        let index = ops.len();
+
+        ops.push(Operation::Pow { input, input_val, power });
+        vals.push(value);
+        grads.push(0.0);
+        index
+    }
+
+    /// Records sin.
+    fn record_sin(self, input: usize, input_val: f64) -> usize {
+        let mut ops = self.inner.operations.write();
+        let mut vals = self.inner.values.write();
+        let mut grads = self.inner.gradients.write();
+
+        let value = input_val.sin();
+        let index = ops.len();
+
+        ops.push(Operation::Sin { input, input_val });
+        vals.push(value);
+        grads.push(0.0);
+        index
+    }
+
+    /// Records cos.
+    fn record_cos(self, input: usize, input_val: f64) -> usize {
+        let mut ops = self.inner.operations.write();
+        let mut vals = self.inner.values.write();
+        let mut grads = self.inner.gradients.write();
+
+        let value = input_val.cos();
+        let index = ops.len();
+
+        ops.push(Operation::Cos { input, input_val });
+        vals.push(value);
+        grads.push(0.0);
+        index
+    }
+
+    /// Records tanh.
+    fn record_tanh(self, input: usize, output_val: f64) -> usize {
+        let mut ops = self.inner.operations.write();
+        let mut vals = self.inner.values.write();
+        let mut grads = self.inner.gradients.write();
+
+        let index = ops.len();
+        ops.push(Operation::Tanh { input, output_val });
+        vals.push(output_val);
+        grads.push(0.0);
+        index
+    }
+
+    /// Records relu.
+    fn record_relu(self, input: usize, input_val: f64) -> usize {
+        let mut ops = self.inner.operations.write();
+        let mut vals = self.inner.values.write();
+        let mut grads = self.inner.gradients.write();
+
+        let value = input_val.max(0.0);
+        let index = ops.len();
+
+        ops.push(Operation::Relu { input, input_val });
+        vals.push(value);
+        grads.push(0.0);
+        index
+    }
+
+    /// Records sigmoid.
+    fn record_sigmoid(self, input: usize, output_val: f64) -> usize {
+        let mut ops = self.inner.operations.write();
+        let mut vals = self.inner.values.write();
+        let mut grads = self.inner.gradients.write();
+
+        let index = ops.len();
+        ops.push(Operation::Sigmoid { input, output_val });
+        vals.push(output_val);
+        grads.push(0.0);
+        index
+    }
+
+    /// Runs backward pass from given output.
+    fn backward(self, output_index: usize) {
+        let ops = self.inner.operations.read();
+        let mut grads = self.inner.gradients.write();
+
+        grads[output_index] = 1.0;
+
+        // Backward pass in reverse order
+        for i in (0..=output_index).rev() {
+            let grad = grads[i];
+            if grad == 0.0 { continue }
+
+            match &ops[i] {
+                Operation::Input => {},
+                Operation::Add { left, right } => {
+                    grads[*left] += grad;
+                    grads[*right] += grad;
+                },
+                Operation::Sub { left, right } => {
+                    grads[*left] += grad;
+                    grads[*right] -= grad;
+                },
+                Operation::Mul { left, right, left_val, right_val } => {
+                    grads[*left] += grad * right_val;
+                    grads[*right] += grad * left_val;
+                },
+                Operation::Div { left, right, left_val, right_val } => {
+                    grads[*left] += grad / right_val;
+                    grads[*right] -= grad * left_val / (right_val * right_val);
+                },
+                Operation::Exp { input, output_val } => {
+                    grads[*input] += grad * output_val;
+                },
+                Operation::Ln { input, input_val } => {
+                    grads[*input] += grad / input_val;
+                },
+                Operation::Pow { input, input_val, power } => {
+                    grads[*input] += grad * power * input_val.powf(power - 1.0);
+                },
+                Operation::Sin { input, input_val } => {
+                    grads[*input] += grad * input_val.cos();
+                },
+                Operation::Cos { input, input_val } => {
+                    grads[*input] -= grad * input_val.sin();
+                },
+                Operation::Tanh { input, output_val } => {
+                    grads[*input] += grad * (1.0 - output_val * output_val);
+                },
+                Operation::Relu { input, input_val } => {
+                    if *input_val > 0.0 {
+                        grads[*input] += grad;
+                    }
+                },
+                Operation::Sigmoid { input, output_val } => {
+                    grads[*input] += grad * output_val * (1.0 - output_val);
+                },
+            }
+        }
+    }
+
+    /// Gets gradients for inputs.
+    fn get_gradients(self, inputs: &[Differentiable]) -> [f64] {
+        let grads = self.inner.gradients.read();
+        inputs|τ{|d| grads[d.index]}|collect()
+    }
+}
+
+/// Differentiable placeholder.
+struct Differentiable {
+    index: usize,
+}
+
+impl Differentiable {
+    fn new(index: usize) -> Differentiable {
+        Differentiable { index }
+    }
+}
+
+impl Tape {
+    fn value_count(self) -> usize {
+        self.inner.values.read().len()
+    }
+
+    fn get_value(self, index: usize) -> f64 {
+        self.inner.values.read()[index]
+    }
+
+    fn get_gradient(self, index: usize) -> f64 {
+        self.inner.gradients.read()[index]
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_tape_creation() {
+        let tape = Tape::new();
+        assert_eq!(tape.value_count(), 0);
+    }
+
+    #[test]
+    fn test_tape_new_input() {
+        let tape = Tape::new();
+        let idx = tape.new_input(3.0);
+
+        assert_eq!(idx, 0);
+        assert_eq!(tape.get_value(0), 3.0);
+        assert_eq!(tape.get_gradient(0), 0.0);
+    }
+
+    #[test]
+    fn test_tape_multiple_inputs() {
+        let tape = Tape::new();
+        let a = tape.new_input(2.0);
+        let b = tape.new_input(3.0);
+
+        assert_eq!(a, 0);
+        assert_eq!(b, 1);
+        assert_eq!(tape.value_count(), 2);
+    }
+
+    #[test]
+    fn test_tape_record_add() {
+        let tape = Tape::new();
+        let a = tape.new_input(2.0);
+        let b = tape.new_input(3.0);
+        let c = tape.record_add(a, b);
+
+        assert_eq!(tape.get_value(c), 5.0);
+    }
+
+    #[test]
+    fn test_tape_record_sub() {
+        let tape = Tape::new();
+        let a = tape.new_input(5.0);
+        let b = tape.new_input(3.0);
+        let c = tape.record_sub(a, b);
+
+        assert_eq!(tape.get_value(c), 2.0);
+    }
+
+    #[test]
+    fn test_tape_record_mul() {
+        let tape = Tape::new();
+        let a = tape.new_input(2.0);
+        let b = tape.new_input(3.0);
+        let c = tape.record_mul(a, b, 2.0, 3.0);
+
+        assert_eq!(tape.get_value(c), 6.0);
+    }
+
+    #[test]
+    fn test_tape_record_div() {
+        let tape = Tape::new();
+        let a = tape.new_input(6.0);
+        let b = tape.new_input(2.0);
+        let c = tape.record_div(a, b, 6.0, 2.0);
+
+        assert_eq!(tape.get_value(c), 3.0);
+    }
+
+    #[test]
+    fn test_tape_backward_add() {
+        let tape = Tape::new();
+        let a = tape.new_input(2.0);
+        let b = tape.new_input(3.0);
+        let c = tape.record_add(a, b);
+
+        tape.backward(c);
+
+        assert_eq!(tape.get_gradient(a), 1.0);
+        assert_eq!(tape.get_gradient(b), 1.0);
+    }
+
+    #[test]
+    fn test_tape_backward_mul() {
+        let tape = Tape::new();
+        let a = tape.new_input(2.0);
+        let b = tape.new_input(3.0);
+        let c = tape.record_mul(a, b, 2.0, 3.0);
+
+        tape.backward(c);
+
+        // d/da(a*b) = b = 3.0
+        // d/db(a*b) = a = 2.0
+        assert_eq!(tape.get_gradient(a), 3.0);
+        assert_eq!(tape.get_gradient(b), 2.0);
+    }
+
+    #[test]
+    fn test_tape_reference() {
+        let tape = Tape::new();
+        let _ref = tape.reference();
+        // Just verify it compiles and doesn't panic
+    }
+
+    #[test]
+    fn test_operation_variants() {
+        let _input = Operation::Input;
+        let _add = Operation::Add { left: 0, right: 1 };
+        let _sub = Operation::Sub { left: 0, right: 1 };
+        let _mul = Operation::Mul { left: 0, right: 1, left_val: 1.0, right_val: 2.0 };
+        let _div = Operation::Div { left: 0, right: 1, left_val: 1.0, right_val: 2.0 };
+        let _exp = Operation::Exp { input: 0, output_val: 2.718 };
+        let _ln = Operation::Ln { input: 0, input_val: 1.0 };
+        let _pow = Operation::Pow { input: 0, input_val: 2.0, power: 3.0 };
+        let _sin = Operation::Sin { input: 0, input_val: 0.0 };
+        let _cos = Operation::Cos { input: 0, input_val: 0.0 };
+        let _tanh = Operation::Tanh { input: 0, output_val: 0.0 };
+        let _relu = Operation::Relu { input: 0, input_val: 1.0 };
+        let _sigmoid = Operation::Sigmoid { input: 0, output_val: 0.5 };
+    }
+
+    #[test]
+    fn test_differentiable() {
+        let d = Differentiable::new(5);
+        assert_eq!(d.index, 5);
+    }
+
+    #[test]
+    fn test_get_gradients() {
+        let tape = Tape::new();
+        let a = tape.new_input(2.0);
+        let b = tape.new_input(3.0);
+        let c = tape.record_add(a, b);
+
+        tape.backward(c);
+
+        let inputs = [Differentiable::new(a), Differentiable::new(b)];
+        let grads = tape.get_gradients(&inputs);
+
+        assert_eq!(grads.len(), 2);
+        assert_eq!(grads[0], 1.0);
+        assert_eq!(grads[1], 1.0);
+    }
+}

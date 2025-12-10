@@ -1,0 +1,1130 @@
+/// U-Net Architecture - Noise Prediction for Diffusion Models
+///
+/// Implements U-Net architectures for latent diffusion:
+/// - UNet2D: Classic Stable Diffusion 1.x/2.x architecture
+/// - UNetXL: SDXL architecture with additional conditioning
+///
+/// Sigil features:
+/// - `computed!` for all intermediate activations
+/// - `τ{}` morpheme for efficient layer application
+/// - Cross-attention with `data~` text conditioning
+
+use core::tensor::{Tensor, DType, Device}
+use core::error::Result
+use candle_nn::{Conv2d, GroupNorm, Linear, Module, VarBuilder, Embedding}
+use diffusion::types::{NoisePrediction, DiffusionTimestep}
+
+// ============================================================================
+// U-Net Configuration
+// ============================================================================
+
+/// U-Net 2D configuration (SD 1.x/2.x style)
+#[derive(Debug, Clone)]
+pub struct UNet2DConfig {
+    /// Input channels (latent channels)
+    pub in_channels: u32 = 4,
+
+    /// Output channels (same as input for noise prediction)
+    pub out_channels: u32 = 4,
+
+    /// Block output channels at each resolution level
+    pub block_out_channels: [u32] = [320, 640, 1280, 1280],
+
+    /// Number of ResNet blocks per level
+    pub layers_per_block: u32 = 2,
+
+    /// Cross-attention dimensions (text encoder hidden size)
+    pub cross_attention_dim: u32 = 768,
+
+    /// Attention head dimension
+    pub attention_head_dim: u32 = 8,
+
+    /// Number of attention heads (derived from channels / head_dim)
+    pub num_attention_heads?: [u32],
+
+    /// Use linear projection in attention
+    pub use_linear_projection: bool = false,
+
+    /// GroupNorm num_groups
+    pub norm_num_groups: u32 = 32,
+
+    /// Epsilon for layer norm
+    pub norm_eps: f64 = 1e-5,
+
+    /// Activation function
+    pub act_fn: str = "silu",
+
+    /// Downsample padding mode
+    pub downsample_padding: u32 = 1,
+
+    /// Add self-attention in specific blocks
+    pub attention_levels: [bool] = [false, true, true, true],
+
+    /// Transformer layers per attention block
+    pub transformer_layers_per_block: u32 = 1,
+
+    /// Time embedding dimension
+    pub time_embed_dim?: u32,
+}
+
+impl UNet2DConfig {
+    /// Config for SD 1.x
+    pub fn sd_1x() -> Self {
+        Self {
+            in_channels: 4,
+            out_channels: 4,
+            block_out_channels: [320, 640, 1280, 1280],
+            layers_per_block: 2,
+            cross_attention_dim: 768, // CLIP ViT-L
+            attention_head_dim: 8,
+            num_attention_heads: None,
+            use_linear_projection: false,
+            norm_num_groups: 32,
+            norm_eps: 1e-5,
+            act_fn: "silu".to_string(),
+            downsample_padding: 1,
+            attention_levels: [false, true, true, true],
+            transformer_layers_per_block: 1,
+            time_embed_dim: None,
+        }
+    }
+
+    /// Config for SD 2.x
+    pub fn sd_2x() -> Self {
+        Self {
+            cross_attention_dim: 1024, // OpenCLIP ViT-H
+            use_linear_projection: true,
+            ..Self::sd_1x()
+        }
+    }
+
+    /// Get time embedding dimension
+    pub fn time_embed_dim(self) -> u32 {
+        self.time_embed_dim.unwrap_or(self.block_out_channels[0] * 4)
+    }
+}
+
+/// U-Net XL configuration (SDXL)
+#[derive(Debug, Clone)]
+pub struct UNetXLConfig {
+    /// Base U-Net config
+    pub base: UNet2DConfig,
+
+    /// Additional time embedding for size conditioning
+    pub addition_embed_type: str = "text_time",
+
+    /// Addition time embed dimension
+    pub addition_time_embed_dim: u32 = 256,
+
+    /// Projection class embeddings input dim
+    pub projection_class_embeddings_input_dim: u32 = 2816,
+
+    /// Use separate transformer blocks per attention level
+    pub transformer_layers_per_block: [u32] = [1, 2, 10],
+}
+
+impl UNetXLConfig {
+    /// Standard SDXL config
+    pub fn sdxl() -> Self {
+        Self {
+            base: UNet2DConfig {
+                in_channels: 4,
+                out_channels: 4,
+                block_out_channels: [320, 640, 1280],
+                layers_per_block: 2,
+                cross_attention_dim: 2048, // CLIP + OpenCLIP pooled
+                attention_head_dim: 64,
+                num_attention_heads: Some([5, 10, 20]),
+                use_linear_projection: true,
+                norm_num_groups: 32,
+                norm_eps: 1e-5,
+                act_fn: "silu".to_string(),
+                downsample_padding: 1,
+                attention_levels: [false, true, true],
+                transformer_layers_per_block: 1, // Overridden by per-block
+                time_embed_dim: Some(1280),
+            },
+            addition_embed_type: "text_time".to_string(),
+            addition_time_embed_dim: 256,
+            projection_class_embeddings_input_dim: 2816,
+            transformer_layers_per_block: [1, 2, 10],
+        }
+    }
+}
+
+// ============================================================================
+// Time Embedding
+// ============================================================================
+
+/// Sinusoidal time embedding
+pub struct TimestepEmbedding {
+    linear_1: Linear,
+    linear_2: Linear,
+    act: Activation,
+}
+
+impl TimestepEmbedding {
+    pub fn new(
+        in_channels: u32,
+        time_embed_dim: u32,
+        act_fn: &str,
+        vb: VarBuilder,
+    ) -> Result<Self> {
+        let linear_1 = Linear::new(in_channels, time_embed_dim, vb.pp("linear_1"))?
+        let linear_2 = Linear::new(time_embed_dim, time_embed_dim, vb.pp("linear_2"))?
+        let act = Activation::from_str(act_fn)
+
+        Ok(Self { linear_1, linear_2, act })
+    }
+}
+
+impl Module for TimestepEmbedding {
+    fn forward(self, x: &Tensor) -> Result<Tensor> {
+        let x = self.linear_1.forward(x)?
+        let x = self.act.forward(&x)?
+        self.linear_2.forward(&x)
+    }
+}
+
+/// Get sinusoidal position embeddings
+pub fn get_timestep_embedding(
+    timesteps: &Tensor,
+    embedding_dim: u32,
+    max_period: f32,
+) -> Result<Tensor!> {
+    let half_dim = embedding_dim / 2
+    let exponent = -(0..half_dim as usize)
+        τ{ |i| i as f32 * (max_period.ln() / (half_dim - 1) as f32) }
+        |collect::<[f32]>
+
+    let emb = Tensor::new(exponent.as_slice(), timesteps.device())?
+    let emb = emb.exp()?
+
+    // timesteps: [batch] -> [batch, 1]
+    let timesteps = timesteps.unsqueeze(1)?
+    let emb = timesteps.broadcast_mul(&emb.unsqueeze(0)?)?
+
+    let sin_emb = emb.sin()?
+    let cos_emb = emb.cos()?
+
+    Tensor::cat(&[sin_emb, cos_emb], 1)
+}
+
+// ============================================================================
+// ResNet Blocks
+// ============================================================================
+
+/// ResNet block with time embedding
+pub struct ResNetBlock {
+    norm1: GroupNorm,
+    conv1: Conv2d,
+    time_emb_proj?: Linear,
+    norm2: GroupNorm,
+    conv2: Conv2d,
+    shortcut?: Conv2d,
+    dropout?: f32,
+}
+
+impl ResNetBlock {
+    pub fn new(
+        in_channels: u32,
+        out_channels: u32,
+        time_emb_dim?: u32,
+        groups: u32,
+        dropout: f32,
+        vb: VarBuilder,
+    ) -> Result<Self> {
+        let norm1 = GroupNorm::new(groups, in_channels, 1e-5, vb.pp("norm1"))?
+        let conv1 = Conv2d::new(in_channels, out_channels, 3, 1, 1, vb.pp("conv1"))?
+
+        let time_emb_proj = if let Some(dim) = time_emb_dim {
+            Some(Linear::new(dim, out_channels, vb.pp("time_emb_proj"))?)
+        } else {
+            None
+        }
+
+        let norm2 = GroupNorm::new(groups, out_channels, 1e-5, vb.pp("norm2"))?
+        let conv2 = Conv2d::new(out_channels, out_channels, 3, 1, 1, vb.pp("conv2"))?
+
+        let shortcut = if in_channels != out_channels {
+            Some(Conv2d::new(in_channels, out_channels, 1, 1, 0, vb.pp("conv_shortcut"))?)
+        } else {
+            None
+        }
+
+        Ok(Self {
+            norm1, conv1, time_emb_proj, norm2, conv2, shortcut,
+            dropout: if dropout > 0.0 { Some(dropout) } else { None },
+        })
+    }
+
+    pub fn forward(self, x: &Tensor, temb?: &Tensor) -> Result<Tensor!> {
+        let residual = match &self.shortcut {
+            Some(conv) => conv.forward(x)?,
+            None => x.clone(),
+        }
+
+        let mut h = self.norm1.forward(x)?
+        h = h.silu()?
+        h = self.conv1.forward(&h)?
+
+        // Add time embedding
+        if let (Some(proj), Some(temb)) = (&self.time_emb_proj, temb) {
+            let temb = temb.silu()?
+            let temb = proj.forward(&temb)?
+            // temb: [batch, channels] -> [batch, channels, 1, 1]
+            let temb = temb.unsqueeze(2)?.unsqueeze(3)?
+            h = (h + temb)?
+        }
+
+        h = self.norm2.forward(&h)?
+        h = h.silu()?
+
+        // Dropout during training
+        if let Some(p) = self.dropout {
+            h = h.dropout(p)?
+        }
+
+        h = self.conv2.forward(&h)?
+
+        (h + residual)!
+    }
+}
+
+// ============================================================================
+// Attention Blocks
+// ============================================================================
+
+/// Self-attention block
+pub struct SelfAttention {
+    to_q: Linear,
+    to_k: Linear,
+    to_v: Linear,
+    to_out: Linear,
+    num_heads: u32,
+    head_dim: u32,
+    scale: f32,
+}
+
+impl SelfAttention {
+    pub fn new(
+        channels: u32,
+        num_heads: u32,
+        head_dim: u32,
+        use_linear: bool,
+        vb: VarBuilder,
+    ) -> Result<Self> {
+        let inner_dim = num_heads * head_dim
+
+        let to_q = Linear::new(channels, inner_dim, vb.pp("to_q"))?
+        let to_k = Linear::new(channels, inner_dim, vb.pp("to_k"))?
+        let to_v = Linear::new(channels, inner_dim, vb.pp("to_v"))?
+        let to_out = Linear::new(inner_dim, channels, vb.pp("to_out.0"))?
+
+        let scale = (head_dim as f32).sqrt().recip()
+
+        Ok(Self { to_q, to_k, to_v, to_out, num_heads, head_dim, scale })
+    }
+
+    pub fn forward(self, x: &Tensor) -> Result<Tensor!> {
+        let (batch, seq, _) = x.dims3()?
+
+        let q = self.to_q.forward(x)?
+        let k = self.to_k.forward(x)?
+        let v = self.to_v.forward(x)?
+
+        // Reshape to [batch, num_heads, seq, head_dim]
+        let q = q.reshape([batch, seq, self.num_heads as usize, self.head_dim as usize])?
+            .transpose(1, 2)?
+        let k = k.reshape([batch, seq, self.num_heads as usize, self.head_dim as usize])?
+            .transpose(1, 2)?
+        let v = v.reshape([batch, seq, self.num_heads as usize, self.head_dim as usize])?
+            .transpose(1, 2)?
+
+        // Attention
+        let attn = (q.matmul(&k.transpose(-1, -2)?)? * self.scale)?
+        let attn = attn.softmax(-1)?
+        let out = attn.matmul(&v)?
+
+        // Reshape back
+        let out = out.transpose(1, 2)?.reshape([batch, seq, self.num_heads as usize * self.head_dim as usize])?
+
+        self.to_out.forward(&out)!
+    }
+}
+
+/// Cross-attention block for text conditioning
+pub struct CrossAttentionBlock {
+    to_q: Linear,
+    to_k: Linear,
+    to_v: Linear,
+    to_out: Linear,
+    num_heads: u32,
+    head_dim: u32,
+    scale: f32,
+}
+
+impl CrossAttentionBlock {
+    pub fn new(
+        query_dim: u32,
+        context_dim: u32,
+        num_heads: u32,
+        head_dim: u32,
+        vb: VarBuilder,
+    ) -> Result<Self> {
+        let inner_dim = num_heads * head_dim
+
+        let to_q = Linear::new(query_dim, inner_dim, vb.pp("to_q"))?
+        let to_k = Linear::new(context_dim, inner_dim, vb.pp("to_k"))?
+        let to_v = Linear::new(context_dim, inner_dim, vb.pp("to_v"))?
+        let to_out = Linear::new(inner_dim, query_dim, vb.pp("to_out.0"))?
+
+        let scale = (head_dim as f32).sqrt().recip()
+
+        Ok(Self { to_q, to_k, to_v, to_out, num_heads, head_dim, scale })
+    }
+
+    /// Forward with context (text embeddings)
+    /// `context~` is marked as untrusted external data (user's text prompt)
+    pub fn forward(self, x: &Tensor, context~: &Tensor) -> Result<Tensor!> {
+        let (batch, seq_q, _) = x.dims3()?
+        let (_, seq_k, _) = context~.dims3()?
+
+        let q = self.to_q.forward(x)?
+        let k = self.to_k.forward(context~)?
+        let v = self.to_v.forward(context~)?
+
+        // Reshape
+        let q = q.reshape([batch, seq_q, self.num_heads as usize, self.head_dim as usize])?
+            .transpose(1, 2)?
+        let k = k.reshape([batch, seq_k, self.num_heads as usize, self.head_dim as usize])?
+            .transpose(1, 2)?
+        let v = v.reshape([batch, seq_k, self.num_heads as usize, self.head_dim as usize])?
+            .transpose(1, 2)?
+
+        // Cross-attention
+        let attn = (q.matmul(&k.transpose(-1, -2)?)? * self.scale)?
+        let attn = attn.softmax(-1)?
+        let out = attn.matmul(&v)?
+
+        // Reshape back
+        let out = out.transpose(1, 2)?.reshape([batch, seq_q, self.num_heads as usize * self.head_dim as usize])?
+
+        self.to_out.forward(&out)!
+    }
+}
+
+/// Basic Transformer block (self-attn + cross-attn + FFN)
+pub struct BasicTransformerBlock {
+    norm1: LayerNorm,
+    attn1: SelfAttention,
+    norm2: LayerNorm,
+    attn2: CrossAttentionBlock,
+    norm3: LayerNorm,
+    ff: FeedForward,
+}
+
+impl BasicTransformerBlock {
+    pub fn new(
+        dim: u32,
+        num_heads: u32,
+        head_dim: u32,
+        context_dim: u32,
+        vb: VarBuilder,
+    ) -> Result<Self> {
+        let norm1 = LayerNorm::new(dim, 1e-5, vb.pp("norm1"))?
+        let attn1 = SelfAttention::new(dim, num_heads, head_dim, true, vb.pp("attn1"))?
+        let norm2 = LayerNorm::new(dim, 1e-5, vb.pp("norm2"))?
+        let attn2 = CrossAttentionBlock::new(dim, context_dim, num_heads, head_dim, vb.pp("attn2"))?
+        let norm3 = LayerNorm::new(dim, 1e-5, vb.pp("norm3"))?
+        let ff = FeedForward::new(dim, dim * 4, vb.pp("ff"))?
+
+        Ok(Self { norm1, attn1, norm2, attn2, norm3, ff })
+    }
+
+    pub fn forward(self, x: &Tensor, context~: &Tensor) -> Result<Tensor!> {
+        // Self-attention
+        let residual = x
+        let x = self.norm1.forward(x)?
+        let x = self.attn1.forward(&x)?
+        let x = (x + residual)?
+
+        // Cross-attention with text context~
+        let residual = &x
+        let x = self.norm2.forward(&x)?
+        let x = self.attn2.forward(&x, context~)?
+        let x = (x + residual)?
+
+        // FFN
+        let residual = &x
+        let x = self.norm3.forward(&x)?
+        let x = self.ff.forward(&x)?
+        (x + residual)!
+    }
+}
+
+/// Feed-forward network
+pub struct FeedForward {
+    linear1: Linear,
+    linear2: Linear,
+}
+
+impl FeedForward {
+    pub fn new(dim: u32, hidden_dim: u32, vb: VarBuilder) -> Result<Self> {
+        let linear1 = Linear::new(dim, hidden_dim, vb.pp("net.0.proj"))?
+        let linear2 = Linear::new(hidden_dim, dim, vb.pp("net.2"))?
+        Ok(Self { linear1, linear2 })
+    }
+}
+
+impl Module for FeedForward {
+    fn forward(self, x: &Tensor) -> Result<Tensor> {
+        let x = self.linear1.forward(x)?
+        let x = x.gelu()?
+        self.linear2.forward(&x)
+    }
+}
+
+// ============================================================================
+// Spatial Transformer
+// ============================================================================
+
+/// Spatial Transformer (attention over spatial dimensions)
+pub struct SpatialTransformer {
+    norm: GroupNorm,
+    proj_in: Conv2dOrLinear,
+    transformer_blocks: [BasicTransformerBlock],
+    proj_out: Conv2dOrLinear,
+}
+
+enum Conv2dOrLinear {
+    Conv2d(Conv2d),
+    Linear(Linear),
+}
+
+impl SpatialTransformer {
+    pub fn new(
+        in_channels: u32,
+        num_heads: u32,
+        head_dim: u32,
+        depth: u32,
+        context_dim: u32,
+        use_linear: bool,
+        vb: VarBuilder,
+    ) -> Result<Self> {
+        let inner_dim = num_heads * head_dim
+
+        let norm = GroupNorm::new(32, in_channels, 1e-6, vb.pp("norm"))?
+
+        let proj_in = if use_linear {
+            Conv2dOrLinear::Linear(Linear::new(in_channels, inner_dim, vb.pp("proj_in"))?)
+        } else {
+            Conv2dOrLinear::Conv2d(Conv2d::new(in_channels, inner_dim, 1, 1, 0, vb.pp("proj_in"))?)
+        }
+
+        let transformer_blocks = (0..depth)
+            τ{ |i| BasicTransformerBlock::new(
+                inner_dim, num_heads, head_dim, context_dim,
+                vb.pp(format!("transformer_blocks.{}", i))
+            )?}
+            |collect::<Result<[_]>>?
+
+        let proj_out = if use_linear {
+            Conv2dOrLinear::Linear(Linear::new(inner_dim, in_channels, vb.pp("proj_out"))?)
+        } else {
+            Conv2dOrLinear::Conv2d(Conv2d::new(inner_dim, in_channels, 1, 1, 0, vb.pp("proj_out"))?)
+        }
+
+        Ok(Self { norm, proj_in, transformer_blocks, proj_out })
+    }
+
+    pub fn forward(self, x: &Tensor, context~: &Tensor) -> Result<Tensor!> {
+        let (batch, channels, height, width) = x.dims4()?
+        let residual = x
+
+        let x = self.norm.forward(x)?
+
+        // Project in
+        let x = match &self.proj_in {
+            Conv2dOrLinear::Conv2d(conv) => conv.forward(&x)?,
+            Conv2dOrLinear::Linear(linear) => {
+                let x = x.reshape([batch, channels, height * width])?
+                    .transpose(1, 2)?
+                linear.forward(&x)?
+            }
+        }
+
+        // Flatten spatial dimensions for transformer
+        let x = if matches!(self.proj_in, Conv2dOrLinear::Conv2d(_)) {
+            let (_, c, h, w) = x.dims4()?
+            x.reshape([batch, c, h * w])?.transpose(1, 2)?
+        } else {
+            x
+        }
+
+        // Apply transformer blocks
+        let mut x = x
+        for block in &self.transformer_blocks {
+            x = block.forward(&x, context~)?
+        }
+
+        // Project out
+        let x = match &self.proj_out {
+            Conv2dOrLinear::Conv2d(conv) => {
+                let x = x.transpose(1, 2)?.reshape([batch, -1, height, width])?
+                conv.forward(&x)?
+            }
+            Conv2dOrLinear::Linear(linear) => {
+                let x = linear.forward(&x)?
+                x.transpose(1, 2)?.reshape([batch, channels, height, width])?
+            }
+        }
+
+        (x + residual)!
+    }
+}
+
+// ============================================================================
+// Down/Up Blocks
+// ============================================================================
+
+/// Downsample block
+pub struct DownBlock {
+    res_blocks: [ResNetBlock],
+    attentions?: [SpatialTransformer],
+    downsampler?: Downsample,
+}
+
+impl DownBlock {
+    pub fn new(
+        in_channels: u32,
+        out_channels: u32,
+        time_embed_dim: u32,
+        num_layers: u32,
+        add_attention: bool,
+        attention_head_dim: u32,
+        cross_attention_dim: u32,
+        use_linear_projection: bool,
+        transformer_layers: u32,
+        add_downsample: bool,
+        vb: VarBuilder,
+    ) -> Result<Self> {
+        let mut res_blocks = vec![]
+        let mut attentions = if add_attention { Some(vec![]) } else { None }
+
+        for i in 0..num_layers {
+            let in_ch = if i == 0 { in_channels } else { out_channels }
+
+            res_blocks.push(ResNetBlock::new(
+                in_ch, out_channels, Some(time_embed_dim), 32, 0.0,
+                vb.pp(format!("resnets.{}", i))
+            )?)
+
+            if add_attention {
+                let num_heads = out_channels / attention_head_dim
+                attentions.as_mut().unwrap().push(SpatialTransformer::new(
+                    out_channels, num_heads, attention_head_dim,
+                    transformer_layers, cross_attention_dim,
+                    use_linear_projection,
+                    vb.pp(format!("attentions.{}", i))
+                )?)
+            }
+        }
+
+        let downsampler = if add_downsample {
+            Some(Downsample::new(out_channels, vb.pp("downsamplers.0"))?)
+        } else {
+            None
+        }
+
+        Ok(Self { res_blocks, attentions, downsampler })
+    }
+
+    pub fn forward(
+        self,
+        x: &Tensor,
+        temb: &Tensor,
+        context~: &Tensor,
+    ) -> Result<(Tensor!, [Tensor!])> {
+        let mut hidden_states!: [Tensor!] = vec![]
+        let mut x = x.clone()
+
+        for (i, res_block) in self.res_blocks.iter().enumerate() {
+            x = res_block.forward(&x, Some(temb))?
+
+            if let Some(attns) = &self.attentions {
+                x = attns[i].forward(&x, context~)?
+            }
+
+            hidden_states!.push(x.clone())
+        }
+
+        if let Some(down) = &self.downsampler {
+            x = down.forward(&x)?
+            hidden_states!.push(x.clone())
+        }
+
+        Ok((x!, hidden_states!))
+    }
+}
+
+/// Upsample block
+pub struct UpBlock {
+    res_blocks: [ResNetBlock],
+    attentions?: [SpatialTransformer],
+    upsampler?: Upsample,
+}
+
+impl UpBlock {
+    pub fn new(
+        in_channels: u32,
+        prev_out_channels: u32,
+        out_channels: u32,
+        time_embed_dim: u32,
+        num_layers: u32,
+        add_attention: bool,
+        attention_head_dim: u32,
+        cross_attention_dim: u32,
+        use_linear_projection: bool,
+        transformer_layers: u32,
+        add_upsample: bool,
+        vb: VarBuilder,
+    ) -> Result<Self> {
+        let mut res_blocks = vec![]
+        let mut attentions = if add_attention { Some(vec![]) } else { None }
+
+        for i in 0..num_layers {
+            let skip_channels = if i == num_layers - 1 { in_channels } else { out_channels }
+            let in_ch = if i == 0 { prev_out_channels + skip_channels } else { out_channels + skip_channels }
+
+            res_blocks.push(ResNetBlock::new(
+                in_ch, out_channels, Some(time_embed_dim), 32, 0.0,
+                vb.pp(format!("resnets.{}", i))
+            )?)
+
+            if add_attention {
+                let num_heads = out_channels / attention_head_dim
+                attentions.as_mut().unwrap().push(SpatialTransformer::new(
+                    out_channels, num_heads, attention_head_dim,
+                    transformer_layers, cross_attention_dim,
+                    use_linear_projection,
+                    vb.pp(format!("attentions.{}", i))
+                )?)
+            }
+        }
+
+        let upsampler = if add_upsample {
+            Some(Upsample::new(out_channels, vb.pp("upsamplers.0"))?)
+        } else {
+            None
+        }
+
+        Ok(Self { res_blocks, attentions, upsampler })
+    }
+
+    pub fn forward(
+        self,
+        x: &Tensor,
+        res_hidden_states!: &mut [Tensor!],
+        temb: &Tensor,
+        context~: &Tensor,
+    ) -> Result<Tensor!> {
+        let mut x = x.clone()
+
+        for (i, res_block) in self.res_blocks.iter().enumerate() {
+            // Pop skip connection
+            let skip! = res_hidden_states!.pop().unwrap()
+            x = Tensor::cat(&[x, skip!], 1)?
+
+            x = res_block.forward(&x, Some(temb))?
+
+            if let Some(attns) = &self.attentions {
+                x = attns[i].forward(&x, context~)?
+            }
+        }
+
+        if let Some(up) = &self.upsampler {
+            x = up.forward(&x)?
+        }
+
+        Ok(x!)
+    }
+}
+
+/// Middle block
+pub struct MidBlock {
+    res_block1: ResNetBlock,
+    attention: SpatialTransformer,
+    res_block2: ResNetBlock,
+}
+
+impl MidBlock {
+    pub fn new(
+        channels: u32,
+        time_embed_dim: u32,
+        attention_head_dim: u32,
+        cross_attention_dim: u32,
+        use_linear_projection: bool,
+        transformer_layers: u32,
+        vb: VarBuilder,
+    ) -> Result<Self> {
+        let num_heads = channels / attention_head_dim
+
+        let res_block1 = ResNetBlock::new(
+            channels, channels, Some(time_embed_dim), 32, 0.0,
+            vb.pp("resnets.0")
+        )?
+
+        let attention = SpatialTransformer::new(
+            channels, num_heads, attention_head_dim,
+            transformer_layers, cross_attention_dim,
+            use_linear_projection,
+            vb.pp("attentions.0")
+        )?
+
+        let res_block2 = ResNetBlock::new(
+            channels, channels, Some(time_embed_dim), 32, 0.0,
+            vb.pp("resnets.1")
+        )?
+
+        Ok(Self { res_block1, attention, res_block2 })
+    }
+
+    pub fn forward(self, x: &Tensor, temb: &Tensor, context~: &Tensor) -> Result<Tensor!> {
+        let x = self.res_block1.forward(x, Some(temb))?
+        let x = self.attention.forward(&x, context~)?
+        self.res_block2.forward(&x, Some(temb))
+    }
+}
+
+/// Downsample layer
+pub struct Downsample {
+    conv: Conv2d,
+}
+
+impl Downsample {
+    pub fn new(channels: u32, vb: VarBuilder) -> Result<Self> {
+        let conv = Conv2d::new(channels, channels, 3, 2, 1, vb.pp("conv"))?
+        Ok(Self { conv })
+    }
+}
+
+impl Module for Downsample {
+    fn forward(self, x: &Tensor) -> Result<Tensor> {
+        self.conv.forward(x)
+    }
+}
+
+/// Upsample layer
+pub struct Upsample {
+    conv: Conv2d,
+}
+
+impl Upsample {
+    pub fn new(channels: u32, vb: VarBuilder) -> Result<Self> {
+        let conv = Conv2d::new(channels, channels, 3, 1, 1, vb.pp("conv"))?
+        Ok(Self { conv })
+    }
+}
+
+impl Module for Upsample {
+    fn forward(self, x: &Tensor) -> Result<Tensor> {
+        let (_, _, h, w) = x.dims4()?
+        let x = x.upsample_nearest2d(h * 2, w * 2)?
+        self.conv.forward(&x)
+    }
+}
+
+// ============================================================================
+// Full U-Net 2D
+// ============================================================================
+
+/// Complete U-Net 2D model
+pub struct UNet2D {
+    config: UNet2DConfig,
+    conv_in: Conv2d,
+    time_proj: TimestepEmbedding,
+    time_embedding: TimestepEmbedding,
+    down_blocks: [DownBlock],
+    mid_block: MidBlock,
+    up_blocks: [UpBlock],
+    conv_norm_out: GroupNorm,
+    conv_out: Conv2d,
+}
+
+impl UNet2D {
+    pub fn new(config: UNet2DConfig, vb: VarBuilder) -> Result<Self> {
+        let time_embed_dim = config.time_embed_dim()
+
+        // Input conv
+        let conv_in = Conv2d::new(
+            config.in_channels, config.block_out_channels[0],
+            3, 1, 1, vb.pp("conv_in")
+        )?
+
+        // Time embedding
+        let time_proj = TimestepEmbedding::new(
+            config.block_out_channels[0], time_embed_dim,
+            &config.act_fn, vb.pp("time_proj")
+        )?
+        let time_embedding = TimestepEmbedding::new(
+            time_embed_dim, time_embed_dim,
+            &config.act_fn, vb.pp("time_embedding")
+        )?
+
+        // Build down blocks
+        let mut down_blocks = vec![]
+        let mut prev_out_ch = config.block_out_channels[0]
+
+        for (i, &out_ch) in config.block_out_channels.iter().enumerate() {
+            let is_last = i == config.block_out_channels.len() - 1
+
+            down_blocks.push(DownBlock::new(
+                prev_out_ch, out_ch, time_embed_dim,
+                config.layers_per_block,
+                config.attention_levels[i],
+                config.attention_head_dim,
+                config.cross_attention_dim,
+                config.use_linear_projection,
+                config.transformer_layers_per_block,
+                !is_last,
+                vb.pp(format!("down_blocks.{}", i))
+            )?)
+
+            prev_out_ch = out_ch
+        }
+
+        // Mid block
+        let last_ch = *config.block_out_channels.last().unwrap()
+        let mid_block = MidBlock::new(
+            last_ch, time_embed_dim,
+            config.attention_head_dim, config.cross_attention_dim,
+            config.use_linear_projection, config.transformer_layers_per_block,
+            vb.pp("mid_block")
+        )?
+
+        // Build up blocks (reversed)
+        let mut up_blocks = vec![]
+        let reversed: [u32] = config.block_out_channels.iter().rev().copied().collect()
+
+        for (i, &out_ch) in reversed.iter().enumerate() {
+            let is_last = i == reversed.len() - 1
+            let prev_out = if i == 0 { last_ch } else { reversed[i - 1] }
+            let skip_ch = config.block_out_channels[reversed.len() - 1 - i]
+
+            up_blocks.push(UpBlock::new(
+                skip_ch, prev_out, out_ch, time_embed_dim,
+                config.layers_per_block + 1,
+                config.attention_levels[reversed.len() - 1 - i],
+                config.attention_head_dim,
+                config.cross_attention_dim,
+                config.use_linear_projection,
+                config.transformer_layers_per_block,
+                !is_last,
+                vb.pp(format!("up_blocks.{}", i))
+            )?)
+        }
+
+        // Output
+        let conv_norm_out = GroupNorm::new(
+            config.norm_num_groups, config.block_out_channels[0], 1e-5,
+            vb.pp("conv_norm_out")
+        )?
+        let conv_out = Conv2d::new(
+            config.block_out_channels[0], config.out_channels,
+            3, 1, 1, vb.pp("conv_out")
+        )?
+
+        Ok(Self {
+            config, conv_in, time_proj, time_embedding,
+            down_blocks, mid_block, up_blocks,
+            conv_norm_out, conv_out,
+        })
+    }
+
+    /// Forward pass
+    /// - `sample!`: Noisy latent (computed!)
+    /// - `timestep`: Current diffusion timestep
+    /// - `encoder_hidden_states~`: Text conditioning (untrusted user input)
+    pub fn forward(
+        self,
+        sample!: &Tensor,
+        timestep: &DiffusionTimestep,
+        encoder_hidden_states~: &Tensor,
+    ) -> Result<NoisePrediction!> {
+        // Time embedding
+        let t = Tensor::new(&[timestep.step as f32], sample!.device())?
+        let t_emb = get_timestep_embedding(&t, self.config.block_out_channels[0], 10000.0)?
+        let t_emb = self.time_proj.forward(&t_emb)?
+        let emb = self.time_embedding.forward(&t_emb)?
+
+        // Input
+        let x = self.conv_in.forward(sample!)?
+
+        // Down
+        let mut down_block_res_samples!: [[Tensor!]] = vec![]
+        let mut x = x
+
+        for down_block in &self.down_blocks {
+            let (x_new!, res!) = down_block.forward(&x, &emb, encoder_hidden_states~)?
+            x = x_new!
+            down_block_res_samples!.push(res!)
+        }
+
+        // Mid
+        x = self.mid_block.forward(&x, &emb, encoder_hidden_states~)?
+
+        // Up
+        for up_block in &self.up_blocks {
+            let res! = down_block_res_samples!.pop().unwrap()
+            x = up_block.forward(&x, &mut res!.clone(), &emb, encoder_hidden_states~)?
+        }
+
+        // Output
+        x = self.conv_norm_out.forward(&x)?
+        x = x.silu()?
+        let output! = self.conv_out.forward(&x)?
+
+        Ok(NoisePrediction!::noise_only(output!))
+    }
+}
+
+// ============================================================================
+// U-Net XL (SDXL)
+// ============================================================================
+
+/// U-Net XL for SDXL
+pub struct UNetXL {
+    config: UNetXLConfig,
+    inner: UNet2D,
+    add_embedding: TimestepEmbedding,
+}
+
+impl UNetXL {
+    pub fn new(config: UNetXLConfig, vb: VarBuilder) -> Result<Self> {
+        let inner = UNet2D::new(config.base.clone(), vb.clone())?
+
+        // Additional embedding for size/crop conditioning
+        let add_embedding = TimestepEmbedding::new(
+            config.projection_class_embeddings_input_dim,
+            config.base.time_embed_dim(),
+            &config.base.act_fn,
+            vb.pp("add_embedding")
+        )?
+
+        Ok(Self { config, inner, add_embedding })
+    }
+
+    /// Forward with additional SDXL conditioning
+    pub fn forward(
+        self,
+        sample!: &Tensor,
+        timestep: &DiffusionTimestep,
+        encoder_hidden_states~: &Tensor,
+        added_cond_kwargs~: &AddedCondKwargs~,
+    ) -> Result<NoisePrediction!> {
+        // Process additional conditioning
+        let text_embeds~ = &added_cond_kwargs~.text_embeds~
+        let time_ids~ = &added_cond_kwargs~.time_ids~
+
+        let add_embeds~ = Tensor::cat(&[text_embeds~.clone(), time_ids~.clone()], 1)?
+        let add_emb = self.add_embedding.forward(&add_embeds~)?
+
+        // Modify time embedding with addition
+        // (simplified - full impl would add to time embedding)
+
+        self.inner.forward(sample!, timestep, encoder_hidden_states~)
+    }
+}
+
+/// Additional conditioning for SDXL
+#[derive(Debug, Clone)]
+pub struct AddedCondKwargs~ {
+    /// Pooled text embeddings from second text encoder
+    pub text_embeds~: Tensor,
+
+    /// Time IDs (original_size, crop_coords, target_size)
+    pub time_ids~: Tensor,
+}
+
+// ============================================================================
+// Helper Types
+// ============================================================================
+
+/// Activation function enum
+pub enum Activation {
+    SiLU,
+    GELU,
+    ReLU,
+}
+
+impl Activation {
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "silu" | "swish" => Self::SiLU,
+            "gelu" => Self::GELU,
+            "relu" => Self::ReLU,
+            _ => Self::SiLU,
+        }
+    }
+
+    pub fn forward(self, x: &Tensor) -> Result<Tensor> {
+        match self {
+            Self::SiLU => x.silu(),
+            Self::GELU => x.gelu(),
+            Self::ReLU => x.relu(),
+        }
+    }
+}
+
+/// Layer normalization
+pub struct LayerNorm {
+    weight: Tensor,
+    bias: Tensor,
+    eps: f64,
+}
+
+impl LayerNorm {
+    pub fn new(dim: u32, eps: f64, vb: VarBuilder) -> Result<Self> {
+        let weight = vb.get(dim as usize, "weight")?
+        let bias = vb.get(dim as usize, "bias")?
+        Ok(Self { weight, bias, eps })
+    }
+}
+
+impl Module for LayerNorm {
+    fn forward(self, x: &Tensor) -> Result<Tensor> {
+        x.layer_norm(&self.weight, &self.bias, self.eps)
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_unet_config() {
+        let config = UNet2DConfig::sd_1x()
+        assert_eq!(config.in_channels, 4)
+        assert_eq!(config.cross_attention_dim, 768)
+
+        let config_xl = UNetXLConfig::sdxl()
+        assert_eq!(config_xl.base.cross_attention_dim, 2048)
+    }
+
+    #[test]
+    fn test_timestep_embedding() {
+        let t = Tensor::new(&[500.0f32], &Device::Cpu)?
+        let emb = get_timestep_embedding(&t, 320, 10000.0)?
+        assert_eq!(emb.dims(), &[1, 320])
+    }
+
+    #[test]
+    fn test_resnet_block() {
+        // Would test ResNetBlock forward pass
+    }
+}

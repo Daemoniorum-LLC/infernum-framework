@@ -1,0 +1,16 @@
+/// Infernum-Sigil Benchmark Suite
+///
+/// Comprehensive benchmarks for measuring performance across all modules.
+
+pub mod config
+pub mod runner
+pub mod core_bench
+pub mod vision_bench
+pub mod diffusion_bench
+pub mod video_bench
+pub mod optimization_bench
+pub mod report
+
+pub use config::*
+pub use runner::*
+pub use report::*

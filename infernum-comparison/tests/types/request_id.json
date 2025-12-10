@@ -1,0 +1,35 @@
+{
+  "name": "RequestId Type Tests",
+  "description": "Tests for the RequestId identifier type",
+  "cases": [
+    {
+      "name": "create_new_unique",
+      "action": "RequestId::new()",
+      "expected": {
+        "is_uuid": true,
+        "version": 4
+      }
+    },
+    {
+      "name": "default_creates_new",
+      "action": "RequestId::default()",
+      "expected": {
+        "is_uuid": true,
+        "version": 4
+      }
+    },
+    {
+      "name": "two_new_ids_are_different",
+      "action": "RequestId::new() != RequestId::new()",
+      "expected": true
+    },
+    {
+      "name": "display_format",
+      "description": "Display should show UUID format (8-4-4-4-12)",
+      "action": "RequestId::new().to_string()",
+      "expected": {
+        "matches_uuid_pattern": true
+      }
+    }
+  ]
+}

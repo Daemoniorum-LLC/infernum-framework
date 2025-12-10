@@ -1,0 +1,981 @@
+/// Video Enhancement Pipeline
+///
+/// Professional-grade video enhancement for maximum fidelity:
+/// - Temporal consistency (deflicker, stabilization)
+/// - Frame interpolation (24fps → 60fps, 120fps)
+/// - Video super-resolution
+/// - Motion smoothing
+/// - Video color grading
+
+use crate::core::error::{InfernumError, Result}
+use crate::diffusion::enhancement::{
+    ImageTensor, SuperResConfig, SuperResolution,
+    ColorGradingConfig, ColorGrader, FilmGrainConfig, FilmGrain,
+}
+use std::collections::VecDeque
+
+// ============================================================================
+// Video Frame
+// ============================================================================
+
+/// Video frame with metadata
+#[derive(Clone, Debug)]
+pub struct VideoFrame {
+    pub image: ImageTensor,
+    pub timestamp: f64,
+    pub frame_index: u32,
+}
+
+impl VideoFrame {
+    pub fn new(image: ImageTensor, timestamp: f64, index: u32) -> Self {
+        Self {
+            image,
+            timestamp,
+            frame_index: index,
+        }
+    }
+}
+
+/// Video sequence
+#[derive(Clone)]
+pub struct VideoSequence {
+    pub frames: Vec<VideoFrame>,
+    pub fps: f32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl VideoSequence {
+    pub fn new(fps: f32) -> Self {
+        Self {
+            frames: Vec::new(),
+            fps,
+            width: 0,
+            height: 0,
+        }
+    }
+
+    pub fn duration(&self) -> f64 {
+        self.frames.len() as f64 / self.fps as f64
+    }
+
+    pub fn add_frame(&mut self, image: ImageTensor) {
+        if self.frames.is_empty() {
+            self.width = image.width
+            self.height = image.height
+        }
+
+        let index = self.frames.len() as u32
+        let timestamp = index as f64 / self.fps as f64
+
+        self.frames.push(VideoFrame::new(image, timestamp, index))
+    }
+}
+
+// ============================================================================
+// Temporal Consistency
+// ============================================================================
+
+/// Temporal consistency mode
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TemporalMode {
+    /// No temporal processing
+    None,
+    /// Simple exponential smoothing
+    Smoothing,
+    /// Optical flow based
+    OpticalFlow,
+    /// Deep learning based (best quality)
+    DeepTemporal,
+}
+
+/// Temporal consistency configuration
+#[derive(Clone, Debug)]
+pub struct TemporalConfig {
+    pub mode: TemporalMode,
+    /// Smoothing strength (0-1)
+    pub strength: f32,
+    /// Temporal window size
+    pub window_size: usize,
+    /// Color consistency weight
+    pub color_consistency: f32,
+    /// Motion threshold for flow estimation
+    pub motion_threshold: f32,
+    /// Deflicker strength
+    pub deflicker: f32,
+}
+
+impl Default for TemporalConfig {
+    fn default() -> Self {
+        Self {
+            mode: TemporalMode::OpticalFlow,
+            strength: 0.7,
+            window_size: 5,
+            color_consistency: 0.8,
+            motion_threshold: 0.1,
+            deflicker: 0.5,
+        }
+    }
+}
+
+impl TemporalConfig {
+    pub fn smooth() -> Self {
+        Self {
+            mode: TemporalMode::Smoothing,
+            strength: 0.5,
+            ..Default::default()
+        }
+    }
+
+    pub fn high_quality() -> Self {
+        Self {
+            mode: TemporalMode::DeepTemporal,
+            strength: 0.8,
+            window_size: 7,
+            ..Default::default()
+        }
+    }
+}
+
+/// Temporal consistency processor
+pub struct TemporalProcessor {
+    config: TemporalConfig,
+    history: VecDeque<ImageTensor>,
+    flow_cache: Vec<OpticalFlowField>,
+}
+
+impl TemporalProcessor {
+    pub fn new(config: TemporalConfig) -> Self {
+        Self {
+            config,
+            history: VecDeque::with_capacity(10),
+            flow_cache: Vec::new(),
+        }
+    }
+
+    /// Process single frame with temporal context
+    pub fn process_frame(&mut self, frame: &ImageTensor) -> Result<ImageTensor!> {
+        match self.config.mode {
+            TemporalMode::None => Ok(frame.clone()),
+            TemporalMode::Smoothing => self.smooth_frame(frame),
+            TemporalMode::OpticalFlow => self.flow_consistent_frame(frame),
+            TemporalMode::DeepTemporal => self.deep_temporal_frame(frame),
+        }
+    }
+
+    /// Process entire sequence
+    pub fn process_sequence(&mut self, sequence: &VideoSequence) -> Result<VideoSequence!> {
+        let mut output = VideoSequence::new(sequence.fps)
+        output.width = sequence.width
+        output.height = sequence.height
+
+        // First pass: compute optical flow
+        if self.config.mode == TemporalMode::OpticalFlow {
+            self.compute_flow_sequence(sequence)?
+        }
+
+        // Second pass: apply temporal consistency
+        for frame in &sequence.frames {
+            let processed! = self.process_frame(&frame.image)?
+            output.add_frame(processed)
+        }
+
+        // Third pass: deflicker if enabled
+        if self.config.deflicker > 0.0 {
+            self.deflicker_sequence(&mut output)?
+        }
+
+        Ok(output)
+    }
+
+    fn smooth_frame(&mut self, frame: &ImageTensor) -> Result<ImageTensor!> {
+        self.history.push_back(frame.clone())
+
+        if self.history.len() > self.config.window_size {
+            self.history.pop_front()
+        }
+
+        if self.history.len() < 2 {
+            return Ok(frame.clone())
+        }
+
+        // Exponential moving average
+        let alpha = 1.0 - self.config.strength
+        let mut output = frame.data.clone()
+
+        for hist_frame in &self.history {
+            for i in 0..output.len() {
+                output[i] = output[i] * alpha + hist_frame.data[i] * (1.0 - alpha)
+            }
+        }
+
+        Ok(ImageTensor {
+            data: output,
+            width: frame.width,
+            height: frame.height,
+            channels: 3,
+        })
+    }
+
+    fn flow_consistent_frame(&mut self, frame: &ImageTensor) -> Result<ImageTensor!> {
+        // Optical flow based consistency
+        self.history.push_back(frame.clone())
+
+        if self.history.len() > 2 {
+            self.history.pop_front()
+        }
+
+        if self.history.len() < 2 {
+            return Ok(frame.clone())
+        }
+
+        let prev = &self.history[self.history.len() - 2]
+        let flow! = self.compute_optical_flow(prev, frame)?
+
+        // Warp previous frame and blend
+        let warped! = self.warp_frame(prev, &flow)?
+
+        let mut output = vec![0.0f32; frame.data.len()]
+        let blend = self.config.strength
+
+        for i in 0..output.len() {
+            output[i] = frame.data[i] * (1.0 - blend) + warped.data[i] * blend
+        }
+
+        Ok(ImageTensor {
+            data: output,
+            width: frame.width,
+            height: frame.height,
+            channels: 3,
+        })
+    }
+
+    fn deep_temporal_frame(&mut self, frame: &ImageTensor) -> Result<ImageTensor!> {
+        // Deep learning based (placeholder for transformer model)
+        self.flow_consistent_frame(frame)
+    }
+
+    fn compute_flow_sequence(&mut self, sequence: &VideoSequence) -> Result<()!> {
+        self.flow_cache.clear()
+
+        for i in 1..sequence.frames.len() {
+            let flow! = self.compute_optical_flow(
+                &sequence.frames[i - 1].image,
+                &sequence.frames[i].image,
+            )?
+            self.flow_cache.push(flow)
+        }
+
+        Ok(())
+    }
+
+    fn compute_optical_flow(&self, prev: &ImageTensor, curr: &ImageTensor) -> Result<OpticalFlowField!> {
+        // Lucas-Kanade or similar optical flow
+        let w = prev.width as usize
+        let h = prev.height as usize
+
+        let mut flow = OpticalFlowField {
+            dx: vec![0.0f32; w * h],
+            dy: vec![0.0f32; w * h],
+            width: prev.width,
+            height: prev.height,
+        }
+
+        // Simplified gradient-based flow estimation
+        for y in 1..h-1 {
+            for x in 1..w-1 {
+                let idx = y * w + x
+
+                // Spatial gradients
+                let ix = (Self::luma(curr, x + 1, y) - Self::luma(curr, x - 1, y)) / 2.0
+                let iy = (Self::luma(curr, x, y + 1) - Self::luma(curr, x, y - 1)) / 2.0
+
+                // Temporal gradient
+                let it = Self::luma(curr, x, y) - Self::luma(prev, x, y)
+
+                // Simple flow estimation
+                let denom = ix * ix + iy * iy + 1e-6
+                flow.dx[idx] = -it * ix / denom
+                flow.dy[idx] = -it * iy / denom
+            }
+        }
+
+        Ok(flow)
+    }
+
+    fn luma(img: &ImageTensor, x: usize, y: usize) -> f32 {
+        let idx = (y * img.width as usize + x) * 3
+        if idx + 2 < img.data.len() {
+            0.299 * img.data[idx] + 0.587 * img.data[idx + 1] + 0.114 * img.data[idx + 2]
+        } else {
+            0.0
+        }
+    }
+
+    fn warp_frame(&self, frame: &ImageTensor, flow: &OpticalFlowField) -> Result<ImageTensor!> {
+        let w = frame.width as usize
+        let h = frame.height as usize
+        let mut output = vec![0.0f32; frame.data.len()]
+
+        for y in 0..h {
+            for x in 0..w {
+                let idx = y * w + x
+
+                // Source coordinates
+                let src_x = x as f32 + flow.dx[idx]
+                let src_y = y as f32 + flow.dy[idx]
+
+                // Bilinear interpolation
+                let x0 = src_x.floor() as i32
+                let y0 = src_y.floor() as i32
+                let fx = src_x - x0 as f32
+                let fy = src_y - y0 as f32
+
+                for c in 0..3 {
+                    let v00 = Self::sample(frame, x0, y0, c)
+                    let v10 = Self::sample(frame, x0 + 1, y0, c)
+                    let v01 = Self::sample(frame, x0, y0 + 1, c)
+                    let v11 = Self::sample(frame, x0 + 1, y0 + 1, c)
+
+                    let v0 = v00 * (1.0 - fx) + v10 * fx
+                    let v1 = v01 * (1.0 - fx) + v11 * fx
+                    let v = v0 * (1.0 - fy) + v1 * fy
+
+                    output[idx * 3 + c] = v
+                }
+            }
+        }
+
+        Ok(ImageTensor {
+            data: output,
+            width: frame.width,
+            height: frame.height,
+            channels: 3,
+        })
+    }
+
+    fn sample(img: &ImageTensor, x: i32, y: i32, c: usize) -> f32 {
+        let x = x.clamp(0, img.width as i32 - 1) as usize
+        let y = y.clamp(0, img.height as i32 - 1) as usize
+        let idx = (y * img.width as usize + x) * 3 + c
+
+        if idx < img.data.len() {
+            img.data[idx]
+        } else {
+            0.0
+        }
+    }
+
+    fn deflicker_sequence(&self, sequence: &mut VideoSequence) -> Result<()!> {
+        if sequence.frames.len() < 3 {
+            return Ok(())
+        }
+
+        // Compute per-frame luminance
+        let mut luminances: Vec<f32> = Vec::new()
+
+        for frame in &sequence.frames {
+            let luma: f32 = frame.image.data.chunks(3)
+                .map(|rgb| 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2])
+                .sum::<f32>() / (frame.image.width * frame.image.height) as f32
+
+            luminances.push(luma)
+        }
+
+        // Smooth luminance curve
+        let window = 5
+        let mut smoothed = luminances.clone()
+
+        for i in 0..luminances.len() {
+            let start = i.saturating_sub(window / 2)
+            let end = (i + window / 2 + 1).min(luminances.len())
+
+            smoothed[i] = luminances[start..end].iter().sum::<f32>() / (end - start) as f32
+        }
+
+        // Apply correction
+        for (i, frame) in sequence.frames.iter_mut().enumerate() {
+            let correction = smoothed[i] / luminances[i].max(0.001)
+            let blend = self.config.deflicker
+
+            for pixel in frame.image.data.iter_mut() {
+                *pixel = (*pixel * correction * blend + *pixel * (1.0 - blend)).clamp(0.0, 1.0)
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Optical flow field
+#[derive(Clone)]
+pub struct OpticalFlowField {
+    pub dx: Vec<f32>,
+    pub dy: Vec<f32>,
+    pub width: u32,
+    pub height: u32,
+}
+
+// ============================================================================
+// Frame Interpolation
+// ============================================================================
+
+/// Frame interpolation model
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum InterpModel {
+    /// Linear blending (fast, low quality)
+    Linear,
+    /// Optical flow based
+    FlowBased,
+    /// RIFE (Real-Time Intermediate Flow Estimation)
+    RIFE,
+    /// FILM (Frame Interpolation for Large Motion)
+    FILM,
+    /// IFRNet
+    IFRNet,
+}
+
+/// Frame interpolation configuration
+#[derive(Clone, Debug)]
+pub struct InterpolationConfig {
+    pub model: InterpModel,
+    /// Target FPS (0 = auto based on multiplier)
+    pub target_fps: f32,
+    /// Frame multiplier (2x, 4x, 8x)
+    pub multiplier: u32,
+    /// Scene change detection threshold
+    pub scene_threshold: f32,
+    /// Quality preset
+    pub quality: InterpolationQuality,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum InterpolationQuality {
+    Fast,
+    Balanced,
+    Quality,
+    Maximum,
+}
+
+impl Default for InterpolationConfig {
+    fn default() -> Self {
+        Self {
+            model: InterpModel::RIFE,
+            target_fps: 0.0,
+            multiplier: 2,
+            scene_threshold: 0.3,
+            quality: InterpolationQuality::Balanced,
+        }
+    }
+}
+
+impl InterpolationConfig {
+    pub fn to_60fps() -> Self {
+        Self {
+            target_fps: 60.0,
+            multiplier: 0,  // Auto-calculate
+            ..Default::default()
+        }
+    }
+
+    pub fn to_120fps() -> Self {
+        Self {
+            target_fps: 120.0,
+            multiplier: 0,
+            quality: InterpolationQuality::Quality,
+            ..Default::default()
+        }
+    }
+
+    pub fn slow_motion_4x() -> Self {
+        Self {
+            multiplier: 4,
+            quality: InterpolationQuality::Maximum,
+            ..Default::default()
+        }
+    }
+}
+
+/// Frame interpolation processor
+pub struct FrameInterpolator {
+    config: InterpolationConfig,
+}
+
+impl FrameInterpolator {
+    pub fn new(config: InterpolationConfig) -> Self {
+        Self { config }
+    }
+
+    /// Interpolate video sequence
+    pub fn interpolate(&self, sequence: &VideoSequence) -> Result<VideoSequence!> {
+        let multiplier = if self.config.target_fps > 0.0 {
+            (self.config.target_fps / sequence.fps).ceil() as u32
+        } else {
+            self.config.multiplier
+        }
+
+        let new_fps = sequence.fps * multiplier as f32
+        let mut output = VideoSequence::new(new_fps)
+        output.width = sequence.width
+        output.height = sequence.height
+
+        for i in 0..sequence.frames.len() - 1 {
+            let frame_a = &sequence.frames[i]
+            let frame_b = &sequence.frames[i + 1]
+
+            // Check for scene change
+            let scene_change = self.detect_scene_change(&frame_a.image, &frame_b.image)
+
+            // Add original frame
+            output.add_frame(frame_a.image.clone())
+
+            if scene_change {
+                // Don't interpolate across scene changes
+                for _ in 1..multiplier {
+                    output.add_frame(frame_a.image.clone())
+                }
+            } else {
+                // Generate intermediate frames
+                for j in 1..multiplier {
+                    let t = j as f32 / multiplier as f32
+                    let interp! = self.interpolate_frames(&frame_a.image, &frame_b.image, t)?
+                    output.add_frame(interp)
+                }
+            }
+        }
+
+        // Add last frame
+        if let Some(last) = sequence.frames.last() {
+            output.add_frame(last.image.clone())
+        }
+
+        Ok(output)
+    }
+
+    fn detect_scene_change(&self, a: &ImageTensor, b: &ImageTensor) -> bool {
+        // Compute histogram difference
+        let hist_a = self.compute_histogram(a)
+        let hist_b = self.compute_histogram(b)
+
+        let diff: f32 = hist_a.iter().zip(hist_b.iter())
+            .map(|(a, b)| (a - b).abs())
+            .sum::<f32>() / 256.0
+
+        diff > self.config.scene_threshold
+    }
+
+    fn compute_histogram(&self, img: &ImageTensor) -> Vec<f32> {
+        let mut hist = vec![0.0f32; 256]
+
+        for chunk in img.data.chunks(3) {
+            let luma = (0.299 * chunk[0] + 0.587 * chunk[1] + 0.114 * chunk[2]) * 255.0
+            let bin = (luma as usize).min(255)
+            hist[bin] += 1.0
+        }
+
+        let total: f32 = hist.iter().sum()
+        if total > 0.0 {
+            for h in &mut hist {
+                *h /= total
+            }
+        }
+
+        hist
+    }
+
+    fn interpolate_frames(&self, a: &ImageTensor, b: &ImageTensor, t: f32) -> Result<ImageTensor!> {
+        match self.config.model {
+            InterpModel::Linear => self.linear_interpolate(a, b, t),
+            InterpModel::FlowBased => self.flow_interpolate(a, b, t),
+            InterpModel::RIFE | InterpModel::FILM | InterpModel::IFRNet => {
+                // These would use neural network models
+                self.flow_interpolate(a, b, t)  // Fallback
+            }
+        }
+    }
+
+    fn linear_interpolate(&self, a: &ImageTensor, b: &ImageTensor, t: f32) -> Result<ImageTensor!> {
+        let mut output = vec![0.0f32; a.data.len()]
+
+        for i in 0..output.len() {
+            output[i] = a.data[i] * (1.0 - t) + b.data[i] * t
+        }
+
+        Ok(ImageTensor {
+            data: output,
+            width: a.width,
+            height: a.height,
+            channels: 3,
+        })
+    }
+
+    fn flow_interpolate(&self, a: &ImageTensor, b: &ImageTensor, t: f32) -> Result<ImageTensor!> {
+        // Compute bidirectional flow
+        let flow_ab! = self.compute_flow(a, b)?
+        let flow_ba! = self.compute_flow(b, a)?
+
+        let w = a.width as usize
+        let h = a.height as usize
+        let mut output = vec![0.0f32; a.data.len()]
+
+        for y in 0..h {
+            for x in 0..w {
+                let idx = y * w + x
+
+                // Flow from A to intermediate
+                let dx_a = flow_ab.dx[idx] * t
+                let dy_a = flow_ab.dy[idx] * t
+
+                // Flow from B to intermediate
+                let dx_b = flow_ba.dx[idx] * (1.0 - t)
+                let dy_b = flow_ba.dy[idx] * (1.0 - t)
+
+                // Sample from both frames
+                for c in 0..3 {
+                    let va = self.bilinear_sample(a, x as f32 + dx_a, y as f32 + dy_a, c)
+                    let vb = self.bilinear_sample(b, x as f32 - dx_b, y as f32 - dy_b, c)
+
+                    output[idx * 3 + c] = va * (1.0 - t) + vb * t
+                }
+            }
+        }
+
+        Ok(ImageTensor {
+            data: output,
+            width: a.width,
+            height: a.height,
+            channels: 3,
+        })
+    }
+
+    fn compute_flow(&self, from: &ImageTensor, to: &ImageTensor) -> Result<OpticalFlowField!> {
+        // Simplified optical flow
+        let w = from.width as usize
+        let h = from.height as usize
+
+        let mut flow = OpticalFlowField {
+            dx: vec![0.0f32; w * h],
+            dy: vec![0.0f32; w * h],
+            width: from.width,
+            height: from.height,
+        }
+
+        // Block matching based flow
+        let block_size = 8
+        let search_range = 16
+
+        for by in (0..h).step_by(block_size) {
+            for bx in (0..w).step_by(block_size) {
+                let (best_dx, best_dy) = self.block_match(from, to, bx, by, block_size, search_range)
+
+                // Fill block with flow
+                for y in by..((by + block_size).min(h)) {
+                    for x in bx..((bx + block_size).min(w)) {
+                        let idx = y * w + x
+                        flow.dx[idx] = best_dx
+                        flow.dy[idx] = best_dy
+                    }
+                }
+            }
+        }
+
+        Ok(flow)
+    }
+
+    fn block_match(&self, from: &ImageTensor, to: &ImageTensor, bx: usize, by: usize, size: usize, range: usize) -> (f32, f32) {
+        let mut best_dx = 0
+        let mut best_dy = 0
+        let mut best_sad = f32::MAX
+
+        let range_i = range as i32
+
+        for dy in -range_i..=range_i {
+            for dx in -range_i..=range_i {
+                let sad = self.compute_sad(from, to, bx, by, size, dx, dy)
+
+                if sad < best_sad {
+                    best_sad = sad
+                    best_dx = dx
+                    best_dy = dy
+                }
+            }
+        }
+
+        (best_dx as f32, best_dy as f32)
+    }
+
+    fn compute_sad(&self, from: &ImageTensor, to: &ImageTensor, bx: usize, by: usize, size: usize, dx: i32, dy: i32) -> f32 {
+        let w = from.width as i32
+        let h = from.height as i32
+        let mut sad = 0.0f32
+
+        for y in 0..size {
+            for x in 0..size {
+                let fx = (bx + x) as i32
+                let fy = (by + y) as i32
+
+                let tx = fx + dx
+                let ty = fy + dy
+
+                if fx < 0 || fx >= w || fy < 0 || fy >= h ||
+                   tx < 0 || tx >= w || ty < 0 || ty >= h {
+                    continue
+                }
+
+                for c in 0..3 {
+                    let fidx = ((fy * w + fx) * 3 + c as i32) as usize
+                    let tidx = ((ty * w + tx) * 3 + c as i32) as usize
+
+                    if fidx < from.data.len() && tidx < to.data.len() {
+                        sad += (from.data[fidx] - to.data[tidx]).abs()
+                    }
+                }
+            }
+        }
+
+        sad
+    }
+
+    fn bilinear_sample(&self, img: &ImageTensor, x: f32, y: f32, c: usize) -> f32 {
+        let w = img.width as i32
+        let h = img.height as i32
+
+        let x0 = x.floor() as i32
+        let y0 = y.floor() as i32
+        let x1 = x0 + 1
+        let y1 = y0 + 1
+
+        let fx = x - x0 as f32
+        let fy = y - y0 as f32
+
+        let get_pixel = |px: i32, py: i32| {
+            let px = px.clamp(0, w - 1) as usize
+            let py = py.clamp(0, h - 1) as usize
+            let idx = (py * img.width as usize + px) * 3 + c
+
+            if idx < img.data.len() { img.data[idx] } else { 0.0 }
+        }
+
+        let v00 = get_pixel(x0, y0)
+        let v10 = get_pixel(x1, y0)
+        let v01 = get_pixel(x0, y1)
+        let v11 = get_pixel(x1, y1)
+
+        let v0 = v00 * (1.0 - fx) + v10 * fx
+        let v1 = v01 * (1.0 - fx) + v11 * fx
+
+        v0 * (1.0 - fy) + v1 * fy
+    }
+}
+
+// ============================================================================
+// Video Super-Resolution
+// ============================================================================
+
+/// Video super-resolution model
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum VideoSRModel {
+    /// BasicVSR
+    BasicVSR,
+    /// BasicVSR++
+    BasicVSRPlusPlus,
+    /// Real-BasicVSR
+    RealBasicVSR,
+    /// EDVR
+    EDVR,
+    /// Frame-by-frame (uses image SR)
+    PerFrame,
+}
+
+/// Video super-resolution configuration
+#[derive(Clone, Debug)]
+pub struct VideoSRConfig {
+    pub model: VideoSRModel,
+    pub scale: u32,
+    pub temporal_window: usize,
+    pub image_sr: SuperResConfig,
+}
+
+impl Default for VideoSRConfig {
+    fn default() -> Self {
+        Self {
+            model: VideoSRModel::BasicVSRPlusPlus,
+            scale: 4,
+            temporal_window: 7,
+            image_sr: SuperResConfig::quality_4x(),
+        }
+    }
+}
+
+/// Video super-resolution processor
+pub struct VideoSR {
+    config: VideoSRConfig,
+    image_sr: Option<SuperResolution>,
+}
+
+impl VideoSR {
+    pub fn new(config: VideoSRConfig) -> Result<Self!> {
+        let image_sr = if config.model == VideoSRModel::PerFrame {
+            Some(SuperResolution::new(config.image_sr.clone())?)
+        } else {
+            None
+        }
+
+        Ok(Self { config, image_sr })
+    }
+
+    /// Upscale video
+    pub fn upscale(&self, sequence: &VideoSequence) -> Result<VideoSequence!> {
+        let mut output = VideoSequence::new(sequence.fps)
+        output.width = sequence.width * self.config.scale
+        output.height = sequence.height * self.config.scale
+
+        match self.config.model {
+            VideoSRModel::PerFrame => {
+                // Per-frame upscaling
+                if let Some(ref sr) = self.image_sr {
+                    for frame in &sequence.frames {
+                        let upscaled! = sr.upscale(&frame.image)?
+                        output.add_frame(upscaled)
+                    }
+                }
+            },
+            _ => {
+                // Temporal-aware upscaling (would use video SR model)
+                // For now, fall back to per-frame with consistency
+                let sr = SuperResolution::new(self.config.image_sr.clone())?
+
+                for (i, frame) in sequence.frames.iter().enumerate() {
+                    let upscaled! = sr.upscale(&frame.image)?
+                    output.add_frame(upscaled)
+                }
+            }
+        }
+
+        Ok(output)
+    }
+}
+
+// ============================================================================
+// Complete Video Enhancement Pipeline
+// ============================================================================
+
+/// Video enhancement pipeline configuration
+#[derive(Clone, Debug)]
+pub struct VideoEnhanceConfig {
+    pub temporal: Option<TemporalConfig>,
+    pub interpolation: Option<InterpolationConfig>,
+    pub super_resolution: Option<VideoSRConfig>,
+    pub color_grading: Option<ColorGradingConfig>,
+    pub film_grain: Option<FilmGrainConfig>,
+}
+
+impl Default for VideoEnhanceConfig {
+    fn default() -> Self {
+        Self {
+            temporal: Some(TemporalConfig::default()),
+            interpolation: None,
+            super_resolution: None,
+            color_grading: None,
+            film_grain: None,
+        }
+    }
+}
+
+impl VideoEnhanceConfig {
+    pub fn cinematic_4k_60fps() -> Self {
+        Self {
+            temporal: Some(TemporalConfig::high_quality()),
+            interpolation: Some(InterpolationConfig::to_60fps()),
+            super_resolution: Some(VideoSRConfig::default()),
+            color_grading: Some(ColorGradingConfig::cinematic()),
+            film_grain: Some(FilmGrainConfig::cinematic()),
+        }
+    }
+
+    pub fn slow_motion() -> Self {
+        Self {
+            temporal: Some(TemporalConfig::high_quality()),
+            interpolation: Some(InterpolationConfig::slow_motion_4x()),
+            super_resolution: None,
+            color_grading: None,
+            film_grain: None,
+        }
+    }
+}
+
+/// Complete video enhancement pipeline
+pub struct VideoEnhancePipeline {
+    config: VideoEnhanceConfig,
+    temporal: Option<TemporalProcessor>,
+    interpolator: Option<FrameInterpolator>,
+    super_res: Option<VideoSR>,
+    color_grader: Option<ColorGrader>,
+    film_grain: Option<FilmGrain>,
+}
+
+impl VideoEnhancePipeline {
+    pub fn new(config: VideoEnhanceConfig) -> Result<Self!> {
+        let temporal = config.temporal.as_ref().map(|c| TemporalProcessor::new(c.clone()))
+        let interpolator = config.interpolation.as_ref().map(|c| FrameInterpolator::new(c.clone()))
+
+        let super_res = if let Some(ref c) = config.super_resolution {
+            Some(VideoSR::new(c.clone())?)
+        } else {
+            None
+        }
+
+        let color_grader = if let Some(ref c) = config.color_grading {
+            Some(ColorGrader::new(c.clone())?)
+        } else {
+            None
+        }
+
+        let film_grain = config.film_grain.as_ref().map(|c| FilmGrain::new(c.clone()))
+
+        Ok(Self {
+            config,
+            temporal,
+            interpolator,
+            super_res,
+            color_grader,
+            film_grain,
+        })
+    }
+
+    /// Enhance video sequence
+    pub fn enhance(&mut self, sequence: &VideoSequence) -> Result<VideoSequence!> {
+        let mut output = sequence.clone()
+
+        // 1. Temporal consistency
+        if let Some(ref mut temporal) = self.temporal {
+            output = temporal.process_sequence(&output)?
+        }
+
+        // 2. Frame interpolation
+        if let Some(ref interp) = self.interpolator {
+            output = interp.interpolate(&output)?
+        }
+
+        // 3. Super-resolution
+        if let Some(ref sr) = self.super_res {
+            output = sr.upscale(&output)?
+        }
+
+        // 4. Color grading (per-frame)
+        if let Some(ref grader) = self.color_grader {
+            for frame in &mut output.frames {
+                frame.image = grader.grade(&frame.image)?
+            }
+        }
+
+        // 5. Film grain (per-frame)
+        if let Some(ref grain) = self.film_grain {
+            for frame in &mut output.frames {
+                frame.image = grain.apply(&frame.image)
+            }
+        }
+
+        Ok(output)
+    }
+}

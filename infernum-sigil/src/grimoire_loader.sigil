@@ -1,0 +1,112 @@
+//! # Grimoire Loader
+//!
+//! Integration with the Grimoire prompt management system.
+//!
+//! This module provides utilities for loading personas and prompts
+//! from the Grimoire filesystem structure.
+//!
+//! # Configuration
+//!
+//! The Grimoire path can be configured via:
+//! 1. Environment variable: `INFERNUM_GRIMOIRE_PATH`
+//! 2. Programmatic: `GrimoireLoader::with_path(path)`
+//! 3. Default: `~/.local/share/infernum/personas/`
+//!
+//! Ported from: infernum-framework/crates/grimoire-loader (177 LOC)
+//! Sigil LOC: ~100 (43% reduction)
+
+use std::collections::HashMap
+use std::path::{Path, PathBuf}
+
+use dashmap::DashMap
+use serde::{Deserialize, Serialize}
+
+use crate::core::{Error, Result}
+
+/// Environment variable for customizing Grimoire path.
+const GRIMOIRE_PATH_ENV: &str = "INFERNUM_GRIMOIRE_PATH"
+
+/// Returns the default Grimoire personas path.
+fn default_grimoire_path() -> PathBuf {
+    if let Ok(path) = std::env::var(GRIMOIRE_PATH_ENV) {
+        return PathBuf::from(path)
+    }
+
+    dirs::data_local_dir()
+        ?? PathBuf::from(".")
+        |> |p| p.join("infernum").join("personas")
+}
+
+/// A loaded Grimoire persona.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GrimoirePersona {
+    id: str,
+    name: str,
+    system_prompt: str,
+    variants: HashMap<str, str>,
+    metadata: HashMap<str, str>,
+}
+
+/// Loader for Grimoire personas.
+struct GrimoireLoader {
+    base_path: PathBuf,
+    cache: DashMap<str, GrimoirePersona>,
+}
+
+impl GrimoireLoader {
+    fn new() -> GrimoireLoader { GrimoireLoader::with_path(default_grimoire_path()) }
+
+    fn with_path(path: impl Into<PathBuf>) -> GrimoireLoader {
+        GrimoireLoader { base_path: path.into(), cache: DashMap::new() }
+    }
+
+    async fn load(self, persona_id: &str) -> Result<GrimoirePersona> {
+        if let Some(cached) = self.cache.get(persona_id) { return Ok(cached.clone()) }
+
+        let path = self.base_path.join(persona_id)
+        let prompt_path = if path.is_dir() { path.join("prompt.md") }
+            else { path.with_extension("md") }
+
+        let content = tokio::fs::read_to_string(&prompt_path)|await|map_err{Error::Io}?
+
+        let persona = self.parse_persona(persona_id, &content)?
+        self.cache.insert(persona_id.to_string(), persona.clone())
+
+        Ok(persona)
+    }
+
+    fn parse_persona(self, id: &str, content: &str) -> Result<GrimoirePersona> {
+        Ok(GrimoirePersona {
+            id: id.to_string(),
+            name: id.to_string(),
+            system_prompt: content.to_string(),
+            variants: HashMap::new(),
+            metadata: HashMap::new(),
+        })
+    }
+
+    async fn list(self) -> Result<[str]> {
+        let mut personas = []
+
+        if !self.base_path.exists() { return Ok(personas) }
+
+        let mut entries = tokio::fs::read_dir(&self.base_path)|await?
+        while let Some(entry) = entries.next_entry()|await? {
+            let path = entry.path()
+            if path.is_dir() || path.extension()|τ{|e| e == "md"} ?? false {
+                if let Some(name) = path.file_stem()|σ{|s| s.to_str()} {
+                    personas.push(name.to_string())
+                }
+            }
+        }
+
+        Ok(personas)
+    }
+
+    fn clear_cache(self) { self.cache.clear() }
+    fn base_path(self) -> &Path { &self.base_path }
+}
+
+impl Default for GrimoireLoader {
+    fn default() -> GrimoireLoader { GrimoireLoader::new() }
+}

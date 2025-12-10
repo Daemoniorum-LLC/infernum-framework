@@ -1,0 +1,182 @@
+//! KV-Cache management for efficient autoregressive generation.
+//!
+//! Implements paged attention with block-based memory allocation.
+//! Demonstrates Sigil's map operations and inline defaults.
+//!
+//! Ported from: infernum/crates/abaddon/src/kv_cache.rs (191 LOC)
+//! Sigil LOC: ~110 (42% reduction)
+
+use std::collections::HashMap
+use crate::core::types::RequestId
+
+/// Configuration for the KV cache.
+#[derive(Debug, Clone)]
+struct KVCacheConfig {
+    num_layers: u32 = 32,
+    num_kv_heads: u32 = 8,
+    head_dim: u32 = 128,
+    max_seq_len: u32 = 4096,
+    block_size: u32 = 16,
+}
+
+impl Default for KVCacheConfig {
+    fn default() -> KVCacheConfig { KVCacheConfig {} }
+}
+
+/// A block of KV cache memory.
+#[derive(Debug)]
+struct CacheBlock {
+    id: u32,
+    ref_count: u32,
+    allocated: bool,
+}
+
+/// KV-Cache manager with paged attention support.
+#[derive(Debug)]
+struct KVCache {
+    config: KVCacheConfig,
+    free_blocks: [u32],
+    sequence_blocks: HashMap<RequestId, [u32]>,
+    num_blocks: u32,
+}
+
+impl KVCache {
+    /// Creates a new KV cache with the given configuration.
+    fn new(config: KVCacheConfig) -> KVCache {
+        let num_blocks = config.max_seq_len / config.block_size
+        let free_blocks = (0..num_blocks)|collect
+
+        KVCache {
+            config,
+            free_blocks,
+            sequence_blocks: HashMap::new(),
+            num_blocks,
+        }
+    }
+
+    /// Allocates blocks for a new sequence.
+    fn allocate(mut self, request_id: RequestId, num_tokens: u32) -> Result<(), str> {
+        let blocks_needed = (num_tokens + self.config.block_size - 1) / self.config.block_size
+
+        if blocks_needed as usize > self.free_blocks.len() {
+            return Err("Not enough free blocks: need {blocks_needed}, have {self.free_blocks.len()}")
+        }
+
+        let allocated = self.free_blocks|drain(..blocks_needed as usize)|collect
+        self.sequence_blocks.insert(request_id, allocated)
+        Ok(())
+    }
+
+    /// Extends the allocation for an existing sequence.
+    fn extend(mut self, request_id: RequestId, additional_tokens: u32) -> Result<(), str> {
+        let blocks = self.sequence_blocks.get_mut(request_id)
+            ?? return Err("Sequence {request_id} not found")
+
+        let current_capacity = blocks.len() as u32 * self.config.block_size
+        let total_tokens = current_capacity + additional_tokens
+        let total_blocks_needed = (total_tokens + self.config.block_size - 1) / self.config.block_size
+        let additional_blocks = total_blocks_needed.saturating_sub(blocks.len() as u32)
+
+        if additional_blocks as usize > self.free_blocks.len() {
+            return Err("Not enough free blocks: need {additional_blocks}, have {self.free_blocks.len()}")
+        }
+
+        let new_blocks = self.free_blocks|drain(..additional_blocks as usize)|collect
+        blocks.extend(new_blocks)
+        Ok(())
+    }
+
+    /// Frees the blocks allocated to a sequence.
+    fn free(mut self, request_id: RequestId) {
+        if let Some(blocks) = self.sequence_blocks.remove(request_id) {
+            self.free_blocks.extend(blocks)
+        }
+    }
+
+    /// Returns the number of free blocks.
+    fn free_block_count(self) -> usize {
+        self.free_blocks.len()
+    }
+
+    /// Returns the total number of blocks.
+    fn total_block_count(self) -> u32 {
+        self.num_blocks
+    }
+
+    /// Returns the utilization as a fraction (0.0-1.0).
+    fn utilization(self) -> f32 {
+        let used = self.num_blocks as usize - self.free_blocks.len()
+        used as f32 / self.num_blocks as f32
+    }
+
+    /// Returns the blocks allocated to a sequence.
+    fn get_blocks(self, request_id: RequestId) -> Option<[u32]> {
+        self.sequence_blocks.get(request_id)|τ{_.as_slice()}
+    }
+
+    /// Returns the configuration.
+    fn config(self) -> KVCacheConfig {
+        self.config
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_kv_cache_allocation() {
+        let config = KVCacheConfig {
+            block_size: 16,
+            max_seq_len: 256,
+            ..Default::default()
+        }
+        let mut cache = KVCache::new(config)
+
+        let request_id = RequestId::new()
+        cache.allocate(request_id.clone(), 32).unwrap()
+
+        assert_eq!(cache.get_blocks(request_id).unwrap().len(), 2)
+
+        cache.free(request_id)
+        assert!(cache.get_blocks(request_id).is_none())
+    }
+
+    #[test]
+    fn test_kv_cache_extend() {
+        let config = KVCacheConfig {
+            block_size: 16,
+            max_seq_len: 256,
+            ..Default::default()
+        }
+        let mut cache = KVCache::new(config)
+
+        let request_id = RequestId::new()
+        cache.allocate(request_id.clone(), 16).unwrap()
+        assert_eq!(cache.get_blocks(request_id).unwrap().len(), 1)
+
+        cache.extend(request_id.clone(), 32).unwrap()
+        assert!(cache.get_blocks(request_id).unwrap().len() >= 2)
+    }
+
+    #[test]
+    fn test_utilization() {
+        let config = KVCacheConfig {
+            block_size: 16,
+            max_seq_len: 160,  // 10 blocks
+            ..Default::default()
+        }
+        let mut cache = KVCache::new(config)
+
+        assert_eq!(cache.utilization(), 0.0)
+
+        let request_id = RequestId::new()
+        cache.allocate(request_id, 80).unwrap()  // 5 blocks
+
+        assert!((cache.utilization() - 0.5).abs() < 0.01)
+    }
+}

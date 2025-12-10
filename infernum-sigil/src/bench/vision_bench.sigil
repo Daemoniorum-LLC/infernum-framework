@@ -1,0 +1,408 @@
+/// Vision Module Benchmarks
+///
+/// Benchmarks for image preprocessing, ViT, and VLM inference.
+
+use crate::bench::config::{BenchmarkMeta, BenchmarkCategory}
+use crate::bench::runner::{Benchmark, black_box}
+use crate::core::error::Result
+
+// ============================================================================
+// Image Preprocessing
+// ============================================================================
+
+/// Image resize benchmark
+pub struct ImageResizeBench {
+    src_size: (u32, u32),
+    dst_size: (u32, u32),
+    data: Vec<f32>,
+}
+
+impl ImageResizeBench {
+    pub fn new(src: (u32, u32), dst: (u32, u32)) -> Self {
+        Self {
+            src_size: src,
+            dst_size: dst,
+            data: Vec::new(),
+        }
+    }
+
+    pub fn upscale() -> Self {
+        Self::new((256, 256), (512, 512))
+    }
+
+    pub fn downscale() -> Self {
+        Self::new((1024, 1024), (224, 224))
+    }
+
+    pub fn standard() -> Self {
+        Self::new((512, 512), (224, 224))
+    }
+}
+
+impl Benchmark for ImageResizeBench {
+    fn meta(&self) -> BenchmarkMeta {
+        BenchmarkMeta::new(
+            &format!("image_resize_{}x{}_to_{}x{}",
+                self.src_size.0, self.src_size.1,
+                self.dst_size.0, self.dst_size.1),
+            BenchmarkCategory::Vision,
+        )
+        .description("Bilinear image resize")
+        .tag("preprocessing")
+        .tag("image")
+    }
+
+    fn setup(&mut self) -> Result<()!> {
+        let size = (self.src_size.0 * self.src_size.1 * 3) as usize
+        self.data = (0..size).map(|i| (i as f32 / 255.0)).collect()
+        Ok(())
+    }
+
+    fn run(&mut self) -> Result<()!> {
+        // Bilinear interpolation
+        let (sw, sh) = self.src_size
+        let (dw, dh) = self.dst_size
+        let mut result = vec![0.0f32; (dw * dh * 3) as usize]
+
+        let scale_x = sw as f32 / dw as f32
+        let scale_y = sh as f32 / dh as f32
+
+        for y in 0..dh {
+            for x in 0..dw {
+                let src_x = x as f32 * scale_x
+                let src_y = y as f32 * scale_y
+
+                let x0 = src_x.floor() as u32
+                let y0 = src_y.floor() as u32
+                let x1 = (x0 + 1).min(sw - 1)
+                let y1 = (y0 + 1).min(sh - 1)
+
+                let fx = src_x - x0 as f32
+                let fy = src_y - y0 as f32
+
+                for c in 0..3u32 {
+                    let v00 = self.data[((y0 * sw + x0) * 3 + c) as usize]
+                    let v01 = self.data[((y0 * sw + x1) * 3 + c) as usize]
+                    let v10 = self.data[((y1 * sw + x0) * 3 + c) as usize]
+                    let v11 = self.data[((y1 * sw + x1) * 3 + c) as usize]
+
+                    let v = v00 * (1.0 - fx) * (1.0 - fy)
+                        + v01 * fx * (1.0 - fy)
+                        + v10 * (1.0 - fx) * fy
+                        + v11 * fx * fy
+
+                    result[((y * dw + x) * 3 + c) as usize] = v
+                }
+            }
+        }
+
+        black_box(&result);
+        Ok(())
+    }
+}
+
+/// Image normalization benchmark
+pub struct ImageNormalizeBench {
+    size: (u32, u32),
+    data: Vec<f32>,
+}
+
+impl ImageNormalizeBench {
+    pub fn new(size: (u32, u32)) -> Self {
+        Self { size, data: Vec::new() }
+    }
+
+    pub fn small() -> Self {
+        Self::new((224, 224))
+    }
+
+    pub fn medium() -> Self {
+        Self::new((512, 512))
+    }
+
+    pub fn large() -> Self {
+        Self::new((1024, 1024))
+    }
+}
+
+impl Benchmark for ImageNormalizeBench {
+    fn meta(&self) -> BenchmarkMeta {
+        BenchmarkMeta::new(
+            &format!("image_normalize_{}x{}", self.size.0, self.size.1),
+            BenchmarkCategory::Vision,
+        )
+        .description("ImageNet normalization")
+        .tag("preprocessing")
+        .tag("normalize")
+    }
+
+    fn setup(&mut self) -> Result<()!> {
+        let size = (self.size.0 * self.size.1 * 3) as usize
+        self.data = (0..size).map(|i| (i as f32 % 256.0) / 255.0).collect()
+        Ok(())
+    }
+
+    fn run(&mut self) -> Result<()!> {
+        // ImageNet normalization
+        let mean = [0.485f32, 0.456, 0.406]
+        let std = [0.229f32, 0.224, 0.225]
+
+        let mut result = self.data.clone()
+
+        for y in 0..self.size.1 {
+            for x in 0..self.size.0 {
+                for c in 0..3 {
+                    let idx = ((y * self.size.0 + x) * 3 + c) as usize
+                    result[idx] = (result[idx] - mean[c as usize]) / std[c as usize]
+                }
+            }
+        }
+
+        black_box(&result);
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Patch Embedding
+// ============================================================================
+
+/// Patch embedding benchmark
+pub struct PatchEmbedBench {
+    image_size: u32,
+    patch_size: u32,
+    embed_dim: u32,
+    data: Vec<f32>,
+    weights: Vec<f32>,
+}
+
+impl PatchEmbedBench {
+    pub fn new(image_size: u32, patch_size: u32, embed_dim: u32) -> Self {
+        Self {
+            image_size,
+            patch_size,
+            embed_dim,
+            data: Vec::new(),
+            weights: Vec::new(),
+        }
+    }
+
+    pub fn vit_b() -> Self {
+        Self::new(224, 16, 768)
+    }
+
+    pub fn vit_l() -> Self {
+        Self::new(224, 16, 1024)
+    }
+
+    pub fn clip() -> Self {
+        Self::new(336, 14, 1024)
+    }
+}
+
+impl Benchmark for PatchEmbedBench {
+    fn meta(&self) -> BenchmarkMeta {
+        let name = if self.embed_dim == 768 { "vit_b" }
+            else if self.embed_dim == 1024 && self.patch_size == 16 { "vit_l" }
+            else { "clip" }
+
+        BenchmarkMeta::new(
+            &format!("patch_embed_{}", name),
+            BenchmarkCategory::Vision,
+        )
+        .description(&format!("Patch embed {}x{} -> {}", self.patch_size, self.patch_size, self.embed_dim))
+        .tag("embedding")
+        .tag("vit")
+    }
+
+    fn setup(&mut self) -> Result<()!> {
+        let img_size = (self.image_size * self.image_size * 3) as usize
+        self.data = (0..img_size).map(|i| (i as f32 * 0.01).sin()).collect()
+
+        let weight_size = (3 * self.patch_size * self.patch_size * self.embed_dim) as usize
+        self.weights = (0..weight_size).map(|i| (i as f32 * 0.001).cos()).collect()
+        Ok(())
+    }
+
+    fn run(&mut self) -> Result<()!> {
+        let num_patches = self.image_size / self.patch_size
+        let num_total_patches = num_patches * num_patches
+        let patch_area = (self.patch_size * self.patch_size) as usize
+        let in_channels = 3usize
+
+        let mut result = vec![0.0f32; (num_total_patches * self.embed_dim) as usize]
+
+        // Simulate conv2d with kernel_size=patch_size, stride=patch_size
+        for py in 0..num_patches {
+            for px in 0..num_patches {
+                let patch_idx = (py * num_patches + px) as usize
+
+                for d in 0..self.embed_dim {
+                    let mut sum = 0.0f32
+
+                    for c in 0..in_channels {
+                        for ky in 0..self.patch_size {
+                            for kx in 0..self.patch_size {
+                                let iy = py * self.patch_size + ky
+                                let ix = px * self.patch_size + kx
+                                let img_idx = ((iy * self.image_size + ix) * 3 + c as u32) as usize
+
+                                let w_idx = (c * patch_area + (ky * self.patch_size + kx) as usize)
+                                    * self.embed_dim as usize + d as usize
+
+                                sum += self.data[img_idx] * self.weights[w_idx]
+                            }
+                        }
+                    }
+
+                    result[patch_idx * self.embed_dim as usize + d as usize] = sum
+                }
+            }
+        }
+
+        black_box(&result);
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Attention
+// ============================================================================
+
+/// Vision attention benchmark
+pub struct VisionAttentionBench {
+    num_patches: u32,
+    num_heads: u32,
+    head_dim: u32,
+    q: Vec<f32>,
+    k: Vec<f32>,
+    v: Vec<f32>,
+}
+
+impl VisionAttentionBench {
+    pub fn new(num_patches: u32, num_heads: u32, head_dim: u32) -> Self {
+        Self {
+            num_patches,
+            num_heads,
+            head_dim,
+            q: Vec::new(),
+            k: Vec::new(),
+            v: Vec::new(),
+        }
+    }
+
+    pub fn vit_b() -> Self {
+        Self::new(196, 12, 64)  // 224/16 = 14, 14*14 = 196
+    }
+
+    pub fn vit_l() -> Self {
+        Self::new(196, 16, 64)
+    }
+
+    pub fn clip_large() -> Self {
+        Self::new(576, 16, 64)  // 336/14 = 24, 24*24 = 576
+    }
+}
+
+impl Benchmark for VisionAttentionBench {
+    fn meta(&self) -> BenchmarkMeta {
+        let name = if self.num_patches == 196 && self.num_heads == 12 { "vit_b" }
+            else if self.num_patches == 196 { "vit_l" }
+            else { "clip_large" }
+
+        BenchmarkMeta::new(
+            &format!("vision_attention_{}", name),
+            BenchmarkCategory::Vision,
+        )
+        .description(&format!("Self-attention {} patches, {} heads", self.num_patches, self.num_heads))
+        .tag("attention")
+        .tag("vit")
+    }
+
+    fn setup(&mut self) -> Result<()!> {
+        let size = (self.num_patches * self.num_heads * self.head_dim) as usize
+        self.q = (0..size).map(|i| (i as f32 * 0.01).sin()).collect()
+        self.k = (0..size).map(|i| (i as f32 * 0.01).cos()).collect()
+        self.v = (0..size).map(|i| (i as f32 * 0.02).sin()).collect()
+        Ok(())
+    }
+
+    fn run(&mut self) -> Result<()!> {
+        let scale = 1.0 / (self.head_dim as f32).sqrt()
+        let seq = self.num_patches as usize
+        let h = self.num_heads as usize
+        let d = self.head_dim as usize
+
+        let mut output = vec![0.0f32; seq * h * d]
+
+        for head in 0..h {
+            // Compute attention scores
+            let mut scores = vec![0.0f32; seq * seq]
+
+            for i in 0..seq {
+                for j in 0..seq {
+                    let mut dot = 0.0f32
+                    for k in 0..d {
+                        let q_idx = i * h * d + head * d + k
+                        let k_idx = j * h * d + head * d + k
+                        dot += self.q[q_idx] * self.k[k_idx]
+                    }
+                    scores[i * seq + j] = dot * scale
+                }
+            }
+
+            // Softmax
+            for i in 0..seq {
+                let row_start = i * seq
+                let max = scores[row_start..row_start + seq].iter().cloned()
+                    .fold(f32::NEG_INFINITY, f32::max)
+
+                let mut sum = 0.0f32
+                for j in 0..seq {
+                    scores[row_start + j] = (scores[row_start + j] - max).exp()
+                    sum += scores[row_start + j]
+                }
+                for j in 0..seq {
+                    scores[row_start + j] /= sum
+                }
+            }
+
+            // Apply to values
+            for i in 0..seq {
+                for k in 0..d {
+                    let mut sum = 0.0f32
+                    for j in 0..seq {
+                        let v_idx = j * h * d + head * d + k
+                        sum += scores[i * seq + j] * self.v[v_idx]
+                    }
+                    output[i * h * d + head * d + k] = sum
+                }
+            }
+        }
+
+        black_box(&output);
+        Ok(())
+    }
+}
+
+// ============================================================================
+// All Vision Benchmarks
+// ============================================================================
+
+pub fn all_vision_benchmarks() -> Vec<Box<dyn Benchmark>> {
+    vec![
+        // Image preprocessing
+        Box::new(ImageResizeBench::standard()),
+        Box::new(ImageResizeBench::downscale()),
+        Box::new(ImageNormalizeBench::small()),
+        Box::new(ImageNormalizeBench::medium()),
+
+        // Patch embedding
+        Box::new(PatchEmbedBench::vit_b()),
+        Box::new(PatchEmbedBench::clip()),
+
+        // Attention
+        Box::new(VisionAttentionBench::vit_b()),
+        Box::new(VisionAttentionBench::clip_large()),
+    ]
+}

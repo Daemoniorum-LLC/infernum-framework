@@ -1,0 +1,888 @@
+/// Temporal Attention and Motion Modules
+///
+/// Implements temporal modeling components for video diffusion:
+/// - Temporal attention layers
+/// - Motion modules (AnimateDiff-style)
+/// - Temporal transformer blocks
+/// - Positional encodings for time
+
+use crate::core::error::{InfernumError, Result}
+use crate::abaddon::backend::{Tensor, TensorOps, ComputeBackend}
+use crate::video::types::{TemporalConfig, TemporalPositionType}
+
+// ============================================================================
+// Temporal Attention Configuration
+// ============================================================================
+
+/// Configuration for temporal attention
+pub struct TemporalAttentionConfig {
+    /// Hidden dimension
+    pub dim: u32,
+    /// Number of attention heads
+    pub num_heads: u32,
+    /// Head dimension (dim / num_heads if not specified)
+    pub head_dim: Option<u32>,
+    /// Dropout rate
+    pub dropout: f32,
+    /// Use causal (autoregressive) attention
+    pub causal: bool,
+    /// Positional encoding type
+    pub pos_encoding: TemporalPositionType,
+    /// Maximum sequence length
+    pub max_seq_len: u32,
+    /// Use rotary embeddings
+    pub use_rope: bool,
+    /// Use flash attention
+    pub use_flash_attn: bool,
+}
+
+impl TemporalAttentionConfig {
+    pub fn default(dim: u32) -> Self {
+        Self {
+            dim,
+            num_heads: 8,
+            head_dim: None,
+            dropout: 0.0,
+            causal: false,
+            pos_encoding: TemporalPositionType::Sinusoidal,
+            max_seq_len: 128,
+            use_rope: false,
+            use_flash_attn: true,
+        }
+    }
+
+    /// SVD-style causal attention
+    pub fn svd(dim: u32) -> Self {
+        Self {
+            dim,
+            num_heads: 8,
+            head_dim: None,
+            dropout: 0.0,
+            causal: true,
+            pos_encoding: TemporalPositionType::Learned,
+            max_seq_len: 25,
+            use_rope: false,
+            use_flash_attn: true,
+        }
+    }
+
+    /// AnimateDiff-style bidirectional
+    pub fn animatediff(dim: u32) -> Self {
+        Self {
+            dim,
+            num_heads: 8,
+            head_dim: None,
+            dropout: 0.0,
+            causal: false,
+            pos_encoding: TemporalPositionType::Sinusoidal,
+            max_seq_len: 32,
+            use_rope: false,
+            use_flash_attn: true,
+        }
+    }
+
+    fn head_dim(&self) -> u32 {
+        self.head_dim.unwrap_or(self.dim / self.num_heads)
+    }
+}
+
+// ============================================================================
+// Temporal Attention
+// ============================================================================
+
+/// Temporal self-attention layer
+pub struct TemporalAttention<B: ComputeBackend> {
+    /// Configuration
+    config: TemporalAttentionConfig,
+    /// Query projection
+    to_q: Linear<B>,
+    /// Key projection
+    to_k: Linear<B>,
+    /// Value projection
+    to_v: Linear<B>,
+    /// Output projection
+    to_out: Linear<B>,
+    /// Layer normalization
+    norm: LayerNorm<B>,
+    /// Positional encoding
+    pos_embed: PositionalEncoding<B>,
+    /// Causal mask (precomputed)
+    causal_mask: Option<Tensor<B>>,
+}
+
+impl<B: ComputeBackend> TemporalAttention<B> {
+    /// Create new temporal attention layer
+    pub fn new(config: TemporalAttentionConfig, backend: B) -> Result<Self> {
+        let dim = config.dim
+        let inner_dim = config.num_heads * config.head_dim()
+
+        let to_q = Linear::new(dim, inner_dim, false, backend.clone())?
+        let to_k = Linear::new(dim, inner_dim, false, backend.clone())?
+        let to_v = Linear::new(dim, inner_dim, false, backend.clone())?
+        let to_out = Linear::new(inner_dim, dim, true, backend.clone())?
+        let norm = LayerNorm::new(dim, backend.clone())?
+
+        let pos_embed = PositionalEncoding::new(
+            config.pos_encoding.clone(),
+            config.head_dim(),
+            config.max_seq_len,
+            backend.clone(),
+        )?
+
+        let causal_mask = if config.causal {
+            Some(create_causal_mask(config.max_seq_len, &backend)?)
+        } else {
+            None
+        }
+
+        Ok(Self {
+            config,
+            to_q,
+            to_k,
+            to_v,
+            to_out,
+            norm,
+            pos_embed,
+            causal_mask,
+        })
+    }
+
+    /// Forward pass
+    /// Input: [batch, frames, height*width, dim]
+    /// Output: [batch, frames, height*width, dim]
+    pub fn forward(&self, x: &Tensor<B>, frame_indices: Option<&Tensor<B>>) -> Result<Tensor<B>!> {
+        let residual = x.clone()
+        let x! = self.norm.forward(x)?
+
+        let (batch, frames, spatial, dim) = x.shape4()
+        let head_dim = self.config.head_dim()
+        let num_heads = self.config.num_heads
+
+        // Rearrange: [batch * spatial, frames, dim]
+        let x = x.permute([0, 2, 1, 3])?.reshape([batch * spatial, frames, dim])?
+
+        // Project Q, K, V
+        let q! = self.to_q.forward(&x)?
+        let k! = self.to_k.forward(&x)?
+        let v! = self.to_v.forward(&x)?
+
+        // Reshape for multi-head attention: [batch * spatial, num_heads, frames, head_dim]
+        let q = q.reshape([batch * spatial, frames, num_heads, head_dim])?.permute([0, 2, 1, 3])?
+        let k = k.reshape([batch * spatial, frames, num_heads, head_dim])?.permute([0, 2, 1, 3])?
+        let v = v.reshape([batch * spatial, frames, num_heads, head_dim])?.permute([0, 2, 1, 3])?
+
+        // Add positional encoding
+        let (q!, k!) = self.pos_embed.apply(&q, &k, frame_indices)?
+
+        // Compute attention
+        let attn_out! = if self.config.use_flash_attn {
+            flash_attention(&q, &k, &v, self.causal_mask.as_ref())?
+        } else {
+            scaled_dot_product_attention(&q, &k, &v, self.causal_mask.as_ref())?
+        }
+
+        // Reshape back: [batch * spatial, frames, inner_dim]
+        let attn_out = attn_out.permute([0, 2, 1, 3])?.reshape([batch * spatial, frames, num_heads * head_dim])?
+
+        // Output projection
+        let out! = self.to_out.forward(&attn_out)?
+
+        // Reshape to original: [batch, frames, spatial, dim]
+        let out = out.reshape([batch, spatial, frames, dim])?.permute([0, 2, 1, 3])?
+
+        // Residual connection
+        Ok(out + residual)
+    }
+
+    pub fn load_state_dict(&mut self, state_dict: &Map<str, Tensor<B>>, prefix: &str) -> Result<()> {
+        self.to_q.load_state_dict(state_dict, &format!("{}.to_q", prefix))?
+        self.to_k.load_state_dict(state_dict, &format!("{}.to_k", prefix))?
+        self.to_v.load_state_dict(state_dict, &format!("{}.to_v", prefix))?
+        self.to_out.load_state_dict(state_dict, &format!("{}.to_out.0", prefix))?
+        self.norm.load_state_dict(state_dict, &format!("{}.norm", prefix))?
+        self.pos_embed.load_state_dict(state_dict, &format!("{}.pos_embed", prefix))?
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Motion Module (AnimateDiff-style)
+// ============================================================================
+
+/// Motion module configuration
+pub struct MotionModuleConfig {
+    /// Hidden dimension
+    pub dim: u32,
+    /// Number of temporal attention layers
+    pub num_layers: u32,
+    /// Attention config
+    pub attn_config: TemporalAttentionConfig,
+    /// Use zero initialization for output
+    pub zero_init: bool,
+}
+
+impl MotionModuleConfig {
+    pub fn default(dim: u32) -> Self {
+        Self {
+            dim,
+            num_layers: 2,
+            attn_config: TemporalAttentionConfig::animatediff(dim),
+            zero_init: true,
+        }
+    }
+
+    pub fn v2(dim: u32) -> Self {
+        Self {
+            dim,
+            num_layers: 2,
+            attn_config: TemporalAttentionConfig {
+                use_rope: true,
+                ..TemporalAttentionConfig::animatediff(dim)
+            },
+            zero_init: true,
+        }
+    }
+}
+
+/// Motion module for AnimateDiff
+pub struct MotionModule<B: ComputeBackend> {
+    /// Configuration
+    config: MotionModuleConfig,
+    /// Temporal attention layers
+    temporal_attn_layers: Vec<TemporalTransformerBlock<B>>,
+    /// Scale factor (for zero-init)
+    scale: f32,
+}
+
+impl<B: ComputeBackend> MotionModule<B> {
+    /// Create new motion module
+    pub fn new(config: MotionModuleConfig, backend: B) -> Result<Self> {
+        let temporal_attn_layers: Vec<TemporalTransformerBlock<B>> = (0..config.num_layers)
+            τ{ |_| TemporalTransformerBlock::new(
+                config.dim,
+                config.attn_config.clone(),
+                backend.clone(),
+            )}
+            .collect::<Result<_>>()?
+
+        let scale = if config.zero_init { 0.0 } else { 1.0 }
+
+        Ok(Self {
+            config,
+            temporal_attn_layers,
+            scale,
+        })
+    }
+
+    /// Forward pass
+    /// Input: [batch, channels, frames, height, width]
+    /// Output: [batch, channels, frames, height, width]
+    pub fn forward(&self, x: &Tensor<B>) -> Result<Tensor<B>!> {
+        let (batch, channels, frames, height, width) = x.shape5()
+
+        // Rearrange to [batch, frames, height*width, channels]
+        let x = x.permute([0, 2, 3, 4, 1])?.reshape([batch, frames, height * width, channels])?
+
+        let mut h! = x.clone()
+
+        for layer in self.temporal_attn_layers.iter() {
+            h = layer.forward(&h, None)?
+        }
+
+        // Apply scale (for zero-init training)
+        let h = h * self.scale
+
+        // Residual connection in spatial arrangement
+        let h = h + x
+
+        // Rearrange back to [batch, channels, frames, height, width]
+        let h = h.reshape([batch, frames, height, width, channels])?.permute([0, 4, 1, 2, 3])?
+
+        Ok(h)
+    }
+
+    /// Set scale for inference (enable motion after zero-init training)
+    pub fn set_scale(&mut self, scale: f32) {
+        self.scale = scale
+    }
+
+    pub fn load_state_dict(&mut self, state_dict: &Map<str, Tensor<B>>, prefix: &str) -> Result<()> {
+        for (i, layer) in self.temporal_attn_layers.iter_mut().enumerate() {
+            layer.load_state_dict(state_dict, &format!("{}.temporal_transformer.transformer_blocks.{}", prefix, i))?
+        }
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Temporal Transformer Block
+// ============================================================================
+
+/// Temporal transformer block with attention and feedforward
+pub struct TemporalTransformerBlock<B: ComputeBackend> {
+    /// Temporal self-attention
+    attn: TemporalAttention<B>,
+    /// Feedforward network
+    ff: FeedForward<B>,
+    /// Pre-attention norm
+    norm1: LayerNorm<B>,
+    /// Pre-ff norm
+    norm2: LayerNorm<B>,
+}
+
+impl<B: ComputeBackend> TemporalTransformerBlock<B> {
+    pub fn new(dim: u32, attn_config: TemporalAttentionConfig, backend: B) -> Result<Self> {
+        Ok(Self {
+            attn: TemporalAttention::new(attn_config, backend.clone())?,
+            ff: FeedForward::new(dim, dim * 4, backend.clone())?,
+            norm1: LayerNorm::new(dim, backend.clone())?,
+            norm2: LayerNorm::new(dim, backend)?,
+        })
+    }
+
+    pub fn forward(&self, x: &Tensor<B>, frame_indices: Option<&Tensor<B>>) -> Result<Tensor<B>!> {
+        // Pre-norm attention
+        let h! = self.norm1.forward(x)?
+        let h! = self.attn.forward(&h, frame_indices)?
+        let x! = x.clone() + h
+
+        // Pre-norm feedforward
+        let h! = self.norm2.forward(&x)?
+        let h! = self.ff.forward(&h)?
+        Ok(x + h)
+    }
+
+    pub fn load_state_dict(&mut self, state_dict: &Map<str, Tensor<B>>, prefix: &str) -> Result<()> {
+        self.attn.load_state_dict(state_dict, &format!("{}.attn1", prefix))?
+        self.ff.load_state_dict(state_dict, &format!("{}.ff", prefix))?
+        self.norm1.load_state_dict(state_dict, &format!("{}.norm1", prefix))?
+        self.norm2.load_state_dict(state_dict, &format!("{}.norm2", prefix))?
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Positional Encodings
+// ============================================================================
+
+/// Positional encoding for temporal dimension
+pub struct PositionalEncoding<B: ComputeBackend> {
+    /// Encoding type
+    encoding_type: TemporalPositionType,
+    /// Embedding table (for learned)
+    embed_table: Option<Tensor<B>>,
+    /// Sinusoidal frequencies (precomputed)
+    sin_cos: Option<(Tensor<B>, Tensor<B>)>,
+    /// Dimension
+    dim: u32,
+    /// Max sequence length
+    max_len: u32,
+}
+
+impl<B: ComputeBackend> PositionalEncoding<B> {
+    pub fn new(
+        encoding_type: TemporalPositionType,
+        dim: u32,
+        max_len: u32,
+        backend: B,
+    ) -> Result<Self> {
+        let (embed_table, sin_cos) = match &encoding_type {
+            TemporalPositionType::Learned => {
+                let table = backend.randn([max_len, dim])? * 0.02
+                (Some(table), None)
+            },
+            TemporalPositionType::Sinusoidal => {
+                let (sin, cos) = compute_sinusoidal_encoding(dim, max_len, &backend)?
+                (None, Some((sin, cos)))
+            },
+            TemporalPositionType::RoPE => {
+                let (sin, cos) = compute_rope_frequencies(dim, max_len, &backend)?
+                (None, Some((sin, cos)))
+            },
+            TemporalPositionType::Alibi => {
+                // Alibi doesn't use embeddings, uses attention bias
+                (None, None)
+            },
+            TemporalPositionType::None => {
+                (None, None)
+            },
+        }
+
+        Ok(Self {
+            encoding_type,
+            embed_table,
+            sin_cos,
+            dim,
+            max_len,
+        })
+    }
+
+    /// Apply positional encoding to Q and K
+    pub fn apply(
+        &self,
+        q: &Tensor<B>,
+        k: &Tensor<B>,
+        positions: Option<&Tensor<B>>,
+    ) -> Result<(Tensor<B>!, Tensor<B>!)> {
+        match &self.encoding_type {
+            TemporalPositionType::Learned => {
+                let embed = self.embed_table.as_ref().unwrap()
+                let seq_len = q.shape()[2]  // [batch, heads, seq, dim]
+
+                let pos_embed = if let Some(pos) = positions {
+                    embed.index_select(0, pos)?
+                } else {
+                    embed.slice([..seq_len, ..])?
+                }
+
+                // Add to Q and K
+                let pos_embed = pos_embed.unsqueeze(0)?.unsqueeze(0)?  // [1, 1, seq, dim]
+                Ok((q.clone() + pos_embed.clone(), k.clone() + pos_embed))
+            },
+            TemporalPositionType::Sinusoidal => {
+                let (sin, cos) = self.sin_cos.as_ref().unwrap()
+                let seq_len = q.shape()[2]
+
+                let sin = sin.slice([..seq_len, ..])?.unsqueeze(0)?.unsqueeze(0)?
+                let cos = cos.slice([..seq_len, ..])?.unsqueeze(0)?.unsqueeze(0)?
+
+                // Add sinusoidal to Q and K
+                let q_rot = q.clone() * cos.clone() + rotate_half(q)? * sin.clone()
+                let k_rot = k.clone() * cos + rotate_half(k)? * sin
+                Ok((q_rot, k_rot))
+            },
+            TemporalPositionType::RoPE => {
+                let (sin, cos) = self.sin_cos.as_ref().unwrap()
+                let seq_len = q.shape()[2]
+
+                // Apply rotary embeddings
+                let sin = sin.slice([..seq_len, ..])?.unsqueeze(0)?.unsqueeze(0)?
+                let cos = cos.slice([..seq_len, ..])?.unsqueeze(0)?.unsqueeze(0)?
+
+                let q_rot = apply_rotary_emb(q, &cos, &sin)?
+                let k_rot = apply_rotary_emb(k, &cos, &sin)?
+                Ok((q_rot, k_rot))
+            },
+            TemporalPositionType::Alibi | TemporalPositionType::None => {
+                // No modification to Q/K, alibi uses attention bias
+                Ok((q.clone(), k.clone()))
+            },
+        }
+    }
+
+    /// Get alibi attention bias (if using alibi)
+    pub fn get_alibi_bias(&self, seq_len: u32, backend: &B) -> Result<Option<Tensor<B>>> {
+        if matches!(self.encoding_type, TemporalPositionType::Alibi) {
+            let bias = compute_alibi_bias(seq_len, 8, backend)?  // 8 heads default
+            Ok(Some(bias))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn load_state_dict(&mut self, state_dict: &Map<str, Tensor<B>>, prefix: &str) -> Result<()> {
+        if let Some(ref mut table) = self.embed_table {
+            if let Some(w) = state_dict.get(&format!("{}.weight", prefix)) {
+                *table = w.clone()
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 3D Positional encoding (for spatiotemporal)
+pub struct PositionalEncoding3D<B: ComputeBackend> {
+    /// Temporal encoding
+    temporal: PositionalEncoding<B>,
+    /// Spatial encoding (height)
+    spatial_h: PositionalEncoding<B>,
+    /// Spatial encoding (width)
+    spatial_w: PositionalEncoding<B>,
+}
+
+impl<B: ComputeBackend> PositionalEncoding3D<B> {
+    pub fn new(
+        dim: u32,
+        max_t: u32,
+        max_h: u32,
+        max_w: u32,
+        backend: B,
+    ) -> Result<Self> {
+        // Split dimension among t, h, w
+        let t_dim = dim / 3
+        let h_dim = dim / 3
+        let w_dim = dim - t_dim - h_dim
+
+        Ok(Self {
+            temporal: PositionalEncoding::new(
+                TemporalPositionType::Sinusoidal,
+                t_dim,
+                max_t,
+                backend.clone(),
+            )?,
+            spatial_h: PositionalEncoding::new(
+                TemporalPositionType::Sinusoidal,
+                h_dim,
+                max_h,
+                backend.clone(),
+            )?,
+            spatial_w: PositionalEncoding::new(
+                TemporalPositionType::Sinusoidal,
+                w_dim,
+                max_w,
+                backend,
+            )?,
+        })
+    }
+
+    /// Get combined 3D positional encoding
+    pub fn forward(&self, t: u32, h: u32, w: u32, backend: &B) -> Result<Tensor<B>!> {
+        // Create position indices
+        let t_idx = backend.arange(0, t as i64, 1)?
+        let h_idx = backend.arange(0, h as i64, 1)?
+        let w_idx = backend.arange(0, w as i64, 1)?
+
+        // Get embeddings
+        let t_embed = self.temporal.embed_table.as_ref()
+            .map(|e| e.index_select(0, &t_idx))
+            .transpose()?
+            .or_else(|| self.temporal.sin_cos.as_ref().map(|(s, c)| {
+                let sin = s.slice([..t, ..]);
+                let cos = c.slice([..t, ..]);
+                // Combine sin/cos into single embedding
+                sin.map(|s| cos.map(|c| concat(&[&s, &c], -1)))
+            }))
+            .flatten()
+            .ok_or(InfernumError::InvalidState("No temporal embedding"))?
+
+        let h_embed = self.spatial_h.embed_table.as_ref()
+            .map(|e| e.index_select(0, &h_idx))
+            .transpose()?
+            .ok_or(InfernumError::InvalidState("No height embedding"))?
+
+        let w_embed = self.spatial_w.embed_table.as_ref()
+            .map(|e| e.index_select(0, &w_idx))
+            .transpose()?
+            .ok_or(InfernumError::InvalidState("No width embedding"))?
+
+        // Broadcast and combine: [t, h, w, dim]
+        let t_embed = t_embed.unsqueeze(1)?.unsqueeze(1)?  // [t, 1, 1, d_t]
+        let h_embed = h_embed.unsqueeze(0)?.unsqueeze(2)?  // [1, h, 1, d_h]
+        let w_embed = w_embed.unsqueeze(0)?.unsqueeze(0)?  // [1, 1, w, d_w]
+
+        // Broadcast to [t, h, w, d_t/d_h/d_w] and concatenate
+        let t_broadcast = t_embed.expand([t, h, w, -1])?
+        let h_broadcast = h_embed.expand([t, h, w, -1])?
+        let w_broadcast = w_embed.expand([t, h, w, -1])?
+
+        concat(&[&t_broadcast, &h_broadcast, &w_broadcast], -1)
+    }
+}
+
+/// Temporal position embedding (learned, per-frame)
+pub struct TemporalPositionEmbedding<B: ComputeBackend> {
+    /// Embedding table [max_frames, dim]
+    embedding: Tensor<B>,
+    /// Max frames
+    max_frames: u32,
+}
+
+impl<B: ComputeBackend> TemporalPositionEmbedding<B> {
+    pub fn new(dim: u32, max_frames: u32, backend: B) -> Result<Self> {
+        let embedding = backend.randn([max_frames, dim])? * 0.02
+        Ok(Self { embedding, max_frames })
+    }
+
+    /// Get embeddings for frame indices
+    pub fn forward(&self, frame_indices: &Tensor<B>) -> Result<Tensor<B>!> {
+        self.embedding.index_select(0, frame_indices)
+    }
+
+    /// Get embeddings for sequence of frames
+    pub fn forward_seq(&self, num_frames: u32) -> Result<Tensor<B>!> {
+        Ok(self.embedding.slice([..num_frames, ..])?)
+    }
+
+    pub fn load_state_dict(&mut self, state_dict: &Map<str, Tensor<B>>, prefix: &str) -> Result<()> {
+        if let Some(w) = state_dict.get(&format!("{}.weight", prefix)) {
+            self.embedding = w.clone()
+        }
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Compute sinusoidal positional encoding
+fn compute_sinusoidal_encoding<B: ComputeBackend>(
+    dim: u32,
+    max_len: u32,
+    backend: &B,
+) -> Result<(Tensor<B>, Tensor<B>)> {
+    let half_dim = dim / 2
+
+    // Compute frequencies: 10000^(-2i/d)
+    let freqs = backend.arange(0, half_dim as i64, 1)?
+    let freqs = (freqs * (-f32::ln(10000.0) / half_dim as f32)).exp()
+
+    // Position indices
+    let positions = backend.arange(0, max_len as i64, 1)?
+
+    // Outer product: [max_len, half_dim]
+    let angles = positions.unsqueeze(1)? * freqs.unsqueeze(0)?
+
+    let sin = angles.sin()?
+    let cos = angles.cos()?
+
+    // Interleave to get [max_len, dim]
+    let sin = interleave_dim(&sin, &backend.zeros_like(&sin)?, -1)?
+    let cos = interleave_dim(&cos, &backend.zeros_like(&cos)?, -1)?
+
+    Ok((sin, cos))
+}
+
+/// Compute RoPE frequencies
+fn compute_rope_frequencies<B: ComputeBackend>(
+    dim: u32,
+    max_len: u32,
+    backend: &B,
+) -> Result<(Tensor<B>, Tensor<B>)> {
+    let half_dim = dim / 2
+    let theta = 10000.0_f32
+
+    // Frequencies: theta^(-2i/d)
+    let freqs = backend.arange(0, half_dim as i64, 1)?
+    let freqs = (freqs * 2.0 / dim as f32 * -f32::ln(theta)).exp()
+
+    // Position indices
+    let positions = backend.arange(0, max_len as i64, 1)?
+
+    // [max_len, half_dim]
+    let freqs = positions.unsqueeze(1)? * freqs.unsqueeze(0)?
+
+    Ok((freqs.sin()?, freqs.cos()?))
+}
+
+/// Apply rotary embeddings
+fn apply_rotary_emb<B: ComputeBackend>(
+    x: &Tensor<B>,
+    cos: &Tensor<B>,
+    sin: &Tensor<B>,
+) -> Result<Tensor<B>!> {
+    // x: [batch, heads, seq, dim]
+    // cos, sin: [1, 1, seq, dim/2]
+
+    let dim = x.shape()[3] as usize
+    let half_dim = dim / 2
+
+    let x1 = x.slice([.., .., .., ..half_dim])?
+    let x2 = x.slice([.., .., .., half_dim..])?
+
+    // Rotate: (x1, x2) -> (x1 * cos - x2 * sin, x1 * sin + x2 * cos)
+    let rotated_x1 = x1.clone() * cos.clone() - x2.clone() * sin.clone()
+    let rotated_x2 = x1 * sin + x2 * cos
+
+    concat(&[&rotated_x1, &rotated_x2], -1)
+}
+
+/// Rotate half for sinusoidal
+fn rotate_half<B: ComputeBackend>(x: &Tensor<B>) -> Result<Tensor<B>!> {
+    let dim = x.shape()[3] as usize
+    let half_dim = dim / 2
+
+    let x1 = x.slice([.., .., .., ..half_dim])?
+    let x2 = x.slice([.., .., .., half_dim..])?
+
+    concat(&[&(-x2), &x1], -1)
+}
+
+/// Compute alibi attention bias
+fn compute_alibi_bias<B: ComputeBackend>(
+    seq_len: u32,
+    num_heads: u32,
+    backend: &B,
+) -> Result<Tensor<B>!> {
+    // Compute slopes for each head
+    let ratio = 2.0_f32.powf(-(8.0 / num_heads as f32))
+    let slopes: Vec<f32> = (1..=num_heads)
+        .map(|i| ratio.powi(i as i32))
+        .collect()
+
+    let slopes = backend.from_vec(&slopes)?
+    let slopes = slopes.reshape([1, num_heads, 1, 1])?
+
+    // Distance matrix
+    let positions = backend.arange(0, seq_len as i64, 1)?
+    let distances = positions.unsqueeze(0)? - positions.unsqueeze(1)?  // [seq, seq]
+    let distances = distances.unsqueeze(0)?.unsqueeze(0)?  // [1, 1, seq, seq]
+
+    // Alibi bias: slope * distance
+    Ok(slopes * distances)
+}
+
+/// Create causal attention mask
+fn create_causal_mask<B: ComputeBackend>(
+    max_len: u32,
+    backend: &B,
+) -> Result<Tensor<B>!> {
+    let mask = backend.ones([max_len, max_len])?
+    let mask = mask.triu(1)? * f32::NEG_INFINITY
+    Ok(mask)
+}
+
+/// Scaled dot-product attention
+fn scaled_dot_product_attention<B: ComputeBackend>(
+    q: &Tensor<B>,
+    k: &Tensor<B>,
+    v: &Tensor<B>,
+    mask: Option<&Tensor<B>>,
+) -> Result<Tensor<B>!> {
+    let head_dim = q.shape()[3] as f32
+    let scale = head_dim.sqrt()
+
+    // Attention scores: [batch, heads, seq_q, seq_k]
+    let scores! = (q @ k.transpose(-2, -1)?) / scale
+
+    // Apply mask if provided
+    let scores! = if let Some(m) = mask {
+        let seq_len = scores.shape()[2]
+        let m = m.slice([..seq_len, ..seq_len])?
+        scores + m.unsqueeze(0)?.unsqueeze(0)?
+    } else {
+        scores
+    }
+
+    // Softmax and value projection
+    let attn! = scores.softmax(-1)?
+    Ok(attn @ v)
+}
+
+/// Flash attention (placeholder - would use optimized implementation)
+fn flash_attention<B: ComputeBackend>(
+    q: &Tensor<B>,
+    k: &Tensor<B>,
+    v: &Tensor<B>,
+    mask: Option<&Tensor<B>>,
+) -> Result<Tensor<B>!> {
+    // Fall back to standard attention (flash attention impl would go here)
+    scaled_dot_product_attention(q, k, v, mask)
+}
+
+// Helper types
+struct Linear<B: ComputeBackend> {
+    weight: Tensor<B>,
+    bias: Option<Tensor<B>>,
+}
+
+impl<B: ComputeBackend> Linear<B> {
+    fn new(in_features: u32, out_features: u32, use_bias: bool, backend: B) -> Result<Self> {
+        let weight = backend.randn([out_features, in_features])? * (1.0 / (in_features as f32).sqrt())
+        let bias = if use_bias { Some(backend.zeros([out_features])?) } else { None }
+        Ok(Self { weight, bias })
+    }
+
+    fn forward(&self, x: &Tensor<B>) -> Result<Tensor<B>!> {
+        let out = x @ self.weight.transpose(-2, -1)?
+        if let Some(ref b) = self.bias {
+            Ok(out + b)
+        } else {
+            Ok(out)
+        }
+    }
+
+    fn load_state_dict(&mut self, state_dict: &Map<str, Tensor<B>>, prefix: &str) -> Result<()> {
+        if let Some(w) = state_dict.get(&format!("{}.weight", prefix)) {
+            self.weight = w.clone()
+        }
+        if let Some(b) = state_dict.get(&format!("{}.bias", prefix)) {
+            self.bias = Some(b.clone())
+        }
+        Ok(())
+    }
+}
+
+struct LayerNorm<B: ComputeBackend> {
+    weight: Tensor<B>,
+    bias: Tensor<B>,
+    eps: f32,
+}
+
+impl<B: ComputeBackend> LayerNorm<B> {
+    fn new(dim: u32, backend: B) -> Result<Self> {
+        Ok(Self {
+            weight: backend.ones([dim])?,
+            bias: backend.zeros([dim])?,
+            eps: 1e-5,
+        })
+    }
+
+    fn forward(&self, x: &Tensor<B>) -> Result<Tensor<B>!> {
+        let mean = x.mean(-1, true)?
+        let var = x.var(-1, true)?
+        let normalized = (x.clone() - mean) / (var + self.eps).sqrt()
+        Ok(normalized * self.weight.clone() + self.bias.clone())
+    }
+
+    fn load_state_dict(&mut self, state_dict: &Map<str, Tensor<B>>, prefix: &str) -> Result<()> {
+        if let Some(w) = state_dict.get(&format!("{}.weight", prefix)) {
+            self.weight = w.clone()
+        }
+        if let Some(b) = state_dict.get(&format!("{}.bias", prefix)) {
+            self.bias = b.clone()
+        }
+        Ok(())
+    }
+}
+
+struct FeedForward<B: ComputeBackend> {
+    net_0: Linear<B>,
+    net_2: Linear<B>,
+}
+
+impl<B: ComputeBackend> FeedForward<B> {
+    fn new(dim: u32, ff_dim: u32, backend: B) -> Result<Self> {
+        Ok(Self {
+            net_0: Linear::new(dim, ff_dim, true, backend.clone())?,
+            net_2: Linear::new(ff_dim, dim, true, backend)?,
+        })
+    }
+
+    fn forward(&self, x: &Tensor<B>) -> Result<Tensor<B>!> {
+        let h = self.net_0.forward(x)?.gelu()?
+        self.net_2.forward(&h)
+    }
+
+    fn load_state_dict(&mut self, state_dict: &Map<str, Tensor<B>>, prefix: &str) -> Result<()> {
+        self.net_0.load_state_dict(state_dict, &format!("{}.net.0.proj", prefix))?
+        self.net_2.load_state_dict(state_dict, &format!("{}.net.2", prefix))?
+        Ok(())
+    }
+}
+
+fn interleave_dim<B: ComputeBackend>(a: &Tensor<B>, b: &Tensor<B>, dim: i32) -> Result<Tensor<B>!> { unimplemented!() }
+fn concat<B: ComputeBackend>(tensors: &[&Tensor<B>], dim: i32) -> Result<Tensor<B>!> { unimplemented!() }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_temporal_attention_config() {
+        let config = TemporalAttentionConfig::svd(1024)
+        assert!(config.causal)
+        assert_eq!(config.max_seq_len, 25)
+    }
+
+    #[test]
+    fn test_motion_module_config() {
+        let config = MotionModuleConfig::default(320)
+        assert_eq!(config.num_layers, 2)
+        assert!(config.zero_init)
+    }
+}

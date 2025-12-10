@@ -1,0 +1,824 @@
+/// Video Generation Pipelines
+///
+/// High-level pipelines for video generation from text and images.
+/// Supports SVD, AnimateDiff, CogVideoX, Mochi, and more.
+
+use crate::core::error::{InfernumError, Result}
+use crate::abaddon::backend::{Tensor, TensorOps, ComputeBackend}
+use crate::video::types::{
+    VideoTensor, LatentVideo, VideoConfig, VideoOutput, VideoArchitecture,
+    MotionConfig, MotionMetrics, ImageCondition, TextCondition, VideoCondition,
+}
+use crate::video::vae3d::{VAE3D, VAE3DConfig}
+use crate::video::unet3d::{UNet3D, UNet3DConfig, AddedCondKwargs}
+use crate::video::transformer::{VideoTransformer, VideoTransformerConfig}
+use crate::diffusion::scheduler::{NoiseScheduler, FlowMatchScheduler, DDIMScheduler}
+use crate::diffusion::text_encoder::{CLIPTextEncoder, T5Encoder}
+
+// ============================================================================
+// Request Types
+// ============================================================================
+
+/// Video generation request
+pub struct VideoGenerationRequest {
+    /// Text prompt
+    pub prompt~: str,
+    /// Negative prompt
+    pub negative_prompt~: Option<str>,
+    /// Number of frames to generate
+    pub num_frames: Option<u32>,
+    /// Frames per second
+    pub fps: Option<u32>,
+    /// Output width
+    pub width: Option<u32>,
+    /// Output height
+    pub height: Option<u32>,
+    /// Number of inference steps
+    pub num_inference_steps: Option<u32>,
+    /// Guidance scale
+    pub guidance_scale: Option<f32>,
+    /// Random seed
+    pub seed: Option<u64>,
+    /// Progress callback
+    pub progress_callback: Option<fn(VideoProgressInfo)>,
+}
+
+impl VideoGenerationRequest {
+    pub fn new(prompt: str~) -> Self {
+        Self {
+            prompt,
+            negative_prompt: None,
+            num_frames: None,
+            fps: None,
+            width: None,
+            height: None,
+            num_inference_steps: None,
+            guidance_scale: None,
+            seed: None,
+            progress_callback: None,
+        }
+    }
+}
+
+/// Image-to-video request
+pub struct I2VRequest {
+    /// Base video request
+    pub base: VideoGenerationRequest,
+    /// Conditioning image
+    pub image~: Tensor,
+    /// Image noise augmentation strength
+    pub noise_aug_strength: Option<f32>,
+    /// Motion bucket ID (for SVD)
+    pub motion_bucket_id: Option<u32>,
+}
+
+/// Text-to-video request
+pub struct T2VRequest {
+    /// Base video request
+    pub base: VideoGenerationRequest,
+    /// Motion strength
+    pub motion_strength: Option<f32>,
+}
+
+/// Video extension request
+pub struct VideoExtensionRequest {
+    /// Base video request
+    pub base: VideoGenerationRequest,
+    /// Source video to extend
+    pub source_video~: VideoTensor,
+    /// Number of frames to add
+    pub extend_frames: u32,
+    /// Overlap frames for consistency
+    pub overlap_frames: Option<u32>,
+}
+
+/// Generation output
+pub struct VideoGenerationOutput<B: ComputeBackend> {
+    /// Generated video
+    pub video: VideoOutput<B>,
+    /// Generation parameters used
+    pub params: VideoGenerationParams,
+}
+
+/// Generation parameters
+pub struct VideoGenerationParams {
+    pub num_frames: u32,
+    pub fps: u32,
+    pub width: u32,
+    pub height: u32,
+    pub num_steps: u32,
+    pub guidance_scale: f32,
+    pub seed: u64,
+}
+
+/// Progress information
+pub struct VideoProgressInfo {
+    pub step: u32,
+    pub total_steps: u32,
+    pub frame: Option<u32>,
+    pub total_frames: Option<u32>,
+}
+
+// ============================================================================
+// Video Diffusion Pipeline Trait
+// ============================================================================
+
+/// Trait for video diffusion pipelines
+pub trait VideoDiffusionPipeline<B: ComputeBackend> {
+    /// Generate video from text
+    async fn generate_t2v(&self, request: T2VRequest) -> Result<VideoGenerationOutput<B>>
+
+    /// Generate video from image
+    async fn generate_i2v(&self, request: I2VRequest) -> Result<VideoGenerationOutput<B>>
+
+    /// Extend existing video
+    async fn extend(&self, request: VideoExtensionRequest) -> Result<VideoGenerationOutput<B>>
+
+    /// Get supported features
+    fn supports_t2v(&self) -> bool
+    fn supports_i2v(&self) -> bool
+    fn supports_extension(&self) -> bool
+}
+
+// ============================================================================
+// Stable Video Diffusion Pipeline
+// ============================================================================
+
+/// Stable Video Diffusion pipeline (Image-to-Video)
+pub struct StableVideoDiffusionPipeline<B: ComputeBackend> {
+    /// VAE for encoding/decoding
+    vae: VAE3D<B>,
+    /// UNet for denoising
+    unet: UNet3D<B>,
+    /// CLIP image encoder
+    image_encoder: CLIPImageEncoder<B>,
+    /// Scheduler
+    scheduler: DDIMScheduler<B>,
+    /// Feature extractor config
+    video_config: VideoConfig,
+    /// Backend
+    backend: B,
+}
+
+impl<B: ComputeBackend> StableVideoDiffusionPipeline<B> {
+    /// Create new SVD pipeline
+    pub fn new(
+        vae: VAE3D<B>,
+        unet: UNet3D<B>,
+        image_encoder: CLIPImageEncoder<B>,
+        scheduler: DDIMScheduler<B>,
+        video_config: VideoConfig,
+        backend: B,
+    ) -> Self {
+        Self { vae, unet, image_encoder, scheduler, video_config, backend }
+    }
+
+    /// Load from pretrained
+    pub async fn from_pretrained(path: str~, backend: B) -> Result<Self> {
+        let vae = VAE3D::load(&format!("{}/vae", path~), VAE3DConfig::svd(), backend.clone())?
+        let unet = UNet3D::load(&format!("{}/unet", path~), UNet3DConfig::svd(), backend.clone())?
+        let image_encoder = CLIPImageEncoder::load(&format!("{}/image_encoder", path~), backend.clone())?
+        let scheduler = DDIMScheduler::new(1000, backend.clone())?
+
+        Ok(Self::new(vae, unet, image_encoder, scheduler, VideoConfig::svd(), backend))
+    }
+
+    /// Generate video from image
+    pub async fn generate(
+        &self,
+        image~: &Tensor<B>,
+        request: I2VRequest,
+    ) -> Result<VideoGenerationOutput<B>!> {
+        let num_frames = request.base.num_frames.unwrap_or(self.video_config.num_frames)
+        let fps = request.base.fps.unwrap_or(self.video_config.fps)
+        let width = request.base.width.unwrap_or(self.video_config.width)
+        let height = request.base.height.unwrap_or(self.video_config.height)
+        let num_steps = request.base.num_inference_steps.unwrap_or(25)
+        let guidance_scale = request.base.guidance_scale.unwrap_or(3.0)
+        let seed = request.base.seed.unwrap_or(rand::random())
+        let noise_aug = request.noise_aug_strength.unwrap_or(0.02)
+        let motion_bucket_id = request.motion_bucket_id.unwrap_or(127)
+
+        // Set random seed
+        self.backend.set_seed(seed)?
+
+        // Encode conditioning image
+        let image_embeddings! = self.image_encoder.forward(image~)?
+
+        // Add noise augmentation
+        let noise = self.backend.randn_like(image~)? * noise_aug
+        let noisy_image! = image~.clone() + noise
+        let image_latents! = self.vae.encode(&noisy_image.unsqueeze(1)?)?.mode()
+
+        // Repeat for all frames
+        let image_latents = image_latents.repeat([1, 1, num_frames, 1, 1])?
+
+        // Initialize random latents
+        let latent_h = height / self.video_config.spatial_downsample
+        let latent_w = width / self.video_config.spatial_downsample
+        let latents! = self.backend.randn([
+            1,
+            self.video_config.latent_channels,
+            num_frames,
+            latent_h,
+            latent_w,
+        ])?
+
+        // Concatenate image latents with noise latents for conditioning
+        let latents = concat_latents(&latents, &image_latents)?
+
+        // Set scheduler timesteps
+        self.scheduler.set_timesteps(num_steps)?
+
+        // Denoising loop
+        let mut latents = latents
+        for (i, timestep) in self.scheduler.timesteps().iter().enumerate() {
+            // Prepare added conditions
+            let added_cond = AddedCondKwargs {
+                fps: Some(fps),
+                motion_bucket_id: Some(motion_bucket_id),
+                noise_aug_strength: Some(noise_aug),
+                text_embeds: None,
+                time_ids: None,
+            }
+
+            // Classifier-free guidance
+            let latent_input = if guidance_scale > 1.0 {
+                concat_batch(&latents, &latents)?  // Double for CFG
+            } else {
+                latents.clone()
+            }
+
+            // Predict noise
+            let noise_pred! = self.unet.forward(
+                &latent_input,
+                *timestep,
+                &image_embeddings,
+                Some(&added_cond),
+            )?
+
+            // Apply CFG
+            let noise_pred! = if guidance_scale > 1.0 {
+                let (uncond, cond) = noise_pred.chunk(2, 0)?
+                uncond.clone() + guidance_scale * (cond - uncond)
+            } else {
+                noise_pred
+            }
+
+            // Scheduler step
+            latents = self.scheduler.step(&noise_pred, *timestep, &latents)?
+
+            // Progress callback
+            if let Some(callback) = &request.base.progress_callback {
+                callback(VideoProgressInfo {
+                    step: i as u32,
+                    total_steps: num_steps,
+                    frame: None,
+                    total_frames: Some(num_frames),
+                })
+            }
+        }
+
+        // Decode latents to video
+        let frames! = self.vae.decode(&latents)?
+
+        // Create output
+        let video = VideoOutput {
+            frames,
+            latents,
+            seed,
+            timestamps: (0..num_frames).map(|i| i as f32 / fps as f32).collect(),
+            motion_metrics: None,
+        }
+
+        Ok(VideoGenerationOutput {
+            video,
+            params: VideoGenerationParams {
+                num_frames,
+                fps,
+                width,
+                height,
+                num_steps,
+                guidance_scale,
+                seed,
+            },
+        })
+    }
+}
+
+impl<B: ComputeBackend> VideoDiffusionPipeline<B> for StableVideoDiffusionPipeline<B> {
+    async fn generate_t2v(&self, _request: T2VRequest) -> Result<VideoGenerationOutput<B>> {
+        Err(InfernumError::Unsupported("SVD does not support text-to-video"))
+    }
+
+    async fn generate_i2v(&self, request: I2VRequest) -> Result<VideoGenerationOutput<B>> {
+        self.generate(&request.image, request).await
+    }
+
+    async fn extend(&self, _request: VideoExtensionRequest) -> Result<VideoGenerationOutput<B>> {
+        Err(InfernumError::Unsupported("SVD extension not yet implemented"))
+    }
+
+    fn supports_t2v(&self) -> bool { false }
+    fn supports_i2v(&self) -> bool { true }
+    fn supports_extension(&self) -> bool { false }
+}
+
+// ============================================================================
+// AnimateDiff Pipeline
+// ============================================================================
+
+/// AnimateDiff pipeline (SD + Motion Modules)
+pub struct AnimateDiffPipeline<B: ComputeBackend> {
+    /// Base SD VAE
+    vae: VAE3D<B>,
+    /// UNet with motion modules
+    unet: UNet3D<B>,
+    /// Text encoder
+    text_encoder: CLIPTextEncoder<B>,
+    /// Scheduler
+    scheduler: DDIMScheduler<B>,
+    /// Video config
+    video_config: VideoConfig,
+    /// Backend
+    backend: B,
+}
+
+impl<B: ComputeBackend> AnimateDiffPipeline<B> {
+    /// Create pipeline with motion modules
+    pub fn new(
+        vae: VAE3D<B>,
+        unet: UNet3D<B>,
+        text_encoder: CLIPTextEncoder<B>,
+        scheduler: DDIMScheduler<B>,
+        video_config: VideoConfig,
+        backend: B,
+    ) -> Self {
+        Self { vae, unet, text_encoder, scheduler, video_config, backend }
+    }
+
+    /// Load from pretrained
+    pub async fn from_pretrained(
+        sd_path: str~,
+        motion_module_path: str~,
+        backend: B,
+    ) -> Result<Self> {
+        // Load base SD components
+        let vae = VAE3D::load(&format!("{}/vae", sd_path~), VAE3DConfig::svd(), backend.clone())?
+        let mut unet = UNet3D::load(&format!("{}/unet", sd_path~), UNet3DConfig::animatediff(), backend.clone())?
+
+        // Load motion modules
+        let motion_state = safetensors::load(&motion_module_path~)?
+        unet.load_motion_modules(motion_state)?
+
+        let text_encoder = CLIPTextEncoder::load(&format!("{}/text_encoder", sd_path~), backend.clone())?
+        let scheduler = DDIMScheduler::new(1000, backend.clone())?
+
+        Ok(Self::new(vae, unet, text_encoder, scheduler, VideoConfig::animatediff(), backend))
+    }
+
+    /// Generate video from text
+    pub async fn generate(
+        &self,
+        request: T2VRequest,
+    ) -> Result<VideoGenerationOutput<B>!> {
+        let num_frames = request.base.num_frames.unwrap_or(self.video_config.num_frames)
+        let fps = request.base.fps.unwrap_or(self.video_config.fps)
+        let width = request.base.width.unwrap_or(self.video_config.width)
+        let height = request.base.height.unwrap_or(self.video_config.height)
+        let num_steps = request.base.num_inference_steps.unwrap_or(20)
+        let guidance_scale = request.base.guidance_scale.unwrap_or(7.5)
+        let seed = request.base.seed.unwrap_or(rand::random())
+
+        self.backend.set_seed(seed)?
+
+        // Encode text
+        let text_embeddings! = self.text_encoder.forward(&request.base.prompt)?
+        let uncond_embeddings! = self.text_encoder.forward(
+            request.base.negative_prompt.as_deref().unwrap_or("")
+        )?
+
+        // Initialize latents
+        let latent_h = height / self.video_config.spatial_downsample
+        let latent_w = width / self.video_config.spatial_downsample
+        let latents! = self.backend.randn([
+            1,
+            self.video_config.latent_channels,
+            num_frames,
+            latent_h,
+            latent_w,
+        ])?
+
+        // Set timesteps
+        self.scheduler.set_timesteps(num_steps)?
+
+        // Denoising loop
+        let mut latents = latents
+        for (i, timestep) in self.scheduler.timesteps().iter().enumerate() {
+            // CFG
+            let latent_input = concat_batch(&latents, &latents)?
+            let encoder_hidden = concat_batch(&uncond_embeddings, &text_embeddings)?
+
+            // Predict noise
+            let noise_pred! = self.unet.forward(
+                &latent_input,
+                *timestep,
+                &encoder_hidden,
+                None,
+            )?
+
+            // Apply CFG
+            let (uncond, cond) = noise_pred.chunk(2, 0)?
+            let noise_pred! = uncond.clone() + guidance_scale * (cond - uncond)
+
+            // Scheduler step
+            latents = self.scheduler.step(&noise_pred, *timestep, &latents)?
+
+            // Progress
+            if let Some(callback) = &request.base.progress_callback {
+                callback(VideoProgressInfo {
+                    step: i as u32,
+                    total_steps: num_steps,
+                    frame: None,
+                    total_frames: Some(num_frames),
+                })
+            }
+        }
+
+        // Decode
+        let frames! = self.vae.decode(&latents)?
+
+        let video = VideoOutput {
+            frames,
+            latents,
+            seed,
+            timestamps: (0..num_frames).map(|i| i as f32 / fps as f32).collect(),
+            motion_metrics: None,
+        }
+
+        Ok(VideoGenerationOutput {
+            video,
+            params: VideoGenerationParams {
+                num_frames,
+                fps,
+                width,
+                height,
+                num_steps,
+                guidance_scale,
+                seed,
+            },
+        })
+    }
+}
+
+impl<B: ComputeBackend> VideoDiffusionPipeline<B> for AnimateDiffPipeline<B> {
+    async fn generate_t2v(&self, request: T2VRequest) -> Result<VideoGenerationOutput<B>> {
+        self.generate(request).await
+    }
+
+    async fn generate_i2v(&self, _request: I2VRequest) -> Result<VideoGenerationOutput<B>> {
+        Err(InfernumError::Unsupported("AnimateDiff I2V requires ControlNet"))
+    }
+
+    async fn extend(&self, _request: VideoExtensionRequest) -> Result<VideoGenerationOutput<B>> {
+        Err(InfernumError::Unsupported("AnimateDiff extension not yet implemented"))
+    }
+
+    fn supports_t2v(&self) -> bool { true }
+    fn supports_i2v(&self) -> bool { false }
+    fn supports_extension(&self) -> bool { false }
+}
+
+// ============================================================================
+// CogVideoX Pipeline
+// ============================================================================
+
+/// CogVideoX pipeline (DiT-based T2V)
+pub struct CogVideoXPipeline<B: ComputeBackend> {
+    /// 3D VAE
+    vae: VAE3D<B>,
+    /// Video transformer
+    transformer: VideoTransformer<B>,
+    /// T5 text encoder
+    text_encoder: T5Encoder<B>,
+    /// Flow matching scheduler
+    scheduler: FlowMatchScheduler<B>,
+    /// Video config
+    video_config: VideoConfig,
+    /// Backend
+    backend: B,
+}
+
+impl<B: ComputeBackend> CogVideoXPipeline<B> {
+    pub fn new(
+        vae: VAE3D<B>,
+        transformer: VideoTransformer<B>,
+        text_encoder: T5Encoder<B>,
+        scheduler: FlowMatchScheduler<B>,
+        video_config: VideoConfig,
+        backend: B,
+    ) -> Self {
+        Self { vae, transformer, text_encoder, scheduler, video_config, backend }
+    }
+
+    pub async fn from_pretrained(path: str~, backend: B) -> Result<Self> {
+        let vae = VAE3D::load(&format!("{}/vae", path~), VAE3DConfig::cogvideox(), backend.clone())?
+        let transformer = VideoTransformer::load(
+            &format!("{}/transformer", path~),
+            VideoTransformerConfig::cogvideox(),
+            backend.clone(),
+        )?
+        let text_encoder = T5Encoder::load(&format!("{}/text_encoder", path~), backend.clone())?
+        let scheduler = FlowMatchScheduler::new(1000, backend.clone())?
+
+        Ok(Self::new(vae, transformer, text_encoder, scheduler, VideoConfig::cogvideox(), backend))
+    }
+
+    pub async fn generate(&self, request: T2VRequest) -> Result<VideoGenerationOutput<B>!> {
+        let num_frames = request.base.num_frames.unwrap_or(self.video_config.num_frames)
+        let fps = request.base.fps.unwrap_or(self.video_config.fps)
+        let width = request.base.width.unwrap_or(self.video_config.width)
+        let height = request.base.height.unwrap_or(self.video_config.height)
+        let num_steps = request.base.num_inference_steps.unwrap_or(50)
+        let guidance_scale = request.base.guidance_scale.unwrap_or(6.0)
+        let seed = request.base.seed.unwrap_or(rand::random())
+
+        self.backend.set_seed(seed)?
+
+        // Encode text with T5
+        let text_embeddings! = self.text_encoder.forward(&request.base.prompt)?
+        let uncond_embeddings! = self.text_encoder.forward("")?
+
+        // Initialize latents
+        let (latent_t, latent_h, latent_w) = self.video_config.latent_dims()
+        let latents! = self.backend.randn([
+            1,
+            self.video_config.latent_channels,
+            latent_t,
+            latent_h,
+            latent_w,
+        ])?
+
+        // Flow matching denoising
+        self.scheduler.set_timesteps(num_steps)?
+
+        let mut latents = latents
+        for (i, timestep) in self.scheduler.timesteps().iter().enumerate() {
+            // CFG
+            let latent_input = concat_batch(&latents, &latents)?
+            let encoder_hidden = concat_batch(&uncond_embeddings, &text_embeddings)?
+
+            // Predict velocity
+            let velocity! = self.transformer.forward(
+                &latent_input,
+                timestep,
+                &encoder_hidden,
+                None,
+            )?
+
+            // Apply CFG
+            let (uncond, cond) = velocity.chunk(2, 0)?
+            let velocity! = uncond.clone() + guidance_scale * (cond - uncond)
+
+            // Flow matching step
+            latents = self.scheduler.step(&velocity, *timestep, &latents)?
+
+            if let Some(callback) = &request.base.progress_callback {
+                callback(VideoProgressInfo {
+                    step: i as u32,
+                    total_steps: num_steps,
+                    frame: None,
+                    total_frames: Some(num_frames),
+                })
+            }
+        }
+
+        // Decode
+        let frames! = self.vae.decode(&latents)?
+
+        let video = VideoOutput {
+            frames,
+            latents,
+            seed,
+            timestamps: (0..num_frames).map(|i| i as f32 / fps as f32).collect(),
+            motion_metrics: None,
+        }
+
+        Ok(VideoGenerationOutput {
+            video,
+            params: VideoGenerationParams {
+                num_frames,
+                fps,
+                width,
+                height,
+                num_steps,
+                guidance_scale,
+                seed,
+            },
+        })
+    }
+}
+
+impl<B: ComputeBackend> VideoDiffusionPipeline<B> for CogVideoXPipeline<B> {
+    async fn generate_t2v(&self, request: T2VRequest) -> Result<VideoGenerationOutput<B>> {
+        self.generate(request).await
+    }
+
+    async fn generate_i2v(&self, _request: I2VRequest) -> Result<VideoGenerationOutput<B>> {
+        Err(InfernumError::Unsupported("CogVideoX I2V requires image conditioning"))
+    }
+
+    async fn extend(&self, _request: VideoExtensionRequest) -> Result<VideoGenerationOutput<B>> {
+        Err(InfernumError::Unsupported("CogVideoX extension not yet implemented"))
+    }
+
+    fn supports_t2v(&self) -> bool { true }
+    fn supports_i2v(&self) -> bool { false }
+    fn supports_extension(&self) -> bool { false }
+}
+
+// ============================================================================
+// Mochi Pipeline
+// ============================================================================
+
+/// Mochi pipeline (high-quality video DiT)
+pub struct MochiPipeline<B: ComputeBackend> {
+    /// VAE
+    vae: VAE3D<B>,
+    /// Video transformer
+    transformer: VideoTransformer<B>,
+    /// T5 encoder
+    text_encoder: T5Encoder<B>,
+    /// Flow scheduler
+    scheduler: FlowMatchScheduler<B>,
+    /// Video config
+    video_config: VideoConfig,
+    /// Backend
+    backend: B,
+}
+
+impl<B: ComputeBackend> MochiPipeline<B> {
+    pub fn new(
+        vae: VAE3D<B>,
+        transformer: VideoTransformer<B>,
+        text_encoder: T5Encoder<B>,
+        scheduler: FlowMatchScheduler<B>,
+        video_config: VideoConfig,
+        backend: B,
+    ) -> Self {
+        Self { vae, transformer, text_encoder, scheduler, video_config, backend }
+    }
+
+    pub async fn from_pretrained(path: str~, backend: B) -> Result<Self> {
+        let vae = VAE3D::load(&format!("{}/vae", path~), VAE3DConfig::mochi(), backend.clone())?
+        let transformer = VideoTransformer::load(
+            &format!("{}/transformer", path~),
+            VideoTransformerConfig::mochi(),
+            backend.clone(),
+        )?
+        let text_encoder = T5Encoder::load(&format!("{}/text_encoder", path~), backend.clone())?
+        let scheduler = FlowMatchScheduler::new(1000, backend.clone())?
+
+        Ok(Self::new(vae, transformer, text_encoder, scheduler, VideoConfig::mochi(), backend))
+    }
+
+    pub async fn generate(&self, request: T2VRequest) -> Result<VideoGenerationOutput<B>!> {
+        let num_frames = request.base.num_frames.unwrap_or(self.video_config.num_frames)
+        let fps = request.base.fps.unwrap_or(self.video_config.fps)
+        let width = request.base.width.unwrap_or(self.video_config.width)
+        let height = request.base.height.unwrap_or(self.video_config.height)
+        let num_steps = request.base.num_inference_steps.unwrap_or(64)
+        let guidance_scale = request.base.guidance_scale.unwrap_or(4.5)
+        let seed = request.base.seed.unwrap_or(rand::random())
+
+        self.backend.set_seed(seed)?
+
+        // Encode text
+        let text_embeddings! = self.text_encoder.forward(&request.base.prompt)?
+
+        // Initialize latents
+        let (latent_t, latent_h, latent_w) = self.video_config.latent_dims()
+        let latents! = self.backend.randn([
+            1,
+            self.video_config.latent_channels,
+            latent_t,
+            latent_h,
+            latent_w,
+        ])?
+
+        // Denoising with flow matching
+        self.scheduler.set_timesteps(num_steps)?
+
+        let mut latents = latents
+        for (i, timestep) in self.scheduler.timesteps().iter().enumerate() {
+            // Mochi uses classifier-free guidance differently
+            let velocity! = self.transformer.forward(
+                &latents,
+                timestep,
+                &text_embeddings,
+                None,
+            )?
+
+            // Step
+            latents = self.scheduler.step(&velocity, *timestep, &latents)?
+
+            if let Some(callback) = &request.base.progress_callback {
+                callback(VideoProgressInfo {
+                    step: i as u32,
+                    total_steps: num_steps,
+                    frame: None,
+                    total_frames: Some(num_frames),
+                })
+            }
+        }
+
+        // Decode
+        let frames! = self.vae.decode(&latents)?
+
+        let video = VideoOutput {
+            frames,
+            latents,
+            seed,
+            timestamps: (0..num_frames).map(|i| i as f32 / fps as f32).collect(),
+            motion_metrics: None,
+        }
+
+        Ok(VideoGenerationOutput {
+            video,
+            params: VideoGenerationParams {
+                num_frames,
+                fps,
+                width,
+                height,
+                num_steps,
+                guidance_scale,
+                seed,
+            },
+        })
+    }
+}
+
+impl<B: ComputeBackend> VideoDiffusionPipeline<B> for MochiPipeline<B> {
+    async fn generate_t2v(&self, request: T2VRequest) -> Result<VideoGenerationOutput<B>> {
+        self.generate(request).await
+    }
+
+    async fn generate_i2v(&self, _request: I2VRequest) -> Result<VideoGenerationOutput<B>> {
+        Err(InfernumError::Unsupported("Mochi I2V not supported"))
+    }
+
+    async fn extend(&self, _request: VideoExtensionRequest) -> Result<VideoGenerationOutput<B>> {
+        Err(InfernumError::Unsupported("Mochi extension not yet implemented"))
+    }
+
+    fn supports_t2v(&self) -> bool { true }
+    fn supports_i2v(&self) -> bool { false }
+    fn supports_extension(&self) -> bool { false }
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+fn concat_batch<B: ComputeBackend>(a: &Tensor<B>, b: &Tensor<B>) -> Result<Tensor<B>!> {
+    // Concatenate along batch dimension
+    concat(&[a, b], 0)
+}
+
+fn concat_latents<B: ComputeBackend>(noise: &Tensor<B>, image: &Tensor<B>) -> Result<Tensor<B>!> {
+    // Concatenate along channel dimension for SVD-style conditioning
+    concat(&[noise, image], 1)
+}
+
+fn concat<B: ComputeBackend>(tensors: &[&Tensor<B>], dim: i32) -> Result<Tensor<B>!> {
+    unimplemented!()
+}
+
+// Forward declarations
+struct CLIPImageEncoder<B: ComputeBackend> { /* ... */ }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_video_generation_request() {
+        let request = VideoGenerationRequest::new("a cat walking")
+        assert!(request.negative_prompt.is_none())
+    }
+
+    #[test]
+    fn test_video_progress_info() {
+        let info = VideoProgressInfo {
+            step: 5,
+            total_steps: 25,
+            frame: Some(0),
+            total_frames: Some(14),
+        }
+        assert_eq!(info.step, 5)
+    }
+}

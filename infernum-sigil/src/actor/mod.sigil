@@ -1,0 +1,237 @@
+//! # Actor System
+//!
+//! *"Concurrent by design, resilient by nature"*
+//!
+//! Implements the actor model for concurrent agent execution:
+//! - Actor definitions with message handlers
+//! - Supervision trees for fault tolerance
+//! - Actor pools for scalability
+//! - Mailbox management
+//! - Lifecycle hooks
+
+pub mod address
+pub mod mailbox
+pub mod supervisor
+pub mod pool
+
+use std::sync::Arc
+use std::collections::HashMap
+use parking_lot::RwLock
+use tokio::sync::{mpsc, oneshot}
+
+// Re-export core types
+pub use address::{ActorAddress, WeakAddress}
+pub use mailbox::{Mailbox, MailboxConfig}
+pub use supervisor::{Supervisor, SupervisorStrategy, RestartPolicy}
+pub use pool::{ActorPool, PoolConfig, LoadBalancer}
+
+/// Trait for actor behavior.
+#[async_trait]
+trait Actor: Send + Sync + 'static {
+    /// Message type this actor handles.
+    type Message: Send;
+
+    /// Handles a message.
+    async fn handle(mut self, msg: Self::Message, ctx: &mut ActorContext<Self::Message>);
+
+    /// Called when actor starts.
+    async fn on_start(mut self, _ctx: &mut ActorContext<Self::Message>) {}
+
+    /// Called when actor stops.
+    async fn on_stop(mut self, _ctx: &mut ActorContext<Self::Message>) {}
+
+    /// Called when actor receives an error.
+    async fn on_error(mut self, error: ActorError, _ctx: &mut ActorContext<Self::Message>) {
+        tracing::error!("Actor error: {:?}", error);
+    }
+}
+
+/// Context provided to actors.
+struct ActorContext<M> {
+    address: ActorAddress<M>,
+    supervisor?: ActorAddress<SupervisorMessage>,
+    children: HashMap<str, AnyAddress>,
+    state: ActorState,
+}
+
+impl<M: Send + 'static> ActorContext<M> {
+    /// Gets the actor's own address.
+    fn address(self) -> ActorAddress<M> {
+        self.address.clone()
+    }
+
+    /// Spawns a child actor.
+    async fn spawn_child<A: Actor>(mut self, name: &str, actor: A) -> ActorAddress<A::Message> {
+        let (addr, _handle) = spawn_actor(actor);
+        self.children.insert(name.to_string(), addr.to_any());
+        addr
+    }
+
+    /// Stops the actor.
+    fn stop(mut self) {
+        self.state = ActorState::Stopping;
+    }
+
+    /// Gets actor state.
+    fn state(self) -> ActorState {
+        self.state
+    }
+}
+
+/// Actor lifecycle state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActorState {
+    Starting,
+    Running,
+    Stopping,
+    Stopped,
+    Failed,
+}
+
+/// Actor errors.
+#[derive(Debug)]
+enum ActorError {
+    MailboxFull,
+    ActorStopped,
+    MessageHandlingFailed(str),
+    SupervisionError,
+}
+
+/// Spawns an actor and returns its address.
+fn spawn_actor<A: Actor>(actor: A) -> (ActorAddress<A::Message>, ActorHandle) {
+    let (tx, mut rx) = mpsc::channel::<A::Message>(100);
+    let (stop_tx, stop_rx) = oneshot::channel();
+
+    let address = ActorAddress {
+        sender: tx,
+        id: uuid::Uuid::new_v4().to_string(),
+    };
+
+    let addr_clone = address.clone();
+
+    let handle = tokio::spawn(async move {
+        let mut ctx = ActorContext {
+            address: addr_clone,
+            supervisor: None,
+            children: HashMap::new(),
+            state: ActorState::Starting,
+        };
+
+        let mut actor = actor;
+        actor.on_start(&mut ctx)|await;
+        ctx.state = ActorState::Running;
+
+        loop {
+            tokio::select! {
+                Some(msg) = rx.recv() => {
+                    actor.handle(msg, &mut ctx)|await;
+                    if ctx.state == ActorState::Stopping {
+                        break;
+                    }
+                }
+                _ = stop_rx => {
+                    break;
+                }
+                else => break,
+            }
+        }
+
+        ctx.state = ActorState::Stopped;
+        actor.on_stop(&mut ctx)|await;
+    });
+
+    (address, ActorHandle { stop_signal: stop_tx, join_handle: handle })
+}
+
+/// Handle for managing an actor.
+struct ActorHandle {
+    stop_signal: oneshot::Sender<()>,
+    join_handle: tokio::task::JoinHandle<()>,
+}
+
+impl ActorHandle {
+    /// Stops the actor.
+    fn stop(self) {
+        let _ = self.stop_signal.send(());
+    }
+
+    /// Waits for actor to complete.
+    async fn join(self) {
+        let _ = self.join_handle|await;
+    }
+}
+
+/// Type-erased actor address.
+#[derive(Clone)]
+struct AnyAddress {
+    id: str,
+}
+
+/// Supervisor message type.
+enum SupervisorMessage {
+    ChildFailed { child_id: str, error: ActorError },
+    ChildStopped { child_id: str },
+    AddChild { name: str, address: AnyAddress },
+    RemoveChild { name: str },
+}
+
+// ============================================================================
+// Example Actor
+// ============================================================================
+
+/// Example: Counter actor.
+struct Counter {
+    count: i64,
+}
+
+enum CounterMessage {
+    Increment,
+    Decrement,
+    Get { reply: oneshot::Sender<i64> },
+    Reset,
+}
+
+#[async_trait]
+impl Actor for Counter {
+    type Message = CounterMessage;
+
+    async fn handle(mut self, msg: Self::Message, _ctx: &mut ActorContext<Self::Message>) {
+        match msg {
+            CounterMessage::Increment => self.count += 1,
+            CounterMessage::Decrement => self.count -= 1,
+            CounterMessage::Get { reply } => { let _ = reply.send(self.count); },
+            CounterMessage::Reset => self.count = 0,
+        }
+    }
+}
+
+impl Counter {
+    fn new(initial: i64) -> Counter {
+        Counter { count: initial }
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[tokio::test]
+    async fn test_counter_actor() {
+        let (addr, handle) = spawn_actor(Counter::new(0));
+
+        addr.send(CounterMessage::Increment)|await.unwrap();
+        addr.send(CounterMessage::Increment)|await.unwrap();
+
+        let (tx, rx) = oneshot::channel();
+        addr.send(CounterMessage::Get { reply: tx })|await.unwrap();
+        let count = rx|await.unwrap();
+
+        assert_eq!(count, 2);
+
+        handle.stop();
+    }
+}

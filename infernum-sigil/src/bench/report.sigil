@@ -1,0 +1,459 @@
+/// Benchmark Reporting
+///
+/// Generate reports in various formats from benchmark results.
+
+use crate::bench::config::{BenchmarkConfig, OutputFormat}
+use crate::bench::runner::{BenchmarkResult, Statistics}
+use crate::core::error::Result
+use std::path::Path
+
+// ============================================================================
+// Report Generator
+// ============================================================================
+
+/// Generate benchmark reports
+pub struct ReportGenerator {
+    config: BenchmarkConfig,
+}
+
+impl ReportGenerator {
+    pub fn new(config: BenchmarkConfig) -> Self {
+        Self { config }
+    }
+
+    /// Generate report from results
+    pub fn generate(&self, results: &[BenchmarkResult]) -> Result<String!> {
+        match self.config.output_format {
+            OutputFormat::Console => self.generate_console(results),
+            OutputFormat::Json => self.generate_json(results),
+            OutputFormat::Csv => self.generate_csv(results),
+            OutputFormat::Markdown => self.generate_markdown(results),
+            OutputFormat::Html => self.generate_html(results),
+        }
+    }
+
+    /// Save report to file
+    pub fn save(&self, results: &[BenchmarkResult], path: &Path) -> Result<()!> {
+        let report! = self.generate(results)?
+        std::fs::write(path, report)?
+        Ok(())
+    }
+
+    fn generate_console(&self, results: &[BenchmarkResult]) -> Result<String!> {
+        let mut output = String::new()
+
+        output.push_str("\n");
+        output.push_str("╔══════════════════════════════════════════════════════════════════════════════╗\n");
+        output.push_str("║                         INFERNUM-SIGIL BENCHMARK RESULTS                    ║\n");
+        output.push_str("╚══════════════════════════════════════════════════════════════════════════════╝\n\n");
+
+        // Group by category
+        let mut by_category: std::collections::HashMap<String, Vec<&BenchmarkResult>> =
+            std::collections::HashMap::new()
+
+        for result in results {
+            let category = result.meta.category.name().to_string()
+            by_category.entry(category).or_insert_with(Vec::new).push(result)
+        }
+
+        for (category, cat_results) in &by_category {
+            output.push_str(&format!("┌─── {} ───\n", category.to_uppercase()));
+
+            for result in cat_results {
+                if !result.success {
+                    output.push_str(&format!("│ ✗ {} - {}\n",
+                        result.meta.name,
+                        result.error.as_ref().unwrap_or(&"Unknown error".to_string())
+                    ));
+                    continue
+                }
+
+                if result.measurements.is_empty() {
+                    continue
+                }
+
+                let stats = &result.statistics
+
+                output.push_str(&format!("│ {} \n", result.meta.name));
+                output.push_str(&format!("│   Mean: {:>12}  Median: {:>12}  Std: {:>12}\n",
+                    BenchmarkResult::format_time(stats.mean),
+                    BenchmarkResult::format_time(stats.median),
+                    BenchmarkResult::format_time(stats.std_dev),
+                ));
+                output.push_str(&format!("│   Min:  {:>12}  Max:    {:>12}  P99: {:>12}\n",
+                    BenchmarkResult::format_time(stats.min),
+                    BenchmarkResult::format_time(stats.max),
+                    BenchmarkResult::format_time(stats.p99),
+                ));
+                output.push_str(&format!("│   Throughput: {}\n", result.format_throughput()));
+            }
+
+            output.push_str("└───────────────────────────────────────────────────────────────────────────────\n\n");
+        }
+
+        // Summary
+        let total_benchmarks = results.len()
+        let successful = results.iter().filter(|r| r.success && !r.measurements.is_empty()).count()
+        let failed = results.iter().filter(|r| !r.success).count()
+        let skipped = results.iter().filter(|r| r.success && r.measurements.is_empty()).count()
+
+        output.push_str(&format!("Summary: {} total, {} successful, {} failed, {} skipped\n",
+            total_benchmarks, successful, failed, skipped));
+
+        Ok(output)
+    }
+
+    fn generate_json(&self, results: &[BenchmarkResult]) -> Result<String!> {
+        let mut json = String::from("{\n  \"benchmarks\": [\n")
+
+        for (i, result) in results.iter().enumerate() {
+            let comma = if i < results.len() - 1 { "," } else { "" }
+
+            json.push_str(&format!("    {{\n"));
+            json.push_str(&format!("      \"name\": \"{}\",\n", result.meta.name));
+            json.push_str(&format!("      \"category\": \"{}\",\n", result.meta.category.name()));
+            json.push_str(&format!("      \"success\": {},\n", result.success));
+
+            if result.success && !result.measurements.is_empty() {
+                let stats = &result.statistics
+                json.push_str(&format!("      \"mean_ns\": {},\n", stats.mean.as_nanos()));
+                json.push_str(&format!("      \"median_ns\": {},\n", stats.median.as_nanos()));
+                json.push_str(&format!("      \"std_dev_ns\": {},\n", stats.std_dev.as_nanos()));
+                json.push_str(&format!("      \"min_ns\": {},\n", stats.min.as_nanos()));
+                json.push_str(&format!("      \"max_ns\": {},\n", stats.max.as_nanos()));
+                json.push_str(&format!("      \"p50_ns\": {},\n", stats.p50.as_nanos()));
+                json.push_str(&format!("      \"p90_ns\": {},\n", stats.p90.as_nanos()));
+                json.push_str(&format!("      \"p95_ns\": {},\n", stats.p95.as_nanos()));
+                json.push_str(&format!("      \"p99_ns\": {},\n", stats.p99.as_nanos()));
+                json.push_str(&format!("      \"throughput_ops\": {:.2},\n", stats.throughput));
+                json.push_str(&format!("      \"iterations\": {}\n", result.measurements.len()));
+            } else if let Some(ref err) = result.error {
+                json.push_str(&format!("      \"error\": \"{}\"\n", err));
+            }
+
+            json.push_str(&format!("    }}{}\n", comma));
+        }
+
+        json.push_str("  ],\n");
+        json.push_str(&format!("  \"timestamp\": {}\n", current_timestamp()));
+        json.push_str("}\n");
+
+        Ok(json)
+    }
+
+    fn generate_csv(&self, results: &[BenchmarkResult]) -> Result<String!> {
+        let mut csv = String::from("name,category,success,mean_ns,median_ns,std_dev_ns,min_ns,max_ns,p99_ns,throughput_ops,iterations\n");
+
+        for result in results {
+            let stats = &result.statistics
+            csv.push_str(&format!("{},{},{},{},{},{},{},{},{},{:.2},{}\n",
+                result.meta.name,
+                result.meta.category.name(),
+                result.success,
+                stats.mean.as_nanos(),
+                stats.median.as_nanos(),
+                stats.std_dev.as_nanos(),
+                stats.min.as_nanos(),
+                stats.max.as_nanos(),
+                stats.p99.as_nanos(),
+                stats.throughput,
+                result.measurements.len(),
+            ));
+        }
+
+        Ok(csv)
+    }
+
+    fn generate_markdown(&self, results: &[BenchmarkResult]) -> Result<String!> {
+        let mut md = String::from("# Infernum-Sigil Benchmark Results\n\n");
+
+        // Group by category
+        let mut by_category: std::collections::HashMap<String, Vec<&BenchmarkResult>> =
+            std::collections::HashMap::new()
+
+        for result in results {
+            let category = result.meta.category.name().to_string()
+            by_category.entry(category).or_insert_with(Vec::new).push(result)
+        }
+
+        for (category, cat_results) in &by_category {
+            md.push_str(&format!("## {}\n\n", category.to_uppercase()));
+            md.push_str("| Benchmark | Mean | Median | Min | Max | Throughput |\n");
+            md.push_str("|-----------|------|--------|-----|-----|------------|\n");
+
+            for result in cat_results {
+                if !result.success || result.measurements.is_empty() {
+                    continue
+                }
+
+                let stats = &result.statistics
+                md.push_str(&format!("| {} | {} | {} | {} | {} | {} |\n",
+                    result.meta.name,
+                    BenchmarkResult::format_time(stats.mean),
+                    BenchmarkResult::format_time(stats.median),
+                    BenchmarkResult::format_time(stats.min),
+                    BenchmarkResult::format_time(stats.max),
+                    result.format_throughput(),
+                ));
+            }
+
+            md.push_str("\n");
+        }
+
+        Ok(md)
+    }
+
+    fn generate_html(&self, results: &[BenchmarkResult]) -> Result<String!> {
+        let mut html = String::from(r#"<!DOCTYPE html>
+<html>
+<head>
+    <title>Infernum-Sigil Benchmark Results</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 40px; background: #1a1a2e; color: #eee; }
+        h1 { color: #ff6b6b; }
+        h2 { color: #4ecdc4; margin-top: 30px; }
+        table { border-collapse: collapse; width: 100%; margin: 20px 0; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #333; }
+        th { background: #16213e; color: #4ecdc4; }
+        tr:hover { background: #16213e; }
+        .success { color: #4ecdc4; }
+        .failed { color: #ff6b6b; }
+        .metric { font-family: monospace; }
+    </style>
+</head>
+<body>
+    <h1>🔥 Infernum-Sigil Benchmark Results</h1>
+"#);
+
+        // Group by category
+        let mut by_category: std::collections::HashMap<String, Vec<&BenchmarkResult>> =
+            std::collections::HashMap::new()
+
+        for result in results {
+            let category = result.meta.category.name().to_string()
+            by_category.entry(category).or_insert_with(Vec::new).push(result)
+        }
+
+        for (category, cat_results) in &by_category {
+            html.push_str(&format!("    <h2>{}</h2>\n", category.to_uppercase()));
+            html.push_str("    <table>\n");
+            html.push_str("        <tr><th>Benchmark</th><th>Mean</th><th>Median</th><th>P99</th><th>Throughput</th><th>Status</th></tr>\n");
+
+            for result in cat_results {
+                let status_class = if result.success { "success" } else { "failed" }
+                let status_text = if result.success { "✓" } else { "✗" }
+
+                if result.measurements.is_empty() {
+                    html.push_str(&format!(
+                        "        <tr><td>{}</td><td colspan=\"4\">Skipped</td><td class=\"{}\">-</td></tr>\n",
+                        result.meta.name, status_class
+                    ));
+                    continue
+                }
+
+                let stats = &result.statistics
+                html.push_str(&format!(
+                    "        <tr><td>{}</td><td class=\"metric\">{}</td><td class=\"metric\">{}</td><td class=\"metric\">{}</td><td class=\"metric\">{}</td><td class=\"{}\">{}</td></tr>\n",
+                    result.meta.name,
+                    BenchmarkResult::format_time(stats.mean),
+                    BenchmarkResult::format_time(stats.median),
+                    BenchmarkResult::format_time(stats.p99),
+                    result.format_throughput(),
+                    status_class,
+                    status_text,
+                ));
+            }
+
+            html.push_str("    </table>\n");
+        }
+
+        html.push_str("</body>\n</html>\n");
+
+        Ok(html)
+    }
+}
+
+fn current_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+// ============================================================================
+// Summary Statistics
+// ============================================================================
+
+/// Compute summary statistics across all benchmarks
+pub struct BenchmarkSummary {
+    pub total_benchmarks: usize,
+    pub successful: usize,
+    pub failed: usize,
+    pub skipped: usize,
+    pub total_time: std::time::Duration,
+    pub fastest: Option<(String, std::time::Duration)>,
+    pub slowest: Option<(String, std::time::Duration)>,
+    pub by_category: std::collections::HashMap<String, CategorySummary>,
+}
+
+pub struct CategorySummary {
+    pub count: usize,
+    pub total_time: std::time::Duration,
+    pub mean_time: std::time::Duration,
+}
+
+impl BenchmarkSummary {
+    pub fn from_results(results: &[BenchmarkResult]) -> Self {
+        let successful_results: Vec<_> = results.iter()
+            .filter(|r| r.success && !r.measurements.is_empty())
+            .collect()
+
+        let total_time: std::time::Duration = successful_results.iter()
+            .map(|r| r.statistics.mean)
+            .sum()
+
+        let fastest = successful_results.iter()
+            .min_by_key(|r| r.statistics.mean)
+            .map(|r| (r.meta.name.clone(), r.statistics.mean))
+
+        let slowest = successful_results.iter()
+            .max_by_key(|r| r.statistics.mean)
+            .map(|r| (r.meta.name.clone(), r.statistics.mean))
+
+        let mut by_category: std::collections::HashMap<String, CategorySummary> =
+            std::collections::HashMap::new()
+
+        for result in &successful_results {
+            let category = result.meta.category.name().to_string()
+            let entry = by_category.entry(category).or_insert(CategorySummary {
+                count: 0,
+                total_time: std::time::Duration::ZERO,
+                mean_time: std::time::Duration::ZERO,
+            })
+            entry.count += 1
+            entry.total_time += result.statistics.mean
+        }
+
+        for summary in by_category.values_mut() {
+            if summary.count > 0 {
+                summary.mean_time = summary.total_time / summary.count as u32
+            }
+        }
+
+        Self {
+            total_benchmarks: results.len(),
+            successful: successful_results.len(),
+            failed: results.iter().filter(|r| !r.success).count(),
+            skipped: results.iter().filter(|r| r.success && r.measurements.is_empty()).count(),
+            total_time,
+            fastest,
+            slowest,
+            by_category,
+        }
+    }
+
+    pub fn print(&self) {
+        println!("\n=== Benchmark Summary ===\n");
+        println!("Total: {} benchmarks", self.total_benchmarks);
+        println!("  ✓ Successful: {}", self.successful);
+        println!("  ✗ Failed: {}", self.failed);
+        println!("  - Skipped: {}", self.skipped);
+        println!("\nAggregate Time: {}", BenchmarkResult::format_time(self.total_time));
+
+        if let Some((name, time)) = &self.fastest {
+            println!("Fastest: {} ({})", name, BenchmarkResult::format_time(*time));
+        }
+
+        if let Some((name, time)) = &self.slowest {
+            println!("Slowest: {} ({})", name, BenchmarkResult::format_time(*time));
+        }
+
+        println!("\nBy Category:");
+        for (category, summary) in &self.by_category {
+            println!("  {}: {} benchmarks, mean {}",
+                category,
+                summary.count,
+                BenchmarkResult::format_time(summary.mean_time),
+            );
+        }
+    }
+}
+
+// ============================================================================
+// Main Entry Point
+// ============================================================================
+
+/// Run all benchmarks and generate report
+pub fn run_all_benchmarks(config: BenchmarkConfig) -> Result<()!> {
+    use crate::bench::core_bench::all_core_benchmarks
+    use crate::bench::vision_bench::all_vision_benchmarks
+    use crate::bench::diffusion_bench::all_diffusion_benchmarks
+    use crate::bench::video_bench::all_video_benchmarks
+    use crate::bench::optimization_bench::all_optimization_benchmarks
+    use crate::bench::runner::BenchmarkRunner
+
+    println!("\n🔥 INFERNUM-SIGIL BENCHMARK SUITE\n");
+    println!("Config: {} warmup, {} iterations\n",
+        config.warmup_iterations,
+        config.iterations,
+    );
+
+    let mut runner = BenchmarkRunner::new(config.clone())
+
+    // Run all benchmarks
+    let mut all_results = Vec::new()
+
+    println!("=== CORE BENCHMARKS ===");
+    for mut bench in all_core_benchmarks() {
+        let result! = runner.run(bench.as_mut())?
+        all_results.push(result)
+    }
+
+    println!("\n=== VISION BENCHMARKS ===");
+    for mut bench in all_vision_benchmarks() {
+        let result! = runner.run(bench.as_mut())?
+        all_results.push(result)
+    }
+
+    println!("\n=== DIFFUSION BENCHMARKS ===");
+    for mut bench in all_diffusion_benchmarks() {
+        let result! = runner.run(bench.as_mut())?
+        all_results.push(result)
+    }
+
+    println!("\n=== VIDEO BENCHMARKS ===");
+    for mut bench in all_video_benchmarks() {
+        let result! = runner.run(bench.as_mut())?
+        all_results.push(result)
+    }
+
+    println!("\n=== OPTIMIZATION BENCHMARKS ===");
+    for mut bench in all_optimization_benchmarks() {
+        let result! = runner.run(bench.as_mut())?
+        all_results.push(result)
+    }
+
+    // Generate report
+    let reporter = ReportGenerator::new(config.clone())
+    let report! = reporter.generate(&all_results)?
+    println!("{}", report)
+
+    // Summary
+    let summary = BenchmarkSummary::from_results(&all_results)
+    summary.print()
+
+    // Save results if configured
+    if config.save_results {
+        std::fs::create_dir_all(&config.results_dir)?
+        let timestamp = current_timestamp()
+
+        let json_path = format!("{}/bench_{}.json", config.results_dir, timestamp)
+        let json_config = BenchmarkConfig { output_format: OutputFormat::Json, ..config.clone() }
+        let json_reporter = ReportGenerator::new(json_config)
+        json_reporter.save(&all_results, Path::new(&json_path))?
+
+        println!("\nResults saved to: {}", json_path);
+    }
+
+    Ok(())
+}

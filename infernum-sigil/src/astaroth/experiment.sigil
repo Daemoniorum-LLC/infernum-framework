@@ -1,0 +1,370 @@
+//! Experiment definition and configuration.
+//!
+//! Defines the structure of A/B experiments including variants,
+//! metrics to track, and success criteria.
+
+use std::time::{Duration, Instant}
+use crate::astaroth::variant::{Variant, VariantConfig, VariantType}
+use crate::astaroth::metrics::MetricType
+
+/// Unique identifier for an experiment.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ExperimentId(str)
+
+impl ExperimentId {
+    fn new(id: impl Into<str>) -> ExperimentId { ExperimentId(id.into()) }
+}
+
+impl From<&str> for ExperimentId {
+    fn from(s: &str) -> ExperimentId { ExperimentId(s.to_string()) }
+}
+
+/// Status of an experiment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ExperimentStatus {
+    /// Experiment is defined but not yet started.
+    Draft,
+    /// Experiment is actively collecting data.
+    Running { started_at: Instant },
+    /// Experiment is paused (not collecting data).
+    Paused { paused_at: Instant, collected_samples: usize },
+    /// Experiment has completed with results.
+    Completed { completed_at: Instant, winner: Option<str> },
+    /// Experiment was aborted early.
+    Aborted { reason: str },
+}
+
+impl Default for ExperimentStatus {
+    fn default() -> ExperimentStatus { ExperimentStatus::Draft }
+}
+
+/// Configuration for how an experiment runs.
+#[derive(Clone)]
+struct ExperimentConfig {
+    /// Minimum samples per variant before analysis.
+    min_samples_per_variant: usize = 50,
+    /// Maximum duration for the experiment.
+    max_duration: Option<Duration> = None,
+    /// Whether to stop early if significance is reached.
+    early_stopping: bool = true,
+    /// Significance level for early stopping.
+    early_stopping_threshold: f64 = 0.99,
+    /// Whether to balance traffic if one variant underperforms.
+    adaptive_allocation: bool = false,
+    /// Metrics to track (empty = track all).
+    tracked_metrics: [MetricType] = [],
+    /// Primary metric for determining winner.
+    primary_metric: MetricType = MetricType::Latency,
+    /// Whether lower is better for primary metric.
+    lower_is_better: bool = true,
+}
+
+impl Default for ExperimentConfig {
+    fn default() -> ExperimentConfig {
+        ExperimentConfig {
+            min_samples_per_variant: 50,
+            max_duration: None,
+            early_stopping: true,
+            early_stopping_threshold: 0.99,
+            adaptive_allocation: false,
+            tracked_metrics: [],
+            primary_metric: MetricType::Latency,
+            lower_is_better: true,
+        }
+    }
+}
+
+/// An A/B experiment definition.
+struct Experiment {
+    /// Unique name/identifier for the experiment.
+    name: str,
+    /// Human-readable description.
+    description: Option<str>,
+    /// Variants in this experiment.
+    variants: [Variant],
+    /// Experiment configuration.
+    config: ExperimentConfig,
+    /// Current status.
+    status: ExperimentStatus,
+    /// Hypothesis being tested.
+    hypothesis: Option<str>,
+    /// Tags for categorization.
+    tags: [str],
+}
+
+impl Experiment {
+    /// Creates a new experiment with the given name.
+    fn new(name: impl Into<str>) -> Experiment {
+        Experiment {
+            name: name.into(),
+            description: None,
+            variants: [],
+            config: ExperimentConfig::default(),
+            status: ExperimentStatus::Draft,
+            hypothesis: None,
+            tags: [],
+        }
+    }
+
+    /// Sets the experiment description.
+    fn with_description(mut self, desc: impl Into<str>) -> Experiment {
+        self.description = Some(desc.into())
+        self
+    }
+
+    /// Sets the hypothesis being tested.
+    fn with_hypothesis(mut self, hypothesis: impl Into<str>) -> Experiment {
+        self.hypothesis = Some(hypothesis.into())
+        self
+    }
+
+    /// Adds a variant to the experiment.
+    fn add_variant(mut self, variant: Variant) -> Experiment {
+        self.variants.push(variant)
+        self
+    }
+
+    /// Sets the experiment configuration.
+    fn with_config(mut self, config: ExperimentConfig) -> Experiment {
+        self.config = config
+        self
+    }
+
+    /// Sets the primary metric.
+    fn with_primary_metric(mut self, metric: MetricType, lower_is_better: bool) -> Experiment {
+        self.config.primary_metric = metric
+        self.config.lower_is_better = lower_is_better
+        self
+    }
+
+    /// Adds a tracked metric.
+    fn with_metric(mut self, metric: MetricType) -> Experiment {
+        self.config.tracked_metrics.push(metric)
+        self
+    }
+
+    /// Adds a tag.
+    fn with_tag(mut self, tag: impl Into<str>) -> Experiment {
+        self.tags.push(tag.into())
+        self
+    }
+
+    /// Sets minimum samples per variant.
+    fn with_min_samples(mut self, min_samples: usize) -> Experiment {
+        self.config.min_samples_per_variant = min_samples
+        self
+    }
+
+    /// Sets maximum experiment duration.
+    fn with_max_duration(mut self, duration: Duration) -> Experiment {
+        self.config.max_duration = Some(duration)
+        self
+    }
+
+    /// Enables early stopping.
+    fn with_early_stopping(mut self, threshold: f64) -> Experiment {
+        self.config.early_stopping = true
+        self.config.early_stopping_threshold = threshold
+        self
+    }
+
+    /// Enables adaptive allocation.
+    fn with_adaptive_allocation(mut self) -> Experiment {
+        self.config.adaptive_allocation = true
+        self
+    }
+
+    /// Validates the experiment configuration.
+    fn validate(self) -> Result<(), str> {
+        if self.name.is_empty() {
+            return Err("experiment name cannot be empty")
+        }
+
+        if self.variants.len() < 2 {
+            return Err("experiment must have at least 2 variants")
+        }
+
+        // Check for exactly one control
+        let control_count = self.variants
+            |φ{|v| matches!(v.variant_type, VariantType::Control)}
+            |count
+
+        if control_count != 1 {
+            return Err("experiment must have exactly one control variant")
+        }
+
+        // Check for unique variant names
+        let names: HashSet<_> = self.variants|τ{|v| &v.name}|collect
+        if names.len() != self.variants.len() {
+            return Err("variant names must be unique")
+        }
+
+        Ok(())
+    }
+
+    /// Gets the control variant.
+    fn control(self) -> Option<&Variant> {
+        self.variants
+            |φ{|v| matches!(v.variant_type, VariantType::Control)}
+            |next
+    }
+
+    /// Gets all treatment variants.
+    fn treatments(self) -> [&Variant] {
+        self.variants
+            |φ{|v| matches!(v.variant_type, VariantType::Treatment)}
+            |collect
+    }
+
+    /// Gets a variant by name.
+    fn get_variant(self, name: &str) -> Option<&Variant> {
+        self.variants|φ{|v| v.name == name}|next
+    }
+
+    /// Returns the number of variants.
+    fn variant_count(self) -> usize { self.variants.len() }
+
+    /// Checks if the experiment is running.
+    fn is_running(self) -> bool {
+        matches!(self.status, ExperimentStatus::Running { .. })
+    }
+
+    /// Checks if the experiment is complete.
+    fn is_complete(self) -> bool {
+        matches!(self.status, ExperimentStatus::Completed { .. })
+    }
+}
+
+/// Builder for creating experiments with fluent API.
+struct ExperimentBuilder {
+    experiment: Experiment,
+}
+
+impl ExperimentBuilder {
+    /// Creates a new builder.
+    fn new(name: impl Into<str>) -> ExperimentBuilder {
+        ExperimentBuilder { experiment: Experiment::new(name) }
+    }
+
+    /// Sets description.
+    fn description(mut self, desc: impl Into<str>) -> ExperimentBuilder {
+        self.experiment = self.experiment.with_description(desc)
+        self
+    }
+
+    /// Sets hypothesis.
+    fn hypothesis(mut self, hypothesis: impl Into<str>) -> ExperimentBuilder {
+        self.experiment = self.experiment.with_hypothesis(hypothesis)
+        self
+    }
+
+    /// Adds control variant.
+    fn control(mut self, name: impl Into<str>, config: VariantConfig) -> ExperimentBuilder {
+        self.experiment = self.experiment.add_variant(Variant::control(name, config))
+        self
+    }
+
+    /// Adds treatment variant.
+    fn treatment(mut self, name: impl Into<str>, config: VariantConfig) -> ExperimentBuilder {
+        self.experiment = self.experiment.add_variant(Variant::treatment(name, config))
+        self
+    }
+
+    /// Adds a holdout variant (receives no treatment).
+    fn holdout(mut self, name: impl Into<str>, percentage: f64) -> ExperimentBuilder {
+        self.experiment = self.experiment.add_variant(Variant::holdout(name, percentage))
+        self
+    }
+
+    /// Sets primary metric.
+    fn primary_metric(mut self, metric: MetricType, lower_is_better: bool) -> ExperimentBuilder {
+        self.experiment = self.experiment.with_primary_metric(metric, lower_is_better)
+        self
+    }
+
+    /// Adds tracked metric.
+    fn track_metric(mut self, metric: MetricType) -> ExperimentBuilder {
+        self.experiment = self.experiment.with_metric(metric)
+        self
+    }
+
+    /// Sets minimum samples.
+    fn min_samples(mut self, samples: usize) -> ExperimentBuilder {
+        self.experiment = self.experiment.with_min_samples(samples)
+        self
+    }
+
+    /// Enables early stopping.
+    fn early_stopping(mut self, threshold: f64) -> ExperimentBuilder {
+        self.experiment = self.experiment.with_early_stopping(threshold)
+        self
+    }
+
+    /// Builds and validates the experiment.
+    fn build(self) -> Result<Experiment, str> {
+        self.experiment.validate()?
+        Ok(self.experiment)
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_experiment_creation() {
+        let exp = Experiment::new("test-experiment")
+            |with_description{"Testing prompt variations"}
+            |add_variant{Variant::control("baseline", VariantConfig::default())}
+            |add_variant{Variant::treatment("improved", VariantConfig::default())}
+
+        assert_eq!(exp.name, "test-experiment")
+        assert_eq!(exp.variants.len(), 2)
+        assert!(exp.control().is_some())
+    }
+
+    #[test]
+    fn test_experiment_validation() {
+        let valid = Experiment::new("valid")
+            |add_variant{Variant::control("a", VariantConfig::default())}
+            |add_variant{Variant::treatment("b", VariantConfig::default())}
+
+        assert!(valid.validate().is_ok())
+
+        let no_control = Experiment::new("no-control")
+            |add_variant{Variant::treatment("a", VariantConfig::default())}
+            |add_variant{Variant::treatment("b", VariantConfig::default())}
+
+        assert!(no_control.validate().is_err())
+    }
+
+    #[test]
+    fn test_experiment_builder() {
+        let exp = ExperimentBuilder::new("builder-test")
+            |control{"baseline", VariantConfig::default()}
+            |treatment{"new-prompt", VariantConfig::default()}
+            |hypothesis{"New prompt improves response quality"}
+            |primary_metric{MetricType::QualityScore, false}
+            |min_samples{100}
+            |build
+
+        assert!(exp.is_ok())
+        let exp = exp.unwrap()
+        assert_eq!(exp.hypothesis, Some("New prompt improves response quality"))
+    }
+
+    #[test]
+    fn test_status_transitions() {
+        let exp = Experiment::new("status-test")
+            |add_variant{Variant::control("a", VariantConfig::default())}
+            |add_variant{Variant::treatment("b", VariantConfig::default())}
+
+        assert!(matches!(exp.status, ExperimentStatus::Draft))
+        assert!(!exp.is_running())
+        assert!(!exp.is_complete())
+    }
+}

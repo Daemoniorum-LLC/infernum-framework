@@ -1,0 +1,766 @@
+/// Distilled Models for Fast Inference
+///
+/// Implements LCM (Latent Consistency Models), SDXL Turbo, SD Lightning,
+/// and other distilled/accelerated diffusion models for few-step generation.
+
+use crate::core::error::{InfernumError, Result}
+use crate::abaddon::backend::{Tensor, TensorOps, ComputeBackend}
+use crate::diffusion::scheduler::{Scheduler, SchedulerConfig}
+
+// ============================================================================
+// LCM (Latent Consistency Models)
+// ============================================================================
+
+/// LCM scheduler configuration
+pub struct LCMSchedulerConfig {
+    /// Number of training timesteps
+    pub num_train_timesteps: u32,
+    /// Beta schedule type
+    pub beta_schedule: BetaSchedule,
+    /// Beta start
+    pub beta_start: f32,
+    /// Beta end
+    pub beta_end: f32,
+    /// Original inference steps (for timestep mapping)
+    pub original_inference_steps: u32,
+    /// Clip sample
+    pub clip_sample: bool,
+    /// Clip sample range
+    pub clip_sample_range: f32,
+    /// Set alpha to one at final step
+    pub set_alpha_to_one: bool,
+    /// Timestep spacing
+    pub timestep_spacing: TimestepSpacing,
+    /// Prediction type
+    pub prediction_type: PredictionType,
+}
+
+pub enum BetaSchedule {
+    Linear,
+    ScaledLinear,
+    SquaredCosCapV2,
+}
+
+pub enum TimestepSpacing {
+    Leading,
+    Trailing,
+    Linspace,
+}
+
+pub enum PredictionType {
+    Epsilon,
+    Sample,
+    VPrediction,
+}
+
+impl LCMSchedulerConfig {
+    pub fn default() -> Self {
+        Self {
+            num_train_timesteps: 1000,
+            beta_schedule: BetaSchedule::ScaledLinear,
+            beta_start: 0.00085,
+            beta_end: 0.012,
+            original_inference_steps: 50,
+            clip_sample: false,
+            clip_sample_range: 1.0,
+            set_alpha_to_one: true,
+            timestep_spacing: TimestepSpacing::Leading,
+            prediction_type: PredictionType::Epsilon,
+        }
+    }
+
+    pub fn lcm_sdxl() -> Self {
+        Self {
+            num_train_timesteps: 1000,
+            beta_schedule: BetaSchedule::ScaledLinear,
+            beta_start: 0.00085,
+            beta_end: 0.012,
+            original_inference_steps: 50,
+            clip_sample: false,
+            clip_sample_range: 1.0,
+            set_alpha_to_one: true,
+            timestep_spacing: TimestepSpacing::Leading,
+            prediction_type: PredictionType::Epsilon,
+        }
+    }
+}
+
+/// LCM Scheduler for few-step inference
+pub struct LCMScheduler<B: ComputeBackend> {
+    config: LCMSchedulerConfig,
+    /// Precomputed alphas
+    alphas_cumprod: Tensor<B>,
+    /// Final alpha
+    final_alpha_cumprod: f32,
+    /// Current timesteps
+    timesteps: Vec<u32>,
+    /// Number of inference steps
+    num_inference_steps: u32,
+}
+
+impl<B: ComputeBackend> LCMScheduler<B> {
+    pub fn new(config: LCMSchedulerConfig, backend: &B) -> Result<Self!> {
+        let betas! = compute_betas(&config, backend)?
+        let alphas! = (1.0 - betas.clone())?
+        let alphas_cumprod! = alphas.cumprod(0)?
+
+        let final_alpha_cumprod = if config.set_alpha_to_one {
+            1.0
+        } else {
+            alphas_cumprod.slice([0])?.item::<f32>()?
+        }
+
+        Ok(Self {
+            config,
+            alphas_cumprod,
+            final_alpha_cumprod,
+            timesteps: Vec::new(),
+            num_inference_steps: 0,
+        })
+    }
+
+    /// Set timesteps for inference
+    pub fn set_timesteps(&mut self, num_inference_steps: u32) -> Result<()!> {
+        self.num_inference_steps = num_inference_steps
+
+        // LCM uses a special timestep schedule
+        let lcm_origin_timesteps = self.config.original_inference_steps
+        let c = self.config.num_train_timesteps / lcm_origin_timesteps
+
+        // Get LCM timesteps
+        let lcm_timesteps: Vec<u32> = (1..=num_inference_steps)
+            .map(|i| {
+                let step = (i as f32 / num_inference_steps as f32
+                    * lcm_origin_timesteps as f32)
+                    .ceil() as u32
+                ((step * c) - 1).min(self.config.num_train_timesteps - 1)
+            })
+            .collect()
+
+        self.timesteps = lcm_timesteps
+        self.timesteps.reverse()  // From high noise to low
+
+        Ok(())
+    }
+
+    /// Single denoising step
+    pub fn step(
+        &self,
+        model_output: &Tensor<B>,
+        timestep: u32,
+        sample: &Tensor<B>,
+    ) -> Result<SchedulerOutput<B>!> {
+        let step_idx = self.timesteps.iter().position(|&t| t == timestep)
+            .ok_or(InfernumError::InvalidTimestep { timestep })?
+
+        // Get alpha values
+        let alpha_prod_t = self.alphas_cumprod.slice([timestep])?.item::<f32>()?
+        let alpha_prod_t_prev = if step_idx < self.timesteps.len() - 1 {
+            let prev_t = self.timesteps[step_idx + 1]
+            self.alphas_cumprod.slice([prev_t])?.item::<f32>()?
+        } else {
+            self.final_alpha_cumprod
+        }
+
+        let beta_prod_t = 1.0 - alpha_prod_t
+        let beta_prod_t_prev = 1.0 - alpha_prod_t_prev
+
+        // Predict x0
+        let predicted_original_sample! = match self.config.prediction_type {
+            PredictionType::Epsilon => {
+                let sqrt_alpha = alpha_prod_t.sqrt()
+                let sqrt_beta = beta_prod_t.sqrt()
+                (sample - sqrt_beta * model_output.clone()) / sqrt_alpha
+            },
+            PredictionType::Sample => model_output.clone(),
+            PredictionType::VPrediction => {
+                let sqrt_alpha = alpha_prod_t.sqrt()
+                let sqrt_beta = beta_prod_t.sqrt()
+                sqrt_alpha * sample.clone() - sqrt_beta * model_output.clone()
+            },
+        }
+
+        // Clip if configured
+        let predicted_original_sample! = if self.config.clip_sample {
+            predicted_original_sample.clamp(
+                -self.config.clip_sample_range,
+                self.config.clip_sample_range,
+            )?
+        } else {
+            predicted_original_sample
+        }
+
+        // Compute prev sample (deterministic)
+        let sqrt_alpha_prev = alpha_prod_t_prev.sqrt()
+        let sqrt_beta_prev = beta_prod_t_prev.sqrt()
+
+        // LCM uses simpler step formula
+        let prev_sample! = sqrt_alpha_prev * predicted_original_sample.clone()
+            + sqrt_beta_prev * model_output.clone()
+
+        Ok(SchedulerOutput {
+            prev_sample,
+            pred_original_sample: Some(predicted_original_sample),
+        })
+    }
+
+    /// Get timesteps
+    pub fn timesteps(&self) -> &[u32] {
+        &self.timesteps
+    }
+}
+
+/// Scheduler output
+pub struct SchedulerOutput<B: ComputeBackend> {
+    pub prev_sample: Tensor<B>,
+    pub pred_original_sample: Option<Tensor<B>>,
+}
+
+// ============================================================================
+// SDXL Turbo / SD Turbo
+// ============================================================================
+
+/// Turbo scheduler configuration (adversarial distillation)
+pub struct TurboSchedulerConfig {
+    /// Number of training timesteps
+    pub num_train_timesteps: u32,
+    /// Sigma data for EDM formulation
+    pub sigma_data: f32,
+    /// Timestep shift
+    pub timestep_shift: f32,
+    /// Min sigma
+    pub sigma_min: f32,
+    /// Max sigma
+    pub sigma_max: f32,
+}
+
+impl TurboSchedulerConfig {
+    pub fn sdxl_turbo() -> Self {
+        Self {
+            num_train_timesteps: 1000,
+            sigma_data: 0.5,
+            timestep_shift: 1.0,
+            sigma_min: 0.0292,
+            sigma_max: 14.6146,
+        }
+    }
+
+    pub fn sd_turbo() -> Self {
+        Self {
+            num_train_timesteps: 1000,
+            sigma_data: 0.5,
+            timestep_shift: 1.0,
+            sigma_min: 0.0292,
+            sigma_max: 14.6146,
+        }
+    }
+}
+
+/// Turbo scheduler for 1-4 step generation
+pub struct TurboScheduler<B: ComputeBackend> {
+    config: TurboSchedulerConfig,
+    /// Current sigmas
+    sigmas: Vec<f32>,
+    /// Current timesteps
+    timesteps: Vec<u32>,
+    _backend: std::marker::PhantomData<B>,
+}
+
+impl<B: ComputeBackend> TurboScheduler<B> {
+    pub fn new(config: TurboSchedulerConfig) -> Self {
+        Self {
+            config,
+            sigmas: Vec::new(),
+            timesteps: Vec::new(),
+            _backend: std::marker::PhantomData,
+        }
+    }
+
+    /// Set timesteps (typically 1-4 for Turbo)
+    pub fn set_timesteps(&mut self, num_inference_steps: u32) {
+        // Turbo uses specific timestep schedules
+        let timesteps = match num_inference_steps {
+            1 => vec![999],
+            2 => vec![999, 499],
+            3 => vec![999, 666, 333],
+            4 => vec![999, 749, 499, 249],
+            n => {
+                // Linear spacing for other step counts
+                (0..n)
+                    .map(|i| ((n - 1 - i) as f32 / (n - 1) as f32 * 999.0) as u32)
+                    .collect()
+            }
+        }
+
+        self.timesteps = timesteps
+
+        // Compute sigmas from timesteps
+        self.sigmas = self.timesteps
+            .iter()
+            .map(|&t| self.timestep_to_sigma(t))
+            .collect()
+        self.sigmas.push(0.0)  // Final sigma = 0
+    }
+
+    fn timestep_to_sigma(&self, timestep: u32) -> f32 {
+        let t_norm = timestep as f32 / (self.config.num_train_timesteps - 1) as f32
+        let log_sigma_min = self.config.sigma_min.ln()
+        let log_sigma_max = self.config.sigma_max.ln()
+
+        (log_sigma_min + t_norm * (log_sigma_max - log_sigma_min)).exp()
+    }
+
+    /// Single denoising step
+    pub fn step(
+        &self,
+        model_output: &Tensor<B>,
+        step_index: usize,
+        sample: &Tensor<B>,
+    ) -> Result<Tensor<B>!> {
+        let sigma = self.sigmas[step_index]
+        let sigma_next = self.sigmas[step_index + 1]
+
+        // EDM formulation
+        let c_out = sigma * self.config.sigma_data
+            / (sigma * sigma + self.config.sigma_data * self.config.sigma_data).sqrt()
+        let c_skip = self.config.sigma_data * self.config.sigma_data
+            / (sigma * sigma + self.config.sigma_data * self.config.sigma_data)
+
+        // Denoised = c_skip * sample + c_out * model_output
+        let denoised! = c_skip * sample.clone() + c_out * model_output.clone()
+
+        // Euler step
+        if sigma_next == 0.0 {
+            Ok(denoised)
+        } else {
+            let d! = (sample - denoised.clone()) / sigma
+            let dt = sigma_next - sigma
+            denoised + d * dt
+        }
+    }
+
+    pub fn timesteps(&self) -> &[u32] {
+        &self.timesteps
+    }
+
+    pub fn sigmas(&self) -> &[f32] {
+        &self.sigmas
+    }
+}
+
+// ============================================================================
+// SD Lightning
+// ============================================================================
+
+/// Lightning scheduler configuration (progressive distillation)
+pub struct LightningSchedulerConfig {
+    /// Base number of steps (power of 2)
+    pub base_steps: u32,
+    /// Number of distillation stages
+    pub num_stages: u32,
+    /// Use CFG-aware distillation
+    pub cfg_aware: bool,
+    /// Timestep discretization
+    pub timestep_discretization: TimestepDiscretization,
+}
+
+pub enum TimestepDiscretization {
+    Uniform,
+    LogSNR,
+    EDM,
+}
+
+impl LightningSchedulerConfig {
+    pub fn sd_lightning_1step() -> Self {
+        Self {
+            base_steps: 1,
+            num_stages: 4,
+            cfg_aware: true,
+            timestep_discretization: TimestepDiscretization::EDM,
+        }
+    }
+
+    pub fn sd_lightning_2step() -> Self {
+        Self {
+            base_steps: 2,
+            num_stages: 4,
+            cfg_aware: true,
+            timestep_discretization: TimestepDiscretization::EDM,
+        }
+    }
+
+    pub fn sd_lightning_4step() -> Self {
+        Self {
+            base_steps: 4,
+            num_stages: 4,
+            cfg_aware: true,
+            timestep_discretization: TimestepDiscretization::EDM,
+        }
+    }
+
+    pub fn sdxl_lightning_1step() -> Self {
+        Self {
+            base_steps: 1,
+            num_stages: 4,
+            cfg_aware: true,
+            timestep_discretization: TimestepDiscretization::EDM,
+        }
+    }
+}
+
+/// Lightning scheduler for 1-8 step generation
+pub struct LightningScheduler<B: ComputeBackend> {
+    config: LightningSchedulerConfig,
+    /// Current timesteps
+    timesteps: Vec<u32>,
+    /// Current sigmas
+    sigmas: Vec<f32>,
+    _backend: std::marker::PhantomData<B>,
+}
+
+impl<B: ComputeBackend> LightningScheduler<B> {
+    pub fn new(config: LightningSchedulerConfig) -> Self {
+        Self {
+            config,
+            timesteps: Vec::new(),
+            sigmas: Vec::new(),
+            _backend: std::marker::PhantomData,
+        }
+    }
+
+    /// Set timesteps
+    pub fn set_timesteps(&mut self, num_inference_steps: u32) {
+        // Lightning uses EDM-style sigma spacing
+        let sigma_min = 0.0292_f32
+        let sigma_max = 14.6146_f32
+        let rho = 7.0_f32
+
+        self.sigmas = (0..=num_inference_steps)
+            .map(|i| {
+                if i == num_inference_steps {
+                    0.0
+                } else {
+                    let t = i as f32 / num_inference_steps as f32
+                    let sigma = (sigma_max.powf(1.0 / rho)
+                        + t * (sigma_min.powf(1.0 / rho) - sigma_max.powf(1.0 / rho)))
+                        .powf(rho)
+                    sigma
+                }
+            })
+            .collect()
+
+        // Convert sigmas to timesteps
+        self.timesteps = self.sigmas[..self.sigmas.len() - 1]
+            .iter()
+            .map(|&sigma| self.sigma_to_timestep(sigma))
+            .collect()
+    }
+
+    fn sigma_to_timestep(&self, sigma: f32) -> u32 {
+        // Approximate mapping
+        let log_sigma = sigma.ln()
+        let t = ((log_sigma - (-3.5)) / (2.7 - (-3.5))).clamp(0.0, 1.0)
+        (t * 999.0) as u32
+    }
+
+    /// Single denoising step (Euler)
+    pub fn step(
+        &self,
+        model_output: &Tensor<B>,
+        step_index: usize,
+        sample: &Tensor<B>,
+    ) -> Result<Tensor<B>!> {
+        let sigma = self.sigmas[step_index]
+        let sigma_next = self.sigmas[step_index + 1]
+
+        // Euler step
+        let d! = (sample - model_output.clone()) / sigma
+        let dt = sigma_next - sigma
+
+        sample + d * dt
+    }
+
+    pub fn timesteps(&self) -> &[u32] {
+        &self.timesteps
+    }
+}
+
+// ============================================================================
+// Hyper-SD
+// ============================================================================
+
+/// Hyper-SD configuration (human feedback distillation)
+pub struct HyperSDConfig {
+    /// Number of inference steps
+    pub num_inference_steps: u32,
+    /// Use LoRA weights
+    pub use_lora: bool,
+    /// LoRA scale
+    pub lora_scale: f32,
+    /// CFG scale (typically lower than base models)
+    pub guidance_scale: f32,
+}
+
+impl HyperSDConfig {
+    pub fn steps_1() -> Self {
+        Self {
+            num_inference_steps: 1,
+            use_lora: true,
+            lora_scale: 1.0,
+            guidance_scale: 0.0,  // No CFG for 1-step
+        }
+    }
+
+    pub fn steps_2() -> Self {
+        Self {
+            num_inference_steps: 2,
+            use_lora: true,
+            lora_scale: 1.0,
+            guidance_scale: 2.0,
+        }
+    }
+
+    pub fn steps_4() -> Self {
+        Self {
+            num_inference_steps: 4,
+            use_lora: true,
+            lora_scale: 0.8,
+            guidance_scale: 4.0,
+        }
+    }
+
+    pub fn steps_8() -> Self {
+        Self {
+            num_inference_steps: 8,
+            use_lora: true,
+            lora_scale: 0.6,
+            guidance_scale: 5.0,
+        }
+    }
+}
+
+// ============================================================================
+// DMD2 (Distribution Matching Distillation)
+// ============================================================================
+
+/// DMD2 scheduler for single-step generation
+pub struct DMD2Scheduler<B: ComputeBackend> {
+    /// Noise level for single step
+    noise_level: f32,
+    _backend: std::marker::PhantomData<B>,
+}
+
+impl<B: ComputeBackend> DMD2Scheduler<B> {
+    pub fn new(noise_level: f32) -> Self {
+        Self {
+            noise_level,
+            _backend: std::marker::PhantomData,
+        }
+    }
+
+    /// Single step generation
+    pub fn step(
+        &self,
+        model_output: &Tensor<B>,
+        noisy_sample: &Tensor<B>,
+    ) -> Result<Tensor<B>!> {
+        // DMD2 uses a simple formula for single-step
+        let alpha = (1.0 - self.noise_level * self.noise_level).sqrt()
+        let sigma = self.noise_level
+
+        // x_0 = (x_t - sigma * eps) / alpha
+        (noisy_sample - sigma * model_output.clone()) / alpha
+    }
+}
+
+// ============================================================================
+// Unified Distilled Pipeline
+// ============================================================================
+
+/// Distillation method type
+pub enum DistillationMethod {
+    LCM(LCMSchedulerConfig),
+    Turbo(TurboSchedulerConfig),
+    Lightning(LightningSchedulerConfig),
+    HyperSD(HyperSDConfig),
+    DMD2 { noise_level: f32 },
+}
+
+/// Unified interface for distilled models
+pub struct DistilledPipeline<B: ComputeBackend> {
+    method: DistillationMethod,
+    /// Recommended number of steps
+    recommended_steps: u32,
+    /// Recommended CFG scale
+    recommended_cfg: f32,
+    _backend: std::marker::PhantomData<B>,
+}
+
+impl<B: ComputeBackend> DistilledPipeline<B> {
+    pub fn lcm(num_steps: u32) -> Self {
+        Self {
+            method: DistillationMethod::LCM(LCMSchedulerConfig::default()),
+            recommended_steps: num_steps.clamp(1, 8),
+            recommended_cfg: 1.0,  // LCM uses embedded guidance
+            _backend: std::marker::PhantomData,
+        }
+    }
+
+    pub fn turbo(num_steps: u32) -> Self {
+        Self {
+            method: DistillationMethod::Turbo(TurboSchedulerConfig::sdxl_turbo()),
+            recommended_steps: num_steps.clamp(1, 4),
+            recommended_cfg: 0.0,  // Turbo doesn't use CFG
+            _backend: std::marker::PhantomData,
+        }
+    }
+
+    pub fn lightning(num_steps: u32) -> Self {
+        let config = match num_steps {
+            1 => LightningSchedulerConfig::sd_lightning_1step(),
+            2 => LightningSchedulerConfig::sd_lightning_2step(),
+            _ => LightningSchedulerConfig::sd_lightning_4step(),
+        }
+        Self {
+            method: DistillationMethod::Lightning(config),
+            recommended_steps: num_steps.clamp(1, 8),
+            recommended_cfg: 0.0,  // Lightning doesn't use CFG
+            _backend: std::marker::PhantomData,
+        }
+    }
+
+    pub fn hyper(num_steps: u32) -> Self {
+        let config = match num_steps {
+            1 => HyperSDConfig::steps_1(),
+            2 => HyperSDConfig::steps_2(),
+            4 => HyperSDConfig::steps_4(),
+            _ => HyperSDConfig::steps_8(),
+        }
+        Self {
+            method: DistillationMethod::HyperSD(config.clone()),
+            recommended_steps: num_steps.clamp(1, 8),
+            recommended_cfg: config.guidance_scale,
+            _backend: std::marker::PhantomData,
+        }
+    }
+
+    pub fn dmd2() -> Self {
+        Self {
+            method: DistillationMethod::DMD2 { noise_level: 0.5 },
+            recommended_steps: 1,
+            recommended_cfg: 0.0,
+            _backend: std::marker::PhantomData,
+        }
+    }
+
+    /// Get recommended number of steps
+    pub fn recommended_steps(&self) -> u32 {
+        self.recommended_steps
+    }
+
+    /// Get recommended CFG scale
+    pub fn recommended_cfg(&self) -> f32 {
+        self.recommended_cfg
+    }
+
+    /// Check if CFG is needed
+    pub fn needs_cfg(&self) -> bool {
+        self.recommended_cfg > 0.0
+    }
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+fn compute_betas<B: ComputeBackend>(
+    config: &LCMSchedulerConfig,
+    backend: &B,
+) -> Result<Tensor<B>!> {
+    match config.beta_schedule {
+        BetaSchedule::Linear => {
+            Tensor::linspace(config.beta_start, config.beta_end, config.num_train_timesteps as usize)
+        },
+        BetaSchedule::ScaledLinear => {
+            let start = config.beta_start.sqrt()
+            let end = config.beta_end.sqrt()
+            let betas! = Tensor::linspace(start, end, config.num_train_timesteps as usize)?
+            betas.pow(2.0)
+        },
+        BetaSchedule::SquaredCosCapV2 => {
+            compute_squaredcos_cap_v2(config.num_train_timesteps, backend)
+        },
+    }
+}
+
+fn compute_squaredcos_cap_v2<B: ComputeBackend>(
+    num_timesteps: u32,
+    backend: &B,
+) -> Result<Tensor<B>!> {
+    let s = 0.008_f32
+
+    let timesteps! = Tensor::linspace(0.0, num_timesteps as f32, (num_timesteps + 1) as usize)?
+    let alphas_bar! = (((timesteps / num_timesteps as f32 + s) / (1.0 + s) * std::f32::consts::FRAC_PI_2)
+        .cos()?
+        .pow(2.0)?)?
+
+    // betas = 1 - alphas_bar[1:] / alphas_bar[:-1]
+    let alphas_bar_prev! = alphas_bar.slice([..num_timesteps])?
+    let alphas_bar_curr! = alphas_bar.slice([1..])?
+
+    let betas! = (1.0 - alphas_bar_curr / alphas_bar_prev)?
+    betas.clamp(0.0, 0.999)
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_lcm_config() {
+        let config = LCMSchedulerConfig::default()
+        assert_eq!(config.num_train_timesteps, 1000)
+        assert_eq!(config.original_inference_steps, 50)
+    }
+
+    #[test]
+    fn test_turbo_timesteps() {
+        let mut scheduler = TurboScheduler::<MockBackend>::new(TurboSchedulerConfig::sdxl_turbo())
+        scheduler.set_timesteps(4)
+        assert_eq!(scheduler.timesteps().len(), 4)
+        assert_eq!(scheduler.sigmas().len(), 5)  // +1 for final sigma=0
+    }
+
+    #[test]
+    fn test_lightning_config() {
+        let config = LightningSchedulerConfig::sd_lightning_4step()
+        assert_eq!(config.base_steps, 4)
+        assert!(config.cfg_aware)
+    }
+
+    #[test]
+    fn test_hyper_config() {
+        let config = HyperSDConfig::steps_1()
+        assert_eq!(config.num_inference_steps, 1)
+        assert_eq!(config.guidance_scale, 0.0)
+
+        let config = HyperSDConfig::steps_4()
+        assert_eq!(config.guidance_scale, 4.0)
+    }
+
+    #[test]
+    fn test_distilled_pipeline() {
+        let pipeline = DistilledPipeline::<MockBackend>::turbo(1)
+        assert_eq!(pipeline.recommended_steps(), 1)
+        assert!(!pipeline.needs_cfg())
+
+        let pipeline = DistilledPipeline::<MockBackend>::hyper(4)
+        assert!(pipeline.needs_cfg())
+    }
+
+    struct MockBackend;
+}

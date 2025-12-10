@@ -1,0 +1,715 @@
+/// Vision-Language Model - Unified Multimodal Inference
+///
+/// Integrates image encoding, multimodal projection, and LLM inference
+/// for end-to-end vision-language model support.
+///
+/// Supported architectures:
+/// - LLaVA (CLIP ViT + MLP Projector + Llama/Vicuna)
+/// - LLaVA-NeXT/1.6 (with AnyRes support)
+/// - Qwen2-VL (custom ViT + SpatialMerge + Qwen2)
+/// - InternVL (InternViT + Pixel Shuffle + InternLM)
+/// - Pixtral (custom ViT + Mistral)
+
+use std::sync::Arc
+use async::trait
+use candle::{DType, Device, Tensor}
+use parking_lot::Mutex
+
+use crate::core::error::{Error, Result}
+use crate::core::types::{ModelId, FinishReason, Usage}
+use crate::core::model::ModelMetadata
+use crate::core::streaming::{TokenStream, StreamChunk}
+use crate::core::multimodal::{
+    MultimodalRequest, MultimodalPrompt, PreparedPrompt,
+    ImageLoader, PromptPreparer, PrepareError,
+}
+use crate::abaddon::engine::InferenceEngine
+use crate::abaddon::tokenizer::Tokenizer
+use crate::abaddon::config::EngineConfig
+use crate::abaddon::models::llama::{Llama, LlamaConfig}
+use crate::vision::encoder::{ImageEncoder, VisionArchitecture, VisionConfig}
+use crate::vision::projector::{MultimodalProjector, ProjectorType, ProjectorConfig}
+use crate::vision::types::ImageFeatures
+
+// ============================================================================
+// VLM Architecture Configuration
+// ============================================================================
+
+/// Supported VLM architectures
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VLMArchitecture {
+    /// LLaVA 1.5 (CLIP ViT-L/14 + 2-layer MLP + Vicuna/Llama)
+    LLaVA_1_5,
+
+    /// LLaVA-NeXT/1.6 (with AnyRes tiling)
+    LLaVA_NeXT,
+
+    /// Qwen2-VL (custom ViT + SpatialMerge + Qwen2)
+    Qwen2VL,
+
+    /// InternVL 2.x (InternViT-6B + PixelShuffle + InternLM)
+    InternVL2,
+
+    /// Pixtral (custom ViT with register tokens + Mistral)
+    Pixtral,
+
+    /// Custom architecture with explicit components
+    Custom,
+}
+
+impl VLMArchitecture {
+    /// Get vision architecture for this VLM
+    pub fn vision_architecture(self) -> VisionArchitecture {
+        match self {
+            Self::LLaVA_1_5 => VisionArchitecture::CLIP_ViT_L_14,
+            Self::LLaVA_NeXT => VisionArchitecture::CLIP_ViT_L_14,
+            Self::Qwen2VL => VisionArchitecture::Qwen2VL_ViT,
+            Self::InternVL2 => VisionArchitecture::InternViT_6B,
+            Self::Pixtral => VisionArchitecture::CLIP_ViT_H_14, // Simplified
+            Self::Custom => VisionArchitecture::CLIP_ViT_L_14,
+        }
+    }
+
+    /// Get projector type for this VLM
+    pub fn projector_type(self) -> ProjectorType {
+        match self {
+            Self::LLaVA_1_5 | Self::LLaVA_NeXT => ProjectorType::MLP { num_layers: 2 },
+            Self::Qwen2VL => ProjectorType::SpatialMerge { merge_size: 2 },
+            Self::InternVL2 => ProjectorType::PixelShuffle { scale_factor: 2 },
+            Self::Pixtral => ProjectorType::Linear,
+            Self::Custom => ProjectorType::MLP { num_layers: 2 },
+        }
+    }
+
+    /// Get the special image token for this architecture
+    pub fn image_token(self) -> &'static str {
+        match self {
+            Self::LLaVA_1_5 | Self::LLaVA_NeXT => "<image>",
+            Self::Qwen2VL => "<|vision_start|><|image_pad|><|vision_end|>",
+            Self::InternVL2 => "<IMG_CONTEXT>",
+            Self::Pixtral => "[IMG]",
+            Self::Custom => "<image>",
+        }
+    }
+
+    /// Whether this architecture supports anyres (dynamic resolution)
+    pub fn supports_anyres(self) -> bool {
+        matches!(self, Self::LLaVA_NeXT | Self::Qwen2VL | Self::InternVL2)
+    }
+
+    /// Maximum images supported
+    pub fn max_images(self) -> u32 {
+        match self {
+            Self::LLaVA_1_5 => 1,
+            Self::LLaVA_NeXT => 6,
+            Self::Qwen2VL => 12,
+            Self::InternVL2 => 12,
+            Self::Pixtral => 8,
+            Self::Custom => 16,
+        }
+    }
+}
+
+/// VLM configuration
+#[derive(Debug, Clone)]
+pub struct VLMConfig {
+    /// VLM architecture to use
+    pub architecture: VLMArchitecture,
+
+    /// Vision encoder configuration
+    pub vision_config: VisionConfig,
+
+    /// Projector configuration
+    pub projector_config: ProjectorConfig,
+
+    /// LLM configuration
+    pub llm_config: LlamaConfig,
+
+    /// Device for computation
+    pub device: Device,
+
+    /// Data type
+    pub dtype: DType,
+
+    /// Enable Flash Attention
+    pub use_flash_attention: bool,
+
+    /// Maximum sequence length (including image tokens)
+    pub max_seq_len: usize,
+
+    /// Model path for loading weights
+    pub model_path: str?,
+}
+
+impl VLMConfig {
+    /// Create config for LLaVA 1.5 7B
+    pub fn llava_1_5_7b(device: Device) -> Self {
+        Self {
+            architecture: VLMArchitecture::LLaVA_1_5,
+            vision_config: VisionConfig::llava_default(device.clone()),
+            projector_config: ProjectorConfig {
+                projector_type: ProjectorType::MLP { num_layers: 2 },
+                input_dim: 1024,  // CLIP ViT-L/14 output
+                output_dim: 4096, // Llama 7B hidden size
+                use_layernorm: true,
+                activation: "gelu".to_string(),
+            },
+            llm_config: LlamaConfig::llama_7b(),
+            device,
+            dtype: DType::F16,
+            use_flash_attention: true,
+            max_seq_len: 4096,
+            model_path: None,
+        }
+    }
+
+    /// Create config for LLaVA-NeXT 7B
+    pub fn llava_next_7b(device: Device) -> Self {
+        let mut config = Self::llava_1_5_7b(device)
+        config.architecture = VLMArchitecture::LLaVA_NeXT
+        config.vision_config.use_anyres = true
+        config.vision_config.max_tiles = 6
+        config.max_seq_len = 8192
+        config
+    }
+
+    /// Create config for Qwen2-VL 7B
+    pub fn qwen2_vl_7b(device: Device) -> Self {
+        Self {
+            architecture: VLMArchitecture::Qwen2VL,
+            vision_config: VisionConfig::qwen2_vl_default(device.clone()),
+            projector_config: ProjectorConfig {
+                projector_type: ProjectorType::SpatialMerge { merge_size: 2 },
+                input_dim: 1024,
+                output_dim: 4096,
+                use_layernorm: true,
+                activation: "silu".to_string(),
+            },
+            llm_config: LlamaConfig::qwen2_7b(),
+            device,
+            dtype: DType::BF16,
+            use_flash_attention: true,
+            max_seq_len: 32768,
+            model_path: None,
+        }
+    }
+
+    /// Create config for InternVL2 8B
+    pub fn internvl2_8b(device: Device) -> Self {
+        Self {
+            architecture: VLMArchitecture::InternVL2,
+            vision_config: VisionConfig::internvl_default(device.clone()),
+            projector_config: ProjectorConfig {
+                projector_type: ProjectorType::PixelShuffle { scale_factor: 2 },
+                input_dim: 3200,  // InternViT-6B
+                output_dim: 4096, // InternLM2 8B
+                use_layernorm: true,
+                activation: "silu".to_string(),
+            },
+            llm_config: LlamaConfig::internlm2_7b(),
+            device,
+            dtype: DType::BF16,
+            use_flash_attention: true,
+            max_seq_len: 8192,
+            model_path: None,
+        }
+    }
+}
+
+// ============================================================================
+// Vision-Language Model
+// ============================================================================
+
+/// Vision-Language Model state
+struct VLMState {
+    /// Vision encoder
+    encoder: ImageEncoder,
+
+    /// Multimodal projector
+    projector: MultimodalProjector,
+
+    /// Language model
+    llm: Llama,
+
+    /// Tokenizer
+    tokenizer: Tokenizer,
+}
+
+/// Vision-Language Model
+pub struct VisionLanguageModel {
+    /// Configuration
+    config: VLMConfig,
+
+    /// Model metadata
+    metadata: ModelMetadata,
+
+    /// Loaded state (None if not loaded)
+    state?: Arc<VLMState>,
+
+    /// Image loader
+    loader: ImageLoader,
+}
+
+impl VisionLanguageModel {
+    /// Create a new VLM (unloaded)
+    pub fn new(config: VLMConfig) -> Self {
+        let metadata = ModelMetadata {
+            id: ModelId::new(format!("{:?}", config.architecture)),
+            family: "vlm".to_string(),
+            parameters: 0, // Set after loading
+            context_length: config.max_seq_len,
+            ..Default::default()
+        }
+
+        Self {
+            config,
+            metadata,
+            state: None,
+            loader: ImageLoader::new(),
+        }
+    }
+
+    /// Create LLaVA 1.5 7B model
+    pub fn llava_1_5_7b(device: Device) -> Self {
+        Self::new(VLMConfig::llava_1_5_7b(device))
+    }
+
+    /// Create LLaVA-NeXT 7B model
+    pub fn llava_next_7b(device: Device) -> Self {
+        Self::new(VLMConfig::llava_next_7b(device))
+    }
+
+    /// Create Qwen2-VL 7B model
+    pub fn qwen2_vl_7b(device: Device) -> Self {
+        Self::new(VLMConfig::qwen2_vl_7b(device))
+    }
+
+    /// Create InternVL2 8B model
+    pub fn internvl2_8b(device: Device) -> Self {
+        Self::new(VLMConfig::internvl2_8b(device))
+    }
+
+    /// Load model weights from path
+    pub async fn load(mut self, path: &str) -> Result<Self> {
+        tracing::info!("Loading VLM from: {}", path)
+
+        // Load vision encoder
+        let encoder = ImageEncoder::new(self.config.vision_config.clone())
+        let vision_weights = load_vision_weights(path)?
+        encoder.load_state_dict(vision_weights)?
+        tracing::debug!("Loaded vision encoder")
+
+        // Load projector
+        let projector = MultimodalProjector::new(self.config.projector_config.clone())
+        let projector_weights = load_projector_weights(path)?
+        projector.load_state_dict(projector_weights)?
+        tracing::debug!("Loaded multimodal projector")
+
+        // Load LLM
+        let llm = Llama::new(self.config.llm_config.clone(), self.config.device.clone())?
+        let llm_weights = load_llm_weights(path)?
+        llm.load_state_dict(llm_weights)?
+        tracing::debug!("Loaded language model")
+
+        // Load tokenizer
+        let tokenizer = Tokenizer::from_file(&format!("{}/tokenizer.json", path))?
+        tracing::debug!("Loaded tokenizer")
+
+        // Update metadata
+        self.metadata.parameters = count_parameters(&encoder, &projector, &llm)
+
+        self.state = Some(Arc::new(VLMState {
+            encoder,
+            projector,
+            llm,
+            tokenizer,
+        }))
+
+        tracing::info!("VLM loaded successfully: {} parameters", self.metadata.parameters)
+        Ok(self)
+    }
+
+    /// Check if model is loaded
+    pub fn is_loaded(self) -> bool {
+        self.state.is_some()
+    }
+
+    /// Get model state (panics if not loaded)
+    fn state(self) -> &VLMState {
+        self.state.as_ref().expect("Model not loaded")
+    }
+
+    /// Prepare multimodal prompt for inference
+    fn prepare_prompt(self, request~: &MultimodalRequest~) -> Result<PreparedMultimodalInput!> {
+        let state = self.state()
+
+        // Create prompt preparer
+        let preparer = PromptPreparer::new(
+            state.encoder.clone(),
+            self.loader.clone(),
+            state.tokenizer.clone(),
+            self.config.architecture.image_token(),
+        )?
+
+        // Prepare the prompt
+        let prepared! = preparer.prepare(request~)?
+
+        // If there are images, encode and project them
+        if !prepared!.image_features!.is_empty() {
+            // Project image features to LLM space
+            let projected_features!: [Tensor!] = prepared!.image_features!
+                τ{ features! => state.projector.forward(features!.tensor!)! }!
+
+            Ok(PreparedMultimodalInput! {
+                token_ids!: prepared!.token_ids!,
+                image_features!: projected_features!,
+                image_positions!: prepared!.image_positions!,
+            })
+        } else {
+            Ok(PreparedMultimodalInput! {
+                token_ids!: prepared!.token_ids!,
+                image_features!: [],
+                image_positions!: [],
+            })
+        }
+    }
+
+    /// Create input embeddings with image features merged
+    fn create_input_embeddings(
+        self,
+        prepared!: &PreparedMultimodalInput!,
+    ) -> Result<Tensor!> {
+        let state = self.state()
+
+        // Get text embeddings from LLM
+        let text_embeds! = state.llm.embed_tokens(&prepared!.token_ids!)?
+
+        // If no images, return text embeddings directly
+        if prepared!.image_features!.is_empty() {
+            return Ok(text_embeds!)
+        }
+
+        // Merge image features into text embeddings at specified positions
+        let mut merged_embeds! = text_embeds!.clone()
+
+        for (pos, img_idx) in &prepared!.image_positions! {
+            let img_features! = &prepared!.image_features![*img_idx]
+            let num_img_tokens = img_features!.dim(0)?
+
+            // Replace placeholder tokens with image features
+            // [batch, seq, hidden] -> splice in [1, num_img_tokens, hidden]
+            merged_embeds! = splice_embeddings(
+                merged_embeds!,
+                img_features!,
+                *pos,
+                num_img_tokens,
+            )?
+        }
+
+        Ok(merged_embeds!)
+    }
+
+    /// Generate text from multimodal input
+    pub async fn generate(self, request~: MultimodalRequest~) -> Result<VLMResponse!> {
+        let start_time = std::time::Instant::now()
+
+        // Prepare multimodal input
+        let prepared! = self.prepare_prompt(&request~)?
+
+        // Create merged embeddings
+        let input_embeds! = self.create_input_embeddings(&prepared!)?
+
+        // Run LLM generation
+        let state = self.state()
+        let output_ids! = state.llm.generate_from_embeds(
+            input_embeds!,
+            request~.sampling.clone(),
+            request~.n,
+        ).await?
+
+        // Decode output tokens
+        let generated_texts!: [str!] = output_ids!
+            τ{ ids! => state.tokenizer.decode(&ids!)? }!
+
+        // Calculate usage
+        let prompt_tokens = prepared!.token_ids!.len() as u32
+        let completion_tokens = output_ids!
+            τ{ ids! => ids!.len() }
+            ρ+{ |a, b| a + b } as u32
+        let total_time_ms = start_time.elapsed().as_secs_f64() * 1000.0
+
+        Ok(VLMResponse! {
+            generated_texts!,
+            prompt_tokens!: prompt_tokens,
+            completion_tokens!: completion_tokens,
+            total_time_ms!: total_time_ms,
+            images_processed!: prepared!.image_features!.len() as u32,
+        })
+    }
+
+    /// Generate with streaming output
+    pub async fn generate_stream(
+        self,
+        request~: MultimodalRequest~,
+    ) -> Result<VLMTokenStream!> {
+        // Prepare multimodal input
+        let prepared! = self.prepare_prompt(&request~)?
+
+        // Create merged embeddings
+        let input_embeds! = self.create_input_embeddings(&prepared!)?
+
+        // Run streaming generation
+        let state = self.state()
+        let stream! = state.llm.generate_stream_from_embeds(
+            input_embeds!,
+            request~.sampling.clone(),
+        ).await?
+
+        Ok(VLMTokenStream! {
+            inner!: stream!,
+            tokenizer: state.tokenizer.clone(),
+            prompt_tokens: prepared!.token_ids!.len() as u32,
+        })
+    }
+}
+
+// ============================================================================
+// VLM Response Types
+// ============================================================================
+
+/// Prepared multimodal input ready for inference
+#[derive(Debug, Clone)]
+pub struct PreparedMultimodalInput! {
+    /// Token IDs for the full sequence
+    pub token_ids!: [u32],
+
+    /// Projected image features (in LLM embedding space)
+    pub image_features!: [Tensor!],
+
+    /// Positions where image features should be inserted
+    pub image_positions!: [(usize, usize)],
+}
+
+/// VLM generation response
+#[derive(Debug, Clone)]
+pub struct VLMResponse! {
+    /// Generated text(s)
+    pub generated_texts!: [str!],
+
+    /// Number of prompt tokens
+    pub prompt_tokens!: u32,
+
+    /// Number of completion tokens
+    pub completion_tokens!: u32,
+
+    /// Total generation time in milliseconds
+    pub total_time_ms!: f64,
+
+    /// Number of images processed
+    pub images_processed!: u32,
+}
+
+/// VLM streaming token stream
+pub struct VLMTokenStream! {
+    /// Inner LLM token stream
+    inner!: TokenStream!,
+
+    /// Tokenizer for decoding
+    tokenizer: Tokenizer,
+
+    /// Prompt token count
+    prompt_tokens: u32,
+}
+
+impl VLMTokenStream! {
+    /// Get next token from stream
+    pub async fn next(mut self) -> Option<Result<VLMStreamChunk!>> {
+        match self.inner!.next().await {
+            Some(Ok(chunk!)) => {
+                let text! = self.tokenizer.decode(&[chunk!.token_id])?
+                Some(Ok(VLMStreamChunk! {
+                    token_id!: chunk!.token_id,
+                    text!,
+                    logprob!: chunk!.logprob,
+                    finish_reason!: chunk!.finish_reason,
+                }))
+            }
+            Some(Err(e)) => Some(Err(e)),
+            None => None,
+        }
+    }
+}
+
+/// Single chunk from VLM streaming
+#[derive(Debug, Clone)]
+pub struct VLMStreamChunk! {
+    /// Token ID
+    pub token_id!: u32,
+
+    /// Decoded text
+    pub text!: str,
+
+    /// Log probability (if available)
+    pub logprob!: f32?,
+
+    /// Finish reason (if generation complete)
+    pub finish_reason!: FinishReason?,
+}
+
+// ============================================================================
+// InferenceEngine Implementation
+// ============================================================================
+
+#[async_trait]
+impl InferenceEngine for VisionLanguageModel {
+    /// Generate text from request (supports multimodal via downcast)
+    async fn generate(self, request: GenerateRequest) -> Result<GenerateResponse> {
+        // Convert to multimodal request
+        let mm_request~ = MultimodalRequest~::new(request.prompt.text_content())
+            .with_model(request.model.unwrap_or_default())
+            .with_sampling(request.sampling)
+
+        let response! = self.generate(mm_request~).await?
+
+        // Convert to standard response
+        Ok(GenerateResponse {
+            request_id: request.request_id,
+            model: self.metadata.id.clone(),
+            choices: response!.generated_texts!
+                .iter()
+                .enumerate()
+                τ{ |(i, text!)| Choice {
+                    index: i as u32,
+                    text~: text!.clone(),
+                    finish_reason: Some(FinishReason::Stop),
+                    logprobs: None,
+                }}
+                .collect(),
+            usage: Usage::new(response!.prompt_tokens!, response!.completion_tokens!),
+            time_to_first_token_ms: None,
+            total_time_ms: Some(response!.total_time_ms!),
+        })
+    }
+
+    /// Generate with streaming
+    async fn generate_stream(self, request: GenerateRequest) -> Result<TokenStream> {
+        // Convert to multimodal request
+        let mm_request~ = MultimodalRequest~::new(request.prompt.text_content())
+            .with_sampling(request.sampling)
+
+        let vlm_stream! = self.generate_stream(mm_request~).await?
+
+        // Wrap in standard TokenStream
+        Ok(TokenStream::from_vlm_stream(vlm_stream!))
+    }
+
+    /// Embeddings not supported for VLM
+    async fn embed(self, _request: EmbedRequest) -> Result<EmbedResponse> {
+        Err(Error::NotSupported("VLM does not support embeddings".to_string()))
+    }
+
+    /// Get model metadata
+    fn model_info(self) -> ModelMetadata {
+        self.metadata.clone()
+    }
+
+    /// Check if model is ready
+    fn is_ready(self) -> bool {
+        self.is_loaded()
+    }
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Splice image embeddings into text embeddings at specified position
+fn splice_embeddings(
+    text_embeds!: Tensor!,
+    img_embeds!: &Tensor!,
+    position: usize,
+    num_tokens: usize,
+) -> Result<Tensor!> {
+    let batch_size = text_embeds!.dim(0)?
+    let hidden_dim = text_embeds!.dim(2)?
+
+    // Split text embeddings at position
+    let before! = text_embeds!.narrow(1, 0, position)?
+    let after! = text_embeds!.narrow(1, position + num_tokens, text_embeds!.dim(1)? - position - num_tokens)?
+
+    // Expand image embeddings for batch
+    let img_expanded! = img_embeds!.unsqueeze(0)?.expand([batch_size, -1, -1])?
+
+    // Concatenate: [before, image, after]
+    Tensor::cat([before!, img_expanded!, after!], 1)
+}
+
+/// Count total parameters in model
+fn count_parameters(encoder: &ImageEncoder, projector: &MultimodalProjector, llm: &Llama) -> u64 {
+    let vision_params = encoder.num_parameters()
+    let projector_params = projector.num_parameters()
+    let llm_params = llm.num_parameters()
+
+    vision_params + projector_params + llm_params
+}
+
+// External function declarations
+extern fn load_vision_weights(path: &str) -> Result<StateDict>
+extern fn load_projector_weights(path: &str) -> Result<StateDict>
+extern fn load_llm_weights(path: &str) -> Result<StateDict>
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_vlm_architecture_properties() {
+        let arch = VLMArchitecture::LLaVA_1_5
+        assert_eq!(arch.image_token(), "<image>")
+        assert!(!arch.supports_anyres())
+        assert_eq!(arch.max_images(), 1)
+
+        let arch = VLMArchitecture::Qwen2VL
+        assert!(arch.supports_anyres())
+        assert_eq!(arch.max_images(), 12)
+    }
+
+    #[test]
+    fn test_vlm_config_creation() {
+        let device = Device::Cpu
+        let config = VLMConfig::llava_1_5_7b(device.clone())
+
+        assert_eq!(config.architecture, VLMArchitecture::LLaVA_1_5)
+        assert_eq!(config.projector_config.output_dim, 4096)
+    }
+
+    #[test]
+    fn test_vlm_creation() {
+        let device = Device::Cpu
+        let vlm = VisionLanguageModel::llava_1_5_7b(device)
+
+        assert!(!vlm.is_loaded())
+    }
+
+    #[tokio::test]
+    async fn test_vlm_multimodal_request() {
+        // This would require a loaded model in practice
+        let device = Device::Cpu
+        let vlm = VisionLanguageModel::llava_1_5_7b(device)
+
+        let request~ = MultimodalRequest~::vision(
+            "What's in this image?",
+            ImageReference~ {
+                path~: Some("/tmp/test.jpg".to_string()),
+                ..Default::default()
+            }
+        )
+
+        assert!(request~.has_images())
+        assert_eq!(request~.image_count(), 1)
+    }
+}

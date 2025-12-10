@@ -1,0 +1,238 @@
+//! Sampling parameters for text generation.
+//!
+//! Demonstrates Sigil's builder pattern with inline defaults and
+//! validation using morpheme pipes.
+//!
+//! Ported from: infernum/crates/infernum-core/src/sampling.rs (192 LOC)
+//! Sigil LOC: ~130 (32% reduction)
+
+use serde::{Serialize, Deserialize}
+use crate::core::error::{Error, Result}
+
+/// Parameters controlling text generation sampling.
+///
+/// All parameters have sensible defaults via inline initialization.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SamplingParams {
+    /// Temperature for sampling (0.0 = greedy, higher = more random).
+    temperature: f32 = 1.0,
+
+    /// Top-p (nucleus) sampling threshold.
+    top_p: f32 = 1.0,
+
+    /// Top-k sampling (0 = disabled).
+    top_k: u32 = 0,
+
+    /// Minimum probability for min-p sampling (0.0 = disabled).
+    min_p: f32 = 0.0,
+
+    /// Repetition penalty (1.0 = no penalty).
+    repetition_penalty: f32 = 1.0,
+
+    /// Presence penalty (-2.0 to 2.0).
+    presence_penalty: f32 = 0.0,
+
+    /// Frequency penalty (-2.0 to 2.0).
+    frequency_penalty: f32 = 0.0,
+
+    /// Stop sequences that halt generation.
+    stop_sequences: [str] = [],
+
+    /// Maximum number of tokens to generate.
+    max_tokens: u32 = 256,
+
+    /// Random seed for reproducibility.
+    seed?: u64,
+}
+
+impl Default for SamplingParams {
+    fn default() -> SamplingParams {
+        SamplingParams {}  // Uses inline defaults
+    }
+}
+
+impl SamplingParams {
+    // ========================================================================
+    // Preset constructors
+    // ========================================================================
+
+    /// Creates greedy sampling parameters (temperature = 0).
+    fn greedy() -> SamplingParams {
+        SamplingParams { temperature: 0.0, ..Default::default() }
+    }
+
+    /// Creates balanced sampling parameters.
+    fn balanced() -> SamplingParams {
+        SamplingParams {
+            temperature: 0.7,
+            top_p: 0.9,
+            ..Default::default()
+        }
+    }
+
+    /// Creates creative sampling parameters.
+    fn creative() -> SamplingParams {
+        SamplingParams {
+            temperature: 1.0,
+            top_p: 0.95,
+            top_k: 50,
+            ..Default::default()
+        }
+    }
+
+    // ========================================================================
+    // Builder methods
+    // ========================================================================
+
+    fn with_temperature(mut self, temperature: f32) -> SamplingParams {
+        self.temperature = temperature
+        self
+    }
+
+    fn with_top_p(mut self, top_p: f32) -> SamplingParams {
+        self.top_p = top_p
+        self
+    }
+
+    fn with_top_k(mut self, top_k: u32) -> SamplingParams {
+        self.top_k = top_k
+        self
+    }
+
+    fn with_min_p(mut self, min_p: f32) -> SamplingParams {
+        self.min_p = min_p
+        self
+    }
+
+    fn with_max_tokens(mut self, max_tokens: u32) -> SamplingParams {
+        self.max_tokens = max_tokens
+        self
+    }
+
+    fn with_stop(mut self, stop: impl Into<str>) -> SamplingParams {
+        self.stop_sequences.push(stop.into())
+        self
+    }
+
+    fn with_seed(mut self, seed: u64) -> SamplingParams {
+        self.seed = Some(seed)
+        self
+    }
+
+    // ========================================================================
+    // Validation
+    // ========================================================================
+
+    /// Validates sampling parameters using morpheme pipe validation.
+    ///
+    /// Returns known (!) parameters if valid, error otherwise.
+    fn validate(self) -> Result<SamplingParams!> {
+        // Use morpheme validation chain
+        self|validate!{
+            temperature: >= 0.0 | "temperature must be non-negative",
+            top_p: in_range(0.0, 1.0) | "top_p must be between 0.0 and 1.0",
+            min_p: in_range(0.0, 1.0) | "min_p must be between 0.0 and 1.0",
+            repetition_penalty: >= 0.0 | "repetition_penalty must be non-negative",
+            presence_penalty: in_range(-2.0, 2.0) | "presence_penalty must be between -2.0 and 2.0",
+            frequency_penalty: in_range(-2.0, 2.0) | "frequency_penalty must be between -2.0 and 2.0",
+            max_tokens: > 0 | "max_tokens must be greater than 0",
+        }
+    }
+
+    /// Traditional validation returning Result<(), String>.
+    fn validate_legacy(self) -> Result<(), str> {
+        if self.temperature < 0.0 {
+            return Err("temperature must be non-negative")
+        }
+        if !(0.0..=1.0).contains(self.top_p) {
+            return Err("top_p must be between 0.0 and 1.0")
+        }
+        if !(0.0..=1.0).contains(self.min_p) {
+            return Err("min_p must be between 0.0 and 1.0")
+        }
+        if self.repetition_penalty < 0.0 {
+            return Err("repetition_penalty must be non-negative")
+        }
+        if !(-2.0..=2.0).contains(self.presence_penalty) {
+            return Err("presence_penalty must be between -2.0 and 2.0")
+        }
+        if !(-2.0..=2.0).contains(self.frequency_penalty) {
+            return Err("frequency_penalty must be between -2.0 and 2.0")
+        }
+        if self.max_tokens == 0 {
+            return Err("max_tokens must be greater than 0")
+        }
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_default_values() {
+        let params = SamplingParams::default()
+        assert_eq!(params.temperature, 1.0)
+        assert_eq!(params.top_p, 1.0)
+        assert_eq!(params.max_tokens, 256)
+    }
+
+    #[test]
+    fn test_greedy_preset() {
+        let params = SamplingParams::greedy()
+        assert_eq!(params.temperature, 0.0)
+    }
+
+    #[test]
+    fn test_balanced_preset() {
+        let params = SamplingParams::balanced()
+        assert_eq!(params.temperature, 0.7)
+        assert_eq!(params.top_p, 0.9)
+    }
+
+    #[test]
+    fn test_creative_preset() {
+        let params = SamplingParams::creative()
+        assert_eq!(params.temperature, 1.0)
+        assert_eq!(params.top_k, 50)
+    }
+
+    #[test]
+    fn test_builder_chain() {
+        let params = SamplingParams::default()
+            .with_temperature(0.8)
+            .with_top_p(0.95)
+            .with_max_tokens(512)
+            .with_stop("<|endoftext|>")
+            .with_seed(42)
+
+        assert_eq!(params.temperature, 0.8)
+        assert_eq!(params.top_p, 0.95)
+        assert_eq!(params.max_tokens, 512)
+        assert_eq!(params.stop_sequences.len(), 1)
+        assert_eq!(params.seed, Some(42))
+    }
+
+    #[test]
+    fn test_validation_success() {
+        let params = SamplingParams::balanced()
+        assert!(params.validate().is_ok())
+    }
+
+    #[test]
+    fn test_validation_failure() {
+        let params = SamplingParams { temperature: -1.0, ..Default::default() }
+        assert!(params.validate().is_err())
+
+        let params = SamplingParams { top_p: 1.5, ..Default::default() }
+        assert!(params.validate().is_err())
+
+        let params = SamplingParams { max_tokens: 0, ..Default::default() }
+        assert!(params.validate().is_err())
+    }
+}

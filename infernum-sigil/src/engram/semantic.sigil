@@ -1,0 +1,358 @@
+//! Semantic memory (facts and concepts).
+
+use super::{Memory, MemoryType, Importance}
+use std::collections::HashMap
+
+/// A concept in semantic memory.
+#[derive(Debug, Clone)]
+struct Concept {
+    id: str,
+    name: str,
+    definition?: str,
+    embedding?: [f64],
+    relations: HashMap<str, [str]>, // relation -> [target concepts]
+    properties: HashMap<str, str>,
+    importance: Importance,
+}
+
+impl Concept {
+    fn new(id: str, name: str) -> Concept {
+        Concept {
+            id,
+            name,
+            definition: None,
+            embedding: None,
+            relations: HashMap::new(),
+            properties: HashMap::new(),
+            importance: Importance::Medium,
+        }
+    }
+
+    fn with_definition(mut self, definition: str) -> Concept {
+        self.definition = Some(definition);
+        self
+    }
+
+    fn with_embedding(mut self, embedding: [f64]) -> Concept {
+        self.embedding = Some(embedding);
+        self
+    }
+
+    fn add_relation(mut self, relation: str, target: str) {
+        self.relations
+            .entry(relation)
+            .or_insert([])
+            .push(target);
+    }
+
+    fn set_property(mut self, key: str, value: str) {
+        self.properties.insert(key, value);
+    }
+
+    fn to_memory(self) -> Memory {
+        Memory {
+            id: self.id,
+            content: self.definition.unwrap_or(self.name.clone()),
+            memory_type: MemoryType::Semantic,
+            importance: self.importance,
+            timestamp: std::time::Instant::now(),
+            last_accessed: std::time::Instant::now(),
+            access_count: 1,
+            associations: self.relations.values().flatten().cloned().collect(),
+            embedding: self.embedding,
+        }
+    }
+
+    fn related_by(self, relation: &str) -> [str] {
+        self.relations.get(relation).cloned().unwrap_or([])
+    }
+}
+
+/// Semantic memory store.
+struct SemanticMemory {
+    concepts: HashMap<str, Concept>,
+    name_index: HashMap<str, str>, // name -> id
+    embedding_index?: EmbeddingIndex,
+}
+
+/// Index for embedding-based similarity search.
+struct EmbeddingIndex {
+    embeddings: HashMap<str, [f64]>,
+    dimension: usize,
+}
+
+impl EmbeddingIndex {
+    fn new(dimension: usize) -> EmbeddingIndex {
+        EmbeddingIndex {
+            embeddings: HashMap::new(),
+            dimension,
+        }
+    }
+
+    fn add(mut self, id: str, embedding: [f64]) {
+        if embedding.len() == self.dimension {
+            self.embeddings.insert(id, embedding);
+        }
+    }
+
+    fn remove(mut self, id: &str) {
+        self.embeddings.remove(id);
+    }
+
+    fn find_similar(self, query: &[f64], threshold: f64, limit: usize) -> [(str, f64)] {
+        if query.len() != self.dimension {
+            return []
+        }
+
+        let mut results: [(str, f64)] = self.embeddings.iter()
+            |τ{|(id, emb)| (id.clone(), cosine_similarity(query, emb))}
+            |φ{|(_, sim)| *sim >= threshold}
+            |collect();
+
+        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        results.truncate(limit);
+        results
+    }
+}
+
+/// Computes cosine similarity between two vectors.
+fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0
+    }
+
+    let dot: f64 = a.iter().zip(b.iter())|τ{|(x, y)| x * y}|Σ;
+    let norm_a: f64 = a.iter()|τ{|x| x * x}|Σ.sqrt();
+    let norm_b: f64 = b.iter()|τ{|x| x * x}|Σ.sqrt();
+
+    if norm_a == 0.0 || norm_b == 0.0 {
+        0.0
+    } else {
+        dot / (norm_a * norm_b)
+    }
+}
+
+impl SemanticMemory {
+    fn new() -> SemanticMemory {
+        SemanticMemory {
+            concepts: HashMap::new(),
+            name_index: HashMap::new(),
+            embedding_index: None,
+        }
+    }
+
+    fn with_embeddings(dimension: usize) -> SemanticMemory {
+        SemanticMemory {
+            concepts: HashMap::new(),
+            name_index: HashMap::new(),
+            embedding_index: Some(EmbeddingIndex::new(dimension)),
+        }
+    }
+
+    /// Adds a concept.
+    fn add(mut self, concept: Concept) {
+        let id = concept.id.clone();
+        let name = concept.name.clone();
+
+        if let Some(embedding) = &concept.embedding {
+            if let Some(index) = &mut self.embedding_index {
+                index.add(id.clone(), embedding.clone());
+            }
+        }
+
+        self.name_index.insert(name, id.clone());
+        self.concepts.insert(id, concept);
+    }
+
+    /// Adds a concept from text.
+    fn add_concept(mut self, text: &str, embedding: ?&[f64]) {
+        let id = format!("concept_{}", self.concepts.len());
+        let mut concept = Concept::new(id.clone(), text.to_string())
+            .with_definition(text.to_string());
+
+        if let Some(emb) = embedding {
+            concept = concept.with_embedding(emb.to_vec());
+        }
+
+        self.add(concept);
+    }
+
+    /// Adds a procedure (how-to knowledge).
+    fn add_procedure(mut self, name: &str, steps: &str) {
+        let id = format!("procedure_{}", self.concepts.len());
+        let mut concept = Concept::new(id, name.to_string())
+            .with_definition(steps.to_string());
+        concept.set_property("type", "procedure".to_string());
+        self.add(concept);
+    }
+
+    /// Gets a concept by id.
+    fn get(self, id: &str) -> ?&Concept {
+        self.concepts.get(id)
+    }
+
+    /// Gets a concept by name.
+    fn get_by_name(self, name: &str) -> ?&Concept {
+        self.name_index.get(name)
+            .and_then(|id| self.concepts.get(id))
+    }
+
+    /// Searches concepts.
+    fn search(self, query: &str) -> [&Concept] {
+        let query_lower = query.to_lowercase();
+        self.concepts.values()
+            |φ{|c| c.name.to_lowercase().contains(&query_lower) ||
+                   c.definition.as_ref()
+                       .map(|d| d.to_lowercase().contains(&query_lower))
+                       .unwrap_or(false)}
+            |collect()
+    }
+
+    /// Finds similar concepts by embedding.
+    fn find_similar(self, embedding: &[f64], threshold: f64, limit: usize) -> [&Concept] {
+        if let Some(index) = &self.embedding_index {
+            index.find_similar(embedding, threshold, limit)
+                |τ{|(id, _)| self.concepts.get(&id)}
+                |φ{|c| c.is_some()}
+                |τ{|c| c.unwrap()}
+                |collect()
+        } else {
+            []
+        }
+    }
+
+    /// Gets all concepts related to a concept by a relation.
+    fn related(self, concept_id: &str, relation: &str) -> [&Concept] {
+        if let Some(concept) = self.concepts.get(concept_id) {
+            concept.related_by(relation)
+                |τ{|id| self.concepts.get(&id)}
+                |φ{|c| c.is_some()}
+                |τ{|c| c.unwrap()}
+                |collect()
+        } else {
+            []
+        }
+    }
+
+    /// Adds a relation between concepts.
+    fn relate(mut self, from_id: &str, relation: &str, to_id: &str) {
+        if let Some(concept) = self.concepts.get_mut(from_id) {
+            concept.add_relation(relation.to_string(), to_id.to_string());
+        }
+    }
+
+    /// Gets all concepts of a type (by property).
+    fn of_type(self, type_name: &str) -> [&Concept] {
+        self.concepts.values()
+            |φ{|c| c.properties.get("type") == Some(&type_name.to_string())}
+            |collect()
+    }
+
+    /// Counts concepts.
+    fn count(self) -> usize {
+        self.concepts.len()
+    }
+}
+
+/// Semantic network for complex relationships.
+struct SemanticNetwork {
+    memory: SemanticMemory,
+    hierarchies: HashMap<str, [str]>, // parent -> children
+}
+
+impl SemanticNetwork {
+    fn new() -> SemanticNetwork {
+        SemanticNetwork {
+            memory: SemanticMemory::new(),
+            hierarchies: HashMap::new(),
+        }
+    }
+
+    /// Adds a hierarchical relationship.
+    fn add_child(mut self, parent: str, child: str) {
+        self.hierarchies
+            .entry(parent)
+            .or_insert([])
+            .push(child);
+    }
+
+    /// Gets all descendants of a concept.
+    fn descendants(self, concept: &str) -> [str] {
+        let mut all = [];
+        let mut to_process = [concept.to_string()];
+
+        while !to_process.is_empty() {
+            let current = to_process.pop().unwrap();
+            if let Some(children) = self.hierarchies.get(&current) {
+                for child in children {
+                    all.push(child.clone());
+                    to_process.push(child.clone());
+                }
+            }
+        }
+
+        all
+    }
+
+    /// Gets ancestors of a concept.
+    fn ancestors(self, concept: &str) -> [str] {
+        let mut all = [];
+
+        for (parent, children) in &self.hierarchies {
+            if children.contains(&concept.to_string()) {
+                all.push(parent.clone());
+                all.extend(self.ancestors(parent));
+            }
+        }
+
+        all
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_concept() {
+        let c = Concept::new("c1", "Dog")
+            .with_definition("A domesticated mammal");
+
+        assert_eq!(c.name, "Dog");
+        assert!(c.definition.is_some());
+    }
+
+    #[test]
+    fn test_cosine_similarity() {
+        let a = [1.0, 0.0, 0.0];
+        let b = [1.0, 0.0, 0.0];
+        assert!((cosine_similarity(&a, &b) - 1.0).abs() < 1e-6);
+
+        let c = [0.0, 1.0, 0.0];
+        assert!(cosine_similarity(&a, &c).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_semantic_memory() {
+        let mut sm = SemanticMemory::new();
+        sm.add(Concept::new("c1", "Cat"));
+        sm.add(Concept::new("c2", "Dog"));
+
+        assert_eq!(sm.count(), 2);
+        assert!(sm.get_by_name("Cat").is_some());
+    }
+
+    #[test]
+    fn test_search() {
+        let mut sm = SemanticMemory::new();
+        sm.add(Concept::new("c1", "Black cat").with_definition("A dark feline"));
+        sm.add(Concept::new("c2", "White dog"));
+
+        let results = sm.search("cat");
+        assert_eq!(results.len(), 1);
+    }
+}

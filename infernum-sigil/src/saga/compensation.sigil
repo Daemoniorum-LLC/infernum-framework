@@ -1,0 +1,160 @@
+//! Compensation handling for saga rollback.
+
+/// Result of compensation.
+#[derive(Debug, Clone)]
+enum CompensationResult {
+    Success,
+    Failure(str),
+}
+
+/// A compensation action.
+#[derive(Debug, Clone)]
+struct Compensation {
+    step_name: str,
+    status: CompensationStatus,
+    executed_at: ?std::time::Instant,
+    error: ?str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompensationStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed,
+}
+
+impl Compensation {
+    fn new(step_name: &str) -> Compensation {
+        Compensation {
+            step_name: step_name.to_string(),
+            status: CompensationStatus::Pending,
+            executed_at: None,
+            error: None,
+        }
+    }
+
+    fn execute(mut self) {
+        self.status = CompensationStatus::Running;
+        self.executed_at = Some(std::time::Instant::now());
+    }
+
+    fn complete(mut self) {
+        self.status = CompensationStatus::Completed;
+    }
+
+    fn fail(mut self, error: &str) {
+        self.status = CompensationStatus::Failed;
+        self.error = Some(error.to_string());
+    }
+
+    fn is_pending(self) -> bool {
+        self.status == CompensationStatus::Pending
+    }
+
+    fn is_running(self) -> bool {
+        self.status == CompensationStatus::Running
+    }
+
+    fn is_completed(self) -> bool {
+        self.status == CompensationStatus::Completed
+    }
+
+    fn is_failed(self) -> bool {
+        self.status == CompensationStatus::Failed
+    }
+
+    fn has_error(self) -> bool {
+        self.error.is_some()
+    }
+}
+
+impl CompensationResult {
+    fn is_success(self) -> bool {
+        matches!(self, CompensationResult::Success)
+    }
+
+    fn is_failure(self) -> bool {
+        matches!(self, CompensationResult::Failure(_))
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_compensation_creation() {
+        let comp = Compensation::new("refund_payment");
+        assert_eq!(comp.step_name, "refund_payment");
+        assert!(comp.is_pending());
+        assert!(comp.executed_at.is_none());
+        assert!(!comp.has_error());
+    }
+
+    #[test]
+    fn test_compensation_execute() {
+        let mut comp = Compensation::new("restore_inventory");
+        comp.execute();
+
+        assert!(comp.is_running());
+        assert!(comp.executed_at.is_some());
+    }
+
+    #[test]
+    fn test_compensation_complete() {
+        let mut comp = Compensation::new("cancel_order");
+        comp.execute();
+        comp.complete();
+
+        assert!(comp.is_completed());
+    }
+
+    #[test]
+    fn test_compensation_fail() {
+        let mut comp = Compensation::new("refund_failed");
+        comp.execute();
+        comp.fail("Payment gateway error");
+
+        assert!(comp.is_failed());
+        assert!(comp.has_error());
+        assert_eq!(comp.error, Some("Payment gateway error".to_string()));
+    }
+
+    #[test]
+    fn test_compensation_status_variants() {
+        assert!(matches!(CompensationStatus::Pending, CompensationStatus::Pending));
+        assert!(matches!(CompensationStatus::Running, CompensationStatus::Running));
+        assert!(matches!(CompensationStatus::Completed, CompensationStatus::Completed));
+        assert!(matches!(CompensationStatus::Failed, CompensationStatus::Failed));
+    }
+
+    #[test]
+    fn test_compensation_result_success() {
+        let r = CompensationResult::Success;
+        assert!(r.is_success());
+        assert!(!r.is_failure());
+    }
+
+    #[test]
+    fn test_compensation_result_failure() {
+        let r = CompensationResult::Failure("rollback error".to_string());
+        assert!(!r.is_success());
+        assert!(r.is_failure());
+    }
+
+    #[test]
+    fn test_compensation_lifecycle() {
+        let mut comp = Compensation::new("full_lifecycle");
+
+        assert!(comp.is_pending());
+        comp.execute();
+        assert!(comp.is_running());
+        comp.complete();
+        assert!(comp.is_completed());
+    }
+}

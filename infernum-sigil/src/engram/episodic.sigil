@@ -1,0 +1,314 @@
+//! Episodic memory (events and experiences).
+
+use super::{Memory, MemoryType, Importance}
+use std::collections::HashMap
+
+/// An episode (event memory).
+#[derive(Debug, Clone)]
+struct Episode {
+    id: str,
+    content: str,
+    context: str,
+    timestamp: std::time::Instant,
+    importance: Importance,
+    emotional_valence: f64, // -1.0 to 1.0
+    associations: [str],
+    strength: f64,
+}
+
+impl Episode {
+    fn new(id: str, content: str) -> Episode {
+        Episode {
+            id,
+            content,
+            context: "".to_string(),
+            timestamp: std::time::Instant::now(),
+            importance: Importance::Medium,
+            emotional_valence: 0.0,
+            associations: [],
+            strength: 1.0,
+        }
+    }
+
+    fn from_memory(memory: &Memory) -> Episode {
+        Episode {
+            id: memory.id.clone(),
+            content: memory.content.clone(),
+            context: "".to_string(),
+            timestamp: memory.timestamp,
+            importance: memory.importance,
+            emotional_valence: 0.0,
+            associations: memory.associations.clone(),
+            strength: memory.strength(),
+        }
+    }
+
+    fn to_memory(self) -> Memory {
+        Memory {
+            id: self.id,
+            content: self.content,
+            memory_type: MemoryType::Episodic,
+            importance: self.importance,
+            timestamp: self.timestamp,
+            last_accessed: std::time::Instant::now(),
+            access_count: 1,
+            associations: self.associations,
+            embedding: None,
+        }
+    }
+
+    fn with_context(mut self, context: str) -> Episode {
+        self.context = context;
+        self
+    }
+
+    fn with_valence(mut self, valence: f64) -> Episode {
+        self.emotional_valence = valence.clamp(-1.0, 1.0);
+        self
+    }
+
+    fn with_importance(mut self, importance: Importance) -> Episode {
+        self.importance = importance;
+        self
+    }
+
+    fn decay(mut self, rate: f64) {
+        self.strength *= (1.0 - rate);
+    }
+
+    fn reinforce(mut self, amount: f64) {
+        self.strength = (self.strength + amount).min(1.0);
+    }
+}
+
+/// Episodic memory store.
+struct EpisodicMemory {
+    episodes: HashMap<str, Episode>,
+    temporal_index: [str], // Ordered by timestamp
+    max_episodes: usize,
+}
+
+impl EpisodicMemory {
+    fn new() -> EpisodicMemory {
+        EpisodicMemory {
+            episodes: HashMap::new(),
+            temporal_index: [],
+            max_episodes: 10000,
+        }
+    }
+
+    fn with_capacity(capacity: usize) -> EpisodicMemory {
+        EpisodicMemory {
+            episodes: HashMap::new(),
+            temporal_index: [],
+            max_episodes: capacity,
+        }
+    }
+
+    /// Adds an episode.
+    fn add(mut self, episode: Episode) {
+        let id = episode.id.clone();
+
+        // Remove oldest if at capacity
+        if self.episodes.len() >= self.max_episodes {
+            if let Some(oldest_id) = self.temporal_index.first().cloned() {
+                self.episodes.remove(&oldest_id);
+                self.temporal_index.remove(0);
+            }
+        }
+
+        self.episodes.insert(id.clone(), episode);
+        self.temporal_index.push(id);
+    }
+
+    /// Gets an episode by id.
+    fn get(self, id: &str) -> ?&Episode {
+        self.episodes.get(id)
+    }
+
+    /// Searches episodes.
+    fn search(self, query: &str) -> [&Episode] {
+        let query_lower = query.to_lowercase();
+        self.episodes.values()
+            |φ{|e| e.content.to_lowercase().contains(&query_lower) ||
+                   e.context.to_lowercase().contains(&query_lower)}
+            |collect()
+    }
+
+    /// Gets recent episodes.
+    fn recent(self, count: usize) -> [&Episode] {
+        self.temporal_index.iter().rev()
+            .take(count)
+            |τ{|id| self.episodes.get(id)}
+            |φ{|e| e.is_some()}
+            |τ{|e| e.unwrap()}
+            |collect()
+    }
+
+    /// Gets episodes in a time range.
+    fn in_range(self, start: std::time::Instant, end: std::time::Instant) -> [&Episode] {
+        self.episodes.values()
+            |φ{|e| e.timestamp >= start && e.timestamp <= end}
+            |collect()
+    }
+
+    /// Gets episodes by emotional valence.
+    fn by_valence(self, min: f64, max: f64) -> [&Episode] {
+        self.episodes.values()
+            |φ{|e| e.emotional_valence >= min && e.emotional_valence <= max}
+            |collect()
+    }
+
+    /// Gets positive episodes.
+    fn positive(self) -> [&Episode] {
+        self.by_valence(0.3, 1.0)
+    }
+
+    /// Gets negative episodes.
+    fn negative(self) -> [&Episode] {
+        self.by_valence(-1.0, -0.3)
+    }
+
+    /// Applies decay to all episodes.
+    fn decay(mut self, rate: f64) {
+        for episode in self.episodes.values_mut() {
+            episode.decay(rate);
+        }
+    }
+
+    /// Removes weak episodes.
+    fn remove_weak(mut self, threshold: f64) {
+        let weak_ids: [str] = self.episodes.iter()
+            |φ{|(_, e)| e.strength < threshold}
+            |τ{|(id, _)| id.clone()}
+            |collect();
+
+        for id in weak_ids {
+            self.episodes.remove(&id);
+            self.temporal_index.retain(|i| i != &id);
+        }
+    }
+
+    /// Reinforces episodes matching a pattern.
+    fn reinforce_matching(mut self, pattern: &str, amount: f64) {
+        let pattern_lower = pattern.to_lowercase();
+        for episode in self.episodes.values_mut() {
+            if episode.content.to_lowercase().contains(&pattern_lower) {
+                episode.reinforce(amount);
+            }
+        }
+    }
+
+    /// Gets related episodes (by associations).
+    fn related_to(self, episode_id: &str) -> [&Episode] {
+        if let Some(episode) = self.episodes.get(episode_id) {
+            episode.associations.iter()
+                |τ{|id| self.episodes.get(id)}
+                |φ{|e| e.is_some()}
+                |τ{|e| e.unwrap()}
+                |collect()
+        } else {
+            []
+        }
+    }
+
+    /// Creates an association between episodes.
+    fn associate(mut self, id1: &str, id2: &str) {
+        if let Some(e1) = self.episodes.get_mut(id1) {
+            if !e1.associations.contains(&id2.to_string()) {
+                e1.associations.push(id2.to_string());
+            }
+        }
+        if let Some(e2) = self.episodes.get_mut(id2) {
+            if !e2.associations.contains(&id1.to_string()) {
+                e2.associations.push(id1.to_string());
+            }
+        }
+    }
+
+    /// Gets episode count.
+    fn count(self) -> usize {
+        self.episodes.len()
+    }
+}
+
+/// Episode chain (sequence of related episodes).
+#[derive(Debug, Clone)]
+struct EpisodeChain {
+    episodes: [str],
+    start_time: std::time::Instant,
+    end_time?: std::time::Instant,
+}
+
+impl EpisodeChain {
+    fn new(first_episode: str) -> EpisodeChain {
+        EpisodeChain {
+            episodes: [first_episode],
+            start_time: std::time::Instant::now(),
+            end_time: None,
+        }
+    }
+
+    fn add(mut self, episode_id: str) {
+        self.episodes.push(episode_id);
+    }
+
+    fn close(mut self) {
+        self.end_time = Some(std::time::Instant::now());
+    }
+
+    fn is_open(self) -> bool {
+        self.end_time.is_none()
+    }
+
+    fn length(self) -> usize {
+        self.episodes.len()
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_episode_creation() {
+        let e = Episode::new("e1", "Met a friend")
+            .with_valence(0.8)
+            .with_importance(Importance::High);
+
+        assert!(e.emotional_valence > 0.0);
+        assert_eq!(e.importance, Importance::High);
+    }
+
+    #[test]
+    fn test_decay() {
+        let mut e = Episode::new("e1", "Test");
+        e.strength = 1.0;
+        e.decay(0.1);
+        assert!(e.strength < 1.0);
+    }
+
+    #[test]
+    fn test_episodic_memory() {
+        let mut em = EpisodicMemory::new();
+        em.add(Episode::new("e1", "First event"));
+        em.add(Episode::new("e2", "Second event"));
+
+        assert_eq!(em.count(), 2);
+        assert!(em.get("e1").is_some());
+    }
+
+    #[test]
+    fn test_search() {
+        let mut em = EpisodicMemory::new();
+        em.add(Episode::new("e1", "Happy birthday party"));
+        em.add(Episode::new("e2", "Sad goodbye"));
+
+        let results = em.search("birthday");
+        assert_eq!(results.len(), 1);
+    }
+}

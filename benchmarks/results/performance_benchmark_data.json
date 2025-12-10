@@ -1,0 +1,1542 @@
+{
+  "timestamp": "2025-12-03T22:57:40.478733",
+  "modules": {
+    "abaddon": {
+      "name": "abaddon",
+      "benchmarks": [
+        {
+          "name": "inference_throughput_7B",
+          "description": "Throughput test: 1000 requests, 7B model",
+          "latency": {
+            "min": 30.49240300990355,
+            "max": 61.25717046511021,
+            "mean": 44.46262119230324,
+            "median": 44.46014384269088,
+            "p50": 44.46174142744356,
+            "p95": 52.316213782035305,
+            "p99": 54.86115365151344,
+            "stddev": 4.541728138454769,
+            "samples": 1000
+          },
+          "throughput": {
+            "requests_per_sec": 22.490801783254003,
+            "tokens_per_sec": 17272.935769539075,
+            "total_requests": 1000,
+            "duration_sec": 44.462621192303196
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "batch_scaling_1",
+          "description": "Batch size 1 throughput",
+          "latency": {
+            "min": 32.72535554711508,
+            "max": 57.36827326914731,
+            "mean": 44.46197983222802,
+            "median": 44.61678522082781,
+            "p50": 44.70090939837633,
+            "p95": 51.43281338133118,
+            "p99": 57.36827326914731,
+            "stddev": 4.047352961069779,
+            "samples": 100
+          },
+          "throughput": {
+            "requests_per_sec": 22.4911262110545,
+            "tokens_per_sec": 17273.184930089854,
+            "total_requests": 100,
+            "duration_sec": 4.446197983222802
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "batch_scaling_2",
+          "description": "Batch size 2 throughput",
+          "latency": {
+            "min": 37.98283326912504,
+            "max": 60.38902327483944,
+            "mean": 50.5819721298881,
+            "median": 50.33588650658743,
+            "p50": 50.36927477219306,
+            "p95": 59.437333395301295,
+            "p99": 60.38902327483944,
+            "stddev": 4.6595689407219325,
+            "samples": 100
+          },
+          "throughput": {
+            "requests_per_sec": 39.53977901186323,
+            "tokens_per_sec": 30366.550281110965,
+            "total_requests": 200,
+            "duration_sec": 5.058197212988809
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 2
+        },
+        {
+          "name": "batch_scaling_4",
+          "description": "Batch size 4 throughput",
+          "latency": {
+            "min": 50.66920080126395,
+            "max": 76.02538761620755,
+            "mean": 64.57269478656485,
+            "median": 64.7902893365025,
+            "p50": 64.89351918599104,
+            "p95": 74.38503788128705,
+            "p99": 76.02538761620755,
+            "stddev": 6.0717436046078,
+            "samples": 100
+          },
+          "throughput": {
+            "requests_per_sec": 61.945687929261524,
+            "tokens_per_sec": 47574.28832967285,
+            "total_requests": 400,
+            "duration_sec": 6.457269478656487
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 4
+        },
+        {
+          "name": "batch_scaling_8",
+          "description": "Batch size 8 throughput",
+          "latency": {
+            "min": 70.90659953495056,
+            "max": 120.66747544780858,
+            "mean": 92.10814577157254,
+            "median": 92.96452445911034,
+            "p50": 93.03618669995019,
+            "p95": 106.90031741045779,
+            "p99": 120.66747544780858,
+            "stddev": 8.742074824356145,
+            "samples": 100
+          },
+          "throughput": {
+            "requests_per_sec": 86.85442457868969,
+            "tokens_per_sec": 66704.19807643368,
+            "total_requests": 800,
+            "duration_sec": 9.210814577157251
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 8
+        },
+        {
+          "name": "batch_scaling_16",
+          "description": "Batch size 16 throughput",
+          "latency": {
+            "min": 101.4392036773757,
+            "max": 179.6831303457307,
+            "mean": 143.6691555549396,
+            "median": 144.2793962995769,
+            "p50": 144.63322119130765,
+            "p95": 164.50574861127942,
+            "p99": 179.6831303457307,
+            "stddev": 14.626773439542951,
+            "samples": 100
+          },
+          "throughput": {
+            "requests_per_sec": 111.36698018581681,
+            "tokens_per_sec": 85529.84078270731,
+            "total_requests": 1600,
+            "duration_sec": 14.366915555493968
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 16
+        },
+        {
+          "name": "batch_scaling_32",
+          "description": "Batch size 32 throughput",
+          "latency": {
+            "min": 172.07941119241946,
+            "max": 311.30128080625616,
+            "mean": 252.06705673156537,
+            "median": 252.0443947397292,
+            "p50": 252.3850528703516,
+            "p95": 291.7668500132223,
+            "p99": 311.30128080625616,
+            "stddev": 27.494232025750332,
+            "samples": 100
+          },
+          "throughput": {
+            "requests_per_sec": 126.95034573311128,
+            "tokens_per_sec": 97497.86552302947,
+            "total_requests": 3200,
+            "duration_sec": 25.206705673156538
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 32
+        },
+        {
+          "name": "context_length_512",
+          "description": "Context length 512 tokens",
+          "latency": {
+            "min": 33.05350706677181,
+            "max": 57.701314354184916,
+            "mean": 44.17724394555972,
+            "median": 43.77097945215674,
+            "p50": 43.80113959376644,
+            "p95": 52.268344267095216,
+            "p99": 56.36180229515755,
+            "stddev": 4.446827507173839,
+            "samples": 200
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 14000.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 25.6
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "context_length_1024",
+          "description": "Context length 1024 tokens",
+          "latency": {
+            "min": 36.72494224752804,
+            "max": 65.88564488204729,
+            "mean": 50.93801668204673,
+            "median": 50.908477017995565,
+            "p50": 50.984911426003784,
+            "p95": 59.85189942329696,
+            "p99": 65.64838211462487,
+            "stddev": 5.305196259609865,
+            "samples": 200
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 14000.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 51.2
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "context_length_2048",
+          "description": "Context length 2048 tokens",
+          "latency": {
+            "min": 46.11710915079106,
+            "max": 80.11286373900873,
+            "mean": 63.13626472427009,
+            "median": 63.422589642569534,
+            "p50": 63.43999629003941,
+            "p95": 76.39606773359617,
+            "p99": 77.74613470933507,
+            "stddev": 7.2510506102570815,
+            "samples": 200
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 14000.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 102.4
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "context_length_4096",
+          "description": "Context length 4096 tokens",
+          "latency": {
+            "min": 67.01128977475874,
+            "max": 114.6783294640909,
+            "mean": 87.48199480738589,
+            "median": 86.92940369415956,
+            "p50": 86.96795864253171,
+            "p95": 100.65326861890458,
+            "p99": 110.03119869672051,
+            "stddev": 8.262430210875037,
+            "samples": 200
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 14000.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 204.8
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "context_length_8192",
+          "description": "Context length 8192 tokens",
+          "latency": {
+            "min": 99.55261887311283,
+            "max": 186.55000165798538,
+            "mean": 137.43388546451462,
+            "median": 136.86713230169948,
+            "p50": 136.88527874665132,
+            "p95": 158.03230841875177,
+            "p99": 174.0107881981856,
+            "stddev": 12.988408493580023,
+            "samples": 200
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 14000.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 409.6
+          },
+          "concurrency": 1
+        }
+      ]
+    },
+    "malphas": {
+      "name": "malphas",
+      "benchmarks": [
+        {
+          "name": "routing_round_robin",
+          "description": "Round Robin routing (5 backends)",
+          "latency": {
+            "min": 4.948093686840233,
+            "max": 7.340925547492145,
+            "mean": 6.159652286175928,
+            "median": 6.158103514776089,
+            "p50": 6.158107799494749,
+            "p95": 6.66593366144523,
+            "p99": 6.863506231872299,
+            "stddev": 0.30776548107168616,
+            "samples": 10000
+          },
+          "throughput": {
+            "requests_per_sec": 162346.82633698126,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "routing_least_connections",
+          "description": "Least Connections routing (5 backends)",
+          "latency": {
+            "min": 15.214113035536982,
+            "max": 21.671683931622017,
+            "mean": 18.490803177545544,
+            "median": 18.500061720340966,
+            "p50": 18.500115170454166,
+            "p95": 19.982399918832,
+            "p99": 20.589468010653338,
+            "stddev": 0.9203152696750236,
+            "samples": 10000
+          },
+          "throughput": {
+            "requests_per_sec": 54080.939069988926,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "routing_latency_optimized",
+          "description": "Latency Optimized routing (5 backends)",
+          "latency": {
+            "min": 49.935258984953286,
+            "max": 76.29929613067716,
+            "mean": 61.60113276692145,
+            "median": 61.62805885164828,
+            "p50": 61.62883297742884,
+            "p95": 66.59661744727903,
+            "p99": 68.56845168212904,
+            "stddev": 3.0733195691439743,
+            "samples": 10000
+          },
+          "throughput": {
+            "requests_per_sec": 16233.467715336807,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "routing_cost_optimized",
+          "description": "Cost Optimized routing (5 backends)",
+          "latency": {
+            "min": 79.02384529168667,
+            "max": 117.22086039595098,
+            "mean": 98.56088513111008,
+            "median": 98.56617146903288,
+            "p50": 98.56620677915127,
+            "p95": 106.87468055613533,
+            "p99": 110.4089173353246,
+            "stddev": 4.9671206814893445,
+            "samples": 10000
+          },
+          "throughput": {
+            "requests_per_sec": 10146.01277849479,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "routing_weighted",
+          "description": "Weighted Multi-Factor routing (5 backends)",
+          "latency": {
+            "min": 99.58900863980197,
+            "max": 145.64757380475942,
+            "mean": 123.32260373308787,
+            "median": 123.2712144360355,
+            "p50": 123.27192114881875,
+            "p95": 133.48159237548788,
+            "p99": 137.69230297400725,
+            "stddev": 6.192643571267824,
+            "samples": 10000
+          },
+          "throughput": {
+            "requests_per_sec": 8108.813548604126,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "routing_capability_based",
+          "description": "Capability Based routing (5 backends)",
+          "latency": {
+            "min": 118.55056238001191,
+            "max": 177.502937980112,
+            "mean": 147.88175202514134,
+            "median": 147.92445870029337,
+            "p50": 147.92521895969142,
+            "p95": 160.06138172014929,
+            "p99": 165.25238129763187,
+            "stddev": 7.453375867459092,
+            "samples": 10000
+          },
+          "throughput": {
+            "requests_per_sec": 6762.159538318081,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "backend_scaling_1",
+          "description": "Weighted routing with 1 backends",
+          "latency": {
+            "min": 83.96033731168092,
+            "max": 119.43552797547481,
+            "mean": 100.0371865059777,
+            "median": 100.02948013821984,
+            "p50": 100.03276412996132,
+            "p95": 108.35042406515952,
+            "p99": 111.83258292401344,
+            "stddev": 5.008754403017267,
+            "samples": 5000
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "backend_scaling_2",
+          "description": "Weighted routing with 2 backends",
+          "latency": {
+            "min": 84.51700745318621,
+            "max": 129.9874659630518,
+            "mean": 110.10667887999897,
+            "median": 110.04258647758884,
+            "p50": 110.04842495549369,
+            "p95": 119.38300717585031,
+            "p99": 123.54026984353489,
+            "stddev": 5.564671829371595,
+            "samples": 5000
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "backend_scaling_4",
+          "description": "Weighted routing with 4 backends",
+          "latency": {
+            "min": 98.0943818657159,
+            "max": 139.82467565619922,
+            "mean": 119.98037265416954,
+            "median": 120.0153932948844,
+            "p50": 120.01727536611222,
+            "p95": 130.00575110713567,
+            "p99": 134.3686744399879,
+            "stddev": 6.038069731944705,
+            "samples": 5000
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "backend_scaling_8",
+          "description": "Weighted routing with 8 backends",
+          "latency": {
+            "min": 107.36802188651254,
+            "max": 156.52848421512064,
+            "mean": 129.95775495024878,
+            "median": 129.81590219475964,
+            "p50": 129.81699570412508,
+            "p95": 140.8838754182857,
+            "p99": 145.60823436488664,
+            "stddev": 6.584251150934351,
+            "samples": 5000
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "backend_scaling_16",
+          "description": "Weighted routing with 16 backends",
+          "latency": {
+            "min": 113.81942136105977,
+            "max": 163.19099669462975,
+            "mean": 140.06092740171945,
+            "median": 140.0446211981971,
+            "p50": 140.04541286167142,
+            "p95": 151.45222243438045,
+            "p99": 155.55285372004556,
+            "stddev": 6.893252611004706,
+            "samples": 5000
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "backend_scaling_32",
+          "description": "Weighted routing with 32 backends",
+          "latency": {
+            "min": 123.63094359691063,
+            "max": 177.72717871783553,
+            "mean": 150.08166799521135,
+            "median": 149.95475622806464,
+            "p50": 149.95555069225776,
+            "p95": 162.3833862601948,
+            "p99": 167.0879934931414,
+            "stddev": 7.403048831844412,
+            "samples": 5000
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "backend_scaling_64",
+          "description": "Weighted routing with 64 backends",
+          "latency": {
+            "min": 130.7960256382429,
+            "max": 191.24045459315298,
+            "mean": 159.80897702440149,
+            "median": 160.02589602283098,
+            "p50": 160.02952561842176,
+            "p95": 173.0028053690454,
+            "p99": 178.20026296524412,
+            "stddev": 8.13057999636952,
+            "samples": 5000
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        }
+      ]
+    },
+    "stolas": {
+      "name": "stolas",
+      "benchmarks": [
+        {
+          "name": "rag_retrieval_100",
+          "description": "RAG retrieval from 100 chunks",
+          "latency": {
+            "min": 21.600762768021937,
+            "max": 36.89915500934311,
+            "mean": 28.75274895664022,
+            "median": 28.73044919518734,
+            "p50": 28.73066579237924,
+            "p95": 32.43577403054471,
+            "p99": 34.356588766242865,
+            "stddev": 2.269759059963407,
+            "samples": 500
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "rag_retrieval_1000",
+          "description": "RAG retrieval from 1,000 chunks",
+          "latency": {
+            "min": 93.14030018866404,
+            "max": 154.78368623593673,
+            "mean": 125.88846439975772,
+            "median": 125.67875468055826,
+            "p50": 125.70083970206372,
+            "p95": 142.29873125864293,
+            "p99": 149.27504269893956,
+            "stddev": 9.757369289894624,
+            "samples": 500
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "rag_retrieval_10000",
+          "description": "RAG retrieval from 10,000 chunks",
+          "latency": {
+            "min": 775.1346015582698,
+            "max": 1272.412666502893,
+            "mean": 1032.143658861225,
+            "median": 1032.88368377365,
+            "p50": 1033.0988991188822,
+            "p95": 1164.6998374316252,
+            "p99": 1237.8264978094314,
+            "stddev": 87.33567156508009,
+            "samples": 500
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "rag_retrieval_100000",
+          "description": "RAG retrieval from 100,000 chunks",
+          "latency": {
+            "min": 7715.024674033333,
+            "max": 12722.62283662252,
+            "mean": 10075.11429179698,
+            "median": 10064.54863379088,
+            "p50": 10064.722977107942,
+            "p95": 11333.300189216014,
+            "p99": 12058.750396625845,
+            "stddev": 761.6411593099218,
+            "samples": 500
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "rag_retrieval_1000000",
+          "description": "RAG retrieval from 1,000,000 chunks",
+          "latency": {
+            "min": 76516.90634707923,
+            "max": 120812.86468325098,
+            "mean": 99666.58717608491,
+            "median": 99916.27701523263,
+            "p50": 99919.42811272325,
+            "p95": 113704.86519955841,
+            "p99": 118025.84510340446,
+            "stddev": 8233.204953309338,
+            "samples": 500
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "embedding_dim_384",
+          "description": "RAG with 384-dim embeddings",
+          "latency": {
+            "min": 773.3771192287036,
+            "max": 1224.5150968759533,
+            "mean": 1031.0890677644427,
+            "median": 1038.955921228866,
+            "p50": 1039.0835823869006,
+            "p95": 1161.6791377698153,
+            "p99": 1211.0132967735863,
+            "stddev": 80.48917173403974,
+            "samples": 500
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "embedding_dim_768",
+          "description": "RAG with 768-dim embeddings",
+          "latency": {
+            "min": 781.5780542044506,
+            "max": 1296.3538981290742,
+            "mean": 1022.8572290927319,
+            "median": 1022.2608045379375,
+            "p50": 1022.2843219644076,
+            "p95": 1160.3268493760436,
+            "p99": 1220.1359936995782,
+            "stddev": 82.31456648818515,
+            "samples": 500
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "embedding_dim_1024",
+          "description": "RAG with 1024-dim embeddings",
+          "latency": {
+            "min": 828.9785729271965,
+            "max": 1268.1172820204688,
+            "mean": 1031.9604185461503,
+            "median": 1033.7672323988304,
+            "p50": 1033.905158223242,
+            "p95": 1147.8008193263825,
+            "p99": 1210.388737480115,
+            "stddev": 75.10777801123544,
+            "samples": 500
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "embedding_dim_1536",
+          "description": "RAG with 1536-dim embeddings",
+          "latency": {
+            "min": 695.4435290641229,
+            "max": 1266.8352916846359,
+            "mean": 1034.836809397495,
+            "median": 1033.2212672894157,
+            "p50": 1033.4549694222392,
+            "p95": 1184.9998652903405,
+            "p99": 1249.8330350563717,
+            "stddev": 87.5841544993972,
+            "samples": 500
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "embedding_dim_3072",
+          "description": "RAG with 3072-dim embeddings",
+          "latency": {
+            "min": 833.2146378946204,
+            "max": 1323.5265645740153,
+            "mean": 1036.0770841537892,
+            "median": 1035.5642819533903,
+            "p50": 1035.760305996831,
+            "p95": 1166.8217324329664,
+            "p99": 1215.3653803223694,
+            "stddev": 79.30929719944679,
+            "samples": 500
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        }
+      ]
+    },
+    "beleth": {
+      "name": "beleth",
+      "benchmarks": [
+        {
+          "name": "planning_single_shot",
+          "description": "Single Shot planning strategy",
+          "latency": {
+            "min": 124.38455794308624,
+            "max": 502.9784749655318,
+            "mean": 273.0534601650034,
+            "median": 270.7163975283873,
+            "p50": 270.84047461368203,
+            "p95": 379.1532555469148,
+            "p99": 446.2227862270773,
+            "stddev": 62.033637908471576,
+            "samples": 200
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "planning_react",
+          "description": "ReAct planning strategy",
+          "latency": {
+            "min": 122.82342352144389,
+            "max": 439.2041989070289,
+            "mean": 296.5991707165164,
+            "median": 290.86499414054515,
+            "p50": 291.1292252240315,
+            "p95": 406.63105619528517,
+            "p99": 438.6292745239489,
+            "stddev": 62.61664195090463,
+            "samples": 200
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "planning_tree_of_thoughts",
+          "description": "Tree of Thoughts planning strategy",
+          "latency": {
+            "min": 259.709134822669,
+            "max": 702.3887348786003,
+            "mean": 469.16948329863686,
+            "median": 470.3967928371038,
+            "p50": 471.3192808172285,
+            "p95": 620.0910363305996,
+            "p99": 696.471771448922,
+            "stddev": 88.76951251360396,
+            "samples": 200
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "planning_hierarchical",
+          "description": "Hierarchical planning strategy",
+          "latency": {
+            "min": 199.81459254903348,
+            "max": 576.3571592356802,
+            "mean": 375.5319373956598,
+            "median": 369.3464969393942,
+            "p50": 369.9376596771773,
+            "p95": 510.6393376981083,
+            "p99": 568.8235644402091,
+            "stddev": 76.8654769021671,
+            "samples": 200
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "tool_scaling_1",
+          "description": "Agent step with 1 tools",
+          "latency": {
+            "min": 143.80187948046122,
+            "max": 500.73378028923037,
+            "mean": 285.1357152887434,
+            "median": 281.86601852615996,
+            "p50": 282.129919503438,
+            "p95": 409.1931131611013,
+            "p99": 459.3468135492038,
+            "stddev": 67.5468313604697,
+            "samples": 300
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "tool_scaling_5",
+          "description": "Agent step with 5 tools",
+          "latency": {
+            "min": 121.59099434561412,
+            "max": 518.1558525393624,
+            "mean": 287.8523908445306,
+            "median": 285.72763986114717,
+            "p50": 285.9971497826918,
+            "p95": 404.6686429094705,
+            "p99": 462.84937057784447,
+            "stddev": 67.55725741697822,
+            "samples": 300
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "tool_scaling_10",
+          "description": "Agent step with 10 tools",
+          "latency": {
+            "min": 124.51613253424416,
+            "max": 515.8637500480703,
+            "mean": 299.6382265721531,
+            "median": 294.4309294474785,
+            "p50": 294.45868693819034,
+            "p95": 412.18836350755896,
+            "p99": 479.0894338243827,
+            "stddev": 69.02622860422638,
+            "samples": 300
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "tool_scaling_20",
+          "description": "Agent step with 20 tools",
+          "latency": {
+            "min": 135.57658516946032,
+            "max": 539.4375906806347,
+            "mean": 321.7706787534472,
+            "median": 318.01530285266017,
+            "p50": 318.2412766296807,
+            "p95": 451.9277356466051,
+            "p99": 515.0043274206562,
+            "stddev": 68.46900489410648,
+            "samples": 300
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "tool_scaling_50",
+          "description": "Agent step with 50 tools",
+          "latency": {
+            "min": 168.64591962902506,
+            "max": 589.3613256954094,
+            "mean": 383.06072755854046,
+            "median": 387.7944170897282,
+            "p50": 388.66480823716904,
+            "p95": 503.48794019015986,
+            "p99": 551.0537400004287,
+            "stddev": 76.63612888055853,
+            "samples": 300
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "tool_scaling_100",
+          "description": "Agent step with 100 tools",
+          "latency": {
+            "min": 288.970132406347,
+            "max": 776.2277074637399,
+            "mean": 481.10614383155155,
+            "median": 474.9034919615483,
+            "p50": 475.0889796180499,
+            "p95": 623.6673744595679,
+            "p99": 710.8176026496493,
+            "stddev": 88.42994112488712,
+            "samples": 300
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        }
+      ]
+    },
+    "astaroth": {
+      "name": "astaroth",
+      "benchmarks": [
+        {
+          "name": "ab_even_split",
+          "description": "Even Split traffic splitting",
+          "latency": {
+            "min": 6.5531631793910625,
+            "max": 8.49136236077744,
+            "mean": 7.499984879494475,
+            "median": 7.500157055170131,
+            "p50": 7.500159180042727,
+            "p95": 7.870505778986703,
+            "p99": 8.0248956397115,
+            "stddev": 0.22557412563432475,
+            "samples": 100000
+          },
+          "throughput": {
+            "requests_per_sec": 133333.6021428614,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "ab_weighted",
+          "description": "Weighted traffic splitting",
+          "latency": {
+            "min": 10.704770110434684,
+            "max": 14.27774507596333,
+            "mean": 12.498765926750114,
+            "median": 12.496745334608157,
+            "p50": 12.49674659345452,
+            "p95": 13.114378231696334,
+            "p99": 13.365675125263667,
+            "stddev": 0.37434822107364135,
+            "samples": 100000
+          },
+          "throughput": {
+            "requests_per_sec": 80007.898848619,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "ab_thompson_sampling",
+          "description": "Thompson Sampling traffic splitting",
+          "latency": {
+            "min": 41.922654697295165,
+            "max": 56.817324163257275,
+            "mean": 49.502138610153814,
+            "median": 49.504102866017966,
+            "p50": 49.50415257455901,
+            "p95": 51.94690627151302,
+            "p99": 52.98268729782782,
+            "stddev": 1.4878111871614972,
+            "samples": 100000
+          },
+          "throughput": {
+            "requests_per_sec": 20201.147426686905,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "ab_ucb",
+          "description": "Upper Confidence Bound traffic splitting",
+          "latency": {
+            "min": 34.268618405716005,
+            "max": 44.8280667127795,
+            "mean": 39.50044941171115,
+            "median": 39.49533087402901,
+            "p50": 39.49533812402813,
+            "p95": 41.44642327780674,
+            "p99": 42.262537058365574,
+            "stddev": 1.1847845089461069,
+            "samples": 100000
+          },
+          "throughput": {
+            "requests_per_sec": 25316.167661209733,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "ab_epsilon_greedy",
+          "description": "Epsilon-Greedy traffic splitting",
+          "latency": {
+            "min": 14.401579498174483,
+            "max": 18.7320953425245,
+            "mean": 16.49999581291756,
+            "median": 16.49929049500315,
+            "p50": 16.499292864375192,
+            "p95": 17.31309940095696,
+            "p99": 17.649228580769787,
+            "stddev": 0.4944683635200454,
+            "samples": 100000
+          },
+          "throughput": {
+            "requests_per_sec": 60606.075985614974,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "variant_scaling_2",
+          "description": "Thompson Sampling with 2 variants",
+          "latency": {
+            "min": 41.840348768269465,
+            "max": 53.66607293985057,
+            "mean": 47.99572734024133,
+            "median": 47.998221602862316,
+            "p50": 47.99830512321811,
+            "p95": 50.357170895266364,
+            "p99": 51.27505149421756,
+            "stddev": 1.4346570095864168,
+            "samples": 50000
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "variant_scaling_3",
+          "description": "Thompson Sampling with 3 variants",
+          "latency": {
+            "min": 43.23818955662956,
+            "max": 55.85155741860197,
+            "mean": 49.4981912928899,
+            "median": 49.49086287562999,
+            "p50": 49.49091884549536,
+            "p95": 51.9290188830265,
+            "p99": 52.94359179177491,
+            "stddev": 1.4775309443971711,
+            "samples": 50000
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "variant_scaling_4",
+          "description": "Thompson Sampling with 4 variants",
+          "latency": {
+            "min": 44.10921762052295,
+            "max": 57.96720955863146,
+            "mean": 50.98974558995815,
+            "median": 50.986761575734036,
+            "p50": 50.9868331847852,
+            "p95": 53.509437589637976,
+            "p99": 54.54106297318589,
+            "stddev": 1.5313546701577165,
+            "samples": 50000
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "variant_scaling_5",
+          "description": "Thompson Sampling with 5 variants",
+          "latency": {
+            "min": 46.34271910121178,
+            "max": 59.6392240272365,
+            "mean": 52.49008515529602,
+            "median": 52.487146415224274,
+            "p50": 52.48715152098527,
+            "p95": 55.090076882856586,
+            "p99": 56.17890796002091,
+            "stddev": 1.5740033294561648,
+            "samples": 50000
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "variant_scaling_10",
+          "description": "Thompson Sampling with 10 variants",
+          "latency": {
+            "min": 52.46525385089604,
+            "max": 67.1539282793342,
+            "mean": 59.99555845512072,
+            "median": 59.987785277196025,
+            "p50": 59.987824640159694,
+            "p95": 62.95861955720416,
+            "p99": 64.17582407186357,
+            "stddev": 1.7963067797247103,
+            "samples": 50000
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        },
+        {
+          "name": "variant_scaling_20",
+          "description": "Thompson Sampling with 20 variants",
+          "latency": {
+            "min": 65.42385635871153,
+            "max": 83.92560859015927,
+            "mean": 75.01203009372202,
+            "median": 75.02327537358174,
+            "p50": 75.02331716717025,
+            "p95": 78.67041234739145,
+            "p99": 80.18751426417549,
+            "stddev": 2.2390979002975664,
+            "samples": 50000
+          },
+          "throughput": {
+            "requests_per_sec": 0.0,
+            "tokens_per_sec": 0.0,
+            "total_requests": 0,
+            "duration_sec": 0.0
+          },
+          "memory": {
+            "baseline_mb": 0.0,
+            "peak_mb": 0.0,
+            "per_request_kb": 0.0
+          },
+          "concurrency": 1
+        }
+      ]
+    }
+  }
+}

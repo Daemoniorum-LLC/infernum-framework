@@ -1,0 +1,308 @@
+//! Metacognitive monitoring and self-assessment.
+
+use std::collections::HashMap
+
+/// Confidence level in knowledge/ability.
+#[derive(Debug, Clone, Copy)]
+struct Confidence(f32); // 0.0 to 1.0
+
+impl Confidence {
+    fn new(value: f32) -> Confidence {
+        Confidence(value.clamp(0.0, 1.0))
+    }
+
+    fn high() -> Confidence { Confidence(0.9) }
+    fn medium() -> Confidence { Confidence(0.6) }
+    fn low() -> Confidence { Confidence(0.3) }
+
+    fn value(self) -> f32 { self.0 }
+}
+
+/// Uncertainty about something.
+#[derive(Debug, Clone)]
+struct Uncertainty {
+    area: str,
+    level: f32, // 0.0 (certain) to 1.0 (very uncertain)
+    source: UncertaintySource,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum UncertaintySource {
+    LackOfKnowledge,
+    Ambiguity,
+    Complexity,
+    ExternalFactor,
+    Conflicting Information,
+}
+
+/// Overall cognitive state assessment.
+#[derive(Debug, Clone)]
+struct CognitiveState {
+    clarity: f32,          // How clear thinking is
+    focus: f32,            // How focused attention is
+    energy: f32,           // Cognitive resources available
+    confidence: Confidence,
+    uncertainties: [Uncertainty],
+    cognitive_load: f32,   // Current mental load
+}
+
+impl CognitiveState {
+    fn default() -> CognitiveState {
+        CognitiveState {
+            clarity: 0.8,
+            focus: 0.7,
+            energy: 1.0,
+            confidence: Confidence::medium(),
+            uncertainties: [],
+            cognitive_load: 0.3,
+        }
+    }
+
+    /// Checks if state is good for complex tasks.
+    fn ready_for_complex_task(self) -> bool {
+        self.clarity > 0.6 && self.focus > 0.5 && self.energy > 0.4 && self.cognitive_load < 0.7
+    }
+
+    /// Describes current state.
+    fn describe(self) -> str {
+        let clarity_desc = if self.clarity > 0.7 { "clear" } else if self.clarity > 0.4 { "somewhat cloudy" } else { "confused" };
+        let energy_desc = if self.energy > 0.7 { "energized" } else if self.energy > 0.4 { "moderate energy" } else { "fatigued" };
+
+        format!("Thinking is {}, {} with {:.0}% confidence", clarity_desc, energy_desc, self.confidence.value() * 100.0)
+    }
+}
+
+/// Metacognitive monitor.
+struct MetaMonitor {
+    confidence_history: [(str, Confidence)],
+    uncertainty_map: HashMap<str, Uncertainty>,
+    predictions: HashMap<str, Prediction>,
+    calibration_data: [CalibrationPoint],
+}
+
+/// A prediction for calibration.
+#[derive(Debug, Clone)]
+struct Prediction {
+    description: str,
+    confidence: f32,
+    outcome?: bool,
+}
+
+/// Calibration data point.
+#[derive(Debug, Clone)]
+struct CalibrationPoint {
+    predicted_confidence: f32,
+    was_correct: bool,
+}
+
+impl MetaMonitor {
+    fn new() -> MetaMonitor {
+        MetaMonitor {
+            confidence_history: [],
+            uncertainty_map: HashMap::new(),
+            predictions: HashMap::new(),
+            calibration_data: [],
+        }
+    }
+
+    /// Gets current confidence level.
+    fn current_confidence(self) -> f32 {
+        if self.confidence_history.is_empty() {
+            return 0.7 // Default
+        }
+
+        // Average recent confidence
+        let recent = self.confidence_history.iter().rev().take(10);
+        recent|τ{|(_, c)| c.value()}|Σ / 10.0
+    }
+
+    /// Records confidence for an area.
+    fn record_confidence(mut self, area: &str, confidence: Confidence) {
+        self.confidence_history.push((area.to_string(), confidence));
+        if self.confidence_history.len() > 100 {
+            self.confidence_history.remove(0);
+        }
+    }
+
+    /// Notes uncertainty in an area.
+    fn note_uncertainty(mut self, area: &str, level: f32, source: UncertaintySource) {
+        self.uncertainty_map.insert(area.to_string(), Uncertainty {
+            area: area.to_string(),
+            level,
+            source,
+        });
+    }
+
+    /// Gets high uncertainty areas.
+    fn high_uncertainty_areas(self) -> [str] {
+        self.uncertainty_map.values()
+            |φ{|u| u.level > 0.6}
+            |τ{|u| u.area.clone()}
+            |collect()
+    }
+
+    /// Assesses overall cognitive state.
+    fn assess(self, anima: &Anima) -> CognitiveState {
+        let attention = anima.attention.read();
+        let affect = anima.affect.read();
+
+        let focus = attention.capacity * (1.0 - attention.fatigue);
+
+        // Negative emotions reduce clarity
+        let emotional_impact = match affect.current_valence() {
+            v if v > 0.3 => 1.0,
+            v if v > -0.3 => 0.9,
+            _ => 0.7,
+        };
+
+        CognitiveState {
+            clarity: 0.8 * emotional_impact,
+            focus,
+            energy: 1.0 - attention.fatigue,
+            confidence: Confidence::new(self.current_confidence()),
+            uncertainties: self.uncertainty_map.values().cloned().collect(),
+            cognitive_load: 1.0 - attention.capacity,
+        }
+    }
+
+    /// Makes a prediction for calibration.
+    fn predict(mut self, id: &str, description: &str, confidence: f32) {
+        self.predictions.insert(id.to_string(), Prediction {
+            description: description.to_string(),
+            confidence,
+            outcome: None,
+        });
+    }
+
+    /// Records outcome of a prediction.
+    fn record_outcome(mut self, id: &str, was_correct: bool) {
+        if let Some(pred) = self.predictions.get_mut(id) {
+            pred.outcome = Some(was_correct);
+            self.calibration_data.push(CalibrationPoint {
+                predicted_confidence: pred.confidence,
+                was_correct,
+            });
+        }
+    }
+
+    /// Calculates calibration error.
+    fn calibration_error(self) -> f32 {
+        if self.calibration_data.is_empty() {
+            return 0.0
+        }
+
+        // Group by confidence buckets
+        let mut buckets: HashMap<u8, (f32, f32)> = HashMap::new();
+
+        for point in &self.calibration_data {
+            let bucket = (point.predicted_confidence * 10.0) as u8;
+            let (correct, total) = buckets.entry(bucket).or_insert((0.0, 0.0));
+            if point.was_correct {
+                *correct += 1.0;
+            }
+            *total += 1.0;
+        }
+
+        // Calculate error per bucket
+        let errors: f32 = buckets.iter()|τ{|(bucket, (correct, total))| {
+            let expected = *bucket as f32 / 10.0;
+            let actual = correct / total;
+            (expected - actual).abs()
+        }}|Σ;
+
+        errors / buckets.len() as f32
+    }
+
+    /// Gets expected outcome for an action.
+    fn expected_outcome(self, action: &Action) -> ?Outcome {
+        // Simple heuristic based on past performance
+        Some(Outcome {
+            success: true, // Optimistic default
+            failure_reason: None,
+            better_than_expected: false,
+            actual_result: "expected positive outcome".to_string(),
+        })
+    }
+
+    /// Calculates surprise from outcome.
+    fn calculate_surprise(self, expected: &?Outcome, actual: &Outcome) -> f32 {
+        match expected {
+            Some(exp) => {
+                if exp.success == actual.success { 0.2 }
+                else { 0.8 }
+            },
+            None => 0.5, // Unknown expectation
+        }
+    }
+
+    /// Gets uncertainty for a goal.
+    fn uncertainty_for_goal(self, goal: &Goal) -> f32 {
+        // Check if any required capabilities have noted uncertainty
+        goal.required_capabilities.iter()
+            |τ{|cap| self.uncertainty_map.get(cap)|τ{|u| u.level} ?? 0.0}
+            |ρ·max ?? 0.0
+    }
+}
+
+// Reference types from other modules
+struct Anima {
+    attention: std::sync::Arc<parking_lot::RwLock<AttentionState>>,
+    affect: std::sync::Arc<parking_lot::RwLock<AffectState>>,
+}
+
+struct AttentionState {
+    capacity: f32,
+    fatigue: f32,
+}
+
+struct AffectState;
+impl AffectState {
+    fn current_valence(self) -> f32 { 0.0 }
+}
+
+struct Goal {
+    required_capabilities: [str],
+}
+
+struct Action {
+    name: str,
+}
+
+struct Outcome {
+    success: bool,
+    failure_reason?: str,
+    better_than_expected: bool,
+    actual_result: str,
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_cognitive_state_default() {
+        let state = CognitiveState::default();
+        assert!(state.ready_for_complex_task());
+    }
+
+    #[test]
+    fn test_confidence() {
+        let high = Confidence::high();
+        let low = Confidence::low();
+
+        assert!(high.value() > low.value());
+    }
+
+    #[test]
+    fn test_meta_monitor_uncertainty() {
+        let mut monitor = MetaMonitor::new();
+        monitor.note_uncertainty("quantum_physics", 0.9, UncertaintySource::LackOfKnowledge);
+
+        let areas = monitor.high_uncertainty_areas();
+        assert!(areas.contains(&"quantum_physics".to_string()));
+    }
+}

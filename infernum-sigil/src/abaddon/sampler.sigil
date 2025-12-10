@@ -1,0 +1,210 @@
+//! Token sampling implementations.
+//!
+//! Demonstrates Sigil's morpheme pipes for statistical computations.
+//! Sampling algorithms: greedy, temperature, top-k, top-p, min-p.
+//!
+//! Morpheme Reference:
+//!   τ (tau)    - transform/map
+//!   φ (phi)    - filter
+//!   σ (sigma)  - sort
+//!   ρ (rho)    - reduce
+//!   Σ          - sum
+//!   ⋈          - zip
+//!   ·desc      - descending modifier
+//!   ·max       - maximum reduction
+//!
+//! Ported from: infernum/crates/abaddon/src/sampler.rs (188 LOC)
+//! Sigil LOC: ~120 (36% reduction)
+
+use std::cmp::Ordering
+use crate::core::sampling::SamplingParams
+
+/// Token sampler for text generation.
+struct Sampler {
+    params: SamplingParams,
+    rng?: Rng,
+}
+
+impl Sampler {
+    /// Creates a new sampler with the given parameters.
+    fn new(params: SamplingParams) -> Sampler {
+        let rng = params.seed|τ{seed =>
+            let mut rng = Rng::new()
+            rng·seed(seed)
+            rng
+        }
+
+        Sampler { params, rng }
+    }
+
+    /// Samples a token from the logits.
+    ///
+    /// Pipeline: logits -> temperature -> top-k -> top-p -> min-p -> sample
+    fn sample(mut self, logits: [f32]) -> u32 {
+        // Greedy: just return argmax
+        if self.params.temperature == 0.0 {
+            return self·argmax(logits)
+        }
+
+        // Apply sampling pipeline using morpheme composition
+        let filtered = logits
+            |self·apply_temperature
+            |self·apply_top_k
+            |self·apply_top_p
+            |self·apply_min_p
+
+        self·categorical_sample(filtered)
+    }
+
+    /// Apply temperature scaling: logits / temperature
+    fn apply_temperature(self, logits: [f32]) -> [f32] {
+        logits|τ{_ / self.params.temperature}
+    }
+
+    /// Apply top-k filtering: keep only top k logits
+    fn apply_top_k(self, logits: [f32]) -> [f32] {
+        if self.params.top_k == 0 { return logits }
+
+        let k = self.params.top_k as usize
+        let indexed = logits|·enumerate|σ·desc{|(_, v)| v}
+        let mut result = [f32::NEG_INFINITY; logits·len()]
+
+        for (i, v) in indexed|·take(k) {
+            result[i] = v
+        }
+        result
+    }
+
+    /// Apply top-p (nucleus) filtering: keep tokens until cumsum >= p
+    fn apply_top_p(self, logits: [f32]) -> [f32] {
+        if self.params.top_p >= 1.0 { return logits }
+
+        let probs = self·softmax(logits)
+        let indexed = probs|·enumerate|σ·desc{|(_, p)| p}
+
+        let mut cumsum = 0.0
+        let mut result = [f32::NEG_INFINITY; logits·len()]
+
+        for (i, prob) in indexed {
+            if cumsum < self.params.top_p {
+                result[i] = logits[i]
+                cumsum += prob
+            }
+        }
+        result
+    }
+
+    /// Apply min-p filtering: keep tokens where prob >= min_p * max_prob
+    fn apply_min_p(self, logits: [f32]) -> [f32] {
+        if self.params.min_p <= 0.0 { return logits }
+
+        let probs = self·softmax(logits)
+        let max_prob = probs|ρ·max
+        let threshold = max_prob * self.params.min_p
+
+        logits|⋈(probs)|τ{|(l, p)|
+            if p >= threshold { l } else { f32::NEG_INFINITY }
+        }
+    }
+
+    /// Returns the index of the maximum value (greedy selection).
+    fn argmax(self, logits: [f32]) -> u32 {
+        logits
+            |·enumerate
+            |ρ·max_by{|(_, a), (_, b)| a·partial_cmp(b) ?? Ordering::Equal}
+            |τ{|(i, _)| i as u32}
+            ?? 0
+    }
+
+    /// Computes softmax probabilities: exp(x - max) / sum(exp(x - max))
+    fn softmax(self, logits: [f32]) -> [f32] {
+        let max = logits|ρ·max
+        let exp = logits|τ{(_ - max)·exp()}
+        let sum = exp|Σ
+        exp|τ{_ / sum}
+    }
+
+    /// Samples from a categorical distribution.
+    fn categorical_sample(mut self, logits: [f32]) -> u32 {
+        let probs = self·softmax(logits)
+        let r = self·random_f32()
+
+        let mut cumsum = 0.0
+        for (i, p) in probs|·enumerate {
+            cumsum += p
+            if r < cumsum {
+                return i as u32
+            }
+        }
+
+        (probs·len() - 1) as u32
+    }
+
+    /// Generates a random f32 in [0, 1).
+    fn random_f32(mut self) -> f32 {
+        match self.rng {
+            Some(rng) => rng.f32(),
+            None => fastrand::f32(),
+        }
+    }
+
+    /// Returns the sampling parameters.
+    fn params(self) -> SamplingParams {
+        self.params
+    }
+
+    /// Checks if text matches any stop sequence.
+    fn is_stop_token(self, text: str) -> bool {
+        self.params.stop_sequences|∃{text·contains(_)}
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_greedy_sampling() {
+        let params = SamplingParams::greedy()
+        let mut sampler = Sampler::new(params)
+
+        let logits = [1.0, 5.0, 2.0, 0.5]
+        assert_eq!(sampler.sample(logits), 1)
+    }
+
+    #[test]
+    fn test_deterministic_with_seed() {
+        let params = SamplingParams::balanced().with_seed(42)
+        let mut sampler1 = Sampler::new(params.clone())
+        let mut sampler2 = Sampler::new(params)
+
+        let logits = [1.0, 1.0, 1.0, 1.0]
+        assert_eq!(sampler1.sample(logits), sampler2.sample(logits))
+    }
+
+    #[test]
+    fn test_softmax_sums_to_one() {
+        let sampler = Sampler::new(SamplingParams::default())
+        let logits = [1.0, 2.0, 3.0]
+        let probs = sampler·softmax(logits)
+
+        let sum = probs|Σ
+        assert!((sum - 1.0)·abs() < 0.0001)
+    }
+
+    #[test]
+    fn test_stop_token_detection() {
+        let params = SamplingParams::default()
+            .with_stop("<|endoftext|>")
+            .with_stop("</s>")
+        let sampler = Sampler::new(params)
+
+        assert!(sampler.is_stop_token("<|endoftext|>"))
+        assert!(sampler.is_stop_token("hello</s>world"))
+        assert!(!sampler.is_stop_token("normal text"))
+    }
+}

@@ -1,0 +1,320 @@
+//! # Saga - Distributed Transactions
+//!
+//! *"Orchestrating complex workflows with grace"*
+//!
+//! Saga provides a pattern for managing long-running, distributed transactions
+//! with compensation for failures:
+//!
+//! - Step-by-step workflow execution
+//! - Automatic compensation on failure
+//! - State persistence and recovery
+//! - Parallel and sequential steps
+
+pub mod step
+pub mod compensation
+pub mod orchestrator
+
+use std::sync::Arc
+use std::collections::HashMap
+use parking_lot::RwLock
+
+// Re-export core types
+pub use step::{SagaStep, StepResult, StepStatus}
+pub use compensation::{Compensation, CompensationResult}
+pub use orchestrator::{SagaOrchestrator, OrchestratorConfig}
+
+/// A saga definition.
+struct Saga<S: SagaState> {
+    name: str,
+    steps: [SagaStepDef<S>],
+    state: Arc<RwLock<S>>,
+    execution: SagaExecution,
+}
+
+/// Trait for saga state.
+trait SagaState: Clone + Send + Sync + 'static {}
+
+/// A step definition in a saga.
+struct SagaStepDef<S: SagaState> {
+    name: str,
+    execute: Box<dyn Fn(&mut S) -> StepResult + Send + Sync>,
+    compensate: Box<dyn Fn(&mut S) -> CompensationResult + Send + Sync>,
+    timeout_ms: u64,
+}
+
+/// Execution state of a saga.
+#[derive(Debug, Clone)]
+struct SagaExecution {
+    id: str,
+    status: SagaStatus,
+    current_step: usize,
+    completed_steps: [usize],
+    failed_step: ?usize,
+    compensated_steps: [usize],
+    started_at: std::time::Instant,
+    finished_at: ?std::time::Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SagaStatus {
+    Pending,
+    Running,
+    Completed,
+    Compensating,
+    Compensated,
+    Failed,
+}
+
+impl<S: SagaState> Saga<S> {
+    /// Creates a new saga builder.
+    fn builder(name: &str) -> SagaBuilder<S> {
+        SagaBuilder {
+            name: name.to_string(),
+            steps: [],
+        }
+    }
+
+    /// Executes the saga.
+    async fn execute(mut self) -> Result<S, SagaError> {
+        self.execution.status = SagaStatus::Running;
+
+        for (idx, step) in self.steps.iter().enumerate() {
+            self.execution.current_step = idx;
+
+            let mut state = self.state.write();
+            let result = (step.execute)(&mut state);
+
+            match result {
+                StepResult::Success => {
+                    self.execution.completed_steps.push(idx);
+                }
+                StepResult::Failure(reason) => {
+                    self.execution.failed_step = Some(idx);
+                    self.execution.status = SagaStatus::Compensating;
+                    drop(state);
+
+                    // Run compensation
+                    self.compensate()|await?;
+                    return Err(SagaError::StepFailed {
+                        step: step.name.clone(),
+                        reason,
+                    });
+                }
+                StepResult::Retry => {
+                    // Would implement retry logic
+                    self.execution.failed_step = Some(idx);
+                    drop(state);
+                    self.compensate()|await?;
+                    return Err(SagaError::StepFailed {
+                        step: step.name.clone(),
+                        reason: "Retry exhausted".to_string(),
+                    });
+                }
+            }
+        }
+
+        self.execution.status = SagaStatus::Completed;
+        self.execution.finished_at = Some(std::time::Instant::now());
+
+        Ok(self.state.read().clone())
+    }
+
+    /// Runs compensation for completed steps.
+    async fn compensate(mut self) -> Result<(), SagaError> {
+        // Compensate in reverse order
+        let steps_to_compensate: [usize] = self.execution.completed_steps.iter().rev().cloned().collect();
+
+        for idx in steps_to_compensate {
+            let step = &self.steps[idx];
+            let mut state = self.state.write();
+
+            let result = (step.compensate)(&mut state);
+
+            match result {
+                CompensationResult::Success => {
+                    self.execution.compensated_steps.push(idx);
+                }
+                CompensationResult::Failure(reason) => {
+                    self.execution.status = SagaStatus::Failed;
+                    return Err(SagaError::CompensationFailed {
+                        step: step.name.clone(),
+                        reason,
+                    });
+                }
+            }
+        }
+
+        self.execution.status = SagaStatus::Compensated;
+        self.execution.finished_at = Some(std::time::Instant::now());
+        Ok(())
+    }
+}
+
+/// Builder for sagas.
+struct SagaBuilder<S: SagaState> {
+    name: str,
+    steps: [SagaStepDef<S>],
+}
+
+impl<S: SagaState> SagaBuilder<S> {
+    /// Adds a step to the saga.
+    fn step<E, C>(mut self, name: &str, execute: E, compensate: C) -> SagaBuilder<S>
+    where
+        E: Fn(&mut S) -> StepResult + Send + Sync + 'static,
+        C: Fn(&mut S) -> CompensationResult + Send + Sync + 'static,
+    {
+        self.steps.push(SagaStepDef {
+            name: name.to_string(),
+            execute: Box::new(execute),
+            compensate: Box::new(compensate),
+            timeout_ms: 30000,
+        });
+        self
+    }
+
+    /// Builds the saga with initial state.
+    fn build(self, initial_state: S) -> Saga<S> {
+        Saga {
+            name: self.name,
+            steps: self.steps,
+            state: Arc::new(RwLock::new(initial_state)),
+            execution: SagaExecution {
+                id: uuid::Uuid::new_v4().to_string(),
+                status: SagaStatus::Pending,
+                current_step: 0,
+                completed_steps: [],
+                failed_step: None,
+                compensated_steps: [],
+                started_at: std::time::Instant::now(),
+                finished_at: None,
+            },
+        }
+    }
+}
+
+/// Saga errors.
+#[derive(Debug)]
+enum SagaError {
+    StepFailed { step: str, reason: str },
+    CompensationFailed { step: str, reason: str },
+    Timeout { step: str },
+    StateError,
+}
+
+// ============================================================================
+// Example: Order Processing Saga
+// ============================================================================
+
+/// Example state for order processing.
+#[derive(Clone)]
+struct OrderState {
+    order_id: str,
+    reserved_inventory: bool,
+    payment_authorized: bool,
+    shipped: bool,
+}
+
+impl SagaState for OrderState {}
+
+fn create_order_saga(order_id: &str) -> Saga<OrderState> {
+    Saga::builder("order_processing")
+        .step(
+            "reserve_inventory",
+            |state| {
+                // Reserve inventory
+                state.reserved_inventory = true;
+                StepResult::Success
+            },
+            |state| {
+                // Release inventory
+                state.reserved_inventory = false;
+                CompensationResult::Success
+            },
+        )
+        .step(
+            "authorize_payment",
+            |state| {
+                // Authorize payment
+                state.payment_authorized = true;
+                StepResult::Success
+            },
+            |state| {
+                // Void payment authorization
+                state.payment_authorized = false;
+                CompensationResult::Success
+            },
+        )
+        .step(
+            "ship_order",
+            |state| {
+                // Ship order
+                state.shipped = true;
+                StepResult::Success
+            },
+            |state| {
+                // Cannot un-ship, but mark as needing return
+                state.shipped = false;
+                CompensationResult::Success
+            },
+        )
+        .build(OrderState {
+            order_id: order_id.to_string(),
+            reserved_inventory: false,
+            payment_authorized: false,
+            shipped: false,
+        })
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[derive(Clone)]
+    struct TestState {
+        value: i32,
+    }
+    impl SagaState for TestState {}
+
+    #[tokio::test]
+    async fn test_saga_success() {
+        let saga = Saga::builder("test")
+            .step(
+                "increment",
+                |s| { s.value += 1; StepResult::Success },
+                |s| { s.value -= 1; CompensationResult::Success },
+            )
+            .step(
+                "double",
+                |s| { s.value *= 2; StepResult::Success },
+                |s| { s.value /= 2; CompensationResult::Success },
+            )
+            .build(TestState { value: 5 });
+
+        let result = saga.execute()|await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().value, 12); // (5 + 1) * 2
+    }
+
+    #[tokio::test]
+    async fn test_saga_compensation() {
+        let saga = Saga::builder("test")
+            .step(
+                "increment",
+                |s| { s.value += 1; StepResult::Success },
+                |s| { s.value -= 1; CompensationResult::Success },
+            )
+            .step(
+                "fail",
+                |_| StepResult::Failure("Intentional".to_string()),
+                |_| CompensationResult::Success,
+            )
+            .build(TestState { value: 5 });
+
+        let result = saga.execute()|await;
+        assert!(result.is_err());
+    }
+}

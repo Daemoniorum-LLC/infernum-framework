@@ -1,0 +1,113 @@
+/// Video Generation Module
+///
+/// Implements video diffusion models for temporally coherent video synthesis
+/// from text descriptions or conditioning images.
+///
+/// ## Components
+///
+/// - **types**: Core video types (VideoTensor, FrameSequence, MotionField)
+/// - **vae3d**: 3D VAE for spatiotemporal compression
+/// - **temporal**: Temporal attention and motion modules
+/// - **unet3d**: 3D U-Net for video denoising
+/// - **transformer**: Video DiT/transformer architectures
+/// - **pipeline**: High-level video generation pipelines
+///
+/// ## Supported Models
+///
+/// - Stable Video Diffusion (SVD) - Image-to-video
+/// - AnimateDiff - Motion modules for SD
+/// - CogVideoX - DiT-based long video
+/// - Mochi - High quality video DiT
+/// - LTX-Video - Fast inference
+///
+/// ## Evidentiality Usage
+///
+/// - `data~`: User prompts, conditioning frames, motion vectors
+/// - `computed!`: Generated frames, denoised latents, interpolated video
+/// - `found?`: Optional temporal configs, cached motion states
+
+pub mod types
+pub mod vae3d
+pub mod temporal
+pub mod unet3d
+pub mod transformer
+pub mod pipeline
+pub mod enhancement
+
+// Re-export core types
+pub use types::{
+    VideoTensor,
+    FrameSequence,
+    VideoConfig,
+    VideoFormat,
+    TemporalConfig,
+    MotionConfig,
+    VideoOutput,
+    FrameRate,
+}
+
+pub use vae3d::{
+    VAE3D,
+    VAE3DConfig,
+    VAE3DEncoder,
+    VAE3DDecoder,
+    TemporalCompressor,
+    CausalConv3d,
+}
+
+pub use temporal::{
+    TemporalAttention,
+    TemporalAttentionConfig,
+    MotionModule,
+    MotionModuleConfig,
+    TemporalTransformerBlock,
+    PositionalEncoding3D,
+    TemporalPositionEmbedding,
+}
+
+pub use unet3d::{
+    UNet3D,
+    UNet3DConfig,
+    SpatioTemporalResBlock,
+    TemporalConvBlock,
+    DownBlock3D,
+    UpBlock3D,
+    MidBlock3D,
+}
+
+pub use transformer::{
+    VideoTransformer,
+    VideoTransformerConfig,
+    VideoTransformerBlock,
+    FactorizedAttention,
+    JointSpatioTemporalAttention,
+    CausalAttention,
+}
+
+pub use pipeline::{
+    VideoDiffusionPipeline,
+    StableVideoDiffusionPipeline,
+    AnimateDiffPipeline,
+    CogVideoXPipeline,
+    MochiPipeline,
+    VideoGenerationRequest,
+    VideoGenerationOutput,
+    I2VRequest,
+    T2VRequest,
+    VideoExtensionRequest,
+}
+
+// Video enhancement for maximum fidelity
+pub use enhancement::{
+    TemporalProcessor,
+    TemporalConfig,
+    OpticalFlowConfig,
+    FrameInterpolator,
+    InterpolationConfig,
+    InterpolationModel,
+    VideoSR,
+    VideoSRConfig,
+    VideoSRModel,
+    VideoEnhancePipeline,
+    VideoEnhanceConfig,
+}

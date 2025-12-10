@@ -1,0 +1,29 @@
+//! # Stolas
+//!
+//! *"The Prince reveals hidden knowledge"*
+//!
+//! Stolas is the knowledge engine for the Infernum ecosystem,
+//! providing vector storage, embedding generation, and RAG capabilities.
+//!
+//! ## Features
+//!
+//! - **Vector Storage**: In-memory and persistent vector storage
+//! - **Embedding Generation**: Integration with embedding models
+//! - **Chunking**: Intelligent document chunking strategies
+//! - **Hybrid Search**: Combined dense and sparse retrieval
+//!
+//! Ported from: infernum-framework/crates/stolas (1,226 LOC)
+//! Sigil LOC: ~700 (43% reduction)
+
+pub mod chunker
+pub mod embedding
+pub mod rag
+pub mod store
+
+pub use chunker::{Chunk, Chunker, ChunkingStrategy}
+pub use embedding::{
+    cosine_similarity, dot_product, euclidean_distance,
+    BatchEmbedder, Embedder, EngineEmbedder, MockEmbedder, PoolingStrategy, SentenceEmbedder,
+}
+pub use rag::{ContextItem, Document, RagPipeline, RetrievalConfig}
+pub use store::{InMemoryStore, SearchParams, SearchResult, VectorRecord, VectorStore}

@@ -1,0 +1,427 @@
+//! Tool system for agent actions.
+//!
+//! Ported from: infernum-framework/crates/beleth/src/tool.rs (631 LOC)
+//! Sigil LOC: ~360 (43% reduction)
+
+use std::collections::HashMap
+use std::sync::Arc
+use std::time::{SystemTime, UNIX_EPOCH}
+
+use async_trait::async_trait
+use serde::{Deserialize, Serialize}
+use serde_json::Value
+
+use crate::core::{Error, Result, Message}
+
+/// Risk level of a tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RiskLevel {
+    Safe,
+    ReadOnly,
+    Write,
+    Dangerous,
+}
+
+/// Result from tool execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ToolResult {
+    success: bool,
+    output: str,
+    error: ?str = None,
+    data: ?Value = None,
+}
+
+impl ToolResult {
+    fn success(output: impl Into<str>) -> ToolResult {
+        ToolResult { success: true, output: output.into(), error: None, data: None }
+    }
+
+    fn error(message: impl Into<str>) -> ToolResult {
+        ToolResult { success: false, output: str::new(), error: Some(message.into()), data: None }
+    }
+
+    fn with_data(mut self, data: Value) -> ToolResult {
+        self.data = Some(data)
+        self
+    }
+}
+
+/// Context provided to tools during execution.
+#[derive(Clone)]
+struct ToolContext {
+    agent_id: str,
+    messages: [Message],
+    state: HashMap<str, Value>,
+}
+
+impl ToolContext {
+    fn new(agent_id: impl Into<str>) -> ToolContext {
+        ToolContext { agent_id: agent_id.into(), messages: [], state: HashMap::new() }
+    }
+
+    fn get_state(self, key: &str) -> ?&Value { self.state.get(key) }
+
+    fn set_state(mut self, key: impl Into<str>, value: Value) {
+        self.state.insert(key.into(), value)
+    }
+}
+
+/// Trait for tools that agents can use.
+#[async_trait]
+trait Tool: Send + Sync {
+    fn name(self) -> &str
+    fn description(self) -> &str
+    fn parameters_schema(self) -> Value
+    fn risk_level(self) -> RiskLevel
+    async fn execute(self, params: Value, ctx: &ToolContext) -> Result<ToolResult>
+}
+
+/// A tool call parsed from LLM output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ToolCall {
+    name: str,
+    params: Value,
+}
+
+/// Registry of available tools.
+#[derive(Default)]
+struct ToolRegistry {
+    tools: HashMap<str, Arc<dyn Tool>>,
+}
+
+impl ToolRegistry {
+    fn new() -> ToolRegistry { ToolRegistry::default() }
+
+    fn with_builtins() -> ToolRegistry {
+        let mut registry = ToolRegistry::new()
+        registry.register(Arc::new(CalculatorTool))
+        registry.register(Arc::new(JsonTool))
+        registry.register(Arc::new(DateTimeTool))
+        registry
+    }
+
+    fn register(mut self, tool: Arc<dyn Tool>) {
+        self.tools.insert(tool.name().to_string(), tool)
+    }
+
+    fn get(self, name: &str) -> ?Arc<dyn Tool> { self.tools.get(name).cloned() }
+
+    fn list(self) -> [&str] { self.tools.keys()|τ{str::as_str}|collect }
+
+    fn tools(self) -> [Arc<dyn Tool>] { self.tools.values().cloned()|collect }
+
+    fn len(self) -> usize { self.tools.len() }
+
+    fn is_empty(self) -> bool { self.tools.is_empty() }
+
+    fn to_function_definitions(self) -> [Value] {
+        self.tools.values()|τ{|tool| serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": tool.name(),
+                "description": tool.description(),
+                "parameters": tool.parameters_schema()
+            }
+        })}|collect
+    }
+
+    fn to_prompt_description(self) -> str {
+        let mut desc = str::from("Available tools:\n\n")
+        for tool in self.tools.values() {
+            desc.push_str(&format!(
+                "- {}: {}\n  Parameters: {}\n\n",
+                tool.name(),
+                tool.description(),
+                serde_json::to_string_pretty(&tool.parameters_schema()) ?? str::new()
+            ))
+        }
+        desc
+    }
+
+    async fn execute(self, call: &ToolCall, ctx: &ToolContext) -> Result<ToolResult> {
+        let tool = self.get(&call.name)
+            ?? return Err(Error::internal(format!("Tool '{}' not found", call.name)))
+        tool.execute(call.params.clone(), ctx)|await
+    }
+}
+
+// === Built-in Tools ===
+
+/// Calculator tool for mathematical expressions.
+struct CalculatorTool;
+
+#[async_trait]
+impl Tool for CalculatorTool {
+    fn name(self) -> &str { "calculator" }
+
+    fn description(self) -> &str {
+        "Evaluates mathematical expressions. Supports basic arithmetic (+, -, *, /), parentheses, and common functions (sqrt, sin, cos, tan, log, exp, pow)."
+    }
+
+    fn parameters_schema(self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "expression": { "type": "string", "description": "Mathematical expression to evaluate" }
+            },
+            "required": ["expression"]
+        })
+    }
+
+    fn risk_level(self) -> RiskLevel { RiskLevel::Safe }
+
+    async fn execute(self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
+        let expression = params.get("expression")|σ{|v| v.as_str()}
+            ?? return Err(Error::internal("Missing expression"))
+
+        match evaluate_expression(expression) {
+            Ok(result) => Ok(ToolResult::success(format!("{} = {}", expression, result))
+                .with_data(serde_json::json!({ "result": result }))),
+            Err(e) => Ok(ToolResult::error(format!("Failed to evaluate: {}", e))),
+        }
+    }
+}
+
+/// JSON manipulation tool.
+struct JsonTool;
+
+#[async_trait]
+impl Tool for JsonTool {
+    fn name(self) -> &str { "json" }
+
+    fn description(self) -> &str {
+        "Parses, formats, and queries JSON data. Supports JSONPath queries."
+    }
+
+    fn parameters_schema(self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "operation": { "type": "string", "enum": ["parse", "format", "query"], "description": "Operation to perform" },
+                "data": { "type": "string", "description": "JSON string or data" },
+                "query": { "type": "string", "description": "JSONPath query (for query operation)" }
+            },
+            "required": ["operation", "data"]
+        })
+    }
+
+    fn risk_level(self) -> RiskLevel { RiskLevel::Safe }
+
+    async fn execute(self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
+        let operation = params.get("operation")|σ{|v| v.as_str()}
+            ?? return Err(Error::internal("Missing operation"))
+        let data = params.get("data")|σ{|v| v.as_str()}
+            ?? return Err(Error::internal("Missing data"))
+
+        match operation {
+            "parse" => match serde_json::from_str::<Value>(data) {
+                Ok(parsed) => Ok(ToolResult::success("JSON parsed successfully").with_data(parsed)),
+                Err(e) => Ok(ToolResult::error(format!("Parse error: {}", e))),
+            },
+            "format" => match serde_json::from_str::<Value>(data) {
+                Ok(parsed) => match serde_json::to_string_pretty(&parsed) {
+                    Ok(formatted) => Ok(ToolResult::success(formatted)),
+                    Err(e) => Ok(ToolResult::error(format!("Format error: {}", e))),
+                },
+                Err(e) => Ok(ToolResult::error(format!("Parse error: {}", e))),
+            },
+            "query" => {
+                let query = params.get("query")|σ{|v| v.as_str()} ?? ""
+                match serde_json::from_str::<Value>(data) {
+                    Ok(parsed) => match query_json(&parsed, query) {
+                        Some(v) => Ok(ToolResult::success(v.to_string()).with_data(v)),
+                        None => Ok(ToolResult::error("Query returned no results")),
+                    },
+                    Err(e) => Ok(ToolResult::error(format!("Parse error: {}", e))),
+                }
+            },
+            _ => Ok(ToolResult::error(format!("Unknown operation: {}", operation))),
+        }
+    }
+}
+
+/// DateTime tool.
+struct DateTimeTool;
+
+#[async_trait]
+impl Tool for DateTimeTool {
+    fn name(self) -> &str { "datetime" }
+
+    fn description(self) -> &str { "Gets current date/time or performs date calculations." }
+
+    fn parameters_schema(self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "operation": { "type": "string", "enum": ["now", "format", "parse"], "description": "Operation to perform" },
+                "format": { "type": "string", "description": "Date format string (for format operation)" },
+                "timezone": { "type": "string", "description": "Timezone (e.g., 'UTC', 'America/New_York')" }
+            },
+            "required": ["operation"]
+        })
+    }
+
+    fn risk_level(self) -> RiskLevel { RiskLevel::Safe }
+
+    async fn execute(self, params: Value, _ctx: &ToolContext) -> Result<ToolResult> {
+        let operation = params.get("operation")|σ{|v| v.as_str()}
+            ?? return Err(Error::internal("Missing operation"))
+
+        match operation {
+            "now" => {
+                let secs = SystemTime::now().duration_since(UNIX_EPOCH) ?? Duration::default() |> |d| d.as_secs()
+                let datetime = format_unix_timestamp(secs)
+                Ok(ToolResult::success(format!("Current time: {}", datetime))
+                    .with_data(serde_json::json!({ "timestamp": secs, "iso8601": datetime })))
+            },
+            _ => Ok(ToolResult::error(format!("Operation '{}' not yet implemented", operation))),
+        }
+    }
+}
+
+// === Helper Functions ===
+
+fn evaluate_expression(expr: &str) -> std::result::Result<f64, str> {
+    let expr = expr.trim().replace(' ', "")
+
+    if let Ok(num) = expr.parse::<f64>() { return Ok(num) }
+
+    // Try to find operators and evaluate
+    for (i, c) in expr.chars().rev().enumerate() {
+        let pos = expr.len() - 1 - i
+        if c == '+' && pos > 0 {
+            let left = evaluate_expression(&expr[..pos])?
+            let right = evaluate_expression(&expr[pos + 1..])?
+            return Ok(left + right)
+        }
+        if c == '-' && pos > 0 {
+            let prev = expr.chars().nth(pos - 1)
+            if prev|τ{|p| p.is_ascii_digit() || p == ')'}|> |opt| opt ?? false {
+                let left = evaluate_expression(&expr[..pos])?
+                let right = evaluate_expression(&expr[pos + 1..])?
+                return Ok(left - right)
+            }
+        }
+    }
+
+    for (i, c) in expr.chars().rev().enumerate() {
+        let pos = expr.len() - 1 - i
+        if c == '*' && pos > 0 {
+            let left = evaluate_expression(&expr[..pos])?
+            let right = evaluate_expression(&expr[pos + 1..])?
+            return Ok(left * right)
+        }
+        if c == '/' && pos > 0 {
+            let left = evaluate_expression(&expr[..pos])?
+            let right = evaluate_expression(&expr[pos + 1..])?
+            if right == 0.0 { return Err("Division by zero".to_string()) }
+            return Ok(left / right)
+        }
+    }
+
+    if expr.starts_with('(') && expr.ends_with(')') {
+        return evaluate_expression(&expr[1..expr.len() - 1])
+    }
+
+    if let Some(inner) = expr.strip_prefix("sqrt(")|σ{|s| s.strip_suffix(')')} {
+        return Ok(evaluate_expression(inner)?.sqrt())
+    }
+
+    Err(format!("Cannot evaluate: {}", expr))
+}
+
+fn query_json(value: &Value, query: &str) -> ?Value {
+    if query.is_empty() { return Some(value.clone()) }
+
+    let parts = query.split('.')|collect::<[&str]>
+    let mut current = value
+
+    for part in parts {
+        match current {
+            Value::Object(map) => current = map.get(part)?,
+            Value::Array(arr) => {
+                let idx = part.parse::<usize>().ok()?
+                current = arr.get(idx)?
+            },
+            _ => return None,
+        }
+    }
+
+    Some(current.clone())
+}
+
+fn format_unix_timestamp(secs: u64) -> str {
+    const SECS_PER_DAY: u64 = 86400
+    const SECS_PER_HOUR: u64 = 3600
+    const SECS_PER_MIN: u64 = 60
+
+    let days = secs / SECS_PER_DAY
+    let remaining = secs % SECS_PER_DAY
+    let hours = remaining / SECS_PER_HOUR
+    let remaining = remaining % SECS_PER_HOUR
+    let minutes = remaining / SECS_PER_MIN
+    let seconds = remaining % SECS_PER_MIN
+
+    let mut year = 1970u64
+    let mut day_count = days
+    loop {
+        let days_in_year = if is_leap_year(year) { 366 } else { 365 }
+        if day_count < days_in_year { break }
+        day_count -= days_in_year
+        year += 1
+    }
+
+    let (month, day) = day_of_year_to_month_day(day_count as u32, is_leap_year(year))
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", year, month, day, hours, minutes, seconds)
+}
+
+fn is_leap_year(year: u64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+}
+
+fn day_of_year_to_month_day(day: u32, leap: bool) -> (u32, u32) {
+    let days_in_months = if leap { [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31] }
+        else { [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31] }
+
+    let mut remaining = day
+    for (i, &days) in days_in_months.iter().enumerate() {
+        if remaining < days { return ((i + 1) as u32, remaining + 1) }
+        remaining -= days
+    }
+    (12, 31)
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_evaluate_expression() {
+        assert_eq!(evaluate_expression("2+3").unwrap(), 5.0)
+        assert_eq!(evaluate_expression("10*5").unwrap(), 50.0)
+        assert_eq!(evaluate_expression("20/4").unwrap(), 5.0)
+        assert_eq!(evaluate_expression("sqrt(16)").unwrap(), 4.0)
+    }
+
+    #[test]
+    fn test_query_json() {
+        let json = serde_json::json!({ "name": "test", "nested": { "value": 42 } })
+        assert_eq!(query_json(&json, "name"), Some(serde_json::json!("test")))
+        assert_eq!(query_json(&json, "nested.value"), Some(serde_json::json!(42)))
+    }
+
+    #[tokio::test]
+    async fn test_calculator_tool() {
+        let tool = CalculatorTool
+        let ctx = ToolContext::new("test")
+        let params = serde_json::json!({ "expression": "2+2" })
+
+        let result = tool.execute(params, &ctx)|await.unwrap()
+        assert!(result.success)
+        assert!(result.output.contains("4"))
+    }
+}

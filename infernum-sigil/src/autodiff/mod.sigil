@@ -1,0 +1,348 @@
+//! # Autodiff - Automatic Differentiation
+//!
+//! *"Gradients without the grind"*
+//!
+//! Automatic differentiation for training and optimization:
+//! - Forward mode (for few inputs, many outputs)
+//! - Reverse mode (for many inputs, few outputs)
+//! - Gradient, Jacobian, and Hessian computation
+//! - Integration with Sigil's type system
+
+pub mod tape
+pub mod value
+pub mod ops
+
+use std::collections::HashMap
+
+// Re-export core types
+pub use tape::{Tape, TapeRef}
+pub use value::{DualNumber, GradValue}
+pub use ops::{grad, jacobian, hessian}
+
+/// A differentiable value.
+#[derive(Debug, Clone)]
+struct Differentiable {
+    value: f64,
+    grad: f64,
+    tape?: TapeRef,
+    index: usize,
+}
+
+impl Differentiable {
+    /// Creates a new differentiable value.
+    fn new(value: f64) -> Differentiable {
+        Differentiable {
+            value,
+            grad: 0.0,
+            tape: None,
+            index: 0,
+        }
+    }
+
+    /// Creates a differentiable input (tracked on tape).
+    fn input(value: f64, tape: &Tape) -> Differentiable {
+        let index = tape.new_input(value);
+        Differentiable {
+            value,
+            grad: 0.0,
+            tape: Some(tape.reference()),
+            index,
+        }
+    }
+
+    /// Gets the value.
+    fn value(self) -> f64 { self.value }
+
+    /// Gets the gradient.
+    fn grad(self) -> f64 { self.grad }
+
+    /// Computes gradient with respect to this value.
+    fn backward(mut self) {
+        self.grad = 1.0;
+        if let Some(tape) = &self.tape {
+            tape.backward(self.index);
+        }
+    }
+}
+
+// Arithmetic operations with automatic differentiation
+impl std::ops::Add for Differentiable {
+    type Output = Differentiable;
+
+    fn add(self, other: Differentiable) -> Differentiable {
+        let value = self.value + other.value;
+
+        if let Some(tape) = &self.tape {
+            let index = tape.record_add(self.index, other.index);
+            Differentiable {
+                value,
+                grad: 0.0,
+                tape: Some(tape.clone()),
+                index,
+            }
+        } else {
+            Differentiable::new(value)
+        }
+    }
+}
+
+impl std::ops::Mul for Differentiable {
+    type Output = Differentiable;
+
+    fn mul(self, other: Differentiable) -> Differentiable {
+        let value = self.value * other.value;
+
+        if let Some(tape) = &self.tape {
+            let index = tape.record_mul(self.index, other.index, self.value, other.value);
+            Differentiable {
+                value,
+                grad: 0.0,
+                tape: Some(tape.clone()),
+                index,
+            }
+        } else {
+            Differentiable::new(value)
+        }
+    }
+}
+
+impl std::ops::Sub for Differentiable {
+    type Output = Differentiable;
+
+    fn sub(self, other: Differentiable) -> Differentiable {
+        let value = self.value - other.value;
+
+        if let Some(tape) = &self.tape {
+            let index = tape.record_sub(self.index, other.index);
+            Differentiable {
+                value,
+                grad: 0.0,
+                tape: Some(tape.clone()),
+                index,
+            }
+        } else {
+            Differentiable::new(value)
+        }
+    }
+}
+
+impl std::ops::Div for Differentiable {
+    type Output = Differentiable;
+
+    fn div(self, other: Differentiable) -> Differentiable {
+        let value = self.value / other.value;
+
+        if let Some(tape) = &self.tape {
+            let index = tape.record_div(self.index, other.index, self.value, other.value);
+            Differentiable {
+                value,
+                grad: 0.0,
+                tape: Some(tape.clone()),
+                index,
+            }
+        } else {
+            Differentiable::new(value)
+        }
+    }
+}
+
+impl Differentiable {
+    /// Exponential function.
+    fn exp(self) -> Differentiable {
+        let value = self.value.exp();
+
+        if let Some(tape) = &self.tape {
+            let index = tape.record_exp(self.index, value);
+            Differentiable {
+                value,
+                grad: 0.0,
+                tape: Some(tape.clone()),
+                index,
+            }
+        } else {
+            Differentiable::new(value)
+        }
+    }
+
+    /// Natural logarithm.
+    fn ln(self) -> Differentiable {
+        let value = self.value.ln();
+
+        if let Some(tape) = &self.tape {
+            let index = tape.record_ln(self.index, self.value);
+            Differentiable {
+                value,
+                grad: 0.0,
+                tape: Some(tape.clone()),
+                index,
+            }
+        } else {
+            Differentiable::new(value)
+        }
+    }
+
+    /// Power function.
+    fn pow(self, n: f64) -> Differentiable {
+        let value = self.value.powf(n);
+
+        if let Some(tape) = &self.tape {
+            let index = tape.record_pow(self.index, self.value, n);
+            Differentiable {
+                value,
+                grad: 0.0,
+                tape: Some(tape.clone()),
+                index,
+            }
+        } else {
+            Differentiable::new(value)
+        }
+    }
+
+    /// Sine function.
+    fn sin(self) -> Differentiable {
+        let value = self.value.sin();
+
+        if let Some(tape) = &self.tape {
+            let index = tape.record_sin(self.index, self.value);
+            Differentiable {
+                value,
+                grad: 0.0,
+                tape: Some(tape.clone()),
+                index,
+            }
+        } else {
+            Differentiable::new(value)
+        }
+    }
+
+    /// Cosine function.
+    fn cos(self) -> Differentiable {
+        let value = self.value.cos();
+
+        if let Some(tape) = &self.tape {
+            let index = tape.record_cos(self.index, self.value);
+            Differentiable {
+                value,
+                grad: 0.0,
+                tape: Some(tape.clone()),
+                index,
+            }
+        } else {
+            Differentiable::new(value)
+        }
+    }
+
+    /// Hyperbolic tangent.
+    fn tanh(self) -> Differentiable {
+        let value = self.value.tanh();
+
+        if let Some(tape) = &self.tape {
+            let index = tape.record_tanh(self.index, value);
+            Differentiable {
+                value,
+                grad: 0.0,
+                tape: Some(tape.clone()),
+                index,
+            }
+        } else {
+            Differentiable::new(value)
+        }
+    }
+
+    /// ReLU activation.
+    fn relu(self) -> Differentiable {
+        let value = self.value.max(0.0);
+
+        if let Some(tape) = &self.tape {
+            let index = tape.record_relu(self.index, self.value);
+            Differentiable {
+                value,
+                grad: 0.0,
+                tape: Some(tape.clone()),
+                index,
+            }
+        } else {
+            Differentiable::new(value)
+        }
+    }
+
+    /// Sigmoid activation.
+    fn sigmoid(self) -> Differentiable {
+        let value = 1.0 / (1.0 + (-self.value).exp());
+
+        if let Some(tape) = &self.tape {
+            let index = tape.record_sigmoid(self.index, value);
+            Differentiable {
+                value,
+                grad: 0.0,
+                tape: Some(tape.clone()),
+                index,
+            }
+        } else {
+            Differentiable::new(value)
+        }
+    }
+}
+
+/// Computes gradient using the ∇ operator.
+/// Usage: let grads = loss|∇{params}
+fn compute_gradient<F>(f: F, inputs: &[f64]) -> [f64]
+where
+    F: Fn(&[Differentiable]) -> Differentiable,
+{
+    let tape = Tape::new();
+
+    let diff_inputs: [Differentiable] = inputs
+        |τ{|&x| Differentiable::input(x, &tape)}
+        |collect();
+
+    let output = f(&diff_inputs);
+    output.backward();
+
+    tape.get_gradients(&diff_inputs)
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_differentiable_value() {
+        let x = Differentiable::new(5.0);
+        assert_eq!(x.value(), 5.0);
+    }
+
+    #[test]
+    fn test_addition() {
+        let a = Differentiable::new(3.0);
+        let b = Differentiable::new(4.0);
+        let c = a + b;
+        assert_eq!(c.value(), 7.0);
+    }
+
+    #[test]
+    fn test_multiplication() {
+        let a = Differentiable::new(3.0);
+        let b = Differentiable::new(4.0);
+        let c = a * b;
+        assert_eq!(c.value(), 12.0);
+    }
+
+    #[test]
+    fn test_exp() {
+        let x = Differentiable::new(0.0);
+        let y = x.exp();
+        assert!((y.value() - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_sigmoid() {
+        let x = Differentiable::new(0.0);
+        let y = x.sigmoid();
+        assert!((y.value() - 0.5).abs() < 1e-10);
+    }
+}

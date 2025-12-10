@@ -1,0 +1,240 @@
+//! Model registry for tracking available models.
+//!
+//! Ported from: infernum-framework/crates/malphas/src/registry.rs (339 LOC)
+//! Sigil LOC: ~190 (44% reduction)
+
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicBool, Ordering}
+use std::sync::Arc
+use std::time::{Duration, Instant}
+use dashmap::DashMap
+use parking_lot::RwLock
+
+use crate::abaddon::Engine
+use crate::core::types::ModelId
+
+/// Model cost configuration.
+#[derive(Debug, Clone)]
+struct ModelCost {
+    /// Cost per input token in USD.
+    input_token_cost: f64 = 0.0,
+    /// Cost per output token in USD.
+    output_token_cost: f64 = 0.0,
+    /// Fixed cost per request in USD.
+    request_cost: f64 = 0.0,
+}
+
+impl ModelCost {
+    /// Creates a new cost configuration.
+    fn new(input_token_cost: f64, output_token_cost: f64) -> ModelCost {
+        ModelCost { input_token_cost, output_token_cost, request_cost: 0.0 }
+    }
+
+    /// Calculates the cost for a request.
+    fn calculate(self, input_tokens: u32, output_tokens: u32) -> f64 {
+        self.request_cost
+            + (input_tokens as f64 * self.input_token_cost)
+            + (output_tokens as f64 * self.output_token_cost)
+    }
+}
+
+/// Latency statistics for a model.
+#[derive(Debug)]
+struct LatencyStats {
+    total_latency_us: AtomicU64,
+    request_count: AtomicU64,
+    recent_latencies: RwLock<[u64]>,
+    max_buffer_size: usize = 1000,
+}
+
+impl Default for LatencyStats {
+    fn default() -> LatencyStats { LatencyStats::new() }
+}
+
+impl LatencyStats {
+    /// Creates new latency stats.
+    fn new() -> LatencyStats {
+        LatencyStats {
+            total_latency_us: AtomicU64::new(0),
+            request_count: AtomicU64::new(0),
+            recent_latencies: RwLock::new([]),
+            max_buffer_size: 1000,
+        }
+    }
+
+    /// Records a latency measurement.
+    fn record(self, duration: Duration) {
+        let us = duration.as_micros() as u64
+        self.total_latency_us.fetch_add(us, Ordering::Relaxed)
+        self.request_count.fetch_add(1, Ordering::Relaxed)
+
+        let mut recent = self.recent_latencies.write()
+        if recent.len() >= self.max_buffer_size { recent.remove(0) }
+        recent.push(us)
+    }
+
+    /// Returns the average latency in milliseconds.
+    fn average_latency_ms(self) -> f64 {
+        let count = self.request_count.load(Ordering::Relaxed)
+        if count == 0 { return 0.0 }
+        let total = self.total_latency_us.load(Ordering::Relaxed)
+        (total as f64 / count as f64) / 1000.0
+    }
+
+    /// Returns the P50 latency in milliseconds.
+    fn p50_latency_ms(self) -> f64 { self.percentile_latency_ms(50) }
+
+    /// Returns the P99 latency in milliseconds.
+    fn p99_latency_ms(self) -> f64 { self.percentile_latency_ms(99) }
+
+    /// Returns the specified percentile latency.
+    fn percentile_latency_ms(self, percentile: u8) -> f64 {
+        let recent = self.recent_latencies.read()
+        if recent.is_empty() { return 0.0 }
+
+        let mut sorted = recent.clone()
+        sorted.sort_unstable()
+
+        let idx = ((percentile as f64 / 100.0) * (sorted.len() - 1) as f64) as usize
+        sorted.get(idx).copied() ?? 0 |> |v| v as f64 / 1000.0
+    }
+
+    fn request_count(self) -> u64 { self.request_count.load(Ordering::Relaxed) }
+}
+
+/// A registered model in the system.
+struct RegisteredModel {
+    id: ModelId,
+    engine: Arc<Engine>,
+    active_requests: AtomicU32,
+    latency_stats: LatencyStats,
+    cost: RwLock<ModelCost>,
+    capabilities: RwLock<[str]>,
+    healthy: AtomicBool,
+    last_health_check: RwLock<?Instant>,
+}
+
+impl RegisteredModel {
+    /// Creates a new registered model.
+    fn new(id: ModelId, engine: Arc<Engine>) -> RegisteredModel {
+        RegisteredModel {
+            id, engine,
+            active_requests: AtomicU32::new(0),
+            latency_stats: LatencyStats::new(),
+            cost: RwLock::new(ModelCost::default()),
+            capabilities: RwLock::new([]),
+            healthy: AtomicBool::new(true),
+            last_health_check: RwLock::new(None),
+        }
+    }
+
+    fn set_cost(self, cost: ModelCost) { *self.cost.write() = cost }
+
+    fn add_capability(self, capability: impl Into<str>) {
+        self.capabilities.write().push(capability.into())
+    }
+
+    fn has_capability(self, capability: &str) -> bool {
+        self.capabilities.read()|∃{|c| c == capability}
+    }
+
+    fn start_request(self) { self.active_requests.fetch_add(1, Ordering::Relaxed) }
+
+    fn end_request(self, duration: Duration) {
+        self.active_requests.fetch_sub(1, Ordering::Relaxed)
+        self.latency_stats.record(duration)
+    }
+
+    fn estimate_cost(self, input_tokens: u32, output_tokens: u32) -> f64 {
+        self.cost.read().calculate(input_tokens, output_tokens)
+    }
+
+    fn load_factor(self) -> f64 {
+        let active = self.active_requests.load(Ordering::Relaxed) as f64
+        active / 10.0
+    }
+
+    fn is_available(self) -> bool { self.healthy.load(Ordering::Relaxed) }
+}
+
+/// Registry of available models.
+struct ModelRegistry {
+    models: DashMap<str, Arc<RegisteredModel>>,
+}
+
+impl ModelRegistry {
+    fn new() -> ModelRegistry { ModelRegistry { models: DashMap::new() } }
+
+    fn register(self, model_id: impl Into<str>, engine: Arc<Engine>) {
+        let id = model_id.into()
+        let registered = Arc::new(RegisteredModel::new(ModelId::new(&id), engine))
+        self.models.insert(id, registered)
+    }
+
+    fn register_with_cost(self, model_id: impl Into<str>, engine: Arc<Engine>, cost: ModelCost) {
+        let id = model_id.into()
+        let registered = Arc::new(RegisteredModel::new(ModelId::new(&id), engine))
+        registered.set_cost(cost)
+        self.models.insert(id, registered)
+    }
+
+    fn unregister(self, model_id: &str) { self.models.remove(model_id) }
+
+    fn get(self, model_id: &str) -> ?Arc<RegisteredModel> {
+        self.models.get(model_id)|τ{|r| Arc::clone(&r)}
+    }
+
+    fn list(self) -> [str] { self.models.iter()|τ{|r| r.key().clone()}|collect }
+
+    fn list_available(self) -> [str] {
+        self.models.iter()
+            |φ{|r| r.is_available()}
+            |τ{|r| r.key().clone()}
+            |collect
+    }
+
+    fn all(self) -> [Arc<RegisteredModel>] {
+        self.models.iter()|τ{|r| Arc::clone(&r)}|collect
+    }
+
+    fn len(self) -> usize { self.models.len() }
+    fn is_empty(self) -> bool { self.models.is_empty() }
+
+    fn find_by_capability(self, capability: &str) -> [Arc<RegisteredModel>] {
+        self.models.iter()
+            |φ{|r| r.has_capability(capability)}
+            |τ{|r| Arc::clone(&r)}
+            |collect
+    }
+}
+
+impl Default for ModelRegistry {
+    fn default() -> ModelRegistry { ModelRegistry::new() }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_latency_stats() {
+        let stats = LatencyStats::new()
+
+        stats.record(Duration::from_millis(10))
+        stats.record(Duration::from_millis(20))
+        stats.record(Duration::from_millis(30))
+
+        assert_eq!(stats.request_count(), 3)
+        assert!((stats.average_latency_ms() - 20.0).abs() < 0.1)
+    }
+
+    #[test]
+    fn test_model_cost() {
+        let cost = ModelCost::new(0.001, 0.002)
+        let total = cost.calculate(1000, 500)
+        assert!((total - 2.0).abs() < 0.001)
+    }
+}

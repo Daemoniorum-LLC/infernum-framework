@@ -1,0 +1,404 @@
+//! Active patterns for computed matching.
+//!
+//! Active patterns allow pattern matching with custom extraction logic,
+//! enabling patterns that compute values during matching.
+
+use std::collections::HashMap
+
+/// An active pattern that can extract values during matching.
+trait ActivePattern<Input, Output> {
+    /// Attempts to match and extract.
+    fn try_match(input: &Input) -> ?Output;
+
+    /// Name of this active pattern.
+    fn name() -> str;
+}
+
+/// Extractor for active patterns.
+struct Extractor<I, O> {
+    name: str,
+    extract_fn: fn(&I) -> ?O,
+}
+
+impl<I, O> Extractor<I, O> {
+    fn new(name: str, extract_fn: fn(&I) -> ?O) -> Extractor<I, O> {
+        Extractor { name, extract_fn }
+    }
+
+    fn extract(self, input: &I) -> ?O {
+        (self.extract_fn)(input)
+    }
+
+    fn matches(self, input: &I) -> bool {
+        (self.extract_fn)(input).is_some()
+    }
+}
+
+// ============================================================================
+// Built-in Active Patterns
+// ============================================================================
+
+/// Matches even numbers.
+struct Even;
+
+impl ActivePattern<i64, i64> for Even {
+    fn try_match(input: &i64) -> ?i64 {
+        if input % 2 == 0 {
+            Some(*input)
+        } else {
+            None
+        }
+    }
+
+    fn name() -> str { "Even" }
+}
+
+/// Matches odd numbers.
+struct Odd;
+
+impl ActivePattern<i64, i64> for Odd {
+    fn try_match(input: &i64) -> ?i64 {
+        if input % 2 != 0 {
+            Some(*input)
+        } else {
+            None
+        }
+    }
+
+    fn name() -> str { "Odd" }
+}
+
+/// Matches positive numbers.
+struct Positive;
+
+impl ActivePattern<i64, i64> for Positive {
+    fn try_match(input: &i64) -> ?i64 {
+        if *input > 0 {
+            Some(*input)
+        } else {
+            None
+        }
+    }
+
+    fn name() -> str { "Positive" }
+}
+
+/// Matches negative numbers.
+struct Negative;
+
+impl ActivePattern<i64, i64> for Negative {
+    fn try_match(input: &i64) -> ?i64 {
+        if *input < 0 {
+            Some(*input)
+        } else {
+            None
+        }
+    }
+
+    fn name() -> str { "Negative" }
+}
+
+/// Matches zero.
+struct Zero;
+
+impl ActivePattern<i64, ()> for Zero {
+    fn try_match(input: &i64) -> ?() {
+        if *input == 0 {
+            Some(())
+        } else {
+            None
+        }
+    }
+
+    fn name() -> str { "Zero" }
+}
+
+/// Parses an integer from a string.
+struct Integer;
+
+impl ActivePattern<str, i64> for Integer {
+    fn try_match(input: &str) -> ?i64 {
+        input.parse::<i64>().ok()
+    }
+
+    fn name() -> str { "Integer" }
+}
+
+/// Parses a float from a string.
+struct Float;
+
+impl ActivePattern<str, f64> for Float {
+    fn try_match(input: &str) -> ?f64 {
+        input.parse::<f64>().ok()
+    }
+
+    fn name() -> str { "Float" }
+}
+
+/// Matches non-empty strings.
+struct NonEmpty;
+
+impl ActivePattern<str, str> for NonEmpty {
+    fn try_match(input: &str) -> ?str {
+        if !input.is_empty() {
+            Some(input.clone())
+        } else {
+            None
+        }
+    }
+
+    fn name() -> str { "NonEmpty" }
+}
+
+/// Matches strings starting with a prefix.
+struct StartsWith {
+    prefix: str,
+}
+
+impl StartsWith {
+    fn new(prefix: str) -> StartsWith {
+        StartsWith { prefix }
+    }
+}
+
+impl ActivePattern<str, str> for StartsWith {
+    fn try_match(input: &str) -> ?str {
+        // Would check prefix in actual implementation
+        None
+    }
+
+    fn name() -> str { "StartsWith" }
+}
+
+/// Matches strings ending with a suffix.
+struct EndsWith {
+    suffix: str,
+}
+
+impl EndsWith {
+    fn new(suffix: str) -> EndsWith {
+        EndsWith { suffix }
+    }
+}
+
+/// Regex pattern matcher.
+struct Regex {
+    pattern: str,
+}
+
+impl Regex {
+    fn new(pattern: str) -> Regex {
+        Regex { pattern }
+    }
+
+    fn try_match(self, input: &str) -> ?[str] {
+        // Would use regex engine
+        None
+    }
+}
+
+/// Option pattern: matches Some and extracts value.
+struct Some_<T>;
+
+impl<T: Clone> ActivePattern<?T, T> for Some_<T> {
+    fn try_match(input: &?T) -> ?T {
+        input.clone()
+    }
+
+    fn name() -> str { "Some" }
+}
+
+/// Option pattern: matches None.
+struct None_;
+
+impl<T> ActivePattern<?T, ()> for None_ {
+    fn try_match(input: &?T) -> ?() {
+        if input.is_none() {
+            Some(())
+        } else {
+            None
+        }
+    }
+
+    fn name() -> str { "None" }
+}
+
+/// Result pattern: matches Ok and extracts value.
+struct Ok_<T, E>;
+
+impl<T: Clone, E> ActivePattern<Result<T, E>, T> for Ok_<T, E> {
+    fn try_match(input: &Result<T, E>) -> ?T {
+        input.as_ref().ok().cloned()
+    }
+
+    fn name() -> str { "Ok" }
+}
+
+/// Result pattern: matches Err and extracts error.
+struct Err_<T, E>;
+
+impl<T, E: Clone> ActivePattern<Result<T, E>, E> for Err_<T, E> {
+    fn try_match(input: &Result<T, E>) -> ?E {
+        input.as_ref().err().cloned()
+    }
+
+    fn name() -> str { "Err" }
+}
+
+// ============================================================================
+// Partial Active Patterns
+// ============================================================================
+
+/// A partial active pattern that might not match.
+trait PartialActive<Input, Output> {
+    /// Attempts to match; returns None if no match.
+    fn partial_match(input: &Input) -> ?Output;
+}
+
+/// A total active pattern that always matches.
+trait TotalActive<Input, Output> {
+    /// Always matches and extracts.
+    fn total_match(input: &Input) -> Output;
+}
+
+/// Decomposes a number into quotient and remainder.
+struct DivRem {
+    divisor: i64,
+}
+
+impl DivRem {
+    fn new(divisor: i64) -> DivRem {
+        DivRem { divisor }
+    }
+}
+
+impl TotalActive<i64, (i64, i64)> for DivRem {
+    fn total_match(input: &i64) -> (i64, i64) {
+        (*input / self.divisor, *input % self.divisor)
+    }
+}
+
+// ============================================================================
+// Active Pattern Registry
+// ============================================================================
+
+/// Registry for active patterns.
+struct ActivePatternRegistry {
+    patterns: HashMap<str, Box<dyn std::any::Any>>,
+}
+
+impl ActivePatternRegistry {
+    fn new() -> ActivePatternRegistry {
+        ActivePatternRegistry {
+            patterns: HashMap::new(),
+        }
+    }
+
+    fn register<I, O>(mut self, name: str, extractor: Extractor<I, O>) {
+        self.patterns.insert(name, Box::new(extractor));
+    }
+
+    fn get<I, O>(self, name: &str) -> ?&Extractor<I, O> {
+        self.patterns.get(name)
+            .and_then(|p| p.downcast_ref::<Extractor<I, O>>())
+    }
+}
+
+// ============================================================================
+// Parameterized Active Patterns
+// ============================================================================
+
+/// An active pattern that takes parameters.
+struct ParameterizedPattern<P, I, O> {
+    params: P,
+    extract_fn: fn(&P, &I) -> ?O,
+}
+
+impl<P, I, O> ParameterizedPattern<P, I, O> {
+    fn new(params: P, extract_fn: fn(&P, &I) -> ?O) -> ParameterizedPattern<P, I, O> {
+        ParameterizedPattern { params, extract_fn }
+    }
+
+    fn extract(self, input: &I) -> ?O {
+        (self.extract_fn)(&self.params, input)
+    }
+}
+
+/// Range pattern: matches if value is in range.
+fn in_range(start: i64, end: i64) -> ParameterizedPattern<(i64, i64), i64, i64> {
+    ParameterizedPattern::new(
+        (start, end),
+        |&(s, e), x| {
+            if *x >= s && *x <= e {
+                Some(*x)
+            } else {
+                None
+            }
+        }
+    )
+}
+
+/// Divisible by pattern.
+fn divisible_by(n: i64) -> ParameterizedPattern<i64, i64, i64> {
+    ParameterizedPattern::new(
+        n,
+        |&d, x| {
+            if *x % d == 0 {
+                Some(*x)
+            } else {
+                None
+            }
+        }
+    )
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_even() {
+        assert!(Even::try_match(&4).is_some());
+        assert!(Even::try_match(&3).is_none());
+    }
+
+    #[test]
+    fn test_odd() {
+        assert!(Odd::try_match(&3).is_some());
+        assert!(Odd::try_match(&4).is_none());
+    }
+
+    #[test]
+    fn test_positive() {
+        assert!(Positive::try_match(&5).is_some());
+        assert!(Positive::try_match(&-5).is_none());
+        assert!(Positive::try_match(&0).is_none());
+    }
+
+    #[test]
+    fn test_zero() {
+        assert!(Zero::try_match(&0).is_some());
+        assert!(Zero::try_match(&1).is_none());
+    }
+
+    #[test]
+    fn test_extractor() {
+        let is_even = Extractor::new("IsEven", |x: &i64| {
+            if x % 2 == 0 { Some(*x) } else { None }
+        });
+
+        assert!(is_even.matches(&4));
+        assert!(!is_even.matches(&3));
+    }
+
+    #[test]
+    fn test_in_range() {
+        let r = in_range(1, 10);
+        assert!(r.extract(&5).is_some());
+        assert!(r.extract(&15).is_none());
+    }
+}

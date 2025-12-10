@@ -1,0 +1,309 @@
+//! Differentiable value types.
+
+/// Dual number for forward-mode autodiff.
+#[derive(Debug, Clone, Copy)]
+struct DualNumber {
+    value: f64,
+    derivative: f64,
+}
+
+impl DualNumber {
+    fn new(value: f64, derivative: f64) -> DualNumber {
+        DualNumber { value, derivative }
+    }
+
+    fn constant(value: f64) -> DualNumber {
+        DualNumber { value, derivative: 0.0 }
+    }
+
+    fn variable(value: f64) -> DualNumber {
+        DualNumber { value, derivative: 1.0 }
+    }
+}
+
+impl std::ops::Add for DualNumber {
+    type Output = DualNumber;
+    fn add(self, other: DualNumber) -> DualNumber {
+        DualNumber {
+            value: self.value + other.value,
+            derivative: self.derivative + other.derivative,
+        }
+    }
+}
+
+impl std::ops::Sub for DualNumber {
+    type Output = DualNumber;
+    fn sub(self, other: DualNumber) -> DualNumber {
+        DualNumber {
+            value: self.value - other.value,
+            derivative: self.derivative - other.derivative,
+        }
+    }
+}
+
+impl std::ops::Mul for DualNumber {
+    type Output = DualNumber;
+    fn mul(self, other: DualNumber) -> DualNumber {
+        DualNumber {
+            value: self.value * other.value,
+            derivative: self.derivative * other.value + self.value * other.derivative,
+        }
+    }
+}
+
+impl std::ops::Div for DualNumber {
+    type Output = DualNumber;
+    fn div(self, other: DualNumber) -> DualNumber {
+        DualNumber {
+            value: self.value / other.value,
+            derivative: (self.derivative * other.value - self.value * other.derivative)
+                / (other.value * other.value),
+        }
+    }
+}
+
+impl DualNumber {
+    fn exp(self) -> DualNumber {
+        let exp_val = self.value.exp();
+        DualNumber {
+            value: exp_val,
+            derivative: self.derivative * exp_val,
+        }
+    }
+
+    fn ln(self) -> DualNumber {
+        DualNumber {
+            value: self.value.ln(),
+            derivative: self.derivative / self.value,
+        }
+    }
+
+    fn sin(self) -> DualNumber {
+        DualNumber {
+            value: self.value.sin(),
+            derivative: self.derivative * self.value.cos(),
+        }
+    }
+
+    fn cos(self) -> DualNumber {
+        DualNumber {
+            value: self.value.cos(),
+            derivative: -self.derivative * self.value.sin(),
+        }
+    }
+
+    fn pow(self, n: f64) -> DualNumber {
+        DualNumber {
+            value: self.value.powf(n),
+            derivative: self.derivative * n * self.value.powf(n - 1.0),
+        }
+    }
+}
+
+/// Value with gradient information.
+#[derive(Debug, Clone)]
+struct GradValue {
+    value: f64,
+    grad: f64,
+    requires_grad: bool,
+}
+
+impl GradValue {
+    fn new(value: f64) -> GradValue {
+        GradValue {
+            value,
+            grad: 0.0,
+            requires_grad: true,
+        }
+    }
+
+    fn detach(self) -> GradValue {
+        GradValue {
+            value: self.value,
+            grad: 0.0,
+            requires_grad: false,
+        }
+    }
+
+    fn zero_grad(mut self) {
+        self.grad = 0.0;
+    }
+
+    fn with_grad(mut self, grad: f64) -> GradValue {
+        self.grad = grad;
+        self
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    const EPSILON: f64 = 1e-10;
+
+    fn approx_eq(a: f64, b: f64) -> bool {
+        (a - b).abs() < EPSILON
+    }
+
+    #[test]
+    fn test_dual_number_creation() {
+        let d = DualNumber::new(3.0, 1.0);
+        assert_eq!(d.value, 3.0);
+        assert_eq!(d.derivative, 1.0);
+    }
+
+    #[test]
+    fn test_dual_number_constant() {
+        let c = DualNumber::constant(5.0);
+        assert_eq!(c.value, 5.0);
+        assert_eq!(c.derivative, 0.0);
+    }
+
+    #[test]
+    fn test_dual_number_variable() {
+        let v = DualNumber::variable(2.0);
+        assert_eq!(v.value, 2.0);
+        assert_eq!(v.derivative, 1.0);
+    }
+
+    #[test]
+    fn test_dual_add() {
+        let a = DualNumber::variable(2.0);
+        let b = DualNumber::constant(3.0);
+        let c = a + b;
+
+        assert_eq!(c.value, 5.0);
+        assert_eq!(c.derivative, 1.0); // d/dx(x + 3) = 1
+    }
+
+    #[test]
+    fn test_dual_sub() {
+        let a = DualNumber::variable(5.0);
+        let b = DualNumber::constant(3.0);
+        let c = a - b;
+
+        assert_eq!(c.value, 2.0);
+        assert_eq!(c.derivative, 1.0); // d/dx(x - 3) = 1
+    }
+
+    #[test]
+    fn test_dual_mul() {
+        let x = DualNumber::variable(3.0);
+        let c = DualNumber::constant(2.0);
+        let result = x * c;
+
+        assert_eq!(result.value, 6.0);
+        assert_eq!(result.derivative, 2.0); // d/dx(2x) = 2
+    }
+
+    #[test]
+    fn test_dual_mul_two_vars() {
+        // f(x,y) = x*y at x=2, differentiated wrt x (y=3 constant)
+        let x = DualNumber::variable(2.0);
+        let y = DualNumber::constant(3.0);
+        let result = x * y;
+
+        assert_eq!(result.value, 6.0);
+        assert_eq!(result.derivative, 3.0); // d/dx(x*3) = 3
+    }
+
+    #[test]
+    fn test_dual_div() {
+        let x = DualNumber::variable(6.0);
+        let c = DualNumber::constant(2.0);
+        let result = x / c;
+
+        assert_eq!(result.value, 3.0);
+        assert_eq!(result.derivative, 0.5); // d/dx(x/2) = 0.5
+    }
+
+    #[test]
+    fn test_dual_exp() {
+        let x = DualNumber::variable(0.0);
+        let result = x.exp();
+
+        assert!(approx_eq(result.value, 1.0)); // e^0 = 1
+        assert!(approx_eq(result.derivative, 1.0)); // d/dx(e^x) = e^x = 1 at x=0
+    }
+
+    #[test]
+    fn test_dual_ln() {
+        let x = DualNumber::variable(1.0);
+        let result = x.ln();
+
+        assert!(approx_eq(result.value, 0.0)); // ln(1) = 0
+        assert!(approx_eq(result.derivative, 1.0)); // d/dx(ln(x)) = 1/x = 1 at x=1
+    }
+
+    #[test]
+    fn test_dual_sin() {
+        let x = DualNumber::variable(0.0);
+        let result = x.sin();
+
+        assert!(approx_eq(result.value, 0.0)); // sin(0) = 0
+        assert!(approx_eq(result.derivative, 1.0)); // d/dx(sin(x)) = cos(x) = 1 at x=0
+    }
+
+    #[test]
+    fn test_dual_cos() {
+        let x = DualNumber::variable(0.0);
+        let result = x.cos();
+
+        assert!(approx_eq(result.value, 1.0)); // cos(0) = 1
+        assert!(approx_eq(result.derivative, 0.0)); // d/dx(cos(x)) = -sin(x) = 0 at x=0
+    }
+
+    #[test]
+    fn test_dual_pow() {
+        let x = DualNumber::variable(2.0);
+        let result = x.pow(3.0);
+
+        assert!(approx_eq(result.value, 8.0)); // 2^3 = 8
+        assert!(approx_eq(result.derivative, 12.0)); // d/dx(x^3) = 3x^2 = 12 at x=2
+    }
+
+    #[test]
+    fn test_grad_value_creation() {
+        let g = GradValue::new(5.0);
+        assert_eq!(g.value, 5.0);
+        assert_eq!(g.grad, 0.0);
+        assert!(g.requires_grad);
+    }
+
+    #[test]
+    fn test_grad_value_detach() {
+        let g = GradValue::new(5.0).with_grad(2.0);
+        let detached = g.detach();
+
+        assert_eq!(detached.value, 5.0);
+        assert_eq!(detached.grad, 0.0);
+        assert!(!detached.requires_grad);
+    }
+
+    #[test]
+    fn test_grad_value_zero_grad() {
+        let mut g = GradValue::new(5.0).with_grad(10.0);
+        g.zero_grad();
+
+        assert_eq!(g.grad, 0.0);
+    }
+
+    #[test]
+    fn test_dual_chain_rule() {
+        // f(x) = sin(x^2) at x=1
+        // f'(x) = cos(x^2) * 2x
+        // f'(1) = cos(1) * 2 ≈ 1.0806
+        let x = DualNumber::variable(1.0);
+        let x_squared = x * x; // x^2, derivative = 2x = 2
+        let result = x_squared.sin();
+
+        assert!(approx_eq(result.value, 1.0_f64.sin()));
+        // derivative = cos(1) * 2
+        let expected_deriv = 1.0_f64.cos() * 2.0;
+        assert!((result.derivative - expected_deriv).abs() < 1e-6);
+    }
+}

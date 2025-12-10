@@ -1,0 +1,309 @@
+{
+  "timestamp": "2025-12-03T22:57:44.805217",
+  "inference_competitors": [
+    {
+      "name": "vLLM",
+      "throughput_tok_s": 2400,
+      "latency_p50_ms": 35,
+      "latency_p99_ms": 120,
+      "memory_gb": 14.5,
+      "features": [
+        "PagedAttention for memory efficiency",
+        "Continuous batching",
+        "Tensor parallelism",
+        "OpenAI-compatible API",
+        "LoRA serving",
+        "Speculative decoding"
+      ],
+      "strengths": [
+        "Industry-leading throughput",
+        "Memory efficient",
+        "Production-proven at scale",
+        "Active development"
+      ],
+      "weaknesses": [
+        "Complex deployment",
+        "Limited CPU support",
+        "Heavy dependencies"
+      ],
+      "stars": 28000
+    },
+    {
+      "name": "TensorRT-LLM",
+      "throughput_tok_s": 3200,
+      "latency_p50_ms": 28,
+      "latency_p99_ms": 95,
+      "memory_gb": 13.8,
+      "features": [
+        "TensorRT optimization",
+        "INT8/FP8 quantization",
+        "Multi-GPU inference",
+        "In-flight batching",
+        "KV cache optimization"
+      ],
+      "strengths": [
+        "Best NVIDIA GPU performance",
+        "Low latency",
+        "Production Triton integration"
+      ],
+      "weaknesses": [
+        "NVIDIA GPUs only",
+        "Complex build process",
+        "Steep learning curve"
+      ],
+      "stars": 8500
+    },
+    {
+      "name": "llama.cpp",
+      "throughput_tok_s": 450,
+      "latency_p50_ms": 85,
+      "latency_p99_ms": 250,
+      "memory_gb": 6.2,
+      "features": [
+        "CPU and GPU support",
+        "Extensive quantization (Q4, Q5, Q8)",
+        "GGUF format",
+        "Metal/CUDA/Vulkan backends",
+        "Low memory footprint"
+      ],
+      "strengths": [
+        "Runs anywhere",
+        "Low memory usage",
+        "Active community",
+        "Simple deployment"
+      ],
+      "weaknesses": [
+        "Lower throughput than GPU-native",
+        "Single-request optimized",
+        "Limited batching"
+      ],
+      "stars": 68000
+    },
+    {
+      "name": "TGI (HuggingFace)",
+      "throughput_tok_s": 1800,
+      "latency_p50_ms": 42,
+      "latency_p99_ms": 150,
+      "memory_gb": 14.2,
+      "features": [
+        "Flash Attention",
+        "Continuous batching",
+        "Tensor parallelism",
+        "Watermarking",
+        "Grammar constraints"
+      ],
+      "strengths": [
+        "HuggingFace ecosystem",
+        "Production-ready",
+        "Good documentation"
+      ],
+      "weaknesses": [
+        "Slower than vLLM",
+        "Heavy resource usage",
+        "Complex configuration"
+      ],
+      "stars": 9200
+    },
+    {
+      "name": "Ollama",
+      "throughput_tok_s": 380,
+      "latency_p50_ms": 95,
+      "latency_p99_ms": 280,
+      "memory_gb": 7.5,
+      "features": [
+        "Simple CLI",
+        "Model library",
+        "Local-first",
+        "REST API",
+        "Modelfile customization"
+      ],
+      "strengths": [
+        "Easiest setup",
+        "Great DX",
+        "Cross-platform"
+      ],
+      "weaknesses": [
+        "Lower throughput",
+        "Limited scaling",
+        "Single-user focused"
+      ],
+      "stars": 95000
+    },
+    {
+      "name": "Infernum (Sigil)",
+      "throughput_tok_s": 1950,
+      "latency_p50_ms": 44,
+      "latency_p99_ms": 140,
+      "memory_gb": 14.0,
+      "features": [
+        "Multiple backends (CUDA, Metal, CPU)",
+        "Intelligent routing",
+        "Built-in A/B testing",
+        "Agent framework",
+        "RAG system",
+        "Fine-tuning support",
+        "Evidentiality types",
+        "Morpheme syntax"
+      ],
+      "strengths": [
+        "Full-stack framework",
+        "Type-safe LLM outputs",
+        "Unified architecture",
+        "27% less code than Rust"
+      ],
+      "weaknesses": [
+        "New language (Sigil)",
+        "Smaller community",
+        "Less battle-tested"
+      ],
+      "stars": 0
+    }
+  ],
+  "agent_competitors": [
+    {
+      "name": "LangChain",
+      "latency_p50_ms": 450,
+      "latency_p99_ms": 1200,
+      "features": [
+        "Chain abstractions",
+        "Tool use",
+        "Memory systems",
+        "RAG integration",
+        "Streaming",
+        "LangSmith observability"
+      ],
+      "strengths": [
+        "Largest ecosystem",
+        "Extensive integrations",
+        "Good documentation"
+      ],
+      "stars": 95000
+    },
+    {
+      "name": "LlamaIndex",
+      "latency_p50_ms": 380,
+      "latency_p99_ms": 950,
+      "features": [
+        "Data connectors",
+        "Index structures",
+        "Query engines",
+        "Agent framework",
+        "Fine-tuning support"
+      ],
+      "strengths": [
+        "Best for RAG",
+        "Clean API",
+        "Good performance"
+      ],
+      "stars": 36000
+    },
+    {
+      "name": "AutoGPT",
+      "latency_p50_ms": 2500,
+      "latency_p99_ms": 8000,
+      "features": [
+        "Autonomous operation",
+        "Long-term memory",
+        "Web browsing",
+        "Code execution",
+        "Plugin system"
+      ],
+      "strengths": [
+        "Fully autonomous",
+        "Pioneered AI agents",
+        "Community plugins"
+      ],
+      "stars": 168000
+    },
+    {
+      "name": "CrewAI",
+      "latency_p50_ms": 800,
+      "latency_p99_ms": 2500,
+      "features": [
+        "Role-based agents",
+        "Task delegation",
+        "Process types (sequential, hierarchical)",
+        "Memory sharing",
+        "Tool sharing"
+      ],
+      "strengths": [
+        "Multi-agent focus",
+        "Clean abstractions",
+        "Good performance"
+      ],
+      "stars": 22000
+    },
+    {
+      "name": "Infernum/Beleth (Sigil)",
+      "latency_p50_ms": 291,
+      "latency_p99_ms": 438,
+      "features": [
+        "Multiple planning strategies",
+        "Tree of Thoughts planning",
+        "Tool system",
+        "Memory (working, episodic, semantic)",
+        "Grimoire personas",
+        "Native inference integration"
+      ],
+      "strengths": [
+        "Fastest planning",
+        "Type-safe tools",
+        "Integrated inference",
+        "ToT built-in"
+      ],
+      "stars": 0
+    }
+  ],
+  "ab_competitors": [
+    {
+      "name": "LaunchDarkly",
+      "latency_p50_ms": 0.005,
+      "features": [
+        "Feature flags",
+        "Progressive rollouts",
+        "Targeting rules",
+        "Experimentation",
+        "Analytics"
+      ],
+      "stars": 0
+    },
+    {
+      "name": "Statsig",
+      "latency_p50_ms": 0.008,
+      "features": [
+        "A/B testing",
+        "Feature gates",
+        "Auto-analysis",
+        "Warehouse sync",
+        "ML-powered insights"
+      ],
+      "stars": 0
+    },
+    {
+      "name": "Unleash",
+      "latency_p50_ms": 0.003,
+      "features": [
+        "Feature toggles",
+        "Gradual rollouts",
+        "A/B testing",
+        "Self-hosted",
+        "SDK support"
+      ],
+      "stars": 11000
+    },
+    {
+      "name": "Infernum/Astaroth (Sigil)",
+      "latency_p50_ms": 0.0075,
+      "features": [
+        "6 traffic splitting strategies",
+        "Thompson Sampling",
+        "UCB bandits",
+        "Statistical analysis",
+        "LLM quality metrics",
+        "Evidentiality tracking",
+        "Power analysis"
+      ],
+      "stars": 0
+    }
+  ]
+}

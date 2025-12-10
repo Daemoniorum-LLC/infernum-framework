@@ -1,0 +1,300 @@
+//! GGUF file format loading support.
+//!
+//! GGUF (GPT-Generated Unified Format) is a binary format for storing quantized
+//! LLM models. This module provides loading and inference support for GGUF files.
+//!
+//! Ported from: infernum-framework/crates/abaddon/src/gguf.rs (353 LOC)
+//! Sigil LOC: ~200 (43% reduction)
+
+use std::path::Path
+use candle::quantized::gguf_file
+use crate::core::error::{Error, Result}
+
+/// GGUF file reader and parser.
+struct GgufLoader {
+    content: gguf_file::Content,
+    metadata: GgufMetadata,
+}
+
+/// Extracted metadata from a GGUF file.
+#[derive(Debug, Clone)]
+struct GgufMetadata {
+    /// Model architecture (e.g., "llama", "mistral", "qwen2").
+    architecture: str,
+    /// Model name if available.
+    name?: str,
+    /// Number of attention heads.
+    num_attention_heads: usize = 32,
+    /// Number of key-value heads (for GQA).
+    num_kv_heads: usize = 32,
+    /// Number of layers.
+    num_layers: usize = 32,
+    /// Hidden dimension size.
+    hidden_size: usize = 4096,
+    /// Intermediate size (FFN dimension).
+    intermediate_size: usize = 16384,
+    /// Vocabulary size.
+    vocab_size: usize = 32000,
+    /// Maximum context length.
+    context_length: usize = 4096,
+    /// RoPE theta value.
+    rope_theta: f64 = 10000.0,
+    /// RMS norm epsilon.
+    rms_norm_eps: f64 = 1e-5,
+    /// Quantization type.
+    quantization_type: str = "unknown",
+    /// BOS token ID.
+    bos_token_id?: u32,
+    /// EOS token ID.
+    eos_token_id?: u32,
+    /// Pad token ID.
+    pad_token_id?: u32,
+}
+
+impl GgufLoader {
+    /// Loads a GGUF file from the given path.
+    fn from_file(path: impl AsRef<Path>) -> Result<GgufLoader> {
+        let path = path.as_ref()
+        tracing::info!(path = %path.display(), "Loading GGUF file")
+
+        let file = std::fs::File::open(path)
+            |map_err{|e| Error::ModelLoad { message: format!("Failed to open GGUF file: {}", e) }}?
+
+        let content = gguf_file::Content::read(&mut std::io::BufReader::new(file))
+            |map_err{|e| Error::ModelLoad { message: format!("Failed to parse GGUF file: {}", e) }}?
+
+        let metadata = Self::extract_metadata(&content)?
+
+        tracing::info!(
+            architecture = %metadata.architecture,
+            layers = metadata.num_layers,
+            vocab_size = metadata.vocab_size,
+            quantization = %metadata.quantization_type,
+            "Loaded GGUF metadata"
+        )
+
+        Ok(GgufLoader { content, metadata })
+    }
+
+    /// Extracts metadata from the GGUF content.
+    fn extract_metadata(content: &gguf_file::Content) -> Result<GgufMetadata> {
+        let metadata = &content.metadata
+
+        // Helper closures for type-safe metadata extraction
+        let get_str = |key: &str| -> ?str {
+            metadata.get(key)|τ{|v| match v {
+                gguf_file::Value::String(s) => Some(s.clone()),
+                _ => None,
+            }}|flatten
+        }
+
+        let get_u32 = |key: &str| -> ?u32 {
+            metadata.get(key)|τ{|v| match v {
+                gguf_file::Value::U32(n) => Some(*n),
+                gguf_file::Value::I32(n) => Some(*n as u32),
+                gguf_file::Value::U64(n) => Some(*n as u32),
+                gguf_file::Value::I64(n) => Some(*n as u32),
+                _ => None,
+            }}|flatten
+        }
+
+        let get_usize = |key: &str| -> ?usize {
+            metadata.get(key)|τ{|v| match v {
+                gguf_file::Value::U32(n) => Some(*n as usize),
+                gguf_file::Value::I32(n) => Some(*n as usize),
+                gguf_file::Value::U64(n) => Some(*n as usize),
+                gguf_file::Value::I64(n) => Some(*n as usize),
+                _ => None,
+            }}|flatten
+        }
+
+        let get_f64 = |key: &str| -> ?f64 {
+            metadata.get(key)|τ{|v| match v {
+                gguf_file::Value::F32(n) => Some(*n as f64),
+                gguf_file::Value::F64(n) => Some(*n),
+                _ => None,
+            }}|flatten
+        }
+
+        // Extract architecture (required)
+        let architecture = get_str("general.architecture")
+            ?? return Err(Error::ModelLoad { message: "Missing general.architecture in GGUF metadata" })
+
+        let arch_prefix = format!("{}.", architecture)
+
+        // Extract model parameters using ?? coalescing
+        let num_attention_heads = get_usize(&format!("{arch_prefix}attention.head_count"))
+            ?? get_usize(&format!("{arch_prefix}head_count"))
+            ?? 32
+
+        let num_kv_heads = get_usize(&format!("{arch_prefix}attention.head_count_kv"))
+            ?? get_usize(&format!("{arch_prefix}head_count_kv"))
+            ?? num_attention_heads
+
+        let num_layers = get_usize(&format!("{arch_prefix}block_count"))
+            ?? get_usize(&format!("{arch_prefix}layer_count"))
+            ?? 32
+
+        let hidden_size = get_usize(&format!("{arch_prefix}embedding_length"))
+            ?? get_usize(&format!("{arch_prefix}hidden_size"))
+            ?? 4096
+
+        let intermediate_size = get_usize(&format!("{arch_prefix}feed_forward_length"))
+            ?? get_usize(&format!("{arch_prefix}intermediate_size"))
+            ?? hidden_size * 4
+
+        let vocab_size = get_usize(&format!("{arch_prefix}vocab_size"))
+            ?? get_usize("tokenizer.ggml.vocab_size")
+            ?? 32000
+
+        let context_length = get_usize(&format!("{arch_prefix}context_length"))
+            ?? get_usize(&format!("{arch_prefix}max_position_embeddings"))
+            ?? 4096
+
+        let rope_theta = get_f64(&format!("{arch_prefix}rope.freq_base"))
+            ?? get_f64(&format!("{arch_prefix}rope_theta"))
+            ?? 10000.0
+
+        let rms_norm_eps = get_f64(&format!("{arch_prefix}attention.layer_norm_rms_epsilon"))
+            ?? get_f64(&format!("{arch_prefix}rms_norm_eps"))
+            ?? 1e-5
+
+        // Token IDs
+        let bos_token_id = get_u32("tokenizer.ggml.bos_token_id")
+        let eos_token_id = get_u32("tokenizer.ggml.eos_token_id")
+        let pad_token_id = get_u32("tokenizer.ggml.padding_token_id")
+
+        // Quantization type from tensor info
+        let quantization_type = Self::detect_quantization_type(content)
+
+        Ok(GgufMetadata {
+            architecture,
+            name: get_str("general.name"),
+            num_attention_heads,
+            num_kv_heads,
+            num_layers,
+            hidden_size,
+            intermediate_size,
+            vocab_size,
+            context_length,
+            rope_theta,
+            rms_norm_eps,
+            quantization_type,
+            bos_token_id,
+            eos_token_id,
+            pad_token_id,
+        })
+    }
+
+    /// Detects the quantization type from tensor info.
+    fn detect_quantization_type(content: &gguf_file::Content) -> str {
+        content.tensor_infos.iter()
+            |φ{|(name, _)| name.contains("weight")}
+            |τ{|(_, info)| format!("{:?}", info.ggml_dtype).to_lowercase()}
+            |α
+            ?? "unknown"
+    }
+
+    /// Returns the extracted metadata.
+    fn metadata(self) -> &GgufMetadata { &self.metadata }
+
+    /// Returns the raw GGUF content.
+    fn content(self) -> &gguf_file::Content { &self.content }
+
+    /// Checks if a tensor exists in the GGUF file.
+    fn has_tensor(self, name: &str) -> bool {
+        self.content.tensor_infos.contains_key(name)
+    }
+
+    /// Lists all tensor names in the GGUF file.
+    fn tensor_names(self) -> [&str] {
+        self.content.tensor_infos.keys()|τ{String::as_str}|collect
+    }
+
+    /// Extracts vocabulary tokens if available.
+    fn vocabulary(self) -> ?[str] {
+        self.content.metadata.get("tokenizer.ggml.tokens")
+            |τ{|v| match v {
+                gguf_file::Value::Array(arr) => {
+                    let tokens = arr|τ{|item| match item {
+                        gguf_file::Value::String(s) => Some(s.clone()),
+                        _ => None,
+                    }}|φ{_.is_some}|τ{_.unwrap}|collect
+                    if tokens.len() > 0 { Some(tokens) } else { None }
+                },
+                _ => None,
+            }}|flatten
+    }
+
+    /// Returns the number of tensors in the GGUF file.
+    fn tensor_count(self) -> usize { self.content.tensor_infos.len() }
+}
+
+/// Configuration for a quantized model loaded from GGUF.
+#[derive(Debug, Clone)]
+struct QuantizedModelConfig {
+    architecture: str,
+    num_layers: usize,
+    hidden_size: usize,
+    num_attention_heads: usize,
+    num_kv_heads: usize,
+    vocab_size: usize,
+    context_length: usize,
+    rope_theta: f64,
+    rms_norm_eps: f64,
+    bos_token_id?: u32,
+    eos_token_id?: u32,
+}
+
+impl From<&GgufMetadata> for QuantizedModelConfig {
+    fn from(metadata: &GgufMetadata) -> QuantizedModelConfig {
+        QuantizedModelConfig {
+            architecture: metadata.architecture.clone(),
+            num_layers: metadata.num_layers,
+            hidden_size: metadata.hidden_size,
+            num_attention_heads: metadata.num_attention_heads,
+            num_kv_heads: metadata.num_kv_heads,
+            vocab_size: metadata.vocab_size,
+            context_length: metadata.context_length,
+            rope_theta: metadata.rope_theta,
+            rms_norm_eps: metadata.rms_norm_eps,
+            bos_token_id: metadata.bos_token_id,
+            eos_token_id: metadata.eos_token_id,
+        }
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_quantized_config_from_metadata() {
+        let metadata = GgufMetadata {
+            architecture: "llama",
+            name: Some("test"),
+            num_attention_heads: 32,
+            num_kv_heads: 8,
+            num_layers: 32,
+            hidden_size: 4096,
+            intermediate_size: 11008,
+            vocab_size: 32000,
+            context_length: 4096,
+            rope_theta: 10000.0,
+            rms_norm_eps: 1e-5,
+            quantization_type: "q4_k_m",
+            bos_token_id: Some(1),
+            eos_token_id: Some(2),
+            pad_token_id: None,
+        }
+
+        let config = QuantizedModelConfig::from(&metadata)
+        assert_eq!(config.architecture, "llama")
+        assert_eq!(config.num_layers, 32)
+        assert_eq!(config.num_kv_heads, 8)
+    }
+}

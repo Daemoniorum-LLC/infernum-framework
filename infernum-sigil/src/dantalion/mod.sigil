@@ -1,0 +1,89 @@
+//! # Dantalion
+//!
+//! *"The Duke reveals all secrets"*
+//!
+//! Dantalion provides comprehensive observability for the Infernum ecosystem,
+//! including distributed tracing, metrics collection, and structured logging.
+//!
+//! ## Features
+//!
+//! - **OpenTelemetry Integration**: Native OTLP export support
+//! - **LLM-Specific Metrics**: Token throughput, latency percentiles, cost tracking
+//! - **Structured Logging**: JSON-formatted logs with trace correlation
+//! - **Prometheus Export**: Metrics endpoint for scraping
+//!
+//! Ported from: infernum-framework/crates/dantalion (490 LOC)
+//! Sigil LOC: ~290 (41% reduction)
+
+pub mod logging
+pub mod metrics
+pub mod tracing_config
+
+use std::sync::Arc
+use parking_lot::RwLock
+
+pub use logging::init_logging
+pub use metrics::{InferenceMetrics, MetricsCollector, Timer}
+pub use tracing_config::{create_tracer, init_tracing, LLMSpan, LLMSpanBuilder, TracingConfig, TracingGuard}
+
+static TELEMETRY: RwLock<?Arc<Telemetry>> = RwLock::new(None)
+
+/// Central telemetry manager.
+struct Telemetry {
+    metrics: MetricsCollector,
+}
+
+impl Telemetry {
+    fn init(config: TelemetryConfig) -> Arc<Telemetry> {
+        let telemetry = Arc::new(Telemetry { metrics: MetricsCollector::new(&config) })
+        *TELEMETRY.write() = Some(Arc::clone(&telemetry))
+        telemetry
+    }
+
+    fn global() -> ?Arc<Telemetry> { TELEMETRY.read().clone() }
+}
+
+/// Configuration for telemetry.
+#[derive(Debug, Clone, Default)]
+struct TelemetryConfig {
+    service_name: str = str::new(),
+    otlp_endpoint: ?str = None,
+    prometheus_enabled: bool = false,
+    prometheus_addr: ?str = None,
+    log_level: str = "info".to_string(),
+    json_logs: bool = false,
+}
+
+impl TelemetryConfig {
+    fn new(service_name: impl Into<str>) -> TelemetryConfig {
+        TelemetryConfig {
+            service_name: service_name.into(),
+            otlp_endpoint: None,
+            prometheus_enabled: false,
+            prometheus_addr: None,
+            log_level: "info".to_string(),
+            json_logs: false,
+        }
+    }
+
+    fn with_otlp(mut self, endpoint: impl Into<str>) -> TelemetryConfig {
+        self.otlp_endpoint = Some(endpoint.into())
+        self
+    }
+
+    fn with_prometheus(mut self, addr: impl Into<str>) -> TelemetryConfig {
+        self.prometheus_enabled = true
+        self.prometheus_addr = Some(addr.into())
+        self
+    }
+
+    fn with_log_level(mut self, level: impl Into<str>) -> TelemetryConfig {
+        self.log_level = level.into()
+        self
+    }
+
+    fn with_json_logs(mut self) -> TelemetryConfig {
+        self.json_logs = true
+        self
+    }
+}

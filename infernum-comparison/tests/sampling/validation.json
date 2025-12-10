@@ -1,0 +1,81 @@
+{
+  "name": "SamplingParams Validation Tests",
+  "description": "Tests for sampling parameter validation",
+  "cases": [
+    {
+      "name": "valid_default",
+      "params": {},
+      "expected_valid": true
+    },
+    {
+      "name": "valid_balanced",
+      "params": { "temperature": 0.7, "top_p": 0.9 },
+      "expected_valid": true
+    },
+    {
+      "name": "valid_greedy",
+      "params": { "temperature": 0.0 },
+      "expected_valid": true
+    },
+    {
+      "name": "invalid_negative_temperature",
+      "params": { "temperature": -1.0 },
+      "expected_valid": false,
+      "expected_error": "temperature must be non-negative"
+    },
+    {
+      "name": "invalid_top_p_above_one",
+      "params": { "top_p": 1.5 },
+      "expected_valid": false,
+      "expected_error": "top_p must be between 0.0 and 1.0"
+    },
+    {
+      "name": "invalid_top_p_negative",
+      "params": { "top_p": -0.1 },
+      "expected_valid": false,
+      "expected_error": "top_p must be between 0.0 and 1.0"
+    },
+    {
+      "name": "invalid_min_p_above_one",
+      "params": { "min_p": 1.5 },
+      "expected_valid": false,
+      "expected_error": "min_p must be between 0.0 and 1.0"
+    },
+    {
+      "name": "invalid_repetition_penalty_negative",
+      "params": { "repetition_penalty": -0.5 },
+      "expected_valid": false,
+      "expected_error": "repetition_penalty must be non-negative"
+    },
+    {
+      "name": "invalid_presence_penalty_too_high",
+      "params": { "presence_penalty": 3.0 },
+      "expected_valid": false,
+      "expected_error": "presence_penalty must be between -2.0 and 2.0"
+    },
+    {
+      "name": "invalid_frequency_penalty_too_low",
+      "params": { "frequency_penalty": -3.0 },
+      "expected_valid": false,
+      "expected_error": "frequency_penalty must be between -2.0 and 2.0"
+    },
+    {
+      "name": "invalid_max_tokens_zero",
+      "params": { "max_tokens": 0 },
+      "expected_valid": false,
+      "expected_error": "max_tokens must be greater than 0"
+    },
+    {
+      "name": "valid_edge_values",
+      "params": {
+        "temperature": 0.0,
+        "top_p": 0.0,
+        "min_p": 1.0,
+        "presence_penalty": -2.0,
+        "frequency_penalty": 2.0,
+        "max_tokens": 1
+      },
+      "expected_valid": true
+    }
+  ]
+}

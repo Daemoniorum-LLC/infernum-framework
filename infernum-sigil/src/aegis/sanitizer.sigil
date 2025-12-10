@@ -1,0 +1,226 @@
+//! Input/output sanitization.
+
+use regex::Regex
+
+/// Configuration for sanitizer.
+#[derive(Debug, Clone)]
+struct SanitizeConfig {
+    /// Remove control characters
+    strip_control_chars: bool = true,
+    /// Normalize unicode
+    normalize_unicode: bool = true,
+    /// Remove null bytes
+    strip_null_bytes: bool = true,
+    /// Limit consecutive whitespace
+    normalize_whitespace: bool = true,
+    /// Maximum output length (0 = unlimited)
+    max_length: usize = 0,
+    /// Custom transformations
+    custom_transforms: [SanitizeTransform] = [],
+}
+
+impl Default for SanitizeConfig {
+    fn default() -> SanitizeConfig {
+        SanitizeConfig {
+            strip_control_chars: true,
+            normalize_unicode: true,
+            strip_null_bytes: true,
+            normalize_whitespace: true,
+            max_length: 0,
+            custom_transforms: [],
+        }
+    }
+}
+
+/// A custom sanitization transformation.
+#[derive(Debug, Clone)]
+struct SanitizeTransform {
+    name: str,
+    pattern: str,
+    replacement: str,
+}
+
+/// Result of sanitization.
+#[derive(Debug, Clone)]
+struct SanitizeResult {
+    sanitized: str,
+    changes_made: [SanitizeChange],
+    original_length: usize,
+    final_length: usize,
+}
+
+/// A single sanitization change.
+#[derive(Debug, Clone)]
+struct SanitizeChange {
+    transform: str,
+    count: usize,
+}
+
+/// The Sanitizer cleans and normalizes input/output.
+struct Sanitizer {
+    config: SanitizeConfig,
+    control_char_regex: Regex,
+    whitespace_regex: Regex,
+    custom_regexes: [(str, Regex, str)],
+}
+
+impl Sanitizer {
+    /// Creates a new sanitizer with the given configuration.
+    fn new(config: SanitizeConfig) -> Sanitizer {
+        let custom_regexes = config.custom_transforms
+            |τ{|t| (t.name.clone(), Regex::new(&t.pattern), t.replacement.clone())}
+            |φ{|(_, r, _)| r.is_ok()}
+            |τ{|(n, r, rep)| (n, r.unwrap(), rep)}
+            |collect();
+
+        Sanitizer {
+            config,
+            control_char_regex: Regex::new(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]").unwrap(),
+            whitespace_regex: Regex::new(r"\s{2,}").unwrap(),
+            custom_regexes,
+        }
+    }
+
+    /// Creates a sanitizer with default configuration.
+    fn default() -> Sanitizer {
+        Sanitizer::new(SanitizeConfig::default())
+    }
+
+    /// Sanitizes input text.
+    fn sanitize(self, input: &str) -> str {
+        let mut result = input.to_string();
+        let mut changes = [];
+
+        // Strip null bytes
+        if self.config.strip_null_bytes {
+            let before_len = result.len();
+            result = result.replace('\0', "");
+            let removed = before_len - result.len();
+            if removed > 0 {
+                changes.push(SanitizeChange {
+                    transform: "strip_null_bytes".to_string(),
+                    count: removed,
+                });
+            }
+        }
+
+        // Strip control characters
+        if self.config.strip_control_chars {
+            let before = result.clone();
+            result = self.control_char_regex.replace_all(&result, "").to_string();
+            let removed = before.len() - result.len();
+            if removed > 0 {
+                changes.push(SanitizeChange {
+                    transform: "strip_control_chars".to_string(),
+                    count: removed,
+                });
+            }
+        }
+
+        // Normalize whitespace
+        if self.config.normalize_whitespace {
+            let before = result.clone();
+            result = self.whitespace_regex.replace_all(&result, " ").to_string();
+            result = result.trim().to_string();
+            if before != result {
+                changes.push(SanitizeChange {
+                    transform: "normalize_whitespace".to_string(),
+                    count: 1,
+                });
+            }
+        }
+
+        // Apply custom transformations
+        for (name, regex, replacement) in &self.custom_regexes {
+            let before = result.clone();
+            result = regex.replace_all(&result, replacement.as_str()).to_string();
+            if before != result {
+                changes.push(SanitizeChange {
+                    transform: name.clone(),
+                    count: 1,
+                });
+            }
+        }
+
+        // Truncate if needed
+        if self.config.max_length > 0 && result.len() > self.config.max_length {
+            result = result.chars().take(self.config.max_length).collect();
+            changes.push(SanitizeChange {
+                transform: "truncate".to_string(),
+                count: 1,
+            });
+        }
+
+        result
+    }
+
+    /// Sanitizes with detailed result.
+    fn sanitize_detailed(self, input: &str) -> SanitizeResult {
+        let original_length = input.len();
+        let sanitized = self.sanitize(input);
+
+        SanitizeResult {
+            sanitized: sanitized.clone(),
+            changes_made: [], // Simplified for now
+            original_length,
+            final_length: sanitized.len(),
+        }
+    }
+
+    /// Escapes HTML entities.
+    fn escape_html(input: &str) -> str {
+        input
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&#x27;")
+    }
+
+    /// Escapes for JSON string.
+    fn escape_json(input: &str) -> str {
+        input
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n")
+            .replace('\r', "\\r")
+            .replace('\t', "\\t")
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_sanitize_clean_input() {
+        let sanitizer = Sanitizer::default();
+        let result = sanitizer.sanitize("Hello, world!");
+        assert_eq!(result, "Hello, world!");
+    }
+
+    #[test]
+    fn test_sanitize_control_chars() {
+        let sanitizer = Sanitizer::default();
+        let result = sanitizer.sanitize("Hello\x00\x01World");
+        assert_eq!(result, "HelloWorld");
+    }
+
+    #[test]
+    fn test_sanitize_whitespace() {
+        let sanitizer = Sanitizer::default();
+        let result = sanitizer.sanitize("Hello    World");
+        assert_eq!(result, "Hello World");
+    }
+
+    #[test]
+    fn test_escape_html() {
+        let result = Sanitizer::escape_html("<script>alert('xss')</script>");
+        assert!(!result.contains('<'));
+        assert!(!result.contains('>'));
+    }
+}

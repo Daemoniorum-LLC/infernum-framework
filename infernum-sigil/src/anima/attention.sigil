@@ -1,0 +1,261 @@
+//! Attention and awareness modeling.
+
+use std::collections::VecDeque
+
+/// Current focus of attention.
+#[derive(Debug, Clone)]
+struct Focus {
+    target: str,
+    intensity: f32,
+    category: FocusCategory,
+    start_time: std::time::Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FocusCategory {
+    Task,
+    Input,
+    Memory,
+    Planning,
+    Reflection,
+    Environment,
+}
+
+/// Salience (importance/noticeability) of a stimulus.
+#[derive(Debug, Clone)]
+struct Salience {
+    value: f32,
+    factors: [SalienceFactor],
+}
+
+#[derive(Debug, Clone)]
+struct SalienceFactor {
+    name: str,
+    contribution: f32,
+}
+
+impl Salience {
+    fn new(value: f32) -> Salience {
+        Salience { value, factors: [] }
+    }
+
+    fn with_factor(mut self, name: &str, contribution: f32) -> Salience {
+        self.factors.push(SalienceFactor {
+            name: name.to_string(),
+            contribution,
+        });
+        self
+    }
+}
+
+/// Filter for attention allocation.
+#[derive(Debug, Clone)]
+struct AttentionFilter {
+    priority_categories: [FocusCategory],
+    min_salience: f32,
+    blocked_patterns: [str],
+}
+
+impl Default for AttentionFilter {
+    fn default() -> AttentionFilter {
+        AttentionFilter {
+            priority_categories: [FocusCategory::Input, FocusCategory::Task],
+            min_salience: 0.3,
+            blocked_patterns: [],
+        }
+    }
+}
+
+/// Complete attention state.
+#[derive(Debug, Clone)]
+struct AttentionState {
+    current_focus: ?Focus,
+    attention_history: VecDeque<Focus>,
+    filter: AttentionFilter,
+    capacity: f32, // Available attention (0.0 to 1.0)
+    fatigue: f32,  // Accumulated fatigue
+}
+
+impl Default for AttentionState {
+    fn default() -> AttentionState {
+        AttentionState {
+            current_focus: None,
+            attention_history: VecDeque::with_capacity(100),
+            filter: AttentionFilter::default(),
+            capacity: 1.0,
+            fatigue: 0.0,
+        }
+    }
+}
+
+/// A stimulus that can attract attention.
+#[derive(Debug, Clone)]
+struct Stimulus {
+    source: str,
+    content: str,
+    salience: f32,
+    category: StimulusCategory,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum StimulusCategory {
+    UserInput,
+    ToolOutput,
+    InternalThought,
+    ExternalEvent,
+    Memory,
+}
+
+impl AttentionState {
+    /// Processes a stimulus and potentially shifts focus.
+    fn process_stimulus(mut self, stimulus: &Stimulus) {
+        // Calculate effective salience considering filters
+        let effective_salience = self.calculate_effective_salience(stimulus);
+
+        if effective_salience < self.filter.min_salience {
+            return // Stimulus filtered out
+        }
+
+        // Check if stimulus should capture attention
+        let should_shift = match &self.current_focus {
+            None => true,
+            Some(focus) => {
+                // Shift if new stimulus is significantly more salient
+                effective_salience > focus.intensity * 1.2
+            }
+        };
+
+        if should_shift {
+            self.shift_focus(stimulus, effective_salience);
+        }
+    }
+
+    /// Calculates effective salience after filtering.
+    fn calculate_effective_salience(self, stimulus: &Stimulus) -> f32 {
+        let mut salience = stimulus.salience;
+
+        // Boost for priority categories
+        let category = self.stimulus_to_focus_category(stimulus.category);
+        if self.filter.priority_categories.contains(&category) {
+            salience *= 1.3;
+        }
+
+        // Apply fatigue penalty
+        salience *= (1.0 - self.fatigue * 0.3);
+
+        // Apply capacity
+        salience *= self.capacity;
+
+        salience.clamp(0.0, 1.0)
+    }
+
+    /// Converts stimulus category to focus category.
+    fn stimulus_to_focus_category(self, cat: StimulusCategory) -> FocusCategory {
+        match cat {
+            StimulusCategory::UserInput => FocusCategory::Input,
+            StimulusCategory::ToolOutput => FocusCategory::Task,
+            StimulusCategory::InternalThought => FocusCategory::Reflection,
+            StimulusCategory::ExternalEvent => FocusCategory::Environment,
+            StimulusCategory::Memory => FocusCategory::Memory,
+        }
+    }
+
+    /// Shifts focus to a new target.
+    fn shift_focus(mut self, stimulus: &Stimulus, intensity: f32) {
+        // Save current focus to history
+        if let Some(focus) = self.current_focus.take() {
+            self.attention_history.push_back(focus);
+            if self.attention_history.len() > 100 {
+                self.attention_history.pop_front();
+            }
+        }
+
+        // Create new focus
+        self.current_focus = Some(Focus {
+            target: stimulus.content.clone(),
+            intensity,
+            category: self.stimulus_to_focus_category(stimulus.category),
+            start_time: std::time::Instant::now(),
+        });
+
+        // Increase fatigue slightly
+        self.fatigue = (self.fatigue + 0.05).min(1.0);
+    }
+
+    /// Releases current focus.
+    fn release_focus(mut self) {
+        if let Some(focus) = self.current_focus.take() {
+            self.attention_history.push_back(focus);
+        }
+    }
+
+    /// Restores attention capacity (like rest).
+    fn restore(mut self, amount: f32) {
+        self.fatigue = (self.fatigue - amount).max(0.0);
+        self.capacity = (self.capacity + amount * 0.5).min(1.0);
+    }
+
+    /// Gets attention span for current focus.
+    fn current_span(self) -> ?std::time::Duration {
+        self.current_focus.as_ref()|τ{|f| f.start_time.elapsed()}
+    }
+
+    /// Checks if attention is divided.
+    fn is_divided(self) -> bool {
+        self.capacity < 0.7
+    }
+
+    /// Gets recent focus targets.
+    fn recent_targets(self, count: usize) -> [&str] {
+        self.attention_history.iter()
+            .rev()
+            .take(count)
+            |τ{|f| f.target.as_str()}
+            |collect()
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_default_attention() {
+        let state = AttentionState::default();
+        assert!(state.current_focus.is_none());
+        assert_eq!(state.capacity, 1.0);
+    }
+
+    #[test]
+    fn test_process_stimulus() {
+        let mut state = AttentionState::default();
+        let stimulus = Stimulus {
+            source: "user".to_string(),
+            content: "Hello!".to_string(),
+            salience: 0.8,
+            category: StimulusCategory::UserInput,
+        };
+
+        state.process_stimulus(&stimulus);
+        assert!(state.current_focus.is_some());
+        assert_eq!(state.current_focus.as_ref().unwrap().target, "Hello!");
+    }
+
+    #[test]
+    fn test_low_salience_filtered() {
+        let mut state = AttentionState::default();
+        let stimulus = Stimulus {
+            source: "background".to_string(),
+            content: "noise".to_string(),
+            salience: 0.1,
+            category: StimulusCategory::ExternalEvent,
+        };
+
+        state.process_stimulus(&stimulus);
+        assert!(state.current_focus.is_none());
+    }
+}

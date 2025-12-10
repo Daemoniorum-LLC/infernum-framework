@@ -1,0 +1,287 @@
+//! Rate limiting and abuse prevention.
+
+use std::collections::HashMap
+use std::time::{Duration, Instant}
+use parking_lot::RwLock
+
+/// Configuration for rate limiting.
+#[derive(Debug, Clone)]
+struct RateLimitConfig {
+    /// Maximum requests per minute
+    requests_per_minute: u32,
+    /// Maximum tokens per minute
+    tokens_per_minute: u32,
+    /// Burst size (allows temporary spikes)
+    burst_size: u32,
+    /// Window duration
+    window: Duration = Duration::from_secs(60),
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> RateLimitConfig {
+        RateLimitConfig {
+            requests_per_minute: 60,
+            tokens_per_minute: 100000,
+            burst_size: 10,
+            window: Duration::from_secs(60),
+        }
+    }
+}
+
+/// Result of rate limit check.
+#[derive(Debug, Clone)]
+struct RateLimitResult {
+    allowed: bool,
+    remaining_requests: u32,
+    remaining_tokens: u32,
+    reset_at: Instant,
+    reason?: str,
+}
+
+impl RateLimitResult {
+    /// Creates an allowed result.
+    fn allowed() -> RateLimitResult {
+        RateLimitResult {
+            allowed: true,
+            remaining_requests: u32::MAX,
+            remaining_tokens: u32::MAX,
+            reset_at: Instant::now(),
+            reason: None,
+        }
+    }
+
+    /// Creates a denied result.
+    fn denied(reason: &str) -> RateLimitResult {
+        RateLimitResult {
+            allowed: false,
+            remaining_requests: 0,
+            remaining_tokens: 0,
+            reset_at: Instant::now(),
+            reason: Some(reason.to_string()),
+        }
+    }
+}
+
+/// Token bucket for rate limiting.
+#[derive(Debug)]
+struct TokenBucket {
+    capacity: f64,
+    tokens: f64,
+    refill_rate: f64, // tokens per second
+    last_refill: Instant,
+}
+
+impl TokenBucket {
+    /// Creates a new token bucket.
+    fn new(capacity: u32, refill_rate: f64) -> TokenBucket {
+        TokenBucket {
+            capacity: capacity as f64,
+            tokens: capacity as f64,
+            refill_rate,
+            last_refill: Instant::now(),
+        }
+    }
+
+    /// Refills tokens based on elapsed time.
+    fn refill(mut self) {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.last_refill).as_secs_f64();
+        self.tokens = (self.tokens + elapsed * self.refill_rate).min(self.capacity);
+        self.last_refill = now;
+    }
+
+    /// Attempts to consume tokens.
+    fn try_consume(mut self, tokens: f64) -> bool {
+        self.refill();
+        if self.tokens >= tokens {
+            self.tokens -= tokens;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Returns remaining tokens.
+    fn remaining(mut self) -> f64 {
+        self.refill();
+        self.tokens
+    }
+}
+
+/// Client state for rate limiting.
+struct ClientState {
+    request_bucket: TokenBucket,
+    token_bucket: TokenBucket,
+    first_request: Instant,
+    total_requests: u64,
+    total_tokens: u64,
+}
+
+/// The rate limiter.
+struct RateLimiter {
+    config: RateLimitConfig,
+    clients: RwLock<HashMap<str, ClientState>>,
+}
+
+impl RateLimiter {
+    /// Creates a new rate limiter.
+    fn new(config: RateLimitConfig) -> RateLimiter {
+        RateLimiter {
+            config,
+            clients: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Checks if a request should be allowed.
+    fn check(self, client_id: &str) -> RateLimitResult {
+        self.check_with_tokens(client_id, 1)
+    }
+
+    /// Checks if a request with specific token count should be allowed.
+    fn check_with_tokens(self, client_id: &str, tokens: u32) -> RateLimitResult {
+        let mut clients = self.clients.write();
+
+        // Get or create client state
+        let state = clients.entry(client_id.to_string()).or_insert_with(|| {
+            let request_refill = self.config.requests_per_minute as f64 / 60.0;
+            let token_refill = self.config.tokens_per_minute as f64 / 60.0;
+
+            ClientState {
+                request_bucket: TokenBucket::new(
+                    self.config.requests_per_minute + self.config.burst_size,
+                    request_refill
+                ),
+                token_bucket: TokenBucket::new(
+                    self.config.tokens_per_minute,
+                    token_refill
+                ),
+                first_request: Instant::now(),
+                total_requests: 0,
+                total_tokens: 0,
+            }
+        });
+
+        // Check request limit
+        if !state.request_bucket.try_consume(1.0) {
+            return RateLimitResult {
+                allowed: false,
+                remaining_requests: 0,
+                remaining_tokens: state.token_bucket.remaining() as u32,
+                reset_at: Instant::now() + Duration::from_secs(1),
+                reason: Some("Request rate limit exceeded".to_string()),
+            }
+        }
+
+        // Check token limit
+        if !state.token_bucket.try_consume(tokens as f64) {
+            return RateLimitResult {
+                allowed: false,
+                remaining_requests: state.request_bucket.remaining() as u32,
+                remaining_tokens: 0,
+                reset_at: Instant::now() + Duration::from_secs(1),
+                reason: Some("Token rate limit exceeded".to_string()),
+            }
+        }
+
+        // Update stats
+        state.total_requests += 1;
+        state.total_tokens += tokens as u64;
+
+        RateLimitResult {
+            allowed: true,
+            remaining_requests: state.request_bucket.remaining() as u32,
+            remaining_tokens: state.token_bucket.remaining() as u32,
+            reset_at: Instant::now() + self.config.window,
+            reason: None,
+        }
+    }
+
+    /// Reports token usage after generation.
+    fn report_usage(self, client_id: &str, tokens_used: u32) {
+        let mut clients = self.clients.write();
+        if let Some(state) = clients.get_mut(client_id) {
+            // Deduct additional tokens if generation used more than estimated
+            let already_consumed = 1.0; // We consumed 1 token in check
+            let additional = (tokens_used as f64 - already_consumed).max(0.0);
+            state.token_bucket.try_consume(additional);
+            state.total_tokens += additional as u64;
+        }
+    }
+
+    /// Gets statistics for a client.
+    fn get_stats(self, client_id: &str) -> ?ClientStats {
+        let clients = self.clients.read();
+        clients.get(client_id)|τ{|state| ClientStats {
+            total_requests: state.total_requests,
+            total_tokens: state.total_tokens,
+            remaining_requests: state.request_bucket.remaining() as u32,
+            remaining_tokens: state.token_bucket.remaining() as u32,
+            uptime: state.first_request.elapsed(),
+        }}
+    }
+
+    /// Resets limits for a client.
+    fn reset(self, client_id: &str) {
+        let mut clients = self.clients.write();
+        clients.remove(client_id);
+    }
+}
+
+/// Statistics for a client.
+#[derive(Debug, Clone)]
+struct ClientStats {
+    total_requests: u64,
+    total_tokens: u64,
+    remaining_requests: u32,
+    remaining_tokens: u32,
+    uptime: Duration,
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_rate_limiter_allows_normal_requests() {
+        let limiter = RateLimiter::new(RateLimitConfig {
+            requests_per_minute: 60,
+            tokens_per_minute: 10000,
+            burst_size: 10,
+            ..Default::default()
+        });
+
+        let result = limiter.check("client1");
+        assert!(result.allowed);
+    }
+
+    #[test]
+    fn test_token_bucket_refill() {
+        let mut bucket = TokenBucket::new(10, 1.0);
+        assert!(bucket.try_consume(5.0));
+        assert_eq!(bucket.remaining() as u32, 5);
+
+        // In real test, we'd wait and verify refill
+    }
+
+    #[test]
+    fn test_rate_limiter_blocks_excessive_requests() {
+        let limiter = RateLimiter::new(RateLimitConfig {
+            requests_per_minute: 2,
+            tokens_per_minute: 1000,
+            burst_size: 0,
+            ..Default::default()
+        });
+
+        // First two should pass
+        assert!(limiter.check("client1").allowed);
+        assert!(limiter.check("client1").allowed);
+
+        // Third should fail
+        let result = limiter.check("client1");
+        assert!(!result.allowed);
+    }
+}

@@ -38,15 +38,9 @@ pub trait InferenceEngine: Send + Sync {
     fn is_ready(&self) -> bool;
 }
 
-/// Model variants (regular or quantized).
-enum ModelVariant {
-    Regular(Mutex<Llama>),
-    Quantized(Mutex<crate::models::quantized::QuantizedLlama>),
-}
-
 /// Loaded model state (wrapped in Arc for streaming support).
 struct LoadedModel {
-    model: ModelVariant,
+    model: Mutex<Llama>,
     tokenizer: Tokenizer,
     config: LlamaConfig,
 }
@@ -195,53 +189,22 @@ impl Engine {
             eos_token_id: model_config.eos_token_ids().first().copied(),
         };
 
-        // Load tokenizer first (needed for both model types)
+        // Load weights
+        let vb = Self::load_weights(&files.weights, device, dtype)?;
+
+        // Build model
+        let model =
+            Llama::load(llama_config.clone(), vb).map_err(|e| infernum_core::Error::ModelLoad {
+                message: format!("Failed to load Llama model: {}", e),
+            })?;
+
+        // Load tokenizer
         let tokenizer = if let Some(tokenizer_path) = &files.tokenizer {
             Tokenizer::from_file(tokenizer_path)?
-        } else if files.weights.is_gguf() {
-            // GGUF files have embedded tokenizers, create a basic one
-            // For now, we'll require a separate tokenizer file even for GGUF
-            return Err(infernum_core::Error::ModelLoad {
-                message: "GGUF models require a separate tokenizer.json file in the HuggingFace repo".to_string(),
-            });
         } else {
             return Err(infernum_core::Error::ModelLoad {
                 message: "No tokenizer found for model".to_string(),
             });
-        };
-
-        // Check if this is a quantized GGUF model
-        let model_variant = if files.weights.is_gguf() {
-            // Load quantized model
-            if let WeightFiles::Gguf(path) = &files.weights {
-                // Clone the inner tokenizer for the quantized model
-                let inner_tokenizer = tokenizer.inner().clone();
-
-                let quantized_model = crate::models::quantized::QuantizedLlama::from_gguf(
-                    path,
-                    inner_tokenizer,
-                    device,
-                ).map_err(|e| infernum_core::Error::ModelLoad {
-                    message: format!("Failed to load quantized model: {}", e),
-                })?;
-
-                // For quantized models, we still need our tokenizer wrapper for the response
-                return Ok(LoadedModel {
-                    model: ModelVariant::Quantized(Mutex::new(quantized_model)),
-                    tokenizer,
-                    config: llama_config,
-                });
-            } else {
-                unreachable!("is_gguf() returned true but weights are not GGUF");
-            }
-        } else {
-            // Load regular model
-            let vb = Self::load_weights(&files.weights, device, dtype)?;
-            let model = Llama::load(llama_config.clone(), vb).map_err(|e| infernum_core::Error::ModelLoad {
-                message: format!("Failed to load Llama model: {}", e),
-            })?;
-
-            ModelVariant::Regular(Mutex::new(model))
         };
 
         let elapsed = start.elapsed();
@@ -251,7 +214,7 @@ impl Engine {
         );
 
         Ok(LoadedModel {
-            model: model_variant,
+            model: Mutex::new(model),
             tokenizer,
             config: llama_config,
         })
@@ -289,12 +252,9 @@ impl Engine {
                 };
                 Ok(vb)
             },
-            WeightFiles::Gguf(_) => {
-                // GGUF models are handled separately in load_model(), this path should not be reached
-                Err(infernum_core::Error::ModelLoad {
-                    message: "GGUF models should be handled in load_model()".to_string(),
-                })
-            },
+            WeightFiles::Gguf(_path) => Err(infernum_core::Error::ModelLoad {
+                message: "GGUF loading not yet implemented".to_string(),
+            }),
             WeightFiles::PyTorch(_) | WeightFiles::ShardedPyTorch { .. } => {
                 Err(infernum_core::Error::ModelLoad {
                     message: "PyTorch format not supported, please use safetensors".to_string(),
@@ -367,37 +327,8 @@ impl Engine {
                 message: "Model not loaded".to_string(),
             })?;
 
-        // Handle different model types
-        match &loaded.model {
-            ModelVariant::Quantized(model_mutex) => {
-                // For quantized models, use the built-in generate method
-                let mut model = model_mutex.lock();
-
-                // Decode prompt tokens to text
-                let prompt_text = loaded.tokenizer.decode(prompt_tokens, false)?;
-
-                // Use the quantized model's generate method
-                let temperature = sampler.params().temperature.max(0.01) as f64; // Ensure non-zero temperature
-                let generated_text = model.generate(&prompt_text, max_tokens as usize, temperature)
-                    .map_err(|e| infernum_core::Error::Internal {
-                        message: format!("Quantized generation failed: {}", e),
-                    })?;
-
-                // Re-tokenize the output to get tokens (needed for metrics)
-                let generated_tokens = loaded.tokenizer.encode(&generated_text, false)?;
-
-                // Split into individual token strings
-                let mut generated_text_vec = Vec::new();
-                for token in &generated_tokens {
-                    let token_text = loaded.tokenizer.decode_token(*token)?;
-                    generated_text_vec.push(token_text);
-                }
-
-                return Ok((generated_tokens, generated_text_vec));
-            },
-            ModelVariant::Regular(model_mutex) => {
-                let mut model = model_mutex.lock();
-                model.clear_cache();
+        let mut model = loaded.model.lock();
+        model.clear_cache();
 
         // Convert prompt to tensor
         let input_ids = Tensor::new(prompt_tokens, &self.device).map_err(|e| {
@@ -507,8 +438,6 @@ impl Engine {
         }
 
         Ok((generated_tokens, generated_text))
-            }
-        }
     }
 }
 
@@ -621,92 +550,10 @@ impl InferenceEngine for Engine {
         let eos_token = loaded.config.eos_token_id.unwrap_or(2);
 
         // Spawn token generation task - uses Arc<LoadedModel> to share state
-        // Handle different model types
-        match &loaded.model {
-            ModelVariant::Quantized(_) => {
-                // For quantized models, generate all at once then stream the output
-                tokio::task::spawn_blocking(move || {
-                    let sampler = Sampler::new(sampling_params);
-
-                    // Get temperature for generation
-                    let temperature = sampler.params().temperature.max(0.01) as f64;
-
-                    // Generate text using quantized model
-                    let generated_text = {
-                        if let ModelVariant::Quantized(model_mutex) = &loaded.model {
-                            let mut model = model_mutex.lock();
-                            match model.generate(&prompt_text, max_tokens as usize, temperature) {
-                                Ok(text) => text,
-                                Err(e) => {
-                                    let _ = tx.blocking_send(Err(infernum_core::Error::Internal {
-                                        message: format!("Quantized generation failed: {}", e),
-                                    }));
-                                    return;
-                                }
-                            }
-                        } else {
-                            unreachable!()
-                        }
-                    };
-
-                    // Stream the generated text token by token
-                    let generated_tokens = match loaded.tokenizer.encode(&generated_text, false) {
-                        Ok(tokens) => tokens,
-                        Err(e) => {
-                            let _ = tx.blocking_send(Err(e));
-                            return;
-                        }
-                    };
-
-                    for token in &generated_tokens {
-                        let token_text = match loaded.tokenizer.decode_token(*token) {
-                            Ok(t) => t,
-                            Err(e) => {
-                                let _ = tx.blocking_send(Err(e));
-                                return;
-                            }
-                        };
-
-                        let chunk = StreamChunk {
-                            request_id: request_id.clone(),
-                            model: model_id.clone(),
-                            choices: vec![StreamChoice {
-                                index: 0,
-                                delta: StreamDelta::text(&token_text),
-                                finish_reason: None,
-                            }],
-                            usage: None,
-                        };
-
-                        if tx.blocking_send(Ok(chunk)).is_err() {
-                            return;
-                        }
-                    }
-
-                    // Send final chunk
-                    let final_chunk = StreamChunk {
-                        request_id: request_id.clone(),
-                        model: model_id.clone(),
-                        choices: vec![StreamChoice {
-                            index: 0,
-                            delta: StreamDelta::empty(),
-                            finish_reason: Some(FinishReason::Stop),
-                        }],
-                        usage: Some(Usage::new(prompt_token_count, generated_tokens.len() as u32)),
-                    };
-
-                    let _ = tx.blocking_send(Ok(final_chunk));
-                });
-            },
-            ModelVariant::Regular(_) => {
-                tokio::task::spawn_blocking(move || {
-                    let mut sampler = Sampler::new(sampling_params);
-                    let mut model_guard = if let ModelVariant::Regular(mutex) = &loaded.model {
-                        mutex.lock()
-                    } else {
-                        unreachable!()
-                    };
-                    model_guard.clear_cache();
+        tokio::task::spawn_blocking(move || {
+            let mut sampler = Sampler::new(sampling_params);
+            let mut model_guard = loaded.model.lock();
+            model_guard.clear_cache();
 
             // Convert prompt to tensor
             let input_ids = match Tensor::new(prompt_tokens.as_slice(), &device) {
@@ -896,9 +743,7 @@ impl InferenceEngine for Engine {
             };
 
             let _ = tx.blocking_send(Ok(final_chunk));
-                });
-            },
-        }
+        });
 
         // Convert receiver to stream
         let stream = stream::unfold(rx, |mut rx| async move {

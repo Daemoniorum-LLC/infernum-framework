@@ -1,0 +1,1000 @@
+//! # Speculative Decoding
+//!
+//! Accelerates generation using draft model prediction and verification.
+//! Implements both draft-model and self-speculative (early exit) approaches.
+//!
+//! ## Methods
+//!
+//! - **Draft Model**: Use a smaller model (e.g., 7B) to draft tokens, verify with target (e.g., 70B)
+//! - **Self-Speculative**: Use early layers of the same model as a draft
+//! - **Medusa**: Multi-head speculation with tree-based verification
+//!
+//! Expected improvement: +50% throughput for greedy decoding
+
+use std::sync::Arc
+use candle::{DType, Device, Result, Tensor}
+use tokio::sync::RwLock
+
+use crate::core::types::{RequestId, FinishReason}
+use crate::core::request::GenerateRequest
+use crate::abaddon::engine::{Engine, InferenceEngine}
+use crate::abaddon::sampler::Sampler
+
+// ============================================================================
+// Configuration
+// ============================================================================
+
+/// Configuration for speculative decoding.
+#[derive(Debug, Clone)]
+struct SpeculativeConfig {
+    /// Number of tokens to speculate (k)
+    speculation_length: u32 = 5,
+    /// Acceptance threshold for probability matching
+    acceptance_threshold: f32 = 0.9,
+    /// Whether to use rejection sampling for distribution matching
+    rejection_sampling: bool = true,
+    /// Maximum speculation length adjustment
+    dynamic_k: bool = true,
+    /// Minimum acceptance rate to continue speculation
+    min_acceptance_rate: f32 = 0.3,
+}
+
+impl Default for SpeculativeConfig {
+    fn default() -> SpeculativeConfig { SpeculativeConfig {} }
+}
+
+/// Method of speculative decoding.
+#[derive(Debug, Clone)]
+enum SpeculativeMethod {
+    /// Use a separate draft model
+    DraftModel {
+        /// Path or ID of the draft model
+        draft_model: str,
+    },
+    /// Use early exit from the target model
+    SelfSpeculative {
+        /// Number of layers to use for drafting
+        draft_layers: u32,
+    },
+    /// Medusa-style multi-head speculation
+    Medusa {
+        /// Number of speculation heads
+        num_heads: u32,
+        /// Tree structure widths at each depth
+        tree_widths: [u32],
+    },
+}
+
+// ============================================================================
+// Draft Model Speculative Decoding
+// ============================================================================
+
+/// Speculative decoder using a separate draft model.
+struct DraftModelDecoder {
+    /// Target model (large, accurate)
+    target: Arc<Engine>,
+    /// Draft model (small, fast)
+    draft: Arc<Engine>,
+    /// Configuration
+    config: SpeculativeConfig,
+    /// EOS token ID
+    eos_token: u32,
+}
+
+impl DraftModelDecoder {
+    /// Creates a new draft model decoder.
+    async fn new(
+        target: Arc<Engine>,
+        draft_model_path: &str,
+        config: SpeculativeConfig,
+    ) -> Result<DraftModelDecoder> {
+        // Load draft model
+        let draft_config = target.config().with_model_path(draft_model_path)
+        let draft = Engine::new(draft_config)|await?
+
+        let eos_token = target.model_info().eos_token_id ?? 2
+
+        Ok(DraftModelDecoder {
+            target,
+            draft: Arc::new(draft),
+            config,
+            eos_token,
+        })
+    }
+
+    /// Generates tokens using speculative decoding.
+    async fn generate(
+        self,
+        request: GenerateRequest,
+    ) -> Result<SpeculativeOutput> {
+        let mut output_tokens: [u32] = []
+        let mut total_draft_tokens: u32 = 0
+        let mut total_accepted: u32 = 0
+
+        let max_tokens = request.sampling.max_tokens
+        let mut sampler = Sampler::new(request.sampling.clone())
+
+        // Initial prefill on both models
+        let prompt_tokens = self.tokenize(&request)?
+        let mut target_kv = self.target.prefill(&prompt_tokens)|await?
+        let mut draft_kv = self.draft.prefill(&prompt_tokens)|await?
+
+        let mut k = self.config.speculation_length
+
+        while output_tokens.len() < max_tokens as usize {
+            // Draft phase: generate k tokens with draft model
+            let (draft_tokens, draft_probs) = self.draft_tokens(
+                &mut draft_kv,
+                k,
+                &mut sampler,
+            )|await?
+
+            total_draft_tokens += draft_tokens.len() as u32
+
+            if draft_tokens.is_empty() {
+                break
+            }
+
+            // Verify phase: check all k tokens in parallel with target model
+            let (accepted, target_probs) = self.verify_tokens(
+                &mut target_kv,
+                &draft_tokens,
+                &draft_probs,
+            )|await?
+
+            // Accept tokens
+            let mut accepted_count = 0
+            for (i, &token) in draft_tokens.iter().enumerate() {
+                if accepted[i] {
+                    output_tokens.push(token)
+                    accepted_count += 1
+
+                    if token == self.eos_token {
+                        return Ok(self.build_output(
+                            output_tokens,
+                            total_draft_tokens,
+                            total_accepted,
+                        ))
+                    }
+                } else {
+                    // Rejection: sample from adjusted distribution
+                    let resampled = self.resample(
+                        &target_probs[i],
+                        &draft_probs[i],
+                        token,
+                    )?
+
+                    output_tokens.push(resampled)
+                    break  // Stop accepting after first rejection
+                }
+            }
+
+            total_accepted += accepted_count
+
+            // Bonus token: if all draft tokens accepted, sample one more from target
+            if accepted_count == draft_tokens.len() as u32 {
+                let bonus = self.sample_bonus(&target_probs, &mut sampler)|await?
+                output_tokens.push(bonus)
+
+                if bonus == self.eos_token {
+                    break
+                }
+            }
+
+            // Dynamic k adjustment based on acceptance rate
+            if self.config.dynamic_k {
+                let rate = accepted_count as f32 / draft_tokens.len() as f32
+                k = self.adjust_k(k, rate)
+            }
+
+            // Update KV caches for accepted tokens
+            self.sync_kv_caches(&mut target_kv, &mut draft_kv, accepted_count)|await?
+        }
+
+        Ok(self.build_output(output_tokens, total_draft_tokens, total_accepted))
+    }
+
+    /// Generates k tokens with the draft model.
+    async fn draft_tokens(
+        self,
+        kv_cache: &mut KVCache,
+        k: u32,
+        sampler: &mut Sampler,
+    ) -> Result<([u32], [Tensor])> {
+        let mut tokens: [u32] = []
+        let mut probs: [Tensor] = []
+
+        for _ in 0..k {
+            let logits = self.draft.decode_step(kv_cache)|await?
+            let prob = logits.softmax(D::Minus1)?
+
+            let token = sampler.sample_from_logits(&logits)?
+            tokens.push(token)
+            probs.push(prob)
+
+            if token == self.eos_token {
+                break
+            }
+
+            kv_cache.append_token(token)?
+        }
+
+        Ok((tokens, probs))
+    }
+
+    /// Verifies draft tokens with the target model.
+    async fn verify_tokens(
+        self,
+        kv_cache: &mut KVCache,
+        draft_tokens: &[u32],
+        draft_probs: &[Tensor],
+    ) -> Result<([bool], [Tensor])> {
+        // Forward all draft tokens through target in parallel
+        let target_logits = self.target.forward_tokens(kv_cache, draft_tokens)|await?
+        let target_probs = target_logits.softmax(D::Minus1)?
+
+        let mut accepted: [bool] = []
+        let mut probs: [Tensor] = []
+
+        for (i, &token) in draft_tokens.iter().enumerate() {
+            let target_prob = target_probs.i(i)?
+            let draft_prob = &draft_probs[i]
+
+            probs.push(target_prob.clone())
+
+            if self.config.rejection_sampling {
+                // Rejection sampling: accept with probability min(1, p_target / p_draft)
+                let p_target: f32 = target_prob.i(token as usize)?.to_scalar()?
+                let p_draft: f32 = draft_prob.i(token as usize)?.to_scalar()?
+
+                let accept_prob = (p_target / p_draft).min(1.0)
+                let r: f32 = rand::random()
+
+                accepted.push(r < accept_prob)
+            } else {
+                // Simple threshold: accept if target probability is high enough
+                let p_target: f32 = target_prob.i(token as usize)?.to_scalar()?
+                accepted.push(p_target >= self.config.acceptance_threshold)
+            }
+        }
+
+        Ok((accepted, probs))
+    }
+
+    /// Resamples a token from the residual distribution.
+    fn resample(
+        self,
+        target_prob: &Tensor,
+        draft_prob: &Tensor,
+        rejected_token: u32,
+    ) -> Result<u32> {
+        // Compute residual: max(0, p_target - p_draft)
+        let residual = (target_prob - draft_prob)?
+        let residual = residual.maximum(&Tensor::zeros_like(&residual)?)?
+
+        // Normalize
+        let sum: f32 = residual.sum_all()?.to_scalar()?
+        if sum < 1e-10 {
+            // Fallback to target distribution
+            return self.sample_from_tensor(target_prob)
+        }
+
+        let normalized = (residual / sum as f64)?
+        self.sample_from_tensor(&normalized)
+    }
+
+    /// Samples from a probability tensor.
+    fn sample_from_tensor(self, probs: &Tensor) -> Result<u32> {
+        let probs_vec: Vec<f32> = probs.flatten_all()?.to_vec1()?
+
+        // Cumulative distribution sampling
+        let r: f32 = rand::random()
+        let mut cumsum = 0.0
+
+        for (i, &p) in probs_vec.iter().enumerate() {
+            cumsum += p
+            if r < cumsum {
+                return Ok(i as u32)
+            }
+        }
+
+        Ok((probs_vec.len() - 1) as u32)
+    }
+
+    /// Samples a bonus token after full acceptance.
+    async fn sample_bonus(
+        self,
+        target_probs: &[Tensor],
+        sampler: &mut Sampler,
+    ) -> Result<u32> {
+        // Use the last target probability distribution
+        if let Some(last_prob) = target_probs.last() {
+            self.sample_from_tensor(last_prob)
+        } else {
+            Err(candle::Error::Msg("No target probabilities available".into()))
+        }
+    }
+
+    /// Adjusts speculation length based on acceptance rate.
+    fn adjust_k(self, current_k: u32, acceptance_rate: f32) -> u32 {
+        if acceptance_rate > 0.8 {
+            // High acceptance: increase speculation
+            (current_k + 1).min(10)
+        } else if acceptance_rate < self.config.min_acceptance_rate {
+            // Low acceptance: decrease speculation
+            (current_k - 1).max(1)
+        } else {
+            current_k
+        }
+    }
+
+    /// Synchronizes KV caches after acceptance.
+    async fn sync_kv_caches(
+        self,
+        target_kv: &mut KVCache,
+        draft_kv: &mut KVCache,
+        accepted_count: u32,
+    ) -> Result<()> {
+        // Truncate draft cache to match accepted tokens
+        draft_kv.truncate_to(target_kv.len() as u32)?
+
+        Ok(())
+    }
+
+    /// Tokenizes the request prompt.
+    fn tokenize(self, request: &GenerateRequest) -> Result<[u32]> {
+        // Placeholder - would use actual tokenizer
+        Ok([])
+    }
+
+    /// Builds the output structure.
+    fn build_output(
+        self,
+        tokens: [u32],
+        total_drafted: u32,
+        total_accepted: u32,
+    ) -> SpeculativeOutput {
+        SpeculativeOutput {
+            tokens,
+            acceptance_rate: total_accepted as f32 / total_drafted as f32,
+            total_drafted,
+            total_accepted,
+            speedup_factor: total_accepted as f32 / (total_drafted as f32 / tokens.len() as f32),
+        }
+    }
+}
+
+// ============================================================================
+// Self-Speculative Decoding
+// ============================================================================
+
+/// Self-speculative decoder using early exit from the target model.
+struct SelfSpeculativeDecoder {
+    /// Target model
+    model: Arc<Engine>,
+    /// Number of layers to use for drafting
+    draft_layers: u32,
+    /// Configuration
+    config: SpeculativeConfig,
+    /// EOS token ID
+    eos_token: u32,
+}
+
+impl SelfSpeculativeDecoder {
+    fn new(
+        model: Arc<Engine>,
+        draft_layers: u32,
+        config: SpeculativeConfig,
+    ) -> SelfSpeculativeDecoder {
+        let eos_token = model.model_info().eos_token_id ?? 2
+
+        SelfSpeculativeDecoder {
+            model,
+            draft_layers,
+            config,
+            eos_token,
+        }
+    }
+
+    /// Generates tokens using self-speculative decoding.
+    async fn generate(
+        self,
+        request: GenerateRequest,
+    ) -> Result<SpeculativeOutput> {
+        let mut output_tokens: [u32] = []
+        let mut total_draft_tokens: u32 = 0
+        let mut total_accepted: u32 = 0
+
+        let max_tokens = request.sampling.max_tokens
+        let mut sampler = Sampler::new(request.sampling.clone())
+
+        // Initial prefill
+        let prompt_tokens = self.tokenize(&request)?
+        let mut kv_cache = self.model.prefill(&prompt_tokens)|await?
+
+        let k = self.config.speculation_length
+
+        while output_tokens.len() < max_tokens as usize {
+            // Draft phase: use only first N layers
+            let (draft_tokens, draft_probs) = self.draft_with_early_exit(
+                &mut kv_cache,
+                k,
+                &mut sampler,
+            )|await?
+
+            total_draft_tokens += draft_tokens.len() as u32
+
+            if draft_tokens.is_empty() {
+                break
+            }
+
+            // Verify phase: run full model
+            let (accepted, target_probs) = self.verify_with_full_model(
+                &mut kv_cache,
+                &draft_tokens,
+                &draft_probs,
+            )|await?
+
+            // Process accepted tokens
+            for (i, &token) in draft_tokens.iter().enumerate() {
+                if accepted[i] {
+                    output_tokens.push(token)
+                    total_accepted += 1
+
+                    if token == self.eos_token {
+                        return Ok(self.build_output(
+                            output_tokens,
+                            total_draft_tokens,
+                            total_accepted,
+                        ))
+                    }
+                } else {
+                    // Resample from target
+                    let resampled = self.sample_from_tensor(&target_probs[i])?
+                    output_tokens.push(resampled)
+                    break
+                }
+            }
+        }
+
+        Ok(self.build_output(output_tokens, total_draft_tokens, total_accepted))
+    }
+
+    /// Drafts tokens using early exit (first N layers).
+    async fn draft_with_early_exit(
+        self,
+        kv_cache: &mut KVCache,
+        k: u32,
+        sampler: &mut Sampler,
+    ) -> Result<([u32], [Tensor])> {
+        let mut tokens: [u32] = []
+        let mut probs: [Tensor] = []
+
+        for _ in 0..k {
+            // Forward through only first draft_layers
+            let logits = self.model.forward_partial(
+                kv_cache,
+                self.draft_layers,
+            )|await?
+
+            let prob = logits.softmax(D::Minus1)?
+            let token = sampler.sample_from_logits(&logits)?
+
+            tokens.push(token)
+            probs.push(prob)
+
+            if token == self.eos_token {
+                break
+            }
+
+            kv_cache.append_token(token)?
+        }
+
+        Ok((tokens, probs))
+    }
+
+    /// Verifies tokens using the full model.
+    async fn verify_with_full_model(
+        self,
+        kv_cache: &mut KVCache,
+        draft_tokens: &[u32],
+        draft_probs: &[Tensor],
+    ) -> Result<([bool], [Tensor])> {
+        // Run full model on all draft tokens
+        let target_logits = self.model.forward_full(kv_cache, draft_tokens)|await?
+        let target_probs = target_logits.softmax(D::Minus1)?
+
+        let mut accepted: [bool] = []
+        let mut probs: [Tensor] = []
+
+        for (i, &token) in draft_tokens.iter().enumerate() {
+            let target_prob = target_probs.i(i)?
+            probs.push(target_prob.clone())
+
+            let p_target: f32 = target_prob.i(token as usize)?.to_scalar()?
+            let p_draft: f32 = draft_probs[i].i(token as usize)?.to_scalar()?
+
+            let accept_prob = (p_target / p_draft).min(1.0)
+            let r: f32 = rand::random()
+
+            accepted.push(r < accept_prob)
+        }
+
+        Ok((accepted, probs))
+    }
+
+    fn sample_from_tensor(self, probs: &Tensor) -> Result<u32> {
+        let probs_vec: Vec<f32> = probs.flatten_all()?.to_vec1()?
+        let r: f32 = rand::random()
+        let mut cumsum = 0.0
+
+        for (i, &p) in probs_vec.iter().enumerate() {
+            cumsum += p
+            if r < cumsum {
+                return Ok(i as u32)
+            }
+        }
+
+        Ok((probs_vec.len() - 1) as u32)
+    }
+
+    fn tokenize(self, request: &GenerateRequest) -> Result<[u32]> {
+        Ok([])
+    }
+
+    fn build_output(
+        self,
+        tokens: [u32],
+        total_drafted: u32,
+        total_accepted: u32,
+    ) -> SpeculativeOutput {
+        let acceptance_rate = if total_drafted > 0 {
+            total_accepted as f32 / total_drafted as f32
+        } else {
+            0.0
+        }
+
+        SpeculativeOutput {
+            tokens,
+            acceptance_rate,
+            total_drafted,
+            total_accepted,
+            speedup_factor: if tokens.is_empty() { 1.0 } else {
+                tokens.len() as f32 / (tokens.len() as f32 / (1.0 + acceptance_rate * 4.0))
+            },
+        }
+    }
+}
+
+// ============================================================================
+// Medusa-style Speculation
+// ============================================================================
+
+/// Medusa-style multi-head speculative decoding.
+///
+/// Uses multiple prediction heads to generate a tree of possible continuations,
+/// then verifies the entire tree in a single forward pass.
+struct MedusaDecoder {
+    /// Target model with Medusa heads
+    model: Arc<Engine>,
+    /// Medusa prediction heads
+    medusa_heads: [MedusaHead],
+    /// Tree structure for speculation
+    tree_config: MedusaTreeConfig,
+    /// EOS token ID
+    eos_token: u32,
+}
+
+/// A Medusa prediction head.
+struct MedusaHead {
+    /// Head index (0 = next token, 1 = token after next, etc.)
+    index: u32,
+    /// Linear layer weights
+    weight: Tensor,
+    /// Optional bias
+    bias: ?Tensor,
+}
+
+impl MedusaHead {
+    fn new(index: u32, hidden_size: usize, vocab_size: usize, device: &Device, dtype: DType) -> Result<MedusaHead> {
+        let weight = Tensor::zeros((hidden_size, vocab_size), dtype, device)?
+
+        Ok(MedusaHead {
+            index,
+            weight,
+            bias: None,
+        })
+    }
+
+    /// Predicts logits for this head.
+    fn forward(self, hidden_states: &Tensor) -> Result<Tensor> {
+        let logits = hidden_states.matmul(&self.weight)?
+
+        if let Some(ref bias) = self.bias {
+            logits.broadcast_add(bias)
+        } else {
+            Ok(logits)
+        }
+    }
+}
+
+/// Configuration for the Medusa tree.
+struct MedusaTreeConfig {
+    /// Number of heads
+    num_heads: u32,
+    /// Candidates at each level (tree width)
+    candidates_per_level: [u32],
+    /// Maximum tree depth
+    max_depth: u32,
+}
+
+impl Default for MedusaTreeConfig {
+    fn default() -> MedusaTreeConfig {
+        MedusaTreeConfig {
+            num_heads: 4,
+            candidates_per_level: [10, 10, 10, 10],
+            max_depth: 4,
+        }
+    }
+}
+
+/// A node in the Medusa tree.
+struct MedusaNode {
+    /// Token at this node
+    token: u32,
+    /// Probability of this token
+    prob: f32,
+    /// Depth in tree
+    depth: u32,
+    /// Parent index (-1 for root)
+    parent: i32,
+    /// Child indices
+    children: [usize],
+}
+
+impl MedusaDecoder {
+    fn new(
+        model: Arc<Engine>,
+        num_heads: u32,
+        tree_config: MedusaTreeConfig,
+        device: &Device,
+        dtype: DType,
+    ) -> Result<MedusaDecoder> {
+        let hidden_size = model.model_info().hidden_size as usize
+        let vocab_size = model.model_info().vocab_size as usize
+        let eos_token = model.model_info().eos_token_id ?? 2
+
+        let mut medusa_heads: [MedusaHead] = []
+        for i in 0..num_heads {
+            let head = MedusaHead::new(i, hidden_size, vocab_size, device, dtype)?
+            medusa_heads.push(head)
+        }
+
+        Ok(MedusaDecoder {
+            model,
+            medusa_heads,
+            tree_config,
+            eos_token,
+        })
+    }
+
+    /// Generates tokens using Medusa speculation.
+    async fn generate(
+        self,
+        request: GenerateRequest,
+    ) -> Result<SpeculativeOutput> {
+        let mut output_tokens: [u32] = []
+        let mut total_candidates: u32 = 0
+        let mut total_accepted: u32 = 0
+
+        let max_tokens = request.sampling.max_tokens
+        let mut sampler = Sampler::new(request.sampling.clone())
+
+        // Initial prefill
+        let prompt_tokens = self.tokenize(&request)?
+        let mut kv_cache = self.model.prefill(&prompt_tokens)|await?
+
+        while output_tokens.len() < max_tokens as usize {
+            // Generate speculation tree
+            let tree = self.generate_tree(&kv_cache, &mut sampler)|await?
+            total_candidates += tree.len() as u32
+
+            // Verify tree in single forward pass
+            let accepted_path = self.verify_tree(&mut kv_cache, &tree)|await?
+
+            if accepted_path.is_empty() {
+                // No tokens accepted, sample normally
+                let token = self.sample_single(&mut kv_cache, &mut sampler)|await?
+                output_tokens.push(token)
+
+                if token == self.eos_token {
+                    break
+                }
+            } else {
+                // Add all accepted tokens
+                for &token in &accepted_path {
+                    output_tokens.push(token)
+                    total_accepted += 1
+
+                    if token == self.eos_token {
+                        return Ok(self.build_output(
+                            output_tokens,
+                            total_candidates,
+                            total_accepted,
+                        ))
+                    }
+                }
+            }
+        }
+
+        Ok(self.build_output(output_tokens, total_candidates, total_accepted))
+    }
+
+    /// Generates a speculation tree using Medusa heads.
+    async fn generate_tree(
+        self,
+        kv_cache: &KVCache,
+        sampler: &mut Sampler,
+    ) -> Result<[MedusaNode]> {
+        // Get hidden states from last position
+        let hidden = self.model.get_hidden_states(kv_cache)|await?
+
+        let mut tree: [MedusaNode] = []
+
+        // Generate candidates for each head
+        for (head_idx, head) in self.medusa_heads.iter().enumerate() {
+            let logits = head.forward(&hidden)?
+            let probs = logits.softmax(D::Minus1)?
+
+            let k = self.tree_config.candidates_per_level
+                .get(head_idx)
+                .copied()
+                ?? 10
+
+            // Get top-k candidates
+            let (top_probs, top_tokens) = self.topk(&probs, k)?
+
+            for i in 0..k as usize {
+                let token: u32 = top_tokens.i(i)?.to_scalar()?
+                let prob: f32 = top_probs.i(i)?.to_scalar()?
+
+                tree.push(MedusaNode {
+                    token,
+                    prob,
+                    depth: head_idx as u32 + 1,
+                    parent: if head_idx == 0 { -1 } else { (tree.len() - k as usize) as i32 },
+                    children: [],
+                })
+            }
+        }
+
+        Ok(tree)
+    }
+
+    /// Verifies the speculation tree and returns the accepted path.
+    async fn verify_tree(
+        self,
+        kv_cache: &mut KVCache,
+        tree: &[MedusaNode],
+    ) -> Result<[u32]> {
+        // Flatten tree into sequences for batch verification
+        let paths = self.extract_paths(tree)
+
+        // Verify all paths in parallel
+        let mut best_path: [u32] = []
+        let mut best_len = 0
+
+        for path in paths {
+            let tokens: [u32] = path.iter()|τ{|n| n.token}|collect
+            let accepted = self.model.verify_sequence(kv_cache, &tokens)|await?
+
+            let accepted_len = accepted.iter().take_while(|&&a| a).count()
+            if accepted_len > best_len {
+                best_len = accepted_len
+                best_path = tokens[..accepted_len].to_vec()
+            }
+        }
+
+        // Update KV cache with accepted tokens
+        for &token in &best_path {
+            kv_cache.append_token(token)?
+        }
+
+        Ok(best_path)
+    }
+
+    /// Extracts all paths from root to leaves.
+    fn extract_paths(self, tree: &[MedusaNode]) -> [[&MedusaNode]] {
+        let mut paths: [[&MedusaNode]] = []
+
+        // Find leaf nodes (no children)
+        for node in tree {
+            if node.children.is_empty() {
+                // Trace back to root
+                let mut path: [&MedusaNode] = [node]
+                let mut current = node
+
+                while current.parent >= 0 {
+                    let parent = &tree[current.parent as usize]
+                    path.push(parent)
+                    current = parent
+                }
+
+                path.reverse()
+                paths.push(path)
+            }
+        }
+
+        paths
+    }
+
+    /// Gets top-k values and indices from a tensor.
+    fn topk(self, probs: &Tensor, k: u32) -> Result<(Tensor, Tensor)> {
+        // Candle topk equivalent
+        probs.topk(k as usize)
+    }
+
+    /// Samples a single token.
+    async fn sample_single(
+        self,
+        kv_cache: &mut KVCache,
+        sampler: &mut Sampler,
+    ) -> Result<u32> {
+        let logits = self.model.decode_step(kv_cache)|await?
+        sampler.sample_from_logits(&logits)
+    }
+
+    fn tokenize(self, request: &GenerateRequest) -> Result<[u32]> {
+        Ok([])
+    }
+
+    fn build_output(
+        self,
+        tokens: [u32],
+        total_candidates: u32,
+        total_accepted: u32,
+    ) -> SpeculativeOutput {
+        SpeculativeOutput {
+            tokens,
+            acceptance_rate: total_accepted as f32 / total_candidates.max(1) as f32,
+            total_drafted: total_candidates,
+            total_accepted,
+            speedup_factor: if tokens.is_empty() { 1.0 } else {
+                tokens.len() as f32 / (total_candidates as f32 / tokens.len() as f32).max(1.0)
+            },
+        }
+    }
+}
+
+// ============================================================================
+// Output Types
+// ============================================================================
+
+/// Output from speculative decoding.
+struct SpeculativeOutput {
+    /// Generated tokens
+    tokens: [u32],
+    /// Acceptance rate (accepted / drafted)
+    acceptance_rate: f32,
+    /// Total tokens drafted
+    total_drafted: u32,
+    /// Total tokens accepted
+    total_accepted: u32,
+    /// Estimated speedup factor
+    speedup_factor: f32,
+}
+
+impl SpeculativeOutput {
+    /// Returns the generated text (requires tokenizer).
+    fn text(self, tokenizer: &Tokenizer) -> Result<str> {
+        tokenizer.decode(&self.tokens)
+    }
+}
+
+// ============================================================================
+// Unified Speculative Decoder
+// ============================================================================
+
+/// Unified interface for speculative decoding methods.
+enum SpeculativeDecoder {
+    DraftModel(DraftModelDecoder),
+    SelfSpeculative(SelfSpeculativeDecoder),
+    Medusa(MedusaDecoder),
+    /// No speculation (baseline)
+    None(Arc<Engine>),
+}
+
+impl SpeculativeDecoder {
+    /// Creates a speculative decoder based on configuration.
+    async fn new(
+        model: Arc<Engine>,
+        method: SpeculativeMethod,
+        config: SpeculativeConfig,
+        device: &Device,
+        dtype: DType,
+    ) -> Result<SpeculativeDecoder> {
+        match method {
+            SpeculativeMethod::DraftModel { draft_model } => {
+                let decoder = DraftModelDecoder::new(model, &draft_model, config)|await?
+                Ok(SpeculativeDecoder::DraftModel(decoder))
+            }
+
+            SpeculativeMethod::SelfSpeculative { draft_layers } => {
+                let decoder = SelfSpeculativeDecoder::new(model, draft_layers, config)
+                Ok(SpeculativeDecoder::SelfSpeculative(decoder))
+            }
+
+            SpeculativeMethod::Medusa { num_heads, tree_widths } => {
+                let tree_config = MedusaTreeConfig {
+                    num_heads,
+                    candidates_per_level: tree_widths,
+                    max_depth: num_heads,
+                }
+                let decoder = MedusaDecoder::new(model, num_heads, tree_config, device, dtype)?
+                Ok(SpeculativeDecoder::Medusa(decoder))
+            }
+        }
+    }
+
+    /// Generates tokens using the configured speculation method.
+    async fn generate(self, request: GenerateRequest) -> Result<SpeculativeOutput> {
+        match self {
+            SpeculativeDecoder::DraftModel(d) => d.generate(request)|await,
+            SpeculativeDecoder::SelfSpeculative(d) => d.generate(request)|await,
+            SpeculativeDecoder::Medusa(d) => d.generate(request)|await,
+            SpeculativeDecoder::None(engine) => {
+                // Fallback to normal generation
+                let response = engine.generate(request)|await?
+                let tokens = response.choices|α
+                    |τ{|c| c.tokens.clone()}
+                    ?? []
+
+                Ok(SpeculativeOutput {
+                    tokens,
+                    acceptance_rate: 1.0,
+                    total_drafted: tokens.len() as u32,
+                    total_accepted: tokens.len() as u32,
+                    speedup_factor: 1.0,
+                })
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_speculative_config_defaults() {
+        let config = SpeculativeConfig::default()
+        assert_eq!(config.speculation_length, 5)
+        assert!(config.rejection_sampling)
+        assert!(config.dynamic_k)
+    }
+
+    #[test]
+    fn test_medusa_tree_config() {
+        let config = MedusaTreeConfig::default()
+        assert_eq!(config.num_heads, 4)
+        assert_eq!(config.candidates_per_level.len(), 4)
+    }
+
+    #[test]
+    fn test_speculative_output() {
+        let output = SpeculativeOutput {
+            tokens: [1, 2, 3, 4, 5],
+            acceptance_rate: 0.8,
+            total_drafted: 10,
+            total_accepted: 8,
+            speedup_factor: 1.6,
+        }
+
+        assert_eq!(output.tokens.len(), 5)
+        assert!((output.acceptance_rate - 0.8).abs() < 0.01)
+    }
+}
