@@ -29,12 +29,12 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 
 # File watching
-notify = "7.0"
+notify = "8.2"
 
 # Utilities
 dashmap = { workspace = true }
 regex = { workspace = true }
-dirs = "5.0"
+dirs = "6.0"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
