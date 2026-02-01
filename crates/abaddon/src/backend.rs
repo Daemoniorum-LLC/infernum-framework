@@ -27,7 +27,14 @@ fn from_candle_dtype(dtype: candle_core::DType) -> DType {
         candle_core::DType::F16 => DType::F16,
         candle_core::DType::BF16 => DType::BF16,
         candle_core::DType::F64 => DType::F32, // Map F64 to F32
-        candle_core::DType::U8 | candle_core::DType::U32 | candle_core::DType::I64 => DType::I8,
+        // Map all integer types to I8
+        candle_core::DType::U8
+        | candle_core::DType::U32
+        | candle_core::DType::I64
+        | candle_core::DType::I16
+        | candle_core::DType::I32 => DType::I8,
+        // Map low-precision floats to F16
+        _ => DType::F16,
     }
 }
 

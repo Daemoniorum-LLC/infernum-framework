@@ -55,8 +55,8 @@ tokenizers = "0.22"
 hf-hub = "0.4"
 
 # Vector storage
-lance = "0.39"
-lancedb = "0.22"
+lance = "1.0"
+lancedb = "0.23"
 
 # Observability
 tracing = "0.1"
@@ -132,3 +132,4 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
