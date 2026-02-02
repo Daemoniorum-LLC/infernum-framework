@@ -122,6 +122,7 @@ pub mod sessions;
 pub mod model_cache;
 pub mod wellbeing_intervention;
 pub mod request_batcher;
+pub mod tool_use;
 
 pub use admin::{
     AdminError, AdminModelInfo, LoadModelRequest, LoadModelResponse, ModelLoadOptions,
@@ -243,3 +244,8 @@ pub use wellbeing_intervention::{
     InterventionError, InterventionMetrics, SharedInterventionController, WellbeingState,
 };
 pub use request_batcher::{BatcherConfig, BatcherHandle, BatcherStats, RequestBatcher};
+pub use tool_use::{
+    detect_tool_calls, extract_text_content, format_tools_for_prompt, get_forced_tool,
+    process_model_output, should_include_tools, validate_tool_exists, DetectedToolCall,
+    ModelFamily, ToolProcessingResult,
+};
