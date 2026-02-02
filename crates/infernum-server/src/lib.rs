@@ -245,7 +245,20 @@ pub use wellbeing_intervention::{
 };
 pub use request_batcher::{BatcherConfig, BatcherHandle, BatcherStats, RequestBatcher};
 pub use tool_use::{
+    // Core functions
     detect_tool_calls, extract_text_content, format_tools_for_prompt, get_forced_tool,
-    process_model_output, should_include_tools, validate_tool_exists, DetectedToolCall,
-    ModelFamily, ToolProcessingResult,
+    process_model_output, should_include_tools, validate_tool_exists,
+    // Core types
+    DetectedToolCall, ModelFamily, ToolProcessingResult,
+    // Phase 3: Streaming
+    buffer_might_contain_tool_start, definitely_not_tool_call, try_extract_complete_tool_call,
+    StreamingExtractResult,
+    // Phase 3: Parallel tool calls
+    enforce_parallel_tool_calls, process_model_output_with_options, ProcessingOptions,
+    // Phase 3: Strict mode validation
+    validate_tool_arguments, process_model_output_with_validation, ToolValidationResult,
+    // Phase 3: Deep JSON parsing
+    extract_json_object,
+    // Phase 3: Unknown tool validation
+    validate_detected_calls, DetectedCallsValidation,
 };
