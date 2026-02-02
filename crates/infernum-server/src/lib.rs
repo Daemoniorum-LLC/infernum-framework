@@ -250,9 +250,11 @@ pub use tool_use::{
     process_model_output, should_include_tools, validate_tool_exists,
     // Core types
     DetectedToolCall, ModelFamily, ToolProcessingResult,
-    // Phase 3: Streaming
+    // Phase 3: Streaming detection (low-level)
     buffer_might_contain_tool_start, definitely_not_tool_call, try_extract_complete_tool_call,
     StreamingExtractResult,
+    // Phase 3: Streaming detector (high-level stateful)
+    StreamingToolDetector, ToolDetectionEvent,
     // Phase 3: Parallel tool calls
     enforce_parallel_tool_calls, process_model_output_with_options, ProcessingOptions,
     // Phase 3: Strict mode validation

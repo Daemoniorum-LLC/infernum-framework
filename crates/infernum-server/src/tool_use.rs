@@ -79,7 +79,7 @@ impl ModelFamily {
 }
 
 /// A detected tool call from model output.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DetectedToolCall {
     /// Unique ID for this tool call.
     pub id: String,
@@ -1140,6 +1140,165 @@ pub fn validate_detected_calls(detected: &[DetectedToolCall], tools: &[Tool]) ->
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// STREAMING TOOL DETECTOR
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Events emitted by the streaming tool detector.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ToolDetectionEvent {
+    /// Regular text content to stream to client.
+    Text(String),
+    /// A complete tool call was detected.
+    ToolCall(DetectedToolCall),
+    /// Currently buffering potential tool call (internal state indicator).
+    Buffering,
+}
+
+/// Stateful detector for tool calls in streaming output.
+///
+/// This detector manages a buffer to handle cases where tool call markers
+/// span multiple streaming chunks. It emits events indicating when to:
+/// - Stream text immediately
+/// - Buffer content (potential tool call starting)
+/// - Emit a complete tool call
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use infernum_server::tool_use::{StreamingToolDetector, ModelFamily, ToolDetectionEvent};
+///
+/// let mut detector = StreamingToolDetector::new(ModelFamily::Qwen);
+///
+/// // Process chunks as they arrive from the model
+/// for chunk in streaming_response {
+///     for event in detector.process_chunk(&chunk) {
+///         match event {
+///             ToolDetectionEvent::Text(text) => stream_to_client(text),
+///             ToolDetectionEvent::ToolCall(call) => emit_tool_call_event(call),
+///             ToolDetectionEvent::Buffering => { /* wait for more data */ }
+///         }
+///     }
+/// }
+///
+/// // Flush any remaining buffer at end of stream
+/// for event in detector.finish() {
+///     // handle final events
+/// }
+/// ```
+#[derive(Debug)]
+pub struct StreamingToolDetector {
+    /// Accumulated buffer for potential tool calls.
+    buffer: String,
+    /// Model family for format-specific detection.
+    model_family: ModelFamily,
+    /// Whether we're currently inside a potential tool call.
+    in_potential_tool_call: bool,
+}
+
+impl StreamingToolDetector {
+    /// Create a new streaming tool detector for the given model family.
+    #[must_use]
+    pub fn new(model_family: ModelFamily) -> Self {
+        Self {
+            buffer: String::new(),
+            model_family,
+            in_potential_tool_call: false,
+        }
+    }
+
+    /// Process an incoming chunk of text and return detection events.
+    ///
+    /// Returns a vector of events that should be handled by the caller.
+    /// Multiple events may be returned if a chunk contains both text and tool calls.
+    pub fn process_chunk(&mut self, chunk: &str) -> Vec<ToolDetectionEvent> {
+        self.buffer.push_str(chunk);
+        self.evaluate_buffer()
+    }
+
+    /// Finish processing and flush any remaining buffer.
+    ///
+    /// Call this when the stream ends to emit any buffered content.
+    pub fn finish(&mut self) -> Vec<ToolDetectionEvent> {
+        if self.buffer.is_empty() {
+            return vec![];
+        }
+
+        // If we have buffered content that never became a tool call, emit as text
+        let remaining = std::mem::take(&mut self.buffer);
+        self.in_potential_tool_call = false;
+        vec![ToolDetectionEvent::Text(remaining)]
+    }
+
+    /// Evaluate the current buffer and emit appropriate events.
+    fn evaluate_buffer(&mut self) -> Vec<ToolDetectionEvent> {
+        let mut events = Vec::new();
+
+        loop {
+            // Try to extract a complete tool call
+            let result = try_extract_complete_tool_call(&self.buffer, self.model_family);
+
+            if result.found {
+                // Emit any text before the tool call
+                if let Some(text) = result.text_before {
+                    if !text.is_empty() {
+                        events.push(ToolDetectionEvent::Text(text));
+                    }
+                }
+
+                // Emit the tool call
+                if let Some(call) = result.call {
+                    events.push(ToolDetectionEvent::ToolCall(call));
+                }
+
+                // Update buffer with remaining content
+                self.buffer = result.remaining;
+                self.in_potential_tool_call = false;
+
+                // Continue loop to check for more tool calls
+                continue;
+            }
+
+            // No complete tool call found - check if we might be starting one
+            if buffer_might_contain_tool_start(&self.buffer, self.model_family) {
+                self.in_potential_tool_call = true;
+                // Don't emit anything yet, keep buffering
+                if events.is_empty() {
+                    events.push(ToolDetectionEvent::Buffering);
+                }
+                break;
+            }
+
+            // Definitely not a tool call - emit buffered text
+            if definitely_not_tool_call(&self.buffer, self.model_family) || !self.in_potential_tool_call {
+                if !self.buffer.is_empty() {
+                    let text = std::mem::take(&mut self.buffer);
+                    events.push(ToolDetectionEvent::Text(text));
+                }
+                self.in_potential_tool_call = false;
+                break;
+            }
+
+            // Ambiguous state - keep buffering
+            break;
+        }
+
+        events
+    }
+
+    /// Check if the detector is currently buffering potential tool call content.
+    #[must_use]
+    pub fn is_buffering(&self) -> bool {
+        self.in_potential_tool_call
+    }
+
+    /// Get the current buffer contents (for debugging/testing).
+    #[must_use]
+    pub fn buffer(&self) -> &str {
+        &self.buffer
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2170,6 +2329,295 @@ More text after."#;
             assert_eq!(result.unknown_tools[0], "unknown_tool");
             // valid_calls should NOT contain unknown tools
             assert_eq!(result.valid_calls.len(), 0);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // STREAMING TOOL DETECTOR TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    mod streaming_tool_detector {
+        use super::*;
+
+        // ─────────────────────────────────────────────────────────────────────────
+        // Basic functionality
+        // ─────────────────────────────────────────────────────────────────────────
+
+        #[test]
+        fn test_new_detector() {
+            let detector = StreamingToolDetector::new(ModelFamily::Qwen);
+            assert!(!detector.is_buffering());
+            assert!(detector.buffer().is_empty());
+        }
+
+        #[test]
+        fn test_plain_text_streams_immediately() {
+            let mut detector = StreamingToolDetector::new(ModelFamily::Qwen);
+
+            let events = detector.process_chunk("Hello, world!");
+
+            assert_eq!(events.len(), 1);
+            assert!(matches!(&events[0], ToolDetectionEvent::Text(t) if t == "Hello, world!"));
+            assert!(!detector.is_buffering());
+        }
+
+        #[test]
+        fn test_multiple_plain_text_chunks() {
+            let mut detector = StreamingToolDetector::new(ModelFamily::Qwen);
+
+            let events1 = detector.process_chunk("Hello ");
+            let events2 = detector.process_chunk("world!");
+
+            assert_eq!(events1.len(), 1);
+            assert!(matches!(&events1[0], ToolDetectionEvent::Text(t) if t == "Hello "));
+
+            assert_eq!(events2.len(), 1);
+            assert!(matches!(&events2[0], ToolDetectionEvent::Text(t) if t == "world!"));
+        }
+
+        // ─────────────────────────────────────────────────────────────────────────
+        // Tool call detection
+        // ─────────────────────────────────────────────────────────────────────────
+
+        #[test]
+        fn test_complete_tool_call_in_one_chunk() {
+            let mut detector = StreamingToolDetector::new(ModelFamily::Qwen);
+
+            let chunk = r#"<tool_call>
+{"name": "get_weather", "arguments": {"location": "NYC"}}
+</tool_call>"#;
+
+            let events = detector.process_chunk(chunk);
+
+            assert_eq!(events.len(), 1);
+            match &events[0] {
+                ToolDetectionEvent::ToolCall(call) => {
+                    assert_eq!(call.name, "get_weather");
+                    assert!(call.arguments.contains("NYC"));
+                }
+                other => panic!("Expected ToolCall, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn test_tool_call_split_across_chunks() {
+            let mut detector = StreamingToolDetector::new(ModelFamily::Qwen);
+
+            // First chunk: partial tool marker
+            let events1 = detector.process_chunk("<tool");
+            assert!(detector.is_buffering());
+            assert_eq!(events1.len(), 1);
+            assert!(matches!(events1[0], ToolDetectionEvent::Buffering));
+
+            // Second chunk: more of the marker
+            let events2 = detector.process_chunk("_call>");
+            assert!(detector.is_buffering());
+
+            // Third chunk: JSON content
+            let events3 = detector.process_chunk(r#"
+{"name": "test", "arguments": {}}"#);
+            assert!(detector.is_buffering());
+
+            // Fourth chunk: closing tag
+            let events4 = detector.process_chunk("\n</tool_call>");
+
+            // Should now have the complete tool call
+            assert!(!detector.is_buffering());
+            assert_eq!(events4.len(), 1);
+            match &events4[0] {
+                ToolDetectionEvent::ToolCall(call) => {
+                    assert_eq!(call.name, "test");
+                }
+                other => panic!("Expected ToolCall, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn test_text_before_tool_call() {
+            let mut detector = StreamingToolDetector::new(ModelFamily::Qwen);
+
+            let chunk = r#"Some intro text<tool_call>
+{"name": "test", "arguments": {}}
+</tool_call>"#;
+
+            let events = detector.process_chunk(chunk);
+
+            assert_eq!(events.len(), 2);
+            assert!(matches!(&events[0], ToolDetectionEvent::Text(t) if t == "Some intro text"));
+            assert!(matches!(&events[1], ToolDetectionEvent::ToolCall(_)));
+        }
+
+        #[test]
+        fn test_text_after_tool_call() {
+            let mut detector = StreamingToolDetector::new(ModelFamily::Qwen);
+
+            let chunk = r#"<tool_call>
+{"name": "test", "arguments": {}}
+</tool_call>Some trailing text"#;
+
+            let events = detector.process_chunk(chunk);
+
+            // Should have: ToolCall, then Text (trailing text emitted immediately)
+            assert_eq!(events.len(), 2);
+            assert!(matches!(&events[0], ToolDetectionEvent::ToolCall(_)));
+            assert!(matches!(&events[1], ToolDetectionEvent::Text(t) if t == "Some trailing text"));
+
+            // finish() should return empty since buffer was already flushed
+            let final_events = detector.finish();
+            assert!(final_events.is_empty());
+        }
+
+        #[test]
+        fn test_multiple_tool_calls() {
+            let mut detector = StreamingToolDetector::new(ModelFamily::Qwen);
+
+            let chunk = r#"<tool_call>
+{"name": "tool_a", "arguments": {}}
+</tool_call>
+<tool_call>
+{"name": "tool_b", "arguments": {}}
+</tool_call>"#;
+
+            let events = detector.process_chunk(chunk);
+
+            // Should have both tool calls
+            let tool_calls: Vec<_> = events
+                .iter()
+                .filter(|e| matches!(e, ToolDetectionEvent::ToolCall(_)))
+                .collect();
+            assert_eq!(tool_calls.len(), 2);
+        }
+
+        // ─────────────────────────────────────────────────────────────────────────
+        // Edge cases
+        // ─────────────────────────────────────────────────────────────────────────
+
+        #[test]
+        fn test_finish_flushes_incomplete_buffer() {
+            let mut detector = StreamingToolDetector::new(ModelFamily::Qwen);
+
+            // Start what looks like a tool call but never completes
+            detector.process_chunk("<tool_call>");
+            detector.process_chunk(r#"{"name": "incomplete""#);
+
+            assert!(detector.is_buffering());
+
+            // Finish should flush the buffer as text
+            let events = detector.finish();
+            assert_eq!(events.len(), 1);
+            match &events[0] {
+                ToolDetectionEvent::Text(text) => {
+                    assert!(text.contains("<tool_call>"));
+                    assert!(text.contains("incomplete"));
+                }
+                other => panic!("Expected Text, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn test_empty_finish() {
+            let mut detector = StreamingToolDetector::new(ModelFamily::Qwen);
+
+            // Process complete tool call leaving empty buffer
+            detector.process_chunk(r#"<tool_call>{"name": "t", "arguments": {}}</tool_call>"#);
+
+            let events = detector.finish();
+            assert!(events.is_empty());
+        }
+
+        #[test]
+        fn test_false_positive_tool_start() {
+            let mut detector = StreamingToolDetector::new(ModelFamily::Qwen);
+
+            // Looks like it might start a tool call but doesn't
+            let events1 = detector.process_chunk("<tool");
+            assert!(detector.is_buffering());
+
+            // Continues into something that's clearly not a tool call
+            let events2 = detector.process_chunk("tip>helpful tip</tooltip>");
+
+            // Should emit the whole thing as text
+            assert!(!detector.is_buffering());
+            let has_text = events2.iter().any(|e| matches!(e, ToolDetectionEvent::Text(_)));
+            assert!(has_text);
+        }
+
+        // ─────────────────────────────────────────────────────────────────────────
+        // Model family variations
+        // ─────────────────────────────────────────────────────────────────────────
+
+        #[test]
+        fn test_llama_format() {
+            let mut detector = StreamingToolDetector::new(ModelFamily::Llama);
+
+            let chunk = r#"<|python_tag|>{"name": "test", "arguments": {"x": 1}}"#;
+            let events = detector.process_chunk(chunk);
+
+            assert_eq!(events.len(), 1);
+            assert!(matches!(&events[0], ToolDetectionEvent::ToolCall(c) if c.name == "test"));
+        }
+
+        #[test]
+        fn test_mistral_format() {
+            let mut detector = StreamingToolDetector::new(ModelFamily::Mistral);
+
+            let chunk = r#"[TOOL_CALLS][{"name": "test", "arguments": {}}]"#;
+            let events = detector.process_chunk(chunk);
+
+            assert_eq!(events.len(), 1);
+            assert!(matches!(&events[0], ToolDetectionEvent::ToolCall(c) if c.name == "test"));
+        }
+
+        // ─────────────────────────────────────────────────────────────────────────
+        // Stress tests
+        // ─────────────────────────────────────────────────────────────────────────
+
+        #[test]
+        fn test_character_by_character_streaming() {
+            let mut detector = StreamingToolDetector::new(ModelFamily::Qwen);
+
+            let full_text = r#"Hi<tool_call>{"name": "t", "arguments": {}}</tool_call>bye"#;
+
+            let mut all_events = Vec::new();
+            for c in full_text.chars() {
+                all_events.extend(detector.process_chunk(&c.to_string()));
+            }
+            all_events.extend(detector.finish());
+
+            // Should have: Text("Hi"), ToolCall, Text("bye")
+            let text_events: Vec<_> = all_events
+                .iter()
+                .filter(|e| matches!(e, ToolDetectionEvent::Text(_)))
+                .collect();
+            let tool_events: Vec<_> = all_events
+                .iter()
+                .filter(|e| matches!(e, ToolDetectionEvent::ToolCall(_)))
+                .collect();
+
+            assert_eq!(tool_events.len(), 1);
+            // Text events may be merged or separate depending on buffering
+            assert!(!text_events.is_empty());
+        }
+
+        #[test]
+        fn test_deeply_nested_json() {
+            let mut detector = StreamingToolDetector::new(ModelFamily::Qwen);
+
+            let chunk = r#"<tool_call>
+{"name": "nested", "arguments": {"a": {"b": {"c": {"d": "deep"}}}}}
+</tool_call>"#;
+
+            let events = detector.process_chunk(chunk);
+
+            assert_eq!(events.len(), 1);
+            match &events[0] {
+                ToolDetectionEvent::ToolCall(call) => {
+                    assert_eq!(call.name, "nested");
+                    let args: serde_json::Value = serde_json::from_str(&call.arguments).unwrap();
+                    assert_eq!(args["a"]["b"]["c"]["d"], "deep");
+                }
+                other => panic!("Expected ToolCall, got {:?}", other),
+            }
         }
     }
 }
