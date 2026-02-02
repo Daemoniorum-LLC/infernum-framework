@@ -11,6 +11,7 @@ use abaddon::{Engine, EngineConfig, InferenceEngine};
 use infernum_core::{GenerateRequest, Message, Role, SamplingParams};
 
 /// Start the inference server.
+#[cfg(feature = "server")]
 #[allow(clippy::too_many_arguments)]
 pub async fn serve(
     host: String,

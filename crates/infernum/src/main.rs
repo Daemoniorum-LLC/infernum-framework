@@ -55,6 +55,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Start the inference server
+    #[cfg(feature = "server")]
     Serve {
         /// Host to bind to
         #[arg(short = 'H', long, default_value = "0.0.0.0")]
@@ -527,6 +528,7 @@ async fn main() -> Result<()> {
             commands::chat(model, system).await?;
         },
 
+        #[cfg(feature = "server")]
         Some(Commands::Serve {
             host,
             port,
