@@ -48,6 +48,8 @@ use crate::openai::{
 use crate::tool_use::{
     format_tools_for_prompt, get_forced_tool, process_model_output, should_include_tools,
     validate_tool_exists, ModelFamily,
+    // TODO(#streaming-tools): Integrate StreamingToolDetector for streaming tool call detection
+    // StreamingToolDetector, ToolDetectionEvent,
 };
 
 /// Default server address.
@@ -1606,6 +1608,20 @@ async fn chat_completions(
         match engine.generate_stream(gen_request).await {
             Ok(token_stream) => {
                 let model_name = engine.model_info().id.to_string();
+
+                // TODO(#streaming-tools): Integrate StreamingToolDetector here
+                // Agent-centric streaming format (not OpenAI - see INFERNUM-SPEC.md §10)
+                //
+                // Integration plan:
+                // 1. Create detector: let detector = Arc::new(Mutex::new(StreamingToolDetector::new(model_family)));
+                // 2. Change map() to flat_map() to emit multiple SSE events per chunk
+                // 3. For each chunk, process through detector:
+                //    - ToolDetectionEvent::Text(text)     -> {"type":"text","content":"..."}
+                //    - ToolDetectionEvent::ToolCall(call) -> {"type":"tool_call","id":"...","name":"...","arguments":{...}}
+                //    - ToolDetectionEvent::Buffering      -> skip (waiting for more data)
+                // 4. On stream end, call detector.finish() to flush remaining buffer
+                // 5. Final event: {"type":"done","finish_reason":"...","usage":{...}}
+
                 let sse_stream = token_stream.map(move |chunk_result| {
                     match chunk_result {
                         Ok(chunk) => {
