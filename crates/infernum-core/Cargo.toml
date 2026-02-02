@@ -25,6 +25,9 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 bytes = { workspace = true }
+parking_lot = { workspace = true }
+md5 = "0.7"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
+tempfile = "3.10"

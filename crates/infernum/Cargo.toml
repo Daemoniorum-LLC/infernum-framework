@@ -14,11 +14,12 @@ name = "infernum"
 path = "src/main.rs"
 
 [features]
-default = ["server"]
+default = ["server", "cuda"]
 server = ["infernum-server"]
-# Note: GPU features require abaddon/asmodeus built with GPU support
-cuda = []
-metal = []
+# GPU features - propagate to abaddon
+cuda = ["abaddon/cuda"]
+metal = ["abaddon/metal"]
+haagenti-gpu = ["cuda", "abaddon/haagenti-gpu"]
 
 [dependencies]
 infernum-core = { path = "../infernum-core", version = "0.1.0" }
@@ -29,6 +30,7 @@ beleth = { path = "../beleth", version = "0.1.0" }
 asmodeus = { path = "../asmodeus", version = "0.1.0" }
 dantalion = { path = "../dantalion", version = "0.1.0" }
 grimoire-loader = { path = "../grimoire-loader", version = "0.1.0" }
+paimon = { path = "../paimon", version = "0.1.0" }
 infernum-server = { path = "../infernum-server", version = "0.1.0", optional = true }
 
 # Async
@@ -40,8 +42,13 @@ futures = { workspace = true }
 hf-hub = { workspace = true }
 dirs = "5.0"
 
+# ML
+candle-core = { workspace = true }
+safetensors = { workspace = true }
+
 # CLI
 clap = { workspace = true }
+clap_complete = "4.5"
 dialoguer = { workspace = true }
 indicatif = { workspace = true }
 console = { workspace = true }
@@ -53,6 +60,7 @@ figment = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
+chrono = { workspace = true }
 
 # Error handling
 color-eyre = { workspace = true }
@@ -69,3 +77,4 @@ tracing-subscriber = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "macros"] }
 assert_cmd = "2.0"
 predicates = "3.1"
+tempfile = "3.19"

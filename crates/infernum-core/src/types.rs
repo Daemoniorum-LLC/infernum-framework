@@ -220,3 +220,337 @@ impl Usage {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==========================================================================
+    // ModelId tests
+    // ==========================================================================
+
+    #[test]
+    fn test_model_id_new() {
+        let id = ModelId::new("llama-3.2-3b");
+        assert_eq!(id.0, "llama-3.2-3b");
+    }
+
+    #[test]
+    fn test_model_id_from_string() {
+        let id: ModelId = "test-model".to_string().into();
+        assert_eq!(id.0, "test-model");
+    }
+
+    #[test]
+    fn test_model_id_from_str() {
+        let id: ModelId = "my-model".into();
+        assert_eq!(id.0, "my-model");
+    }
+
+    #[test]
+    fn test_model_id_display() {
+        let id = ModelId::new("display-model");
+        assert_eq!(format!("{}", id), "display-model");
+    }
+
+    #[test]
+    fn test_model_id_equality() {
+        let id1 = ModelId::new("same");
+        let id2 = ModelId::new("same");
+        let id3 = ModelId::new("different");
+
+        assert_eq!(id1, id2);
+        assert_ne!(id1, id3);
+    }
+
+    #[test]
+    fn test_model_id_clone() {
+        let id = ModelId::new("clone-me");
+        let cloned = id.clone();
+        assert_eq!(id, cloned);
+    }
+
+    #[test]
+    fn test_model_id_serialization() {
+        let id = ModelId::new("serialized");
+        let json = serde_json::to_string(&id).expect("serialize");
+        assert!(json.contains("serialized"));
+
+        let parsed: ModelId = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed, id);
+    }
+
+    // ==========================================================================
+    // RequestId tests
+    // ==========================================================================
+
+    #[test]
+    fn test_request_id_new() {
+        let id1 = RequestId::new();
+        let id2 = RequestId::new();
+
+        // UUIDs should be unique
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn test_request_id_default() {
+        let id = RequestId::default();
+        // Just verify it creates without panicking
+        let _ = format!("{}", id);
+    }
+
+    #[test]
+    fn test_request_id_display() {
+        let id = RequestId::new();
+        let display = format!("{}", id);
+        // UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+        assert!(display.len() == 36);
+        assert!(display.contains('-'));
+    }
+
+    #[test]
+    fn test_request_id_clone() {
+        let id = RequestId::new();
+        let cloned = id.clone();
+        assert_eq!(id, cloned);
+    }
+
+    // ==========================================================================
+    // DType tests
+    // ==========================================================================
+
+    #[test]
+    fn test_dtype_variants() {
+        assert_eq!(DType::F32, DType::F32);
+        assert_ne!(DType::F32, DType::F16);
+        assert_ne!(DType::F16, DType::BF16);
+        assert_ne!(DType::I8, DType::I4);
+    }
+
+    #[test]
+    fn test_dtype_serialization() {
+        let dtype = DType::BF16;
+        let json = serde_json::to_string(&dtype).expect("serialize");
+
+        let parsed: DType = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed, dtype);
+    }
+
+    // ==========================================================================
+    // QuantizationType tests
+    // ==========================================================================
+
+    #[test]
+    fn test_quantization_type_variants() {
+        assert_eq!(QuantizationType::None, QuantizationType::None);
+        assert_ne!(QuantizationType::None, QuantizationType::Int8);
+        assert_ne!(QuantizationType::Int4, QuantizationType::GPTQ);
+        assert_ne!(QuantizationType::AWQ, QuantizationType::GgufQ4_0);
+    }
+
+    #[test]
+    fn test_quantization_serialization() {
+        let quant = QuantizationType::GgufQ4KM;
+        let json = serde_json::to_string(&quant).expect("serialize");
+
+        let parsed: QuantizationType = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed, quant);
+    }
+
+    // ==========================================================================
+    // DeviceType tests
+    // ==========================================================================
+
+    #[test]
+    fn test_device_type_cpu() {
+        let device = DeviceType::Cpu;
+        assert_eq!(device, DeviceType::Cpu);
+    }
+
+    #[test]
+    fn test_device_type_cuda() {
+        let device = DeviceType::Cuda { device_id: 0 };
+        match device {
+            DeviceType::Cuda { device_id } => assert_eq!(device_id, 0),
+            _ => panic!("Expected Cuda"),
+        }
+    }
+
+    #[test]
+    fn test_device_type_metal() {
+        let device = DeviceType::Metal { device_id: 1 };
+        match device {
+            DeviceType::Metal { device_id } => assert_eq!(device_id, 1),
+            _ => panic!("Expected Metal"),
+        }
+    }
+
+    #[test]
+    fn test_device_type_default() {
+        let device = DeviceType::default();
+        assert_eq!(device, DeviceType::Cpu);
+    }
+
+    #[test]
+    fn test_device_type_serialization() {
+        let device = DeviceType::Cuda { device_id: 2 };
+        let json = serde_json::to_string(&device).expect("serialize");
+        assert!(json.contains("Cuda") || json.contains("cuda"));
+
+        let parsed: DeviceType = serde_json::from_str(&json).expect("deserialize");
+        match parsed {
+            DeviceType::Cuda { device_id } => assert_eq!(device_id, 2),
+            _ => panic!("Wrong device type"),
+        }
+    }
+
+    // ==========================================================================
+    // FinishReason tests
+    // ==========================================================================
+
+    #[test]
+    fn test_finish_reason_variants() {
+        assert_eq!(FinishReason::Length, FinishReason::Length);
+        assert_ne!(FinishReason::Length, FinishReason::Stop);
+        assert_ne!(FinishReason::ToolCalls, FinishReason::ContentFilter);
+    }
+
+    #[test]
+    fn test_finish_reason_serialization() {
+        let reason = FinishReason::Stop;
+        let json = serde_json::to_string(&reason).expect("serialize");
+        assert!(json.contains("stop"));
+
+        let parsed: FinishReason = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed, reason);
+    }
+
+    // ==========================================================================
+    // Role tests
+    // ==========================================================================
+
+    #[test]
+    fn test_role_variants() {
+        assert_eq!(Role::System, Role::System);
+        assert_ne!(Role::System, Role::User);
+        assert_ne!(Role::User, Role::Assistant);
+        assert_ne!(Role::Assistant, Role::Tool);
+    }
+
+    #[test]
+    fn test_role_serialization() {
+        let role = Role::User;
+        let json = serde_json::to_string(&role).expect("serialize");
+        assert!(json.contains("user"));
+
+        let parsed: Role = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed, role);
+    }
+
+    // ==========================================================================
+    // Message tests
+    // ==========================================================================
+
+    #[test]
+    fn test_message_system() {
+        let msg = Message::system("You are a helpful assistant.");
+        assert_eq!(msg.role, Role::System);
+        assert_eq!(msg.content, "You are a helpful assistant.");
+        assert!(msg.name.is_none());
+        assert!(msg.tool_call_id.is_none());
+    }
+
+    #[test]
+    fn test_message_user() {
+        let msg = Message::user("Hello!");
+        assert_eq!(msg.role, Role::User);
+        assert_eq!(msg.content, "Hello!");
+    }
+
+    #[test]
+    fn test_message_assistant() {
+        let msg = Message::assistant("Hi there!");
+        assert_eq!(msg.role, Role::Assistant);
+        assert_eq!(msg.content, "Hi there!");
+    }
+
+    #[test]
+    fn test_message_serialization() {
+        let msg = Message::user("Test message");
+        let json = serde_json::to_string(&msg).expect("serialize");
+        assert!(json.contains("user"));
+        assert!(json.contains("Test message"));
+
+        let parsed: Message = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed.role, Role::User);
+        assert_eq!(parsed.content, "Test message");
+    }
+
+    #[test]
+    fn test_message_with_name() {
+        let msg = Message {
+            role: Role::User,
+            content: "Hello".to_string(),
+            name: Some("Alice".to_string()),
+            tool_call_id: None,
+        };
+
+        let json = serde_json::to_string(&msg).expect("serialize");
+        assert!(json.contains("Alice"));
+
+        let parsed: Message = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed.name, Some("Alice".to_string()));
+    }
+
+    #[test]
+    fn test_message_clone() {
+        let msg = Message::user("Clone me");
+        let cloned = msg.clone();
+        assert_eq!(cloned.role, msg.role);
+        assert_eq!(cloned.content, msg.content);
+    }
+
+    // ==========================================================================
+    // Usage tests
+    // ==========================================================================
+
+    #[test]
+    fn test_usage_new() {
+        let usage = Usage::new(100, 50);
+        assert_eq!(usage.prompt_tokens, 100);
+        assert_eq!(usage.completion_tokens, 50);
+        assert_eq!(usage.total_tokens, 150);
+    }
+
+    #[test]
+    fn test_usage_default() {
+        let usage = Usage::default();
+        assert_eq!(usage.prompt_tokens, 0);
+        assert_eq!(usage.completion_tokens, 0);
+        assert_eq!(usage.total_tokens, 0);
+    }
+
+    #[test]
+    fn test_usage_serialization() {
+        let usage = Usage::new(200, 100);
+        let json = serde_json::to_string(&usage).expect("serialize");
+        assert!(json.contains("200"));
+        assert!(json.contains("100"));
+        assert!(json.contains("300"));
+
+        let parsed: Usage = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed.prompt_tokens, 200);
+        assert_eq!(parsed.completion_tokens, 100);
+        assert_eq!(parsed.total_tokens, 300);
+    }
+
+    #[test]
+    fn test_usage_clone() {
+        let usage = Usage::new(50, 25);
+        let cloned = usage.clone();
+        assert_eq!(cloned.prompt_tokens, usage.prompt_tokens);
+        assert_eq!(cloned.completion_tokens, usage.completion_tokens);
+        assert_eq!(cloned.total_tokens, usage.total_tokens);
+    }
+}

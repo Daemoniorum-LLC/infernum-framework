@@ -41,8 +41,29 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 dashmap = { workspace = true }
 parking_lot = { workspace = true }
+dirs = "5.0"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
 mockall = { workspace = true }
 wiremock = { workspace = true }
+tempfile = "3.14"
+criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1.4"
+tracing-subscriber = "0.3"
+
+[[bench]]
+name = "agent_benchmarks"
+harness = false
+
+[[example]]
+name = "wellbeing_monitor"
+path = "examples/wellbeing_monitor.rs"
+
+[[example]]
+name = "monitored_inference"
+path = "examples/monitored_inference.rs"
+
+[[example]]
+name = "ooda_with_wellbeing"
+path = "examples/ooda_with_wellbeing.rs"

@@ -43,6 +43,10 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 indicatif = { workspace = true }
+parking_lot = { workspace = true }
+
+# Sigil/Jormungandr
+stolas = { path = "../stolas", version = "0.1.0" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

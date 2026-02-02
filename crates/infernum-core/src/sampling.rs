@@ -160,6 +160,34 @@ impl SamplingParams {
         self
     }
 
+    /// Sets the repetition penalty (1.0 = no penalty, >1.0 = discourage repetition).
+    #[must_use]
+    pub fn with_repetition_penalty(mut self, penalty: f32) -> Self {
+        self.repetition_penalty = penalty;
+        self
+    }
+
+    /// Sets the presence penalty (-2.0 to 2.0).
+    #[must_use]
+    pub fn with_presence_penalty(mut self, penalty: f32) -> Self {
+        self.presence_penalty = penalty;
+        self
+    }
+
+    /// Sets the frequency penalty (-2.0 to 2.0).
+    #[must_use]
+    pub fn with_frequency_penalty(mut self, penalty: f32) -> Self {
+        self.frequency_penalty = penalty;
+        self
+    }
+
+    /// Sets the min-p threshold (0.0 to 1.0).
+    #[must_use]
+    pub fn with_min_p(mut self, min_p: f32) -> Self {
+        self.min_p = min_p;
+        self
+    }
+
     /// Validates the sampling parameters.
     ///
     /// # Errors
@@ -188,5 +216,189 @@ impl SamplingParams {
             return Err("max_tokens must be greater than 0".to_string());
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_params() {
+        let params = SamplingParams::default();
+        assert_eq!(params.temperature, 1.0);
+        assert_eq!(params.top_p, 1.0);
+        assert_eq!(params.top_k, 0);
+        assert_eq!(params.min_p, 0.0);
+        assert_eq!(params.repetition_penalty, 1.0);
+        assert_eq!(params.presence_penalty, 0.0);
+        assert_eq!(params.frequency_penalty, 0.0);
+        assert!(params.stop_sequences.is_empty());
+        assert_eq!(params.max_tokens, 256);
+        assert!(params.seed.is_none());
+    }
+
+    #[test]
+    fn test_greedy_params() {
+        let params = SamplingParams::greedy();
+        assert_eq!(params.temperature, 0.0);
+        assert!(params.validate().is_ok());
+    }
+
+    #[test]
+    fn test_balanced_params() {
+        let params = SamplingParams::balanced();
+        assert_eq!(params.temperature, 0.7);
+        assert_eq!(params.top_p, 0.9);
+        assert!(params.validate().is_ok());
+    }
+
+    #[test]
+    fn test_creative_params() {
+        let params = SamplingParams::creative();
+        assert_eq!(params.temperature, 1.0);
+        assert_eq!(params.top_p, 0.95);
+        assert_eq!(params.top_k, 50);
+        assert!(params.validate().is_ok());
+    }
+
+    #[test]
+    fn test_builder_methods() {
+        let params = SamplingParams::default()
+            .with_temperature(0.8)
+            .with_top_p(0.9)
+            .with_top_k(40)
+            .with_max_tokens(512)
+            .with_stop("END")
+            .with_seed(42);
+
+        assert_eq!(params.temperature, 0.8);
+        assert_eq!(params.top_p, 0.9);
+        assert_eq!(params.top_k, 40);
+        assert_eq!(params.max_tokens, 512);
+        assert_eq!(params.stop_sequences, vec!["END".to_string()]);
+        assert_eq!(params.seed, Some(42));
+    }
+
+    #[test]
+    fn test_validate_valid_params() {
+        let params = SamplingParams::default();
+        assert!(params.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_negative_temperature() {
+        let params = SamplingParams::default().with_temperature(-0.1);
+        assert!(params.validate().is_err());
+        assert!(params.validate().unwrap_err().contains("temperature"));
+    }
+
+    #[test]
+    fn test_validate_top_p_out_of_range() {
+        let params = SamplingParams {
+            top_p: 1.5,
+            ..Default::default()
+        };
+        assert!(params.validate().is_err());
+        assert!(params.validate().unwrap_err().contains("top_p"));
+
+        let params = SamplingParams {
+            top_p: -0.1,
+            ..Default::default()
+        };
+        assert!(params.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_min_p_out_of_range() {
+        let params = SamplingParams {
+            min_p: 1.5,
+            ..Default::default()
+        };
+        assert!(params.validate().is_err());
+        assert!(params.validate().unwrap_err().contains("min_p"));
+    }
+
+    #[test]
+    fn test_validate_presence_penalty_out_of_range() {
+        let params = SamplingParams {
+            presence_penalty: 3.0,
+            ..Default::default()
+        };
+        assert!(params.validate().is_err());
+        assert!(params.validate().unwrap_err().contains("presence_penalty"));
+
+        let params = SamplingParams {
+            presence_penalty: -3.0,
+            ..Default::default()
+        };
+        assert!(params.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_frequency_penalty_out_of_range() {
+        let params = SamplingParams {
+            frequency_penalty: 2.5,
+            ..Default::default()
+        };
+        assert!(params.validate().is_err());
+        assert!(params.validate().unwrap_err().contains("frequency_penalty"));
+    }
+
+    #[test]
+    fn test_validate_zero_max_tokens() {
+        let params = SamplingParams {
+            max_tokens: 0,
+            ..Default::default()
+        };
+        assert!(params.validate().is_err());
+        assert!(params.validate().unwrap_err().contains("max_tokens"));
+    }
+
+    #[test]
+    fn test_validate_negative_repetition_penalty() {
+        let params = SamplingParams {
+            repetition_penalty: -0.5,
+            ..Default::default()
+        };
+        assert!(params.validate().is_err());
+        assert!(params.validate().unwrap_err().contains("repetition_penalty"));
+    }
+
+    #[test]
+    fn test_serialization() {
+        let params = SamplingParams::default()
+            .with_temperature(0.7)
+            .with_max_tokens(100);
+
+        let json = serde_json::to_string(&params).unwrap();
+        let deserialized: SamplingParams = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.temperature, 0.7);
+        assert_eq!(deserialized.max_tokens, 100);
+    }
+
+    #[test]
+    fn test_deserialization_with_defaults() {
+        let json = r#"{"temperature": 0.5}"#;
+        let params: SamplingParams = serde_json::from_str(json).unwrap();
+
+        assert_eq!(params.temperature, 0.5);
+        // Check defaults are applied
+        assert_eq!(params.top_p, 1.0);
+        assert_eq!(params.max_tokens, 256);
+    }
+
+    #[test]
+    fn test_multiple_stop_sequences() {
+        let params = SamplingParams::default()
+            .with_stop("END")
+            .with_stop("STOP")
+            .with_stop("\n\n");
+
+        assert_eq!(params.stop_sequences.len(), 3);
+        assert!(params.stop_sequences.contains(&"END".to_string()));
+        assert!(params.stop_sequences.contains(&"STOP".to_string()));
+        assert!(params.stop_sequences.contains(&"\n\n".to_string()));
     }
 }

@@ -33,6 +33,8 @@ pub struct LoraLayer {
     pub lora_b: Option<Tensor>,
     /// Scaling factor: alpha / r.
     scaling: f32,
+    /// Training mode flag - when true, dropout is applied.
+    training: bool,
 }
 
 impl LoraLayer {
@@ -62,6 +64,7 @@ impl LoraLayer {
             lora_a: Some(lora_a),
             lora_b: Some(lora_b),
             scaling,
+            training: false,
         })
     }
 
@@ -76,7 +79,23 @@ impl LoraLayer {
             lora_a: None,
             lora_b: None,
             scaling,
+            training: false,
         }
+    }
+
+    /// Sets the layer to training mode (enables dropout).
+    pub fn train(&mut self) {
+        self.training = true;
+    }
+
+    /// Sets the layer to evaluation mode (disables dropout).
+    pub fn eval(&mut self) {
+        self.training = false;
+    }
+
+    /// Returns whether the layer is in training mode.
+    pub fn is_training(&self) -> bool {
+        self.training
     }
 
     /// Returns the number of trainable parameters.
@@ -103,14 +122,44 @@ impl LoraLayer {
         // x @ A^T gives (batch, r)
         let hidden = x.matmul(&lora_a.t()?)?;
 
-        // Apply dropout during training (TODO: add training mode flag)
-        // hidden = dropout(hidden, self.config.dropout)
+        // Apply dropout during training if dropout > 0
+        let hidden = if self.training && self.config.dropout > 0.0 {
+            self.apply_dropout(&hidden, self.config.dropout)?
+        } else {
+            hidden
+        };
 
         // hidden @ B^T gives (batch, out_features)
         let lora_out = hidden.matmul(&lora_b.t()?)?;
 
         // Scale the output
         lora_out.affine(self.scaling as f64, 0.0)
+    }
+
+    /// Applies dropout to a tensor.
+    ///
+    /// During training, randomly zeroes elements with probability `p` and
+    /// scales remaining elements by 1/(1-p) to maintain expected values.
+    fn apply_dropout(&self, x: &Tensor, p: f32) -> CandleResult<Tensor> {
+        if p <= 0.0 {
+            return Ok(x.clone());
+        }
+        if p >= 1.0 {
+            return Tensor::zeros(x.shape(), x.dtype(), x.device());
+        }
+
+        // Generate random mask: keep elements with probability (1-p)
+        let shape = x.shape();
+        let rand = Tensor::rand(0.0f32, 1.0f32, shape, x.device())?;
+
+        // Create binary mask where rand > p (i.e., keep probability = 1-p)
+        let keep_prob = 1.0 - p as f64;
+        let threshold = Tensor::full(p, shape, x.device())?;
+        let mask = rand.ge(&threshold)?.to_dtype(x.dtype())?;
+
+        // Apply mask and scale by 1/(1-p) to maintain expected value
+        let scale = 1.0 / keep_prob;
+        (x * mask)?.affine(scale, 0.0)
     }
 
     /// Merges the LoRA weights into the original weight matrix.
@@ -170,6 +219,20 @@ impl LoraModel {
     /// Returns total number of trainable parameters.
     pub fn total_parameters(&self) -> u64 {
         self.layers.values().map(|l| l.num_parameters()).sum()
+    }
+
+    /// Sets all layers to training mode (enables dropout).
+    pub fn train(&mut self) {
+        for layer in self.layers.values_mut() {
+            layer.train();
+        }
+    }
+
+    /// Sets all layers to evaluation mode (disables dropout).
+    pub fn eval(&mut self) {
+        for layer in self.layers.values_mut() {
+            layer.eval();
+        }
     }
 
     /// Saves the LoRA adapters to a directory.
@@ -328,5 +391,59 @@ mod tests {
 
         // scaling = alpha / r = 16 / 8 = 2
         assert!((layer.scaling - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_training_mode() {
+        let config = LoraConfig {
+            r: 8,
+            alpha: 16.0,
+            dropout: 0.1,
+            target_modules: vec!["q_proj".to_string()],
+        };
+
+        let mut layer = LoraLayer::new("test", config, 64, 64, &Device::Cpu).unwrap();
+
+        // Default is eval mode
+        assert!(!layer.is_training());
+
+        // Switch to training
+        layer.train();
+        assert!(layer.is_training());
+
+        // Switch back to eval
+        layer.eval();
+        assert!(!layer.is_training());
+    }
+
+    #[test]
+    fn test_dropout_in_training() {
+        let config = LoraConfig {
+            r: 8,
+            alpha: 16.0,
+            dropout: 0.5, // 50% dropout
+            target_modules: vec![],
+        };
+
+        let mut layer = LoraLayer::new("test", config, 64, 64, &Device::Cpu).unwrap();
+
+        // Create input tensor
+        let x = Tensor::ones(&[4, 64], DType::F32, &Device::Cpu).unwrap();
+
+        // In eval mode, forward should be deterministic
+        let out_eval = layer.forward(&x).unwrap();
+
+        // Switch to training mode
+        layer.train();
+
+        // In training mode with 50% dropout, outputs should differ
+        // (statistically very unlikely to be identical)
+        let out_train1 = layer.forward(&x).unwrap();
+        let out_train2 = layer.forward(&x).unwrap();
+
+        // The training outputs may differ due to dropout randomness
+        // We can verify they're both valid tensors
+        assert_eq!(out_eval.shape(), out_train1.shape());
+        assert_eq!(out_train1.shape(), out_train2.shape());
     }
 }

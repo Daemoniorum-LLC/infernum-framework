@@ -142,3 +142,224 @@ impl Error {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_model_not_found_error() {
+        let error = Error::ModelNotFound {
+            model_id: "llama-7b".to_string(),
+        };
+
+        let msg = error.to_string();
+        assert!(msg.contains("Model not found"));
+        assert!(msg.contains("llama-7b"));
+        assert!(!error.is_retryable());
+        assert!(!error.is_resource_exhaustion());
+    }
+
+    #[test]
+    fn test_unsupported_architecture_error() {
+        let error = Error::UnsupportedArchitecture {
+            architecture: "mamba".to_string(),
+        };
+
+        let msg = error.to_string();
+        assert!(msg.contains("Unsupported model architecture"));
+        assert!(msg.contains("mamba"));
+    }
+
+    #[test]
+    fn test_out_of_memory_error() {
+        let error = Error::OutOfMemory {
+            requested: 16_000_000_000,
+            available: 8_000_000_000,
+        };
+
+        let msg = error.to_string();
+        assert!(msg.contains("Out of memory"));
+        assert!(msg.contains("16000000000"));
+        assert!(msg.contains("8000000000"));
+
+        assert!(!error.is_retryable());
+        assert!(error.is_resource_exhaustion());
+    }
+
+    #[test]
+    fn test_context_length_exceeded_error() {
+        let error = Error::ContextLengthExceeded {
+            current: 32000,
+            max: 8192,
+        };
+
+        let msg = error.to_string();
+        assert!(msg.contains("Context length exceeded"));
+        assert!(msg.contains("32000"));
+        assert!(msg.contains("8192"));
+
+        assert!(!error.is_retryable());
+        assert!(error.is_resource_exhaustion());
+    }
+
+    #[test]
+    fn test_invalid_config_error() {
+        let error = Error::InvalidConfig {
+            message: "temperature must be positive".to_string(),
+        };
+
+        let msg = error.to_string();
+        assert!(msg.contains("Invalid configuration"));
+        assert!(msg.contains("temperature must be positive"));
+    }
+
+    #[test]
+    fn test_backend_error() {
+        let error = Error::backend("cuda", "CUDA out of memory");
+
+        let msg = error.to_string();
+        assert!(msg.contains("Backend error"));
+        assert!(msg.contains("CUDA out of memory"));
+
+        match error {
+            Error::Backend { backend, message } => {
+                assert_eq!(backend, "cuda");
+                assert_eq!(message, "CUDA out of memory");
+            }
+            _ => panic!("Expected Backend error"),
+        }
+    }
+
+    #[test]
+    fn test_timeout_error() {
+        let error = Error::Timeout {
+            duration: Duration::from_secs(30),
+        };
+
+        let msg = error.to_string();
+        assert!(msg.contains("timed out"));
+        assert!(msg.contains("30"));
+
+        assert!(error.is_retryable());
+        assert!(!error.is_resource_exhaustion());
+    }
+
+    #[test]
+    fn test_rate_limited_error() {
+        let error = Error::RateLimited {
+            retry_after: Duration::from_secs(60),
+        };
+
+        let msg = error.to_string();
+        assert!(msg.contains("Rate limited"));
+        assert!(msg.contains("60"));
+
+        assert!(error.is_retryable());
+        assert!(!error.is_resource_exhaustion());
+    }
+
+    #[test]
+    fn test_tokenization_error() {
+        let error = Error::Tokenization {
+            message: "unknown token".to_string(),
+        };
+
+        let msg = error.to_string();
+        assert!(msg.contains("Tokenization error"));
+        assert!(msg.contains("unknown token"));
+    }
+
+    #[test]
+    fn test_model_load_error() {
+        let error = Error::model_load("corrupted weights file");
+
+        let msg = error.to_string();
+        assert!(msg.contains("Failed to load model"));
+        assert!(msg.contains("corrupted weights file"));
+    }
+
+    #[test]
+    fn test_io_error() {
+        let io_error = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let error: Error = io_error.into();
+
+        let msg = error.to_string();
+        assert!(msg.contains("I/O error"));
+        assert!(msg.contains("file not found"));
+    }
+
+    #[test]
+    fn test_serialization_error() {
+        let json_str = "invalid json {";
+        let json_error = serde_json::from_str::<serde_json::Value>(json_str).unwrap_err();
+        let error: Error = json_error.into();
+
+        let msg = error.to_string();
+        assert!(msg.contains("Serialization error"));
+    }
+
+    #[test]
+    fn test_internal_error() {
+        let error = Error::internal("unexpected state");
+
+        let msg = error.to_string();
+        assert!(msg.contains("Internal error"));
+        assert!(msg.contains("unexpected state"));
+    }
+
+    #[test]
+    fn test_is_retryable() {
+        // Retryable errors
+        assert!(Error::Timeout {
+            duration: Duration::from_secs(1)
+        }
+        .is_retryable());
+        assert!(Error::RateLimited {
+            retry_after: Duration::from_secs(1)
+        }
+        .is_retryable());
+
+        // Non-retryable errors
+        assert!(!Error::ModelNotFound {
+            model_id: "x".to_string()
+        }
+        .is_retryable());
+        assert!(!Error::OutOfMemory {
+            requested: 1,
+            available: 0
+        }
+        .is_retryable());
+        assert!(!Error::internal("error").is_retryable());
+    }
+
+    #[test]
+    fn test_is_resource_exhaustion() {
+        // Resource exhaustion errors
+        assert!(Error::OutOfMemory {
+            requested: 100,
+            available: 50
+        }
+        .is_resource_exhaustion());
+        assert!(Error::ContextLengthExceeded {
+            current: 100,
+            max: 50
+        }
+        .is_resource_exhaustion());
+
+        // Non-resource exhaustion errors
+        assert!(!Error::Timeout {
+            duration: Duration::from_secs(1)
+        }
+        .is_resource_exhaustion());
+        assert!(!Error::internal("error").is_resource_exhaustion());
+    }
+
+    #[test]
+    fn test_error_debug() {
+        let error = Error::internal("test");
+        let debug_str = format!("{:?}", error);
+        assert!(debug_str.contains("Internal"));
+        assert!(debug_str.contains("test"));
+    }
+}

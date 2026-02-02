@@ -1,11 +1,133 @@
 //! Embedding generation with model integration.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use infernum_core::Result;
 
 use abaddon::{Engine, InferenceEngine};
+
+// ============================================================================
+// Embedding Metrics (Sprint 7 - Leviathan Feature Parity)
+// ============================================================================
+
+/// Metrics for embedding generation operations.
+///
+/// Thread-safe counters for monitoring embedding performance.
+#[derive(Debug, Default)]
+pub struct EmbeddingMetrics {
+    /// Total number of embedding requests.
+    pub requests_total: AtomicU64,
+    /// Total number of texts embedded.
+    pub texts_embedded_total: AtomicU64,
+    /// Total embedding latency in microseconds.
+    pub latency_total_us: AtomicU64,
+    /// Number of batch operations.
+    pub batch_operations: AtomicU64,
+    /// Total batch size (sum of all batch sizes).
+    pub batch_size_total: AtomicU64,
+    /// Number of failed embedding operations.
+    pub failures_total: AtomicU64,
+    /// Total dimensions processed (texts * dimension).
+    pub dimensions_total: AtomicU64,
+}
+
+impl EmbeddingMetrics {
+    /// Creates a new metrics instance.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Records a successful embedding operation.
+    pub fn record_success(&self, text_count: u64, dimension: u64, latency_us: u64) {
+        self.requests_total.fetch_add(1, Ordering::Relaxed);
+        self.texts_embedded_total.fetch_add(text_count, Ordering::Relaxed);
+        self.latency_total_us.fetch_add(latency_us, Ordering::Relaxed);
+        self.dimensions_total.fetch_add(text_count * dimension, Ordering::Relaxed);
+    }
+
+    /// Records a batch operation.
+    pub fn record_batch(&self, batch_size: u64) {
+        self.batch_operations.fetch_add(1, Ordering::Relaxed);
+        self.batch_size_total.fetch_add(batch_size, Ordering::Relaxed);
+    }
+
+    /// Records a failed embedding operation.
+    pub fn record_failure(&self) {
+        self.failures_total.fetch_add(1, Ordering::Relaxed);
+        self.requests_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Returns the average latency per request in microseconds.
+    #[must_use]
+    pub fn average_latency_us(&self) -> f64 {
+        let total = self.latency_total_us.load(Ordering::Relaxed);
+        let requests = self.requests_total.load(Ordering::Relaxed);
+        if requests > 0 {
+            total as f64 / requests as f64
+        } else {
+            0.0
+        }
+    }
+
+    /// Returns the average batch size.
+    #[must_use]
+    pub fn average_batch_size(&self) -> f64 {
+        let total = self.batch_size_total.load(Ordering::Relaxed);
+        let ops = self.batch_operations.load(Ordering::Relaxed);
+        if ops > 0 {
+            total as f64 / ops as f64
+        } else {
+            0.0
+        }
+    }
+
+    /// Returns the success rate (0.0 to 1.0).
+    #[must_use]
+    pub fn success_rate(&self) -> f64 {
+        let total = self.requests_total.load(Ordering::Relaxed);
+        let failures = self.failures_total.load(Ordering::Relaxed);
+        if total > 0 {
+            (total - failures) as f64 / total as f64
+        } else {
+            1.0
+        }
+    }
+
+    /// Returns metrics in Prometheus text exposition format.
+    #[must_use]
+    pub fn to_prometheus(&self) -> String {
+        format!(
+            "# HELP stolas_embeddings_total Total number of texts embedded\n\
+             # TYPE stolas_embeddings_total counter\n\
+             stolas_embeddings_total {}\n\
+             # HELP stolas_embedding_requests_total Total embedding requests\n\
+             # TYPE stolas_embedding_requests_total counter\n\
+             stolas_embedding_requests_total {}\n\
+             # HELP stolas_embedding_latency_us_total Total embedding latency in microseconds\n\
+             # TYPE stolas_embedding_latency_us_total counter\n\
+             stolas_embedding_latency_us_total {}\n\
+             # HELP stolas_embedding_batch_operations_total Total batch operations\n\
+             # TYPE stolas_embedding_batch_operations_total counter\n\
+             stolas_embedding_batch_operations_total {}\n\
+             # HELP stolas_embedding_failures_total Total failed embedding operations\n\
+             # TYPE stolas_embedding_failures_total counter\n\
+             stolas_embedding_failures_total {}\n\
+             # HELP stolas_embedding_dimensions_total Total dimensions processed\n\
+             # TYPE stolas_embedding_dimensions_total counter\n\
+             stolas_embedding_dimensions_total {}\n",
+            self.texts_embedded_total.load(Ordering::Relaxed),
+            self.requests_total.load(Ordering::Relaxed),
+            self.latency_total_us.load(Ordering::Relaxed),
+            self.batch_operations.load(Ordering::Relaxed),
+            self.failures_total.load(Ordering::Relaxed),
+            self.dimensions_total.load(Ordering::Relaxed),
+        )
+    }
+}
 
 /// Trait for embedding models.
 #[async_trait]
@@ -300,6 +422,78 @@ pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
 
+// ============================================================================
+// Metered Embedder (Sprint 7 - Observability)
+// ============================================================================
+
+/// An embedder wrapper that records metrics for all operations.
+///
+/// Wraps any `Embedder` implementation and tracks:
+/// - Request counts
+/// - Latency (microseconds)
+/// - Batch sizes
+/// - Failure rates
+pub struct MeteredEmbedder {
+    inner: Arc<dyn Embedder>,
+    metrics: Arc<EmbeddingMetrics>,
+}
+
+impl MeteredEmbedder {
+    /// Creates a new metered embedder.
+    pub fn new(embedder: Arc<dyn Embedder>) -> Self {
+        Self {
+            inner: embedder,
+            metrics: Arc::new(EmbeddingMetrics::new()),
+        }
+    }
+
+    /// Creates with shared metrics.
+    pub fn with_metrics(embedder: Arc<dyn Embedder>, metrics: Arc<EmbeddingMetrics>) -> Self {
+        Self {
+            inner: embedder,
+            metrics,
+        }
+    }
+
+    /// Returns the metrics instance.
+    #[must_use]
+    pub fn metrics(&self) -> &Arc<EmbeddingMetrics> {
+        &self.metrics
+    }
+}
+
+#[async_trait]
+impl Embedder for MeteredEmbedder {
+    async fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        let start = Instant::now();
+        let text_count = texts.len() as u64;
+
+        match self.inner.embed(texts).await {
+            Ok(embeddings) => {
+                let latency_us = start.elapsed().as_micros() as u64;
+                let dimension = self.inner.dimension() as u64;
+                self.metrics.record_success(text_count, dimension, latency_us);
+                if text_count > 1 {
+                    self.metrics.record_batch(text_count);
+                }
+                Ok(embeddings)
+            }
+            Err(e) => {
+                self.metrics.record_failure();
+                Err(e)
+            }
+        }
+    }
+
+    fn dimension(&self) -> usize {
+        self.inner.dimension()
+    }
+
+    fn model_name(&self) -> &str {
+        self.inner.model_name()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,5 +546,105 @@ mod tests {
         // Check normalization
         let norm: f32 = embeddings[0].iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 1e-5);
+    }
+
+    // ========================================================================
+    // Embedding Metrics Tests
+    // ========================================================================
+
+    #[test]
+    fn test_embedding_metrics_new() {
+        let metrics = EmbeddingMetrics::new();
+        assert_eq!(metrics.requests_total.load(Ordering::Relaxed), 0);
+        assert_eq!(metrics.texts_embedded_total.load(Ordering::Relaxed), 0);
+        assert_eq!(metrics.failures_total.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_embedding_metrics_record_success() {
+        let metrics = EmbeddingMetrics::new();
+        metrics.record_success(5, 384, 1000);
+
+        assert_eq!(metrics.requests_total.load(Ordering::Relaxed), 1);
+        assert_eq!(metrics.texts_embedded_total.load(Ordering::Relaxed), 5);
+        assert_eq!(metrics.latency_total_us.load(Ordering::Relaxed), 1000);
+        assert_eq!(metrics.dimensions_total.load(Ordering::Relaxed), 5 * 384);
+    }
+
+    #[test]
+    fn test_embedding_metrics_record_batch() {
+        let metrics = EmbeddingMetrics::new();
+        metrics.record_batch(10);
+        metrics.record_batch(20);
+
+        assert_eq!(metrics.batch_operations.load(Ordering::Relaxed), 2);
+        assert_eq!(metrics.batch_size_total.load(Ordering::Relaxed), 30);
+        assert!((metrics.average_batch_size() - 15.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_embedding_metrics_record_failure() {
+        let metrics = EmbeddingMetrics::new();
+        metrics.record_success(1, 384, 500);
+        metrics.record_failure();
+
+        assert_eq!(metrics.requests_total.load(Ordering::Relaxed), 2);
+        assert_eq!(metrics.failures_total.load(Ordering::Relaxed), 1);
+        assert!((metrics.success_rate() - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_embedding_metrics_average_latency() {
+        let metrics = EmbeddingMetrics::new();
+        metrics.record_success(1, 384, 1000);
+        metrics.record_success(1, 384, 2000);
+
+        assert!((metrics.average_latency_us() - 1500.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_embedding_metrics_prometheus_format() {
+        let metrics = EmbeddingMetrics::new();
+        metrics.record_success(10, 384, 5000);
+
+        let prometheus = metrics.to_prometheus();
+        assert!(prometheus.contains("stolas_embeddings_total 10"));
+        assert!(prometheus.contains("stolas_embedding_requests_total 1"));
+        assert!(prometheus.contains("stolas_embedding_latency_us_total 5000"));
+        assert!(prometheus.contains("# TYPE stolas_embeddings_total counter"));
+    }
+
+    #[tokio::test]
+    async fn test_metered_embedder_records_metrics() {
+        let mock = Arc::new(MockEmbedder::new(384));
+        let metered = MeteredEmbedder::new(mock);
+
+        // Single embed
+        metered.embed(&["hello"]).await.unwrap();
+        assert_eq!(metered.metrics().requests_total.load(Ordering::Relaxed), 1);
+        assert_eq!(metered.metrics().texts_embedded_total.load(Ordering::Relaxed), 1);
+
+        // Batch embed
+        metered.embed(&["a", "b", "c"]).await.unwrap();
+        assert_eq!(metered.metrics().requests_total.load(Ordering::Relaxed), 2);
+        assert_eq!(metered.metrics().texts_embedded_total.load(Ordering::Relaxed), 4);
+        assert_eq!(metered.metrics().batch_operations.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn test_metered_embedder_shared_metrics() {
+        let metrics = Arc::new(EmbeddingMetrics::new());
+        let mock1 = Arc::new(MockEmbedder::new(384));
+        let mock2 = Arc::new(MockEmbedder::new(384));
+
+        let metered1 = MeteredEmbedder::with_metrics(mock1, metrics.clone());
+        let metered2 = MeteredEmbedder::with_metrics(mock2, metrics.clone());
+
+        metered1.embed(&["hello"]).await.unwrap();
+        metered2.embed(&["world"]).await.unwrap();
+
+        // Both use the same metrics instance
+        assert_eq!(metrics.requests_total.load(Ordering::Relaxed), 2);
+        assert_eq!(metrics.texts_embedded_total.load(Ordering::Relaxed), 2);
     }
 }

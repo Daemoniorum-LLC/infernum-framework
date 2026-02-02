@@ -167,3 +167,198 @@ pub fn show_config() {
     println!("  INFERNUM_SERVER_HOST");
     println!("  INFERNUM_SERVER_PORT");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_config_default() {
+        let config = Config::default();
+
+        assert!(config.default_model.is_none());
+        assert!((config.temperature - 0.7).abs() < 0.001);
+        assert_eq!(config.max_tokens, 256);
+        assert_eq!(config.server_host, "0.0.0.0");
+        assert_eq!(config.server_port, 8080);
+    }
+
+    #[test]
+    fn test_config_serialization() {
+        let config = Config {
+            default_model: Some("llama".to_string()),
+            temperature: 0.5,
+            max_tokens: 1024,
+            server_host: "127.0.0.1".to_string(),
+            server_port: 9090,
+        };
+
+        // Serialize to TOML
+        let toml_str = toml::to_string_pretty(&config).expect("serialize");
+        assert!(toml_str.contains("default_model = \"llama\""));
+        assert!(toml_str.contains("temperature = 0.5"));
+        assert!(toml_str.contains("max_tokens = 1024"));
+        assert!(toml_str.contains("server_host = \"127.0.0.1\""));
+        assert!(toml_str.contains("server_port = 9090"));
+
+        // Deserialize from TOML
+        let parsed: Config = toml::from_str(&toml_str).expect("deserialize");
+        assert_eq!(parsed.default_model, config.default_model);
+        assert!((parsed.temperature - config.temperature).abs() < 0.001);
+        assert_eq!(parsed.max_tokens, config.max_tokens);
+        assert_eq!(parsed.server_host, config.server_host);
+        assert_eq!(parsed.server_port, config.server_port);
+    }
+
+    #[test]
+    fn test_config_partial_toml() {
+        // Test that partial TOML uses defaults for missing fields
+        let toml_str = r#"
+            default_model = "custom-model"
+        "#;
+
+        let config: Config = toml::from_str(toml_str).expect("parse");
+        assert_eq!(config.default_model, Some("custom-model".to_string()));
+        // Other fields should use defaults
+        assert!((config.temperature - 0.7).abs() < 0.001);
+        assert_eq!(config.max_tokens, 256);
+    }
+
+    #[test]
+    fn test_config_path() {
+        let path = Config::config_path();
+        assert!(path.to_string_lossy().contains("infernum"));
+        assert!(path.to_string_lossy().contains("config.toml"));
+    }
+
+    #[test]
+    fn test_config_dir() {
+        let dir = Config::config_dir();
+        assert!(dir.to_string_lossy().contains("infernum"));
+    }
+
+    #[test]
+    fn test_config_save_and_load() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_path = temp.path().join("config.toml");
+
+        let config = Config {
+            default_model: Some("test-model".to_string()),
+            temperature: 0.9,
+            max_tokens: 512,
+            server_host: "localhost".to_string(),
+            server_port: 3000,
+        };
+
+        // Manually save to temp path
+        let toml_str = toml::to_string_pretty(&config).expect("serialize");
+        std::fs::write(&config_path, toml_str).expect("write");
+
+        // Load and verify
+        let content = std::fs::read_to_string(&config_path).expect("read");
+        let loaded: Config = toml::from_str(&content).expect("parse");
+
+        assert_eq!(loaded.default_model, Some("test-model".to_string()));
+        assert!((loaded.temperature - 0.9).abs() < 0.001);
+        assert_eq!(loaded.max_tokens, 512);
+        assert_eq!(loaded.server_host, "localhost");
+        assert_eq!(loaded.server_port, 3000);
+    }
+
+    #[test]
+    fn test_config_clone() {
+        let config = Config {
+            default_model: Some("model".to_string()),
+            temperature: 0.8,
+            max_tokens: 100,
+            server_host: "host".to_string(),
+            server_port: 1234,
+        };
+
+        let cloned = config.clone();
+        assert_eq!(cloned.default_model, config.default_model);
+        assert!((cloned.temperature - config.temperature).abs() < 0.001);
+        assert_eq!(cloned.max_tokens, config.max_tokens);
+        assert_eq!(cloned.server_host, config.server_host);
+        assert_eq!(cloned.server_port, config.server_port);
+    }
+
+    #[test]
+    fn test_config_debug() {
+        let config = Config::default();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("Config"));
+        assert!(debug_str.contains("temperature"));
+        assert!(debug_str.contains("max_tokens"));
+    }
+
+    #[test]
+    fn test_default_functions() {
+        assert!((default_temperature() - 0.7).abs() < 0.001);
+        assert_eq!(default_max_tokens(), 256);
+        assert_eq!(default_host(), "0.0.0.0");
+        assert_eq!(default_port(), 8080);
+    }
+
+    #[test]
+    fn test_config_load_fallback() {
+        // Config::load() should return defaults when config file doesn't exist
+        // This test just verifies it doesn't panic
+        let config = Config::load();
+        // Should have reasonable defaults
+        assert!(config.temperature > 0.0);
+        assert!(config.max_tokens > 0);
+    }
+
+    #[test]
+    fn test_config_empty_model() {
+        let config = Config {
+            default_model: None,
+            ..Default::default()
+        };
+
+        assert!(config.default_model.is_none());
+
+        // Serialize and deserialize - None should be omitted or handled
+        let toml_str = toml::to_string_pretty(&config).expect("serialize");
+        let parsed: Config = toml::from_str(&toml_str).expect("parse");
+        assert!(parsed.default_model.is_none());
+    }
+
+    #[test]
+    fn test_config_json_serialization() {
+        // Also test JSON serialization since Config derives Serialize/Deserialize
+        let config = Config {
+            default_model: Some("gpt-4".to_string()),
+            temperature: 0.3,
+            max_tokens: 2048,
+            server_host: "api.example.com".to_string(),
+            server_port: 443,
+        };
+
+        let json = serde_json::to_string(&config).expect("serialize json");
+        assert!(json.contains("gpt-4"));
+        assert!(json.contains("2048"));
+
+        let parsed: Config = serde_json::from_str(&json).expect("parse json");
+        assert_eq!(parsed.default_model, config.default_model);
+        assert_eq!(parsed.max_tokens, config.max_tokens);
+    }
+
+    #[test]
+    fn test_config_temperature_range() {
+        // Temperature can be any positive float
+        let config = Config {
+            temperature: 1.5,
+            ..Default::default()
+        };
+        assert!((config.temperature - 1.5).abs() < 0.001);
+
+        let config = Config {
+            temperature: 0.0,
+            ..Default::default()
+        };
+        assert!(config.temperature.abs() < 0.001);
+    }
+}

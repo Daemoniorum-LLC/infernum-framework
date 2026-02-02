@@ -239,3 +239,159 @@ impl EmbedRequest {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Role;
+
+    #[test]
+    fn test_prompt_input_from_string() {
+        let input: PromptInput = "Hello, world!".into();
+        match input {
+            PromptInput::Text(s) => assert_eq!(s, "Hello, world!"),
+            _ => panic!("Expected Text variant"),
+        }
+    }
+
+    #[test]
+    fn test_prompt_input_from_messages() {
+        let messages = vec![Message {
+            role: Role::User,
+            content: "Hello".to_string(),
+            name: None,
+            tool_call_id: None,
+        }];
+        let input: PromptInput = messages.clone().into();
+        match input {
+            PromptInput::Messages(msgs) => assert_eq!(msgs.len(), 1),
+            _ => panic!("Expected Messages variant"),
+        }
+    }
+
+    #[test]
+    fn test_generate_request_new() {
+        let req = GenerateRequest::new("Test prompt");
+        match req.prompt {
+            PromptInput::Text(s) => assert_eq!(s, "Test prompt"),
+            _ => panic!("Expected Text prompt"),
+        }
+        assert!(req.model.is_none());
+        assert!(!req.stream);
+        assert_eq!(req.n, 1);
+    }
+
+    #[test]
+    fn test_generate_request_chat() {
+        let messages = vec![
+            Message {
+                role: Role::System,
+                content: "You are helpful".to_string(),
+                name: None,
+                tool_call_id: None,
+            },
+            Message {
+                role: Role::User,
+                content: "Hello".to_string(),
+                name: None,
+                tool_call_id: None,
+            },
+        ];
+        let req = GenerateRequest::chat(messages);
+        match req.prompt {
+            PromptInput::Messages(msgs) => assert_eq!(msgs.len(), 2),
+            _ => panic!("Expected Messages prompt"),
+        }
+    }
+
+    #[test]
+    fn test_generate_request_builder() {
+        let req = GenerateRequest::new("prompt")
+            .with_model("gpt-4")
+            .with_stream()
+            .with_n(3)
+            .with_logprobs(5);
+
+        assert_eq!(req.model.unwrap().to_string(), "gpt-4");
+        assert!(req.stream);
+        assert_eq!(req.n, 3);
+        assert_eq!(req.logprobs, Some(5));
+    }
+
+    #[test]
+    fn test_generate_request_with_sampling() {
+        let sampling = SamplingParams::greedy();
+        let req = GenerateRequest::new("prompt").with_sampling(sampling);
+        assert_eq!(req.sampling.temperature, 0.0);
+    }
+
+    #[test]
+    fn test_embed_input_from_string() {
+        let input: EmbedInput = "text".into();
+        match input {
+            EmbedInput::Single(s) => assert_eq!(s, "text"),
+            _ => panic!("Expected Single variant"),
+        }
+    }
+
+    #[test]
+    fn test_embed_input_from_vec() {
+        let texts = vec!["a".to_string(), "b".to_string()];
+        let input: EmbedInput = texts.into();
+        match input {
+            EmbedInput::Multiple(v) => assert_eq!(v.len(), 2),
+            _ => panic!("Expected Multiple variant"),
+        }
+    }
+
+    #[test]
+    fn test_embed_input_as_texts() {
+        let single: EmbedInput = "single".into();
+        assert_eq!(single.as_texts(), vec!["single"]);
+
+        let multiple: EmbedInput = vec!["a".to_string(), "b".to_string()].into();
+        assert_eq!(multiple.as_texts(), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn test_embed_request_builder() {
+        let req = EmbedRequest::new("text")
+            .with_model("text-embedding-3")
+            .with_encoding_format(EncodingFormat::Base64)
+            .with_dimensions(512);
+
+        assert_eq!(req.model.unwrap().to_string(), "text-embedding-3");
+        assert_eq!(req.encoding_format, EncodingFormat::Base64);
+        assert_eq!(req.dimensions, Some(512));
+    }
+
+    #[test]
+    fn test_encoding_format_default() {
+        let format = EncodingFormat::default();
+        assert_eq!(format, EncodingFormat::Float);
+    }
+
+    #[test]
+    fn test_generate_request_serialization() {
+        let req = GenerateRequest::new("test prompt").with_stream();
+        let json = serde_json::to_string(&req).unwrap();
+        let deserialized: GenerateRequest = serde_json::from_str(&json).unwrap();
+
+        assert!(deserialized.stream);
+        match deserialized.prompt {
+            PromptInput::Text(s) => assert_eq!(s, "test prompt"),
+            _ => panic!("Expected Text prompt"),
+        }
+    }
+
+    #[test]
+    fn test_embed_request_serialization() {
+        let req = EmbedRequest::new("embed this")
+            .with_encoding_format(EncodingFormat::Base64);
+
+        let json = serde_json::to_string(&req).unwrap();
+        let deserialized: EmbedRequest = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.encoding_format, EncodingFormat::Base64);
+    }
+}
