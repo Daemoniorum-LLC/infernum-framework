@@ -99,7 +99,7 @@ fn run_gpu_benchmark(mut ctx: abaddon::GpuHoloContext) {
     // Encode to holotensor format (CPU - one time cost)
     println!("🔄 Encoding to holotensor format (CPU)...");
     let encode_start = Instant::now();
-    let encoder = LrdfEncoder::new(NUM_FRAGMENTS, 42).with_max_rank(MAX_RANK);
+    let encoder = LrdfEncoder::new(NUM_FRAGMENTS).with_max_rank(MAX_RANK);
     let fragments = encoder.encode_2d(&original, rows, cols).expect("Encoding failed");
     let encode_time = encode_start.elapsed();
     println!("   Encoding time: {:?}", encode_time);
@@ -303,7 +303,7 @@ fn run_cpu_benchmark() {
     // Encode
     println!("🔄 Encoding...");
     let encode_start = Instant::now();
-    let encoder = LrdfEncoder::new(NUM_FRAGMENTS, 42).with_max_rank(MAX_RANK);
+    let encoder = LrdfEncoder::new(NUM_FRAGMENTS).with_max_rank(MAX_RANK);
     let fragments = encoder.encode_2d(&original, rows, cols).expect("Encoding failed");
     println!("   Encoding time: {:?}", encode_start.elapsed());
     println!();

@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         use haagenti::holotensor::LrdfEncoder;
 
-        let encoder = LrdfEncoder::new(num_fragments, seed).with_max_rank(max_rank);
+        let encoder = LrdfEncoder::new(num_fragments).with_max_rank(max_rank);
 
         let start = Instant::now();
         let fragments = encoder.encode_2d(&data, rows, cols)?;
@@ -46,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         use cudarc::driver::CudaDevice;
 
         let device = CudaDevice::new(0)?;
-        let encoder = GpuLrdfEncoder::new(device, num_fragments, seed)?
+        let encoder = GpuLrdfEncoder::new(device, num_fragments)?
             .with_max_rank(max_rank);
 
         let start = Instant::now();
@@ -73,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         use cudarc::driver::CudaDevice;
 
         let device = CudaDevice::new(0)?;
-        let encoder = GpuLrdfEncoder::new(device, num_fragments, seed)?
+        let encoder = GpuLrdfEncoder::new(device, num_fragments)?
             .with_max_rank(max_rank);
 
         let gpu_fragments = encoder.encode_2d(&data, rows, cols)?;

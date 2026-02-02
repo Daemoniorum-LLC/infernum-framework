@@ -150,7 +150,7 @@ fn test_gpu_lrdf_reconstruction() {
         .collect();
 
     // Encode with LRDF
-    let encoder = LrdfEncoder::new(8, 42).with_max_rank(32);
+    let encoder = LrdfEncoder::new(8).with_max_rank(32);
     let fragments = encoder.encode_2d(&data, rows, cols).expect("encode");
 
     assert_eq!(fragments.len(), 8);
@@ -185,7 +185,7 @@ fn test_gpu_lrdf_progressive() {
         .map(|i| ((i as f32) * 0.003).sin() * ((i as f32) * 0.007).cos())
         .collect();
 
-    let encoder = LrdfEncoder::new(16, 42).with_max_rank(64);
+    let encoder = LrdfEncoder::new(16).with_max_rank(64);
     let fragments = encoder.encode_2d(&data, rows, cols).expect("encode");
 
     // Test progressive loading: reconstruct with increasing fragments
@@ -320,7 +320,7 @@ fn test_gpu_faster_than_cpu() {
         .map(|i| ((i as f32) * 0.0001).sin())
         .collect();
 
-    let encoder = LrdfEncoder::new(32, 42).with_max_rank(128);
+    let encoder = LrdfEncoder::new(32).with_max_rank(128);
     let fragments = encoder.encode_2d(&data, rows, cols).expect("encode");
 
     // Warm up
@@ -433,7 +433,7 @@ fn test_gpu_fallback_to_cpu() {
     let cols = 64;
     let data: Vec<f32> = (0..rows * cols).map(|i| (i as f32) * 0.01).collect();
 
-    let encoder = LrdfEncoder::new(8, 42);
+    let encoder = LrdfEncoder::new(8);
     let fragments = encoder.encode_2d(&data, rows, cols).expect("encode");
 
     // CPU decoder should work
@@ -463,7 +463,7 @@ fn test_automatic_gpu_cpu_selection() {
     let cols = 256;
     let data: Vec<f32> = (0..rows * cols).map(|i| (i as f32 * 0.001).sin()).collect();
 
-    let encoder = LrdfEncoder::new(16, 42);
+    let encoder = LrdfEncoder::new(16);
     let fragments = encoder.encode_2d(&data, rows, cols).expect("encode");
 
     // Reconstruct using the loader (should auto-select GPU or CPU)
@@ -509,7 +509,7 @@ fn test_tiered_loader_gpu_integration() {
     let loader = TieredHoloLoader::new(config);
 
     // Create multiple tensors to test GPU batching
-    let encoder = LrdfEncoder::new(16, 42);
+    let encoder = LrdfEncoder::new(16);
     let mut all_fragments = Vec::new();
 
     for i in 0..4 {

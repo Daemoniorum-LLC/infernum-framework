@@ -66,7 +66,7 @@ fn benchmark_quality_curve() {
              rows, cols, (rows * cols * 4) as f64 / 1024.0 / 1024.0);
 
     // Encode
-    let encoder = LrdfEncoder::new(NUM_FRAGMENTS, 42).with_max_rank(MAX_RANK);
+    let encoder = LrdfEncoder::new(NUM_FRAGMENTS).with_max_rank(MAX_RANK);
     let start = Instant::now();
     let fragments = encoder.encode_2d(&original, rows, cols).unwrap();
     let encode_time = start.elapsed();
@@ -130,7 +130,7 @@ fn benchmark_encoding_speed() {
         let size_mb = (rows * cols * 4) as f64 / 1024.0 / 1024.0;
         total_size += rows * cols * 4;
 
-        let encoder = LrdfEncoder::new(NUM_FRAGMENTS, 42).with_max_rank(MAX_RANK);
+        let encoder = LrdfEncoder::new(NUM_FRAGMENTS).with_max_rank(MAX_RANK);
 
         let start = Instant::now();
         let _ = encoder.encode_2d(&data, rows, cols).unwrap();
@@ -165,7 +165,7 @@ fn benchmark_reconstruction_speed() {
     let cols = HIDDEN_SIZE;
     let original = create_realistic_weights(rows, cols, 42);
 
-    let encoder = LrdfEncoder::new(NUM_FRAGMENTS, 42).with_max_rank(MAX_RANK);
+    let encoder = LrdfEncoder::new(NUM_FRAGMENTS).with_max_rank(MAX_RANK);
     let fragments = encoder.encode_2d(&original, rows, cols).unwrap();
 
     println!("   Testing reconstruction at different quality levels...");

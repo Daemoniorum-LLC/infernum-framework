@@ -1254,7 +1254,7 @@ impl HoloModelConverter {
             let mut last_file_idx = usize::MAX;
 
             // Create CPU encoder for fallback/small tensors
-            let cpu_encoder = LrdfEncoder::new(config_consumer.num_fragments, config_consumer.seed)
+            let cpu_encoder = LrdfEncoder::new(config_consumer.num_fragments)
                 .with_max_rank(config_consumer.max_rank);
 
             while let Ok(item) = work_rx.recv() {
