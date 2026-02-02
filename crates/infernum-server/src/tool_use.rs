@@ -1299,6 +1299,159 @@ impl StreamingToolDetector {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// AGENT-CENTRIC SSE EVENTS
+// See INFERNUM-SPEC.md §10 for protocol specification
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Agent-centric SSE event types.
+///
+/// Designed for AI agent consumption - complete, typed, immediately parseable.
+/// NOT OpenAI format. See INFERNUM-SPEC.md §10 for rationale.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SseEvent {
+    /// Streamed text content.
+    Text {
+        /// The text content chunk.
+        content: String,
+    },
+
+    /// Complete tool call (buffered, not partial).
+    ToolCall {
+        /// Unique identifier for this tool call.
+        id: String,
+        /// Name of the function to call.
+        name: String,
+        /// Parsed JSON arguments.
+        arguments: serde_json::Value,
+    },
+
+    /// Error during streaming.
+    Error {
+        /// Error code (e.g., "rate_limit", "context_length").
+        code: String,
+        /// Human-readable error message.
+        message: String,
+        /// Optional additional error details.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        details: Option<serde_json::Value>,
+    },
+
+    /// Stream complete.
+    Done {
+        /// Reason for completion: "stop", "tool_calls", "length", "error".
+        finish_reason: String,
+        /// Token usage statistics.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        usage: Option<SseUsage>,
+    },
+}
+
+/// Token usage for SSE done event.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SseUsage {
+    /// Number of tokens in the prompt.
+    pub prompt_tokens: u32,
+    /// Number of tokens in the completion.
+    pub completion_tokens: u32,
+    /// Total tokens used (prompt + completion).
+    pub total_tokens: u32,
+}
+
+impl SseEvent {
+    /// Create a text event.
+    #[must_use]
+    pub fn text(content: impl Into<String>) -> Self {
+        Self::Text {
+            content: content.into(),
+        }
+    }
+
+    /// Create a tool call event from a DetectedToolCall.
+    #[must_use]
+    pub fn tool_call(call: &DetectedToolCall) -> Self {
+        // Parse arguments as JSON, fall back to raw string if invalid
+        let arguments = serde_json::from_str(&call.arguments)
+            .unwrap_or_else(|_| serde_json::Value::String(call.arguments.clone()));
+
+        Self::ToolCall {
+            id: call.id.clone(),
+            name: call.name.clone(),
+            arguments,
+        }
+    }
+
+    /// Create an error event.
+    #[must_use]
+    pub fn error(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::Error {
+            code: code.into(),
+            message: message.into(),
+            details: None,
+        }
+    }
+
+    /// Create an error event with details.
+    #[must_use]
+    pub fn error_with_details(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        details: serde_json::Value,
+    ) -> Self {
+        Self::Error {
+            code: code.into(),
+            message: message.into(),
+            details: Some(details),
+        }
+    }
+
+    /// Create a done event.
+    #[must_use]
+    pub fn done(finish_reason: impl Into<String>) -> Self {
+        Self::Done {
+            finish_reason: finish_reason.into(),
+            usage: None,
+        }
+    }
+
+    /// Create a done event with usage stats.
+    #[must_use]
+    pub fn done_with_usage(
+        finish_reason: impl Into<String>,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+    ) -> Self {
+        Self::Done {
+            finish_reason: finish_reason.into(),
+            usage: Some(SseUsage {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens: prompt_tokens + completion_tokens,
+            }),
+        }
+    }
+
+    /// Serialize to JSON string for SSE data field.
+    #[must_use]
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_else(|_| {
+            r#"{"type":"error","code":"serialization_error","message":"Failed to serialize event"}"#.to_string()
+        })
+    }
+}
+
+/// Convert ToolDetectionEvent to SseEvent.
+impl From<ToolDetectionEvent> for Option<SseEvent> {
+    fn from(event: ToolDetectionEvent) -> Self {
+        match event {
+            ToolDetectionEvent::Text(content) => Some(SseEvent::text(content)),
+            ToolDetectionEvent::ToolCall(call) => Some(SseEvent::tool_call(&call)),
+            ToolDetectionEvent::Buffering => None, // Skip buffering events
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2617,6 +2770,282 @@ More text after."#;
                     assert_eq!(args["a"]["b"]["c"]["d"], "deep");
                 }
                 other => panic!("Expected ToolCall, got {:?}", other),
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // AGENT-CENTRIC SSE EVENT TESTS
+    // See INFERNUM-SPEC.md §10 for protocol specification
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    mod sse_events {
+        use super::*;
+
+        // ─────────────────────────────────────────────────────────────────────────
+        // JSON serialization format tests
+        // ─────────────────────────────────────────────────────────────────────────
+
+        #[test]
+        fn test_text_event_json_format() {
+            let event = SseEvent::text("Hello world");
+            let json = event.to_json();
+            let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+            assert_eq!(parsed["type"], "text");
+            assert_eq!(parsed["content"], "Hello world");
+            // Should NOT have other fields
+            assert!(parsed.get("id").is_none());
+            assert!(parsed.get("name").is_none());
+        }
+
+        #[test]
+        fn test_tool_call_event_json_format() {
+            let call = DetectedToolCall {
+                id: "call_abc123".to_string(),
+                name: "get_weather".to_string(),
+                arguments: r#"{"location":"NYC","units":"celsius"}"#.to_string(),
+            };
+            let event = SseEvent::tool_call(&call);
+            let json = event.to_json();
+            let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+            assert_eq!(parsed["type"], "tool_call");
+            assert_eq!(parsed["id"], "call_abc123");
+            assert_eq!(parsed["name"], "get_weather");
+            assert_eq!(parsed["arguments"]["location"], "NYC");
+            assert_eq!(parsed["arguments"]["units"], "celsius");
+        }
+
+        #[test]
+        fn test_error_event_json_format() {
+            let event = SseEvent::error("rate_limit", "Too many requests");
+            let json = event.to_json();
+            let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+            assert_eq!(parsed["type"], "error");
+            assert_eq!(parsed["code"], "rate_limit");
+            assert_eq!(parsed["message"], "Too many requests");
+            // details should be absent (not null)
+            assert!(parsed.get("details").is_none());
+        }
+
+        #[test]
+        fn test_error_event_with_details_json_format() {
+            let event = SseEvent::error_with_details(
+                "validation_error",
+                "Invalid arguments",
+                json!({"field": "location", "reason": "required"}),
+            );
+            let json = event.to_json();
+            let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+            assert_eq!(parsed["type"], "error");
+            assert_eq!(parsed["details"]["field"], "location");
+        }
+
+        #[test]
+        fn test_done_event_json_format() {
+            let event = SseEvent::done("stop");
+            let json = event.to_json();
+            let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+            assert_eq!(parsed["type"], "done");
+            assert_eq!(parsed["finish_reason"], "stop");
+            // usage should be absent (not null)
+            assert!(parsed.get("usage").is_none());
+        }
+
+        #[test]
+        fn test_done_event_with_usage_json_format() {
+            let event = SseEvent::done_with_usage("tool_calls", 42, 18);
+            let json = event.to_json();
+            let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+            assert_eq!(parsed["type"], "done");
+            assert_eq!(parsed["finish_reason"], "tool_calls");
+            assert_eq!(parsed["usage"]["prompt_tokens"], 42);
+            assert_eq!(parsed["usage"]["completion_tokens"], 18);
+            assert_eq!(parsed["usage"]["total_tokens"], 60);
+        }
+
+        // ─────────────────────────────────────────────────────────────────────────
+        // Deserialization tests (agents parsing our events)
+        // ─────────────────────────────────────────────────────────────────────────
+
+        #[test]
+        fn test_deserialize_text_event() {
+            let json = r#"{"type":"text","content":"Hello"}"#;
+            let event: SseEvent = serde_json::from_str(json).unwrap();
+
+            match event {
+                SseEvent::Text { content } => assert_eq!(content, "Hello"),
+                other => panic!("Expected Text, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn test_deserialize_tool_call_event() {
+            let json = r#"{"type":"tool_call","id":"call_123","name":"test","arguments":{"x":1}}"#;
+            let event: SseEvent = serde_json::from_str(json).unwrap();
+
+            match event {
+                SseEvent::ToolCall { id, name, arguments } => {
+                    assert_eq!(id, "call_123");
+                    assert_eq!(name, "test");
+                    assert_eq!(arguments["x"], 1);
+                }
+                other => panic!("Expected ToolCall, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn test_deserialize_done_event() {
+            let json = r#"{"type":"done","finish_reason":"stop"}"#;
+            let event: SseEvent = serde_json::from_str(json).unwrap();
+
+            match event {
+                SseEvent::Done { finish_reason, usage } => {
+                    assert_eq!(finish_reason, "stop");
+                    assert!(usage.is_none());
+                }
+                other => panic!("Expected Done, got {:?}", other),
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────────
+        // Conversion from ToolDetectionEvent
+        // ─────────────────────────────────────────────────────────────────────────
+
+        #[test]
+        fn test_convert_text_detection_to_sse() {
+            let detection = ToolDetectionEvent::Text("Hello".to_string());
+            let sse: Option<SseEvent> = detection.into();
+
+            assert!(sse.is_some());
+            match sse.unwrap() {
+                SseEvent::Text { content } => assert_eq!(content, "Hello"),
+                other => panic!("Expected Text, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn test_convert_tool_call_detection_to_sse() {
+            let call = DetectedToolCall {
+                id: "call_xyz".to_string(),
+                name: "my_tool".to_string(),
+                arguments: r#"{"a":1}"#.to_string(),
+            };
+            let detection = ToolDetectionEvent::ToolCall(call);
+            let sse: Option<SseEvent> = detection.into();
+
+            assert!(sse.is_some());
+            match sse.unwrap() {
+                SseEvent::ToolCall { id, name, arguments } => {
+                    assert_eq!(id, "call_xyz");
+                    assert_eq!(name, "my_tool");
+                    assert_eq!(arguments["a"], 1);
+                }
+                other => panic!("Expected ToolCall, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn test_convert_buffering_detection_to_sse() {
+            let detection = ToolDetectionEvent::Buffering;
+            let sse: Option<SseEvent> = detection.into();
+
+            // Buffering events should be skipped (None)
+            assert!(sse.is_none());
+        }
+
+        // ─────────────────────────────────────────────────────────────────────────
+        // Integration: StreamingToolDetector -> SseEvent stream
+        // ─────────────────────────────────────────────────────────────────────────
+
+        #[test]
+        fn test_detector_to_sse_stream_text_only() {
+            let mut detector = StreamingToolDetector::new(ModelFamily::Qwen);
+            let events = detector.process_chunk("Hello world");
+
+            let sse_events: Vec<SseEvent> = events
+                .into_iter()
+                .filter_map(|e| e.into())
+                .collect();
+
+            assert_eq!(sse_events.len(), 1);
+            let json = sse_events[0].to_json();
+            assert!(json.contains(r#""type":"text""#));
+            assert!(json.contains(r#""content":"Hello world""#));
+        }
+
+        #[test]
+        fn test_detector_to_sse_stream_with_tool_call() {
+            let mut detector = StreamingToolDetector::new(ModelFamily::Qwen);
+            let chunk = r#"Let me help<tool_call>
+{"name": "search", "arguments": {"query": "rust"}}
+</tool_call>"#;
+
+            let events = detector.process_chunk(chunk);
+            let sse_events: Vec<SseEvent> = events
+                .into_iter()
+                .filter_map(|e| e.into())
+                .collect();
+
+            assert_eq!(sse_events.len(), 2);
+
+            // First: text
+            match &sse_events[0] {
+                SseEvent::Text { content } => assert_eq!(content, "Let me help"),
+                other => panic!("Expected Text, got {:?}", other),
+            }
+
+            // Second: tool call
+            match &sse_events[1] {
+                SseEvent::ToolCall { name, arguments, .. } => {
+                    assert_eq!(name, "search");
+                    assert_eq!(arguments["query"], "rust");
+                }
+                other => panic!("Expected ToolCall, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn test_full_streaming_session_to_sse() {
+            let mut detector = StreamingToolDetector::new(ModelFamily::Qwen);
+            let mut all_sse: Vec<SseEvent> = Vec::new();
+
+            // Simulate streaming chunks
+            let chunks = vec![
+                "I'll check ",
+                "the weather",
+                "<tool_call>",
+                r#"{"name": "get_weather", "arguments": {"location": "NYC"}}"#,
+                "</tool_call>",
+                " for you.",
+            ];
+
+            for chunk in chunks {
+                let events = detector.process_chunk(chunk);
+                all_sse.extend(events.into_iter().filter_map(|e| e.into()));
+            }
+            all_sse.extend(detector.finish().into_iter().filter_map(|e| e.into()));
+
+            // Should have text events and a tool call
+            let text_count = all_sse.iter().filter(|e| matches!(e, SseEvent::Text { .. })).count();
+            let tool_count = all_sse.iter().filter(|e| matches!(e, SseEvent::ToolCall { .. })).count();
+
+            assert!(text_count >= 1, "Should have text events");
+            assert_eq!(tool_count, 1, "Should have exactly one tool call");
+
+            // Verify the tool call is correct
+            let tool_event = all_sse.iter().find(|e| matches!(e, SseEvent::ToolCall { .. })).unwrap();
+            match tool_event {
+                SseEvent::ToolCall { name, arguments, .. } => {
+                    assert_eq!(name, "get_weather");
+                    assert_eq!(arguments["location"], "NYC");
+                }
+                _ => unreachable!(),
             }
         }
     }

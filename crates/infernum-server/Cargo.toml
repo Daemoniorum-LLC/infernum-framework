@@ -62,6 +62,16 @@ sha2 = "0.10"
 hex = "0.4"
 subtle = "2.5"
 
+# Audit chain (Phase 4 - agent accountability)
+moloch-core = { workspace = true }
+moloch-holocrypt = { workspace = true }
+
+# Cryptography (Phase 4 - secure identity storage)
+arcanum-symmetric = { workspace = true }
+arcanum-hash = { workspace = true }
+arcanum-core = { workspace = true }
+rand = { workspace = true }
+
 # Configuration hot reload
 notify = { version = "8", default-features = false, features = ["fsevent-sys", "macos_fsevent"] }
 

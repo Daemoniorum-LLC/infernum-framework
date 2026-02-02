@@ -48,8 +48,8 @@ use crate::openai::{
 use crate::tool_use::{
     format_tools_for_prompt, get_forced_tool, process_model_output, should_include_tools,
     validate_tool_exists, ModelFamily,
-    // TODO(#streaming-tools): Integrate StreamingToolDetector for streaming tool call detection
-    // StreamingToolDetector, ToolDetectionEvent,
+    // Agent-centric streaming tool detection (Phase 3)
+    StreamingToolDetector, SseEvent,
 };
 
 /// Default server address.
@@ -1609,52 +1609,71 @@ async fn chat_completions(
             Ok(token_stream) => {
                 let model_name = engine.model_info().id.to_string();
 
-                // TODO(#streaming-tools): Integrate StreamingToolDetector here
-                // Agent-centric streaming format (not OpenAI - see INFERNUM-SPEC.md §10)
-                //
-                // Integration plan:
-                // 1. Create detector: let detector = Arc::new(Mutex::new(StreamingToolDetector::new(model_family)));
-                // 2. Change map() to flat_map() to emit multiple SSE events per chunk
-                // 3. For each chunk, process through detector:
-                //    - ToolDetectionEvent::Text(text)     -> {"type":"text","content":"..."}
-                //    - ToolDetectionEvent::ToolCall(call) -> {"type":"tool_call","id":"...","name":"...","arguments":{...}}
-                //    - ToolDetectionEvent::Buffering      -> skip (waiting for more data)
-                // 4. On stream end, call detector.finish() to flush remaining buffer
-                // 5. Final event: {"type":"done","finish_reason":"...","usage":{...}}
+                // Agent-centric streaming format (INFERNUM-SPEC.md §10)
+                // Complete, typed events - no partial JSON accumulation required by agents
+                let model_family = ModelFamily::from_model_name(&model_name);
+                let detector = std::sync::Arc::new(parking_lot::Mutex::new(
+                    StreamingToolDetector::new(model_family)
+                ));
 
-                let sse_stream = token_stream.map(move |chunk_result| {
-                    match chunk_result {
+                let sse_stream = token_stream.flat_map(move |chunk_result| {
+                    let events: Vec<std::result::Result<axum::response::sse::Event, std::convert::Infallible>> = match chunk_result {
                         Ok(chunk) => {
-                            let data = serde_json::json!({
-                                "id": request_id,
-                                "object": "chat.completion.chunk",
-                                "created": chrono::Utc::now().timestamp(),
-                                "model": model_name,
-                                "choices": [{
-                                    "index": 0,
-                                    "delta": {
-                                        "content": chunk.choices.first().map(|c| c.delta.content.as_deref().unwrap_or("")).unwrap_or("")
-                                    },
-                                    "finish_reason": chunk.choices.first().and_then(|c| c.finish_reason.as_ref().map(|r| format!("{:?}", r).to_lowercase()))
-                                }]
-                            });
-                            let json_str = serde_json::to_string(&data)
-                                .unwrap_or_else(|_| r#"{"error":"serialization_failed"}"#.to_string());
-                            Ok::<_, std::convert::Infallible>(axum::response::sse::Event::default().data(json_str))
+                            // Extract content from chunk
+                            let content = chunk.choices.first()
+                                .and_then(|c| c.delta.content.as_deref())
+                                .unwrap_or("");
+                            let finish_reason = chunk.choices.first()
+                                .and_then(|c| c.finish_reason.as_ref());
+
+                            let mut result_events = Vec::new();
+
+                            // Process through detector
+                            if !content.is_empty() {
+                                let detection_events = detector.lock().process_chunk(content);
+                                for event in detection_events {
+                                    if let Some(sse_event) = Option::<SseEvent>::from(event) {
+                                        let json_str = sse_event.to_json();
+                                        result_events.push(Ok(axum::response::sse::Event::default().data(json_str)));
+                                    }
+                                }
+                            }
+
+                            // Handle stream end - flush buffer and emit done event
+                            if finish_reason.is_some() {
+                                // Flush any remaining buffer
+                                let remaining = detector.lock().finish();
+                                for event in remaining {
+                                    if let Some(sse_event) = Option::<SseEvent>::from(event) {
+                                        let json_str = sse_event.to_json();
+                                        result_events.push(Ok(axum::response::sse::Event::default().data(json_str)));
+                                    }
+                                }
+
+                                // Emit done event
+                                let reason = match finish_reason {
+                                    Some(r) => format!("{:?}", r).to_lowercase(),
+                                    None => "stop".to_string(),
+                                };
+                                let done_event = if let Some(u) = &chunk.usage {
+                                    SseEvent::done_with_usage(&reason, u.prompt_tokens, u.completion_tokens)
+                                } else {
+                                    SseEvent::done(&reason)
+                                };
+                                let json_str = done_event.to_json();
+                                result_events.push(Ok(axum::response::sse::Event::default().data(json_str)));
+                            }
+
+                            result_events
                         }
                         Err(e) => {
                             state_clone.failed_requests.fetch_add(1, Ordering::Relaxed);
-                            let data = serde_json::json!({
-                                "error": {
-                                    "message": e.to_string(),
-                                    "type": "server_error"
-                                }
-                            });
-                            let json_str = serde_json::to_string(&data)
-                                .unwrap_or_else(|_| r#"{"error":"serialization_failed"}"#.to_string());
-                            Ok(axum::response::sse::Event::default().data(json_str))
+                            let error_event = SseEvent::error("server_error", e.to_string());
+                            let json_str = error_event.to_json();
+                            vec![Ok(axum::response::sse::Event::default().data(json_str))]
                         }
-                    }
+                    };
+                    futures::stream::iter(events)
                 });
 
                 Sse::new(sse_stream)
@@ -2421,7 +2440,7 @@ mod tests {
             .max_concurrent_requests(32)
             .build();
 
-        assert_eq!(config.addr, "127.0.0.1:3000".parse().unwrap());
+        assert_eq!(config.addr, "127.0.0.1:3000".parse::<std::net::SocketAddr>().unwrap());
         assert!(!config.cors);
         assert_eq!(config.model, Some("test-model".to_string()));
         assert_eq!(config.queue.max_concurrent_requests, 32);

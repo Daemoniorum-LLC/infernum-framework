@@ -123,6 +123,8 @@ pub mod model_cache;
 pub mod wellbeing_intervention;
 pub mod request_batcher;
 pub mod tool_use;
+pub mod agent_identity;
+pub mod audit_client;
 
 pub use admin::{
     AdminError, AdminModelInfo, LoadModelRequest, LoadModelResponse, ModelLoadOptions,
@@ -255,6 +257,8 @@ pub use tool_use::{
     StreamingExtractResult,
     // Phase 3: Streaming detector (high-level stateful)
     StreamingToolDetector, ToolDetectionEvent,
+    // Phase 3: Agent-centric SSE events
+    SseEvent, SseUsage,
     // Phase 3: Parallel tool calls
     enforce_parallel_tool_calls, process_model_output_with_options, ProcessingOptions,
     // Phase 3: Strict mode validation
@@ -263,4 +267,16 @@ pub use tool_use::{
     extract_json_object,
     // Phase 3: Unknown tool validation
     validate_detected_calls, DetectedCallsValidation,
+};
+pub use agent_identity::{
+    AgentIdentity, AgentIdentityError, AgentIdentityExport,
+    EncryptedIdentity, EncryptedIdentityStore,
+};
+pub use audit_client::{
+    AuditClient, AuditClientConfig, AuditClientError,
+    SubmitEventRequest, SubmitEventResponse,
+    // HoloCrypt re-exports
+    EncryptedEvent, EncryptedEventBuilder, EncryptionPolicy, FieldVisibility,
+    EventSealingKey, EventOpeningKey, generate_encryption_keypair,
+    policies as encryption_policies,
 };
