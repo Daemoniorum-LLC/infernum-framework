@@ -136,8 +136,8 @@ pub fn format_tools_for_prompt(tools: &[Tool], model_family: ModelFamily) -> Str
 
     match model_family {
         ModelFamily::Qwen | ModelFamily::Unknown => format_tools_qwen(tools),
-        ModelFamily::Llama => format_tools_qwen(tools), // TODO: Llama-specific format
-        ModelFamily::Mistral => format_tools_qwen(tools), // TODO: Mistral-specific format
+        ModelFamily::Llama => format_tools_llama(tools),
+        ModelFamily::Mistral => format_tools_mistral(tools),
     }
 }
 
@@ -193,6 +193,60 @@ fn format_tools_qwen(tools: &[Tool]) -> String {
     result
 }
 
+/// Format tools in Llama 3 style.
+///
+/// Llama 3 uses a JSON-based function calling format with `<|python_tag|>` for tool calls.
+fn format_tools_llama(tools: &[Tool]) -> String {
+    let mut result = String::from("\n\nYou have access to the following functions:\n\n");
+
+    for tool in tools {
+        // Build JSON schema for the function
+        let func_json = serde_json::json!({
+            "name": tool.function.name,
+            "description": tool.function.description,
+            "parameters": tool.function.parameters
+        });
+
+        result.push_str(&serde_json::to_string_pretty(&func_json).unwrap_or_default());
+        result.push_str("\n\n");
+    }
+
+    result.push_str("To call a function, respond with a JSON object in the following format:\n");
+    result.push_str("<|python_tag|>{\"name\": \"function_name\", \"arguments\": {\"arg1\": \"value1\"}}\n");
+    result.push_str("\nOnly call functions when necessary to answer the user's request.\n");
+
+    result
+}
+
+/// Format tools in Mistral style.
+///
+/// Mistral uses `[AVAILABLE_TOOLS]` for defining tools and `[TOOL_CALLS]` for responses.
+fn format_tools_mistral(tools: &[Tool]) -> String {
+    let mut result = String::from("\n\n[AVAILABLE_TOOLS]\n");
+
+    // Format tools as JSON array
+    let tools_json: Vec<serde_json::Value> = tools
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": t.function.name,
+                    "description": t.function.description,
+                    "parameters": t.function.parameters
+                }
+            })
+        })
+        .collect();
+
+    result.push_str(&serde_json::to_string(&tools_json).unwrap_or_default());
+    result.push_str("\n[/AVAILABLE_TOOLS]\n\n");
+    result.push_str("When you need to call a tool, respond with:\n");
+    result.push_str("[TOOL_CALLS] [{\"name\": \"function_name\", \"arguments\": {\"arg1\": \"value1\"}}]\n");
+
+    result
+}
+
 /// Detect tool calls in model output.
 ///
 /// Parses the model output for tool call patterns based on the model family.
@@ -207,8 +261,8 @@ fn format_tools_qwen(tools: &[Tool]) -> String {
 pub fn detect_tool_calls(output: &str, model_family: ModelFamily) -> Vec<DetectedToolCall> {
     match model_family {
         ModelFamily::Qwen | ModelFamily::Unknown => detect_tool_calls_qwen(output),
-        ModelFamily::Llama => detect_tool_calls_qwen(output), // TODO: Llama-specific detection
-        ModelFamily::Mistral => detect_tool_calls_qwen(output), // TODO: Mistral-specific detection
+        ModelFamily::Llama => detect_tool_calls_llama(output),
+        ModelFamily::Mistral => detect_tool_calls_mistral(output),
     }
 }
 
@@ -242,6 +296,84 @@ struct ToolCallJson {
     arguments: serde_json::Value,
 }
 
+/// Static regex for Llama python_tag detection.
+static LLAMA_TOOL_CALL_REGEX: OnceLock<Regex> = OnceLock::new();
+
+fn get_llama_tool_call_regex() -> &'static Regex {
+    LLAMA_TOOL_CALL_REGEX.get_or_init(|| {
+        // Match JSON object after <|python_tag|>, allowing nested braces
+        Regex::new(r#"<\|python_tag\|>\s*(\{(?:[^{}]|\{[^{}]*\})*\})"#)
+            .expect("invalid llama tool_call regex")
+    })
+}
+
+/// Detect Llama-style tool calls using `<|python_tag|>` markers.
+fn detect_tool_calls_llama(output: &str) -> Vec<DetectedToolCall> {
+    let re = get_llama_tool_call_regex();
+    let mut calls = Vec::new();
+
+    for cap in re.captures_iter(output) {
+        if let Some(json_match) = cap.get(1) {
+            let json_str = json_match.as_str();
+            if let Ok(parsed) = serde_json::from_str::<ToolCallJson>(json_str) {
+                let id = format!("call_{}", Uuid::new_v4().simple());
+                calls.push(DetectedToolCall {
+                    id,
+                    name: parsed.name,
+                    arguments: serde_json::to_string(&parsed.arguments).unwrap_or_default(),
+                });
+            }
+        }
+    }
+
+    // Fallback: also check for Qwen-style tags (models sometimes use both)
+    if calls.is_empty() {
+        calls = detect_tool_calls_qwen(output);
+    }
+
+    calls
+}
+
+/// Static regex for Mistral TOOL_CALLS detection.
+static MISTRAL_TOOL_CALL_REGEX: OnceLock<Regex> = OnceLock::new();
+
+fn get_mistral_tool_call_regex() -> &'static Regex {
+    MISTRAL_TOOL_CALL_REGEX.get_or_init(|| {
+        Regex::new(r#"\[TOOL_CALLS\]\s*\[([^\]]+)\]"#)
+            .expect("invalid mistral tool_call regex")
+    })
+}
+
+/// Detect Mistral-style tool calls using `[TOOL_CALLS]` markers.
+fn detect_tool_calls_mistral(output: &str) -> Vec<DetectedToolCall> {
+    let re = get_mistral_tool_call_regex();
+    let mut calls = Vec::new();
+
+    for cap in re.captures_iter(output) {
+        if let Some(json_match) = cap.get(1) {
+            // Mistral wraps the calls in an array, so we need to parse it
+            let json_str = format!("[{}]", json_match.as_str());
+            if let Ok(parsed) = serde_json::from_str::<Vec<ToolCallJson>>(&json_str) {
+                for tool_call in parsed {
+                    let id = format!("call_{}", Uuid::new_v4().simple());
+                    calls.push(DetectedToolCall {
+                        id,
+                        name: tool_call.name,
+                        arguments: serde_json::to_string(&tool_call.arguments).unwrap_or_default(),
+                    });
+                }
+            }
+        }
+    }
+
+    // Fallback: also check for Qwen-style tags
+    if calls.is_empty() {
+        calls = detect_tool_calls_qwen(output);
+    }
+
+    calls
+}
+
 /// Extract text content from model output, removing tool call sections.
 ///
 /// # Arguments
@@ -254,8 +386,8 @@ struct ToolCallJson {
 pub fn extract_text_content(output: &str, model_family: ModelFamily) -> Option<String> {
     match model_family {
         ModelFamily::Qwen | ModelFamily::Unknown => extract_text_content_qwen(output),
-        ModelFamily::Llama => extract_text_content_qwen(output), // TODO
-        ModelFamily::Mistral => extract_text_content_qwen(output), // TODO
+        ModelFamily::Llama => extract_text_content_llama(output),
+        ModelFamily::Mistral => extract_text_content_mistral(output),
     }
 }
 
@@ -263,6 +395,59 @@ pub fn extract_text_content(output: &str, model_family: ModelFamily) -> Option<S
 fn extract_text_content_qwen(output: &str) -> Option<String> {
     let re = get_tool_call_extract_regex();
     let cleaned = re.replace_all(output, "");
+    let trimmed = cleaned.trim();
+
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// Static regex for Llama text extraction.
+static LLAMA_EXTRACT_REGEX: OnceLock<Regex> = OnceLock::new();
+
+fn get_llama_extract_regex() -> &'static Regex {
+    LLAMA_EXTRACT_REGEX.get_or_init(|| {
+        // Match <|python_tag|> followed by JSON object with nested braces
+        Regex::new(r#"<\|python_tag\|>\s*\{(?:[^{}]|\{[^{}]*\})*\}"#)
+            .expect("invalid llama extract regex")
+    })
+}
+
+/// Extract text content for Llama format.
+fn extract_text_content_llama(output: &str) -> Option<String> {
+    let re = get_llama_extract_regex();
+    let cleaned = re.replace_all(output, "");
+    // Also remove Qwen-style tags as fallback
+    let qwen_re = get_tool_call_extract_regex();
+    let cleaned = qwen_re.replace_all(&cleaned, "");
+    let trimmed = cleaned.trim();
+
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// Static regex for Mistral text extraction.
+static MISTRAL_EXTRACT_REGEX: OnceLock<Regex> = OnceLock::new();
+
+fn get_mistral_extract_regex() -> &'static Regex {
+    MISTRAL_EXTRACT_REGEX.get_or_init(|| {
+        Regex::new(r#"\[TOOL_CALLS\]\s*\[[^\]]+\]"#)
+            .expect("invalid mistral extract regex")
+    })
+}
+
+/// Extract text content for Mistral format.
+fn extract_text_content_mistral(output: &str) -> Option<String> {
+    let re = get_mistral_extract_regex();
+    let cleaned = re.replace_all(output, "");
+    // Also remove Qwen-style tags as fallback
+    let qwen_re = get_tool_call_extract_regex();
+    let cleaned = qwen_re.replace_all(&cleaned, "");
     let trimmed = cleaned.trim();
 
     if trimmed.is_empty() {
@@ -681,5 +866,131 @@ More text after."#;
             },
         });
         assert_eq!(get_forced_tool(Some(&choice)), Some("get_weather"));
+    }
+
+    // === Llama Format Tests ===
+
+    #[test]
+    fn test_format_single_tool_llama() {
+        let tool = make_tool(
+            "get_weather",
+            "Get current weather for a location",
+            json!({
+                "type": "object",
+                "properties": {
+                    "location": {"type": "string", "description": "City name"}
+                },
+                "required": ["location"]
+            }),
+        );
+
+        let result = format_tools_for_prompt(&[tool], ModelFamily::Llama);
+
+        assert!(result.contains("get_weather"));
+        assert!(result.contains("Get current weather"));
+        assert!(result.contains("<|python_tag|>"));
+    }
+
+    #[test]
+    fn test_detect_llama_tool_call() {
+        let output = r#"I'll check the weather.
+<|python_tag|>{"name": "get_weather", "arguments": {"location": "Seattle"}}"#;
+
+        let calls = detect_tool_calls(output, ModelFamily::Llama);
+
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "get_weather");
+        assert!(calls[0].arguments.contains("Seattle"));
+    }
+
+    #[test]
+    fn test_extract_text_llama() {
+        let output = r#"Here is some text.
+<|python_tag|>{"name": "test", "arguments": {}}
+More text after."#;
+
+        let content = extract_text_content(output, ModelFamily::Llama);
+
+        assert!(content.is_some());
+        let text = content.unwrap();
+        assert!(text.contains("Here is some text."));
+        assert!(text.contains("More text after."));
+        assert!(!text.contains("<|python_tag|>"));
+    }
+
+    // === Mistral Format Tests ===
+
+    #[test]
+    fn test_format_single_tool_mistral() {
+        let tool = make_tool(
+            "get_weather",
+            "Get current weather for a location",
+            json!({
+                "type": "object",
+                "properties": {
+                    "location": {"type": "string", "description": "City name"}
+                },
+                "required": ["location"]
+            }),
+        );
+
+        let result = format_tools_for_prompt(&[tool], ModelFamily::Mistral);
+
+        assert!(result.contains("[AVAILABLE_TOOLS]"));
+        assert!(result.contains("get_weather"));
+        assert!(result.contains("[TOOL_CALLS]"));
+    }
+
+    #[test]
+    fn test_detect_mistral_tool_call() {
+        let output = r#"I'll check the weather.
+[TOOL_CALLS] [{"name": "get_weather", "arguments": {"location": "Seattle"}}]"#;
+
+        let calls = detect_tool_calls(output, ModelFamily::Mistral);
+
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "get_weather");
+        assert!(calls[0].arguments.contains("Seattle"));
+    }
+
+    #[test]
+    fn test_extract_text_mistral() {
+        let output = r#"Here is some text.
+[TOOL_CALLS] [{"name": "test", "arguments": {}}]
+More text after."#;
+
+        let content = extract_text_content(output, ModelFamily::Mistral);
+
+        assert!(content.is_some());
+        let text = content.unwrap();
+        assert!(text.contains("Here is some text."));
+        assert!(text.contains("More text after."));
+        assert!(!text.contains("[TOOL_CALLS]"));
+    }
+
+    #[test]
+    fn test_llama_falls_back_to_qwen_format() {
+        // Llama detection should fall back to Qwen format if <|python_tag|> not found
+        let output = r#"<tool_call>
+{"name": "get_weather", "arguments": {"location": "Seattle"}}
+</tool_call>"#;
+
+        let calls = detect_tool_calls(output, ModelFamily::Llama);
+
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "get_weather");
+    }
+
+    #[test]
+    fn test_mistral_falls_back_to_qwen_format() {
+        // Mistral detection should fall back to Qwen format if [TOOL_CALLS] not found
+        let output = r#"<tool_call>
+{"name": "get_weather", "arguments": {"location": "Seattle"}}
+</tool_call>"#;
+
+        let calls = detect_tool_calls(output, ModelFamily::Mistral);
+
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "get_weather");
     }
 }

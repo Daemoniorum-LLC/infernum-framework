@@ -43,7 +43,11 @@ use crate::request_batcher::{BatcherConfig, BatcherHandle, RequestBatcher};
 use crate::openai::{
     ChatChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage, CompletionChoice,
     CompletionRequest, CompletionResponse, EmbeddingData, EmbeddingInput, EmbeddingRequest,
-    EmbeddingResponse, EmbeddingUsage, ModelObject, ModelsResponse, Usage,
+    EmbeddingResponse, EmbeddingUsage, ModelObject, ModelsResponse, ToolChoice, Usage,
+};
+use crate::tool_use::{
+    format_tools_for_prompt, get_forced_tool, process_model_output, should_include_tools,
+    validate_tool_exists, ModelFamily,
 };
 
 /// Default server address.
@@ -1438,6 +1442,33 @@ async fn chat_completions(
         return validation_err.to_api_error(&request_id).into_response();
     }
 
+    // Validate tool_choice: if a specific tool is forced, it must exist in tools list
+    if let Some(forced_tool) = get_forced_tool(req.tool_choice.as_ref()) {
+        let tools = req.tools.as_deref().unwrap_or(&[]);
+        if !validate_tool_exists(forced_tool, tools) {
+            state.active_requests.fetch_sub(1, Ordering::Relaxed);
+            drop(permit);
+            return ApiError::new(ErrorCode::InvalidRequest, &request_id)
+                .message(&format!("Tool '{}' not found in tools list", forced_tool))
+                .param("tool_choice")
+                .build()
+                .into_response();
+        }
+    }
+
+    // Validate tool_choice: "required" must have at least one tool defined
+    if let Some(ToolChoice::String(ref choice)) = req.tool_choice {
+        if choice == "required" && req.tools.as_ref().map_or(true, |t| t.is_empty()) {
+            state.active_requests.fetch_sub(1, Ordering::Relaxed);
+            drop(permit);
+            return ApiError::new(ErrorCode::InvalidRequest, &request_id)
+                .message("tool_choice is 'required' but no tools are defined")
+                .param("tool_choice")
+                .build()
+                .into_response();
+        }
+    }
+
     // Check for available inference engines (speculative or standard)
     // In speculative mode, main engine is intentionally not loaded to avoid OOM
     let speculative_guard = state.speculative_engine.read().await;
@@ -1458,25 +1489,71 @@ async fn chat_completions(
     // Check for streaming
     let stream = req.stream.unwrap_or(false);
 
-    // Build messages into prompt
+    // Determine model family for tool formatting
+    let model_family = ModelFamily::from_model_name(&req.model);
+
+    // Format tools for prompt injection (if tools are present and should be included)
+    let tools_prompt = if should_include_tools(req.tool_choice.as_ref()) {
+        req.tools
+            .as_ref()
+            .map(|tools| format_tools_for_prompt(tools, model_family))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    // Build messages into prompt, injecting tools into system message
     let messages: Vec<infernum_core::Message> = req
         .messages
         .iter()
-        .map(|m| {
+        .enumerate()
+        .map(|(idx, m)| {
             let role = match m.role.as_str() {
                 "system" => infernum_core::Role::System,
                 "user" => infernum_core::Role::User,
                 "assistant" => infernum_core::Role::Assistant,
+                "tool" => infernum_core::Role::User, // Tool results sent as user messages
                 _ => infernum_core::Role::User,
             };
+
+            // Inject tools into the first system message, or create one if needed
+            let content = if role == infernum_core::Role::System && idx == 0 && !tools_prompt.is_empty() {
+                format!("{}{}", m.content, tools_prompt)
+            } else if m.role == "tool" {
+                // Format tool result with tool_call_id context
+                if let Some(ref tool_call_id) = m.tool_call_id {
+                    format!("[Tool Result for {}]: {}", tool_call_id, m.content)
+                } else {
+                    format!("[Tool Result]: {}", m.content)
+                }
+            } else {
+                m.content.clone()
+            };
+
             infernum_core::Message {
                 role,
-                content: m.content.clone(),
+                content,
                 name: None,
-                tool_call_id: None,
+                tool_call_id: m.tool_call_id.clone(),
             }
         })
         .collect();
+
+    // If no system message exists but we have tools, prepend a system message with tools
+    let messages = if !tools_prompt.is_empty()
+        && !messages.iter().any(|m| m.role == infernum_core::Role::System)
+    {
+        let mut new_messages = vec![infernum_core::Message {
+            role: infernum_core::Role::System,
+            content: format!("You are a helpful assistant.{}", tools_prompt),
+            name: None,
+            tool_call_id: None,
+        }];
+        new_messages.extend(messages);
+        new_messages
+    } else {
+        messages
+    };
 
     // Build sampling params
     let mut sampling = SamplingParams::default();
@@ -1601,7 +1678,7 @@ async fn chat_completions(
             }).collect::<String>() + "<|assistant|>\n";
 
             match spec_engine.generate(&prompt, max_tokens) {
-                Ok(content) => {
+                Ok(raw_content) => {
                     let latency_ms = start.elapsed().as_millis() as u64;
                     let stats = spec_engine.stats();
 
@@ -1613,6 +1690,23 @@ async fn chat_completions(
                         speculative = true,
                         "Speculative chat completion finished"
                     );
+
+                    // Process output for tool calls if tools were provided
+                    let has_tools = req.tools.as_ref().map_or(false, |t| !t.is_empty());
+                    let (content, tool_calls, finish_reason) = if has_tools {
+                        let result = process_model_output(&raw_content, model_family);
+                        (
+                            result.content.unwrap_or_default(),
+                            if result.tool_calls.is_empty() {
+                                None
+                            } else {
+                                Some(result.tool_calls)
+                            },
+                            result.finish_reason,
+                        )
+                    } else {
+                        (raw_content, None, "stop".to_string())
+                    };
 
                     // Estimate token counts (not exact, but reasonable)
                     let prompt_tokens = (prompt.len() / 4) as u32;
@@ -1629,10 +1723,10 @@ async fn chat_completions(
                                 role: "assistant".to_string(),
                                 content,
                                 name: None,
-                                tool_calls: None,
+                                tool_calls,
                                 tool_call_id: None,
                             },
-                            finish_reason: "stop".to_string(),
+                            finish_reason,
                             logprobs: None,
                         }],
                         usage: Usage {
@@ -1701,11 +1795,40 @@ async fn chat_completions(
         match result {
             Ok(response) => {
                 let choice = response.choices.first();
-                let content = choice.map(|c| c.text.clone()).unwrap_or_default();
-                let finish_reason = choice
-                    .and_then(|c| c.finish_reason.as_ref())
-                    .map(|r| format!("{:?}", r).to_lowercase())
-                    .unwrap_or_else(|| "stop".to_string());
+                let raw_content = choice.map(|c| c.text.clone()).unwrap_or_default();
+
+                // Process output for tool calls if tools were provided
+                let has_tools = req.tools.as_ref().map_or(false, |t| !t.is_empty());
+                let (content, tool_calls, finish_reason) = if has_tools {
+                    let result = process_model_output(&raw_content, model_family);
+                    (
+                        result.content.unwrap_or_default(),
+                        if result.tool_calls.is_empty() {
+                            None
+                        } else {
+                            Some(result.tool_calls)
+                        },
+                        result.finish_reason,
+                    )
+                } else {
+                    let finish_reason = choice
+                        .and_then(|c| c.finish_reason.as_ref())
+                        .map(|r| format!("{:?}", r).to_lowercase())
+                        .unwrap_or_else(|| "stop".to_string());
+                    (raw_content, None, finish_reason)
+                };
+
+                // For tool_choice: "required", verify at least one tool was called
+                if let Some(ToolChoice::String(ref tc)) = req.tool_choice {
+                    if tc == "required" && tool_calls.is_none() {
+                        // Model didn't call any tools despite "required" - log warning
+                        // but don't fail the request (model behavior, not server error)
+                        tracing::warn!(
+                            request_id = %request_id,
+                            "tool_choice was 'required' but model did not call any tools"
+                        );
+                    }
+                }
 
                 let chat_response = ChatCompletionResponse {
                     id: request_id,
@@ -1718,7 +1841,7 @@ async fn chat_completions(
                             role: "assistant".to_string(),
                             content,
                             name: None,
-                            tool_calls: None,
+                            tool_calls,
                             tool_call_id: None,
                         },
                         finish_reason,
