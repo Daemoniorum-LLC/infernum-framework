@@ -4,8 +4,16 @@
 //!
 //! The main command-line interface for the Infernum ecosystem.
 
-use clap::{Parser, Subcommand};
+#![warn(clippy::all)]
+#![warn(clippy::pedantic)]
+#![deny(clippy::unwrap_used)]
+#![allow(clippy::module_name_repetitions)]
+#![allow(clippy::must_use_candidate)]
+
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::{generate, Shell};
 use color_eyre::eyre::Result;
+use std::io;
 
 mod commands;
 mod config;
@@ -14,7 +22,14 @@ mod config;
 #[command(name = "infernum")]
 #[command(author = "Daemoniorum Engineering")]
 #[command(version)]
-#[command(about = "Blazingly fast LLM inference ecosystem", long_about = None)]
+#[command(about = "Blazingly fast LLM inference ecosystem")]
+#[command(long_about = "Blazingly fast LLM inference ecosystem.\n\n\
+    Run without arguments to start interactive chat mode.\n\n\
+    Examples:\n  \
+    infernum                              # Start interactive chat\n  \
+    infernum -m llama                     # Chat with specific model\n  \
+    infernum serve --model llama          # Start API server\n  \
+    infernum agent \"solve this puzzle\"   # Run autonomous agent")]
 #[command(propagate_version = true)]
 struct Cli {
     /// Log level (trace, debug, info, warn, error)
@@ -25,8 +40,16 @@ struct Cli {
     #[arg(long, global = true)]
     json_logs: bool,
 
+    /// Model to use (for default interactive mode)
+    #[arg(short, long, global = true)]
+    model: Option<String>,
+
+    /// System prompt (for default interactive mode)
+    #[arg(short, long, global = true)]
+    system: Option<String>,
+
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -41,13 +64,29 @@ enum Commands {
         #[arg(short, long, default_value = "8080")]
         port: u16,
 
-        /// Model to load (HuggingFace repo ID or local path)
+        /// Model to load (HuggingFace repo ID, local path, or HCT directory)
         #[arg(short, long)]
         model: Option<String>,
 
         /// Configuration file
         #[arg(short, long)]
         config: Option<String>,
+
+        /// Enable HoloTensor progressive quality inference.
+        /// This enables 70B+ models on 24GB VRAM via holographic compression.
+        /// The model must be a HoloTensor HCT directory.
+        #[arg(long)]
+        holo: bool,
+
+        /// Minimum quality for HoloTensor inference (0.0-1.0).
+        /// Start generating at this quality level. Default: 0.7
+        #[arg(long, default_value = "0.7")]
+        holo_min_quality: f32,
+
+        /// Target quality for HoloTensor inference (0.0-1.0).
+        /// Progressively improve to this quality during generation. Default: 0.95
+        #[arg(long, default_value = "0.95")]
+        holo_target_quality: f32,
     },
 
     /// Run inference on a prompt
@@ -72,16 +111,16 @@ enum Commands {
         stream: bool,
     },
 
-    // TODO: Re-enable when embedding models are supported
-    // /// Generate embeddings
-    // Embed {
-    //     /// Text to embed
-    //     text: String,
-    //
-    //     /// Model to use
-    //     #[arg(short, long)]
-    //     model: Option<String>,
-    // },
+    /// Generate embeddings
+    Embed {
+        /// Text to embed
+        text: String,
+
+        /// Model to use
+        #[arg(short, long)]
+        model: Option<String>,
+    },
+
     /// Manage models
     Model {
         #[command(subcommand)]
@@ -104,6 +143,25 @@ enum Commands {
 
     /// Check system configuration and dependencies
     Doctor,
+
+    /// Interactive first-time setup wizard
+    Setup {
+        /// Skip hardware detection
+        #[arg(long)]
+        skip_detect: bool,
+
+        /// Skip model download
+        #[arg(long)]
+        skip_download: bool,
+
+        /// Skip inference test
+        #[arg(long)]
+        skip_test: bool,
+
+        /// Accept defaults without prompting (non-interactive mode)
+        #[arg(short, long)]
+        yes: bool,
+    },
 
     /// Run an autonomous agent with tools
     Agent {
@@ -131,6 +189,20 @@ enum Commands {
     Config {
         #[command(subcommand)]
         action: ConfigAction,
+    },
+
+    /// Generate shell completions
+    #[command(hide = true)]
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: Shell,
+    },
+
+    /// LLM Studio - Dataset, experiment, and prompt management
+    Studio {
+        #[command(subcommand)]
+        action: StudioAction,
     },
 }
 
@@ -178,6 +250,251 @@ enum ModelAction {
         /// Model identifier
         model: String,
     },
+
+    /// Convert a model to HoloTensor HCT format.
+    /// This enables 70B+ models on 24GB VRAM via progressive quality inference.
+    Convert {
+        /// Source model (HuggingFace repo ID or local path)
+        model: String,
+
+        /// Output directory for HCT files
+        #[arg(short, long)]
+        output: String,
+
+        /// Number of fragments (more = higher max quality, larger files). Default: 64
+        #[arg(long, default_value = "64")]
+        fragments: u32,
+
+        /// Maximum rank for SVD decomposition. Default: 256
+        #[arg(long, default_value = "256")]
+        max_rank: u32,
+
+        /// Minimum quality threshold for verification. Default: 0.85
+        #[arg(long, default_value = "0.85")]
+        min_quality: f32,
+
+        /// Verify quality after conversion
+        #[arg(long, default_value = "true")]
+        verify: bool,
+
+        /// Force CPU-only conversion (disables GPU acceleration)
+        #[arg(long)]
+        cpu_only: bool,
+
+        /// Encoding type: lrdf (default, SVD-based) or spectral (DCT-based)
+        #[arg(long, default_value = "lrdf")]
+        encoding: String,
+    },
+
+    /// Quantize a model to INT4 format for faster inference.
+    /// Achieves ~4x memory reduction with minimal quality loss.
+    Quantize {
+        /// Source model (HuggingFace repo ID or local path)
+        model: String,
+
+        /// Output directory for quantized safetensors
+        #[arg(short, long)]
+        output: String,
+
+        /// Quantization format: int4-sym, int4-asym, int8-sym, int8-asym
+        #[arg(long, default_value = "int4-sym")]
+        format: String,
+
+        /// Block size for quantization (values per scale). Default: 128
+        #[arg(long, default_value = "128")]
+        block_size: usize,
+
+        /// Verify quality after quantization
+        #[arg(long, default_value = "true")]
+        verify: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum StudioAction {
+    /// Show studio statistics and overview
+    Stats,
+
+    /// Dataset management
+    Dataset {
+        #[command(subcommand)]
+        action: DatasetAction,
+    },
+
+    /// Experiment tracking
+    Experiment {
+        #[command(subcommand)]
+        action: ExperimentAction,
+    },
+
+    /// Prompt template management
+    Prompt {
+        #[command(subcommand)]
+        action: PromptAction,
+    },
+
+    /// Model registry (for custom trained models)
+    Registry {
+        #[command(subcommand)]
+        action: RegistryAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum DatasetAction {
+    /// List datasets
+    List,
+
+    /// Create a new dataset
+    Create {
+        /// Dataset name
+        name: String,
+
+        /// Dataset description
+        #[arg(short, long)]
+        description: Option<String>,
+    },
+
+    /// Import data from a file
+    Import {
+        /// Dataset name
+        name: String,
+
+        /// Path to JSONL file
+        file: String,
+    },
+
+    /// Show dataset info
+    Info {
+        /// Dataset name
+        name: String,
+    },
+
+    /// Validate dataset quality
+    Validate {
+        /// Dataset name
+        name: String,
+    },
+
+    /// Analyze dataset with Data Curator agent
+    Analyze {
+        /// Dataset name
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ExperimentAction {
+    /// List experiments
+    List,
+
+    /// Create a new experiment
+    Create {
+        /// Experiment name
+        name: String,
+
+        /// Experiment description
+        #[arg(short, long)]
+        description: Option<String>,
+    },
+
+    /// Show experiment details
+    Info {
+        /// Experiment name
+        name: String,
+    },
+
+    /// List runs in an experiment
+    Runs {
+        /// Experiment name
+        name: String,
+    },
+
+    /// Analyze with Training Coach agent
+    Analyze {
+        /// Experiment name
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum PromptAction {
+    /// List prompt templates
+    List,
+
+    /// Create a new prompt template
+    Create {
+        /// Template name
+        name: String,
+
+        /// Template content (use - for stdin)
+        content: String,
+
+        /// Template description
+        #[arg(short, long)]
+        description: Option<String>,
+    },
+
+    /// Show prompt template
+    #[command(disable_version_flag = true)]
+    Show {
+        /// Template name
+        name: String,
+
+        /// Specific version
+        #[arg(short, long)]
+        version: Option<u32>,
+    },
+
+    /// Test a prompt template
+    Test {
+        /// Template name
+        name: String,
+
+        /// Test input (JSON object for variables)
+        #[arg(short, long)]
+        input: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum RegistryAction {
+    /// List registered models
+    List,
+
+    /// Register a new model
+    Register {
+        /// Model name
+        name: String,
+
+        /// Path to model artifacts
+        path: String,
+
+        /// Model description
+        #[arg(short, long)]
+        description: Option<String>,
+    },
+
+    /// Show model details
+    Info {
+        /// Model name
+        name: String,
+    },
+
+    /// Promote model to next stage
+    Promote {
+        /// Model name
+        name: String,
+
+        /// Target stage (staging, production)
+        stage: String,
+    },
+
+    /// Get improvement roadmap from Eval Analyst
+    Roadmap {
+        /// Model name
+        name: String,
+    },
 }
 
 #[tokio::main]
@@ -202,66 +519,120 @@ async fn main() -> Result<()> {
     let cfg = config::Config::load();
 
     match cli.command {
-        Commands::Serve {
+        // Default: interactive chat mode when no subcommand is provided
+        None => {
+            // Use CLI args or config default model
+            let model = cli.model.or(cfg.default_model.clone());
+            let system = cli.system;
+            commands::chat(model, system).await?;
+        },
+
+        Some(Commands::Serve {
             host,
             port,
             model,
             config: config_file,
-        } => {
+            holo,
+            holo_min_quality,
+            holo_target_quality,
+        }) => {
             // Use config default model if not specified on command line
-            let model = model.or(cfg.default_model.clone());
-            commands::serve(host, port, model, config_file).await?;
+            let model = model.or(cli.model).or(cfg.default_model.clone());
+            commands::serve(
+                host,
+                port,
+                model,
+                config_file,
+                holo,
+                holo_min_quality,
+                holo_target_quality,
+            )
+            .await?;
         },
 
-        Commands::Generate {
+        Some(Commands::Generate {
             prompt,
             model,
             max_tokens,
             temperature,
             stream,
-        } => {
+        }) => {
             // Use config default model if not specified on command line
-            let model = model.or(cfg.default_model.clone());
+            let model = model.or(cli.model).or(cfg.default_model.clone());
             commands::generate(prompt, model, max_tokens, temperature, stream).await?;
         },
 
-        // TODO: Re-enable when embedding models are supported
-        // Commands::Embed { text, model } => {
-        //     commands::embed(text, model).await?;
-        // }
-        Commands::Model { action } => match action {
+        Some(Commands::Embed { text, model }) => {
+            let model = model.or(cli.model).or(cfg.default_model.clone());
+            commands::embed(text, model).await?;
+        },
+
+        Some(Commands::Model { action }) => match action {
             ModelAction::List => commands::model_list().await?,
             ModelAction::Pull { model, revision } => commands::model_pull(model, revision).await?,
             ModelAction::Info { model } => commands::model_info(model).await?,
             ModelAction::Remove { model } => commands::model_remove(model).await?,
+            ModelAction::Convert {
+                model,
+                output,
+                fragments,
+                max_rank,
+                min_quality,
+                verify,
+                cpu_only,
+                encoding,
+            } => {
+                commands::model_convert(model, output, fragments, max_rank, min_quality, verify, cpu_only, encoding)
+                    .await?;
+            }
+            ModelAction::Quantize {
+                model,
+                output,
+                format,
+                block_size,
+                verify,
+            } => {
+                commands::model_quantize(model, output, format, block_size, verify).await?;
+            }
         },
 
-        Commands::Chat { model, system } => {
+        Some(Commands::Chat { model, system }) => {
             // Use config default model if not specified on command line
-            let model = model.or(cfg.default_model.clone());
+            let model = model.or(cli.model).or(cfg.default_model.clone());
+            let system = system.or(cli.system);
             commands::chat(model, system).await?;
         },
 
-        Commands::Version => {
+        Some(Commands::Version) => {
             commands::version();
         },
 
-        Commands::Doctor => {
+        Some(Commands::Doctor) => {
             commands::doctor();
         },
 
-        Commands::Agent {
+        Some(Commands::Setup {
+            skip_detect,
+            skip_download,
+            skip_test,
+            yes,
+        }) => {
+            commands::setup(skip_detect, skip_download, skip_test, yes).await?;
+        },
+
+        Some(Commands::Agent {
             objective,
             model,
             system,
             max_iterations,
             verbose,
-        } => {
-            let model = model.or(cfg.default_model.clone());
+        }) => {
+            let model = model.or(cli.model).or(cfg.default_model.clone());
+            let system = system.or(cli.system);
             commands::agent(objective, model, system, max_iterations, verbose).await?;
         },
 
-        Commands::Config { action } => match action {
+        Some(Commands::Config { action }) => match action {
             ConfigAction::Show => {
                 config::show_config();
             },
@@ -293,6 +664,68 @@ async fn main() -> Result<()> {
             },
             ConfigAction::Path => {
                 println!("{}", config::Config::config_path().display());
+            },
+        },
+
+        Some(Commands::Completions { shell }) => {
+            generate(shell, &mut Cli::command(), "infernum", &mut io::stdout());
+        },
+
+        Some(Commands::Studio { action }) => match action {
+            StudioAction::Stats => {
+                commands::studio_stats().await?;
+            },
+            StudioAction::Dataset { action } => match action {
+                DatasetAction::List => commands::dataset_list().await?,
+                DatasetAction::Create { name, description } => {
+                    commands::dataset_create(name, description).await?;
+                },
+                DatasetAction::Import { name, file } => {
+                    commands::dataset_import(name, file).await?;
+                },
+                DatasetAction::Info { name } => commands::dataset_info(name).await?,
+                DatasetAction::Validate { name } => commands::dataset_validate(name).await?,
+                DatasetAction::Analyze { name } => commands::dataset_analyze(name).await?,
+            },
+            StudioAction::Experiment { action } => match action {
+                ExperimentAction::List => commands::experiment_list().await?,
+                ExperimentAction::Create { name, description } => {
+                    commands::experiment_create(name, description).await?;
+                },
+                ExperimentAction::Info { name } => commands::experiment_info(name).await?,
+                ExperimentAction::Runs { name } => commands::experiment_runs(name).await?,
+                ExperimentAction::Analyze { name } => commands::experiment_analyze(name).await?,
+            },
+            StudioAction::Prompt { action } => match action {
+                PromptAction::List => commands::prompt_list().await?,
+                PromptAction::Create {
+                    name,
+                    content,
+                    description,
+                } => {
+                    commands::prompt_create(name, content, description).await?;
+                },
+                PromptAction::Show { name, version } => {
+                    commands::prompt_show(name, version).await?;
+                },
+                PromptAction::Test { name, input } => {
+                    commands::prompt_test(name, input).await?;
+                },
+            },
+            StudioAction::Registry { action } => match action {
+                RegistryAction::List => commands::registry_list().await?,
+                RegistryAction::Register {
+                    name,
+                    path,
+                    description,
+                } => {
+                    commands::registry_register(name, path, description).await?;
+                },
+                RegistryAction::Info { name } => commands::registry_info(name).await?,
+                RegistryAction::Promote { name, stage } => {
+                    commands::registry_promote(name, stage).await?;
+                },
+                RegistryAction::Roadmap { name } => commands::registry_roadmap(name).await?,
             },
         },
     }

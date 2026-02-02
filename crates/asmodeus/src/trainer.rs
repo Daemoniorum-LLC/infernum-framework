@@ -249,18 +249,20 @@ impl AdamW {
 
     /// Performs a single optimization step.
     pub fn step(&mut self, name: &str, param: &Tensor, grad: &Tensor) -> CandleResult<Tensor> {
+        use std::collections::hash_map::Entry;
+
         let device = param.device();
         let dtype = param.dtype();
 
-        // Initialize state if needed
-        if !self.states.contains_key(name) {
-            let m = Tensor::zeros(param.shape(), dtype, device)?;
-            let v = Tensor::zeros(param.shape(), dtype, device)?;
-            self.states
-                .insert(name.to_string(), AdamWState { m, v, step: 0 });
-        }
-
-        let state = self.states.get_mut(name).unwrap();
+        // Initialize state if needed, using entry API with proper error handling
+        let state = match self.states.entry(name.to_string()) {
+            Entry::Occupied(e) => e.into_mut(),
+            Entry::Vacant(e) => {
+                let m = Tensor::zeros(param.shape(), dtype, device)?;
+                let v = Tensor::zeros(param.shape(), dtype, device)?;
+                e.insert(AdamWState { m, v, step: 0 })
+            }
+        };
         state.step += 1;
 
         // Update biased first moment estimate: m = beta1 * m + (1 - beta1) * grad
@@ -364,8 +366,15 @@ impl TrainingRun {
     }
 
     /// Gets the current status.
+    ///
+    /// Returns `TrainingStatus::Failed` with an error message if the lock is poisoned.
     pub fn status(&self) -> TrainingStatus {
-        self.status.read().unwrap().clone()
+        self.status
+            .read()
+            .map(|guard| guard.clone())
+            .unwrap_or_else(|_| TrainingStatus::Failed {
+                error: "Status lock poisoned".to_string(),
+            })
     }
 
     /// Sends stop signal.
@@ -374,8 +383,18 @@ impl TrainingRun {
     }
 
     /// Updates the status.
+    ///
+    /// Logs a warning if the lock is poisoned but does not panic.
     fn update_status(&self, status: TrainingStatus) {
-        *self.status.write().unwrap() = status;
+        match self.status.write() {
+            Ok(mut guard) => *guard = status,
+            Err(poisoned) => {
+                // Recover from poisoned lock by taking ownership
+                let mut guard = poisoned.into_inner();
+                *guard = status;
+                tracing::warn!("Recovered from poisoned status lock");
+            }
+        }
     }
 }
 
@@ -437,11 +456,17 @@ impl Trainer {
         let (run, mut stop_rx) = TrainingRun::new(run_id.clone());
         let run = Arc::new(run);
 
-        // Store the run
-        self.runs
-            .write()
-            .unwrap()
-            .insert(run_id.clone(), run.clone());
+        // Store the run (recover from poisoned lock if necessary)
+        match self.runs.write() {
+            Ok(mut guard) => {
+                guard.insert(run_id.clone(), run.clone());
+            }
+            Err(poisoned) => {
+                let mut guard = poisoned.into_inner();
+                guard.insert(run_id.clone(), run.clone());
+                tracing::warn!("Recovered from poisoned runs lock during insert");
+            }
+        }
 
         let lora_config = config.lora.clone().unwrap_or_default();
         let output_dir = self.output_dir.clone();
@@ -535,12 +560,11 @@ impl Trainer {
 
         // Create progress bar
         let progress = ProgressBar::new(total_steps);
-        progress.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) loss: {msg}")
-                .unwrap()
-                .progress_chars("#>-"),
-        );
+        if let Ok(style) = ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) loss: {msg}")
+        {
+            progress.set_style(style.progress_chars("#>-"));
+        }
 
         let mut global_step: u64 = 0;
         let mut running_loss = 0.0;
@@ -645,7 +669,7 @@ impl Trainer {
         // This demonstrates the training structure without requiring the full model
 
         let batch_size = batch.len();
-        let seq_len = batch.first().map(|s| s.input_ids.len()).unwrap_or(0);
+        let seq_len = batch.first().map_or(0, |s| s.input_ids.len());
 
         // Create mock input tensor
         let input_data: Vec<f32> = batch
@@ -801,15 +825,25 @@ impl TrainerTrait for Trainer {
     }
 
     fn status(&self, run_id: &str) -> Option<TrainingStatus> {
-        self.runs
-            .read()
-            .unwrap()
-            .get(run_id)
-            .map(|run| run.status())
+        let guard = match self.runs.read() {
+            Ok(g) => g,
+            Err(poisoned) => {
+                tracing::warn!("Recovered from poisoned runs lock during status check");
+                poisoned.into_inner()
+            }
+        };
+        guard.get(run_id).map(|run| run.status())
     }
 
     async fn stop(&self, run_id: &str) -> Result<()> {
-        if let Some(run) = self.runs.read().unwrap().get(run_id) {
+        let guard = match self.runs.read() {
+            Ok(g) => g,
+            Err(poisoned) => {
+                tracing::warn!("Recovered from poisoned runs lock during stop");
+                poisoned.into_inner()
+            }
+        };
+        if let Some(run) = guard.get(run_id) {
             run.stop();
             Ok(())
         } else {

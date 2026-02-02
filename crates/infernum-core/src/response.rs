@@ -150,3 +150,174 @@ impl EmbeddingData {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_choice_creation() {
+        let choice = Choice {
+            index: 0,
+            text: "Hello world".to_string(),
+            finish_reason: Some(FinishReason::Stop),
+            logprobs: None,
+        };
+
+        assert_eq!(choice.index, 0);
+        assert_eq!(choice.text, "Hello world");
+        assert_eq!(choice.finish_reason, Some(FinishReason::Stop));
+    }
+
+    #[test]
+    fn test_logprobs() {
+        let logprobs = LogProbs {
+            tokens: vec!["Hello".to_string(), " ".to_string(), "world".to_string()],
+            token_logprobs: vec![-0.5, -0.1, -0.3],
+            top_logprobs: None,
+        };
+
+        assert_eq!(logprobs.tokens.len(), 3);
+        assert_eq!(logprobs.token_logprobs.len(), 3);
+    }
+
+    #[test]
+    fn test_top_logprob() {
+        let top = TopLogProb {
+            token: "hello".to_string(),
+            logprob: -0.5,
+        };
+
+        assert_eq!(top.token, "hello");
+        assert_eq!(top.logprob, -0.5);
+    }
+
+    #[test]
+    fn test_token_info() {
+        let info = TokenInfo {
+            id: 1234,
+            text: "token".to_string(),
+            logprob: Some(-0.2),
+            special: false,
+        };
+
+        assert_eq!(info.id, 1234);
+        assert_eq!(info.text, "token");
+        assert_eq!(info.logprob, Some(-0.2));
+        assert!(!info.special);
+    }
+
+    #[test]
+    fn test_embedding_data_float() {
+        let data = EmbeddingData::Float(vec![0.1, 0.2, 0.3, 0.4]);
+
+        let floats = data.as_floats().unwrap();
+        assert_eq!(floats, vec![0.1, 0.2, 0.3, 0.4]);
+        assert_eq!(data.dimensions(), 4);
+    }
+
+    #[test]
+    fn test_embedding_data_base64() {
+        let data = EmbeddingData::Base64("AAAAAAAAAAAAAAAA".to_string());
+
+        assert!(data.as_floats().is_err());
+        // 16 chars * 3 / 16 = 3
+        assert_eq!(data.dimensions(), 3);
+    }
+
+    #[test]
+    fn test_embedding() {
+        let embedding = Embedding {
+            index: 0,
+            embedding: EmbeddingData::Float(vec![0.1, 0.2]),
+        };
+
+        assert_eq!(embedding.index, 0);
+        assert_eq!(embedding.embedding.dimensions(), 2);
+    }
+
+    #[test]
+    fn test_generate_response_serialization() {
+        let response = GenerateResponse {
+            request_id: RequestId::new(),
+            model: ModelId::from("test-model"),
+            choices: vec![Choice {
+                index: 0,
+                text: "Generated text".to_string(),
+                finish_reason: Some(FinishReason::Stop),
+                logprobs: None,
+            }],
+            usage: Usage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+            },
+            time_to_first_token_ms: Some(50.0),
+            total_time_ms: Some(200.0),
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        let deserialized: GenerateResponse = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.model.to_string(), "test-model");
+        assert_eq!(deserialized.choices.len(), 1);
+        assert_eq!(deserialized.usage.total_tokens, 15);
+    }
+
+    #[test]
+    fn test_embed_response_serialization() {
+        let response = EmbedResponse {
+            request_id: RequestId::new(),
+            model: ModelId::from("embedding-model"),
+            data: vec![Embedding {
+                index: 0,
+                embedding: EmbeddingData::Float(vec![0.1, 0.2, 0.3]),
+            }],
+            usage: Usage {
+                prompt_tokens: 5,
+                completion_tokens: 0,
+                total_tokens: 5,
+            },
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        let deserialized: EmbedResponse = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.data.len(), 1);
+        assert_eq!(deserialized.data[0].embedding.dimensions(), 3);
+    }
+
+    #[test]
+    fn test_choice_without_finish_reason() {
+        let choice = Choice {
+            index: 0,
+            text: "partial...".to_string(),
+            finish_reason: None,
+            logprobs: None,
+        };
+
+        // Should serialize without finish_reason field
+        let json = serde_json::to_string(&choice).unwrap();
+        assert!(!json.contains("finish_reason"));
+    }
+
+    #[test]
+    fn test_finish_reasons() {
+        let stop = Choice {
+            index: 0,
+            text: "done".to_string(),
+            finish_reason: Some(FinishReason::Stop),
+            logprobs: None,
+        };
+
+        let length = Choice {
+            index: 1,
+            text: "truncated".to_string(),
+            finish_reason: Some(FinishReason::Length),
+            logprobs: None,
+        };
+
+        assert_eq!(stop.finish_reason, Some(FinishReason::Stop));
+        assert_eq!(length.finish_reason, Some(FinishReason::Length));
+    }
+}

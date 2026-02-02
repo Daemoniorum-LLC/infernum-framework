@@ -12,6 +12,8 @@ readme = "README.md"
 [dependencies]
 infernum-core = { path = "../infernum-core", version = "0.1.0" }
 abaddon = { path = "../abaddon", version = "0.1.0" }
+candle-core = { workspace = true }
+candle-nn = { workspace = true }
 malphas = { path = "../malphas", version = "0.1.0" }
 stolas = { path = "../stolas", version = "0.1.0", default-features = false }
 beleth = { path = "../beleth", version = "0.1.0" }
@@ -22,16 +24,20 @@ tokio = { workspace = true }
 tokio-stream = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
+async-stream = "0.3"
 
 # HTTP
 axum = { workspace = true }
+axum-server = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
 hyper = { workspace = true }
+rustls-pemfile = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
+toml = { workspace = true }
 
 # Error handling
 thiserror = { workspace = true }
@@ -43,7 +49,72 @@ tracing = { workspace = true }
 # Utilities
 uuid = { workspace = true }
 chrono = { workspace = true }
+regex = { workspace = true }
+parking_lot = { workspace = true }
+url = "2"
+
+# OpenAPI documentation
+utoipa = { version = "5", features = ["axum_extras", "chrono"] }
+utoipa-swagger-ui = { version = "8", features = ["axum"] }
+
+# Cryptography (Phase 3 security)
+sha2 = "0.10"
+hex = "0.4"
+subtle = "2.5"
+
+# Configuration hot reload
+notify = { version = "8", default-features = false, features = ["fsevent-sys", "macos_fsevent"] }
+
+# HuggingFace model download
+hf-hub = { workspace = true }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# HoloTensor compression
+haagenti = { workspace = true, optional = true }
+haagenti-hct = { workspace = true, optional = true }
+half = "2.4"
+
+# OpenTelemetry distributed tracing
+opentelemetry = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+tracing-opentelemetry = "0.31"
+
+# gRPC
+tonic = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util", "macros"] }
-axum-test = "16.4"
+tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
+axum-test = "18.4"
+reqwest = { version = "0.12", features = ["json"] }
+tempfile = "3.19"
+criterion = { version = "0.6", features = ["async_tokio"] }
+
+[[bench]]
+name = "server_benchmarks"
+harness = false
+
+[features]
+default = []
+holotensor = ["dep:haagenti", "dep:haagenti-hct"]
+
+# GPU acceleration (opt-in, requires hardware)
+cuda = ["abaddon/cuda"]
+metal = ["abaddon/metal"]
+flash-attn = ["abaddon/flash-attn"]
+haagenti-gpu = ["holotensor", "abaddon/haagenti-gpu"]
+
+# CPU optimizations
+mkl = ["abaddon/mkl"]
+accelerate = ["abaddon/accelerate"]
+
+# RAG backends
+lance = ["stolas/lance"]
+
+# Full GPU stack (CUDA + Flash Attention)
+cuda-full = ["cuda", "flash-attn"]

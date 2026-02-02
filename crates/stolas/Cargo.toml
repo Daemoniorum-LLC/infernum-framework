@@ -9,7 +9,7 @@ repository.workspace = true
 description = "Knowledge and RAG engine - The Prince reveals hidden knowledge"
 
 [features]
-default = ["lance"]
+default = []
 lance = ["dep:lance", "dep:lancedb"]
 postgres = []
 qdrant = []
@@ -46,6 +46,7 @@ dashmap = { workspace = true }
 bytes = { workspace = true }
 regex = { workspace = true }
 parking_lot = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

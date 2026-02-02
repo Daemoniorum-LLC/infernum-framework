@@ -11,15 +11,18 @@ description = "Blazingly fast LLM inference engine - The Destroyer renders judgm
 [features]
 default = ["cpu"]
 cpu = []
-cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "dep:cudarc"]
+haagenti-gpu = ["cuda", "dep:haagenti-cuda"]
 metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
-flash-attn = ["cuda"]
+flash-attn = ["cuda", "dep:candle-flash-attn"]
 mkl = ["candle-core/mkl"]
 accelerate = ["candle-core/accelerate"]
+# neural-compression = ["dep:haagenti-neural"]
 
 [dependencies]
 infernum-core = { path = "../infernum-core", version = "0.1.0" }
 dantalion = { path = "../dantalion", version = "0.1.0" }
+arbiter = { path = "../arbiter", version = "0.1.0" }
 
 # Async
 tokio = { workspace = true }
@@ -34,6 +37,16 @@ candle-transformers = { workspace = true }
 safetensors = { workspace = true }
 tokenizers = { workspace = true }
 hf-hub = { workspace = true }
+
+# CUDA runtime (optional, enabled with cuda feature)
+cudarc = { workspace = true, optional = true }
+
+
+# Bounded channels for pipeline mode (used by holotensor converter)
+crossbeam = { version = "0.8", features = ["crossbeam-channel"] }
+
+# Flash Attention (optional, enabled with flash-attn feature)
+candle-flash-attn = { version = "0.9", optional = true }
 
 # Serialization
 serde = { workspace = true }
@@ -58,12 +71,66 @@ humansize = { workspace = true }
 dirs = "5.0"
 fastrand = "2.2"
 sysinfo = "0.31"
+ureq = { version = "2.12", features = ["native-tls"] }
+
+# Compression (HCT format for compressed weights)
+haagenti = { workspace = true }
+haagenti-core = { workspace = true }
+haagenti-hct = { workspace = true }
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+zstd = "0.13"
+
+# GPU decompression (optional)
+haagenti-cuda = { workspace = true, optional = true }
+
+# Neural compression for 10:1 ratio (optional) - not yet published
+# haagenti-neural = { workspace = true, optional = true }
+
+# Half-precision floats
+half = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
 criterion = { workspace = true }
 proptest = { workspace = true }
+memmap2 = { workspace = true }
+tracing-subscriber = "0.3"
+clap = { version = "4.5", features = ["derive"] }
+tempfile = "3.10"
+bytemuck = "1.24"
+zstd = "0.13"
 
 [[bench]]
 name = "inference"
 harness = false
+
+[[bench]]
+name = "weight_loading"
+harness = false
+
+[[bench]]
+name = "holographic"
+harness = false
+
+[[bench]]
+name = "holotensor_405b_bench"
+harness = false
+
+[[example]]
+name = "gpu_hct_test"
+required-features = ["cuda"]
+
+[[example]]
+name = "convert_to_holo"
+
+[[example]]
+name = "gpu_lrdf_bench"
+required-features = ["cuda"]
+
+[[example]]
+name = "holo_to_safetensors"
+required-features = ["cuda"]
+
+[[example]]
+name = "speculative_405b"
+required-features = ["cuda"]

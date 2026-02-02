@@ -14,16 +14,71 @@
 
 #![warn(missing_docs)]
 #![warn(clippy::all)]
+#![warn(clippy::pedantic)]
+#![deny(clippy::unwrap_used)]
+#![allow(clippy::module_name_repetitions)]
+#![allow(clippy::must_use_candidate)]
 
 pub mod agent;
+pub mod dynamic_context;
+pub mod http_engine;
+pub mod long_term_memory;
 pub mod memory;
+pub mod ooda;
 pub mod planner;
+pub mod react;
 pub mod tool;
+pub mod tracing_spans;
+pub mod wellbeing;
+pub mod wellbeing_persist;
 
-pub use agent::{Agent, AgentAction, AgentBuilder, Persona, PersonaSource, StepResult, StepUsage};
-pub use memory::{AgentMemory, ConversationSummary, SummarizationStrategy};
-pub use planner::{DefaultPlanner, LLMPlanner, Plan, PlanStep, Planner, PlanningStrategy};
-pub use tool::{
-    CalculatorTool, DateTimeTool, JsonTool, RiskLevel, Tool, ToolCall, ToolContext, ToolRegistry,
-    ToolResult,
+#[cfg(test)]
+mod proptest_suite;
+
+pub use agent::{
+    Agent, AgentAction, AgentBuilder, Persona, PersonaSource, PlanExecutionResult, PlanStepResult,
+    StepResult, StepUsage,
 };
+pub use memory::{
+    AgentMemory, ConversationManager, ConversationStore, ConversationSummary,
+    FileConversationStore, MemoryConversationStore, PersistentConversation,
+    SerializableConversation, SerializableMessage, SummarizationStrategy,
+};
+pub use planner::{DefaultPlanner, HierarchicalTask, LLMPlanner, Plan, PlanStep, Planner, PlanningStrategy, ThoughtNode};
+pub use tool::{
+    CalculatorTool, DateTimeTool, JsonTool, OutputValidationConfig, RiskLevel, TaskComplexity,
+    Tool, ToolCall, ToolContext, ToolRegistry, ToolResult, ToolTimeoutConfig, ValidationIssue,
+    ValidationResult,
+};
+pub use react::{
+    generate_observation_reasoning, parse_observation, parse_observation_with_validation,
+    ActionType, CompletionReason, NoOpCallback, Observation, ReactAction, ReactCallback,
+    ReactConfig, ReactExecutor, ReactResult, ReactStep,
+};
+pub use ooda::{
+    DecisionAction, NoOpOodaCallback, OodaActionResult, OodaCallback, OodaCompletionReason,
+    OodaConfig, OodaDecision, OodaExecutor, OodaObservation, OodaOrientation, OodaPhase,
+    OodaResult, OodaStep,
+};
+pub use long_term_memory::{
+    ImportanceLevel, LongTermMemory, MemoryEntry, MemoryStats, MemoryType,
+};
+pub use dynamic_context::{
+    ChunkType, ContextComplexity, ContextConfig, DynamicContextManager, RelevanceFactors,
+    SemanticChunk, score_message_relevance, semantic_chunk,
+};
+pub use tracing_spans::{
+    agent_execution_span, context_optimization_span, llm_call_span, memory_operation_span,
+    memory_query_span, ooda_act_span, ooda_decide_span, ooda_iteration_span, ooda_observe_span,
+    ooda_orient_span, persona_load_span, planning_span, react_step_span, semantic_chunking_span,
+    tool_invocation_span, tool_validation_span, SpanExt,
+};
+pub use wellbeing::{
+    DistressSignal, Intervention, WellbeingConfig, WellbeingMonitor, WellbeingSnapshot,
+    WellbeingState,
+};
+pub use wellbeing_persist::{
+    default_history_path, load_history, load_or_create_history, save_history, HistorySummary,
+    PersistedHistory, PersistedSnapshot,
+};
+pub use http_engine::{HttpEngine, HttpEngineError, SimpleMessage};

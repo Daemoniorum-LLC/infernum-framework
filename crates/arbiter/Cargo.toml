@@ -1,0 +1,36 @@
+[package]
+name = "arbiter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Unified GPU arbiter - coordinates Infernum (LLM) and Dantalion (Diffusion) workloads"
+
+[features]
+default = []
+
+[dependencies]
+infernum-core = { path = "../infernum-core", version = "0.1.0" }
+
+# Async
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+
+# Concurrency
+parking_lot = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio-test = "0.4"

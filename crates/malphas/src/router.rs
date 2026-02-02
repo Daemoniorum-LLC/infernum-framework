@@ -164,10 +164,11 @@ impl RequestRouter {
             });
         }
 
+        // Safety: checked is_empty() above, so there's at least one element
         let best = available
             .iter()
             .min_by_key(|m| m.active_requests.load(Ordering::Relaxed))
-            .unwrap();
+            .expect("available is non-empty");
 
         Ok(Arc::clone(&best.engine))
     }
@@ -395,10 +396,11 @@ impl RequestRouter {
             });
         }
 
+        // Safety: checked is_empty() above, so there's at least one element
         let best = available
             .iter()
             .min_by_key(|m| m.active_requests.load(Ordering::Relaxed))
-            .unwrap();
+            .expect("available is non-empty");
 
         Ok(Arc::clone(&best.engine))
     }
