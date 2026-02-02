@@ -657,8 +657,11 @@ fn try_extract_qwen(buffer: &str) -> StreamingExtractResult {
     let end_tag = "</tool_call>";
 
     if let Some(start_idx) = buffer.find(start_tag) {
-        if let Some(end_idx) = buffer.find(end_tag) {
-            let json_start = start_idx + start_tag.len();
+        let json_start = start_idx + start_tag.len();
+        // CRITICAL: Search for end tag AFTER start tag, not from beginning
+        // Bug fix: buffer.find(end_tag) would find stray end tags before start
+        if let Some(end_offset) = buffer[json_start..].find(end_tag) {
+            let end_idx = json_start + end_offset;
             let json_content = buffer[json_start..end_idx].trim();
 
             if let Ok(parsed) = serde_json::from_str::<ToolCallJson>(json_content) {
@@ -857,13 +860,14 @@ pub fn extract_json_object(s: &str, start: usize) -> Option<String> {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Options for processing model output.
+///
+/// For validation of tool calls against schemas, use `process_model_output_with_validation`
+/// which takes a tools list directly.
 #[derive(Debug, Clone, Default)]
 pub struct ProcessingOptions {
     /// Whether parallel tool calls are allowed.
     /// When false, only the first tool call is returned.
     pub parallel_tool_calls: bool,
-    /// Tools available for validation (for strict mode).
-    pub tools: Option<Vec<Tool>>,
 }
 
 /// Enforce parallel_tool_calls setting on detected calls.
@@ -1108,26 +1112,30 @@ pub struct DetectedCallsValidation {
 
 /// Validate detected tool calls against the available tools list.
 ///
-/// Unknown tools are reported but still returned for client handling.
+/// Separates detected calls into known tools (valid_calls) and unknown tools.
+/// Only calls to tools in the provided list are considered valid.
 ///
 /// # Arguments
 /// * `detected` - The detected tool calls
 /// * `tools` - The available tools
 ///
 /// # Returns
-/// Validation result with unknown tool names
+/// Validation result with valid calls and unknown tool names
 #[must_use]
 pub fn validate_detected_calls(detected: &[DetectedToolCall], tools: &[Tool]) -> DetectedCallsValidation {
+    let mut valid_calls = Vec::new();
     let mut unknown_tools = Vec::new();
 
     for call in detected {
-        if !validate_tool_exists(&call.name, tools) {
+        if validate_tool_exists(&call.name, tools) {
+            valid_calls.push(call.clone());
+        } else {
             unknown_tools.push(call.name.clone());
         }
     }
 
     DetectedCallsValidation {
-        valid_calls: detected.to_vec(),
+        valid_calls,
         unknown_tools,
     }
 }
@@ -1880,6 +1888,244 @@ More text after."#;
         }
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PHASE 3 EDGE CASES - Tests for bugs found during code review
+    // These tests are expected to FAIL until the bugs are fixed (TDD RED phase)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    mod phase3_edge_cases {
+        use super::*;
+
+        // ─────────────────────────────────────────────────────────────────────────
+        // BUG 1: try_extract_qwen finds end tag before start tag
+        // Line 660: buffer.find(end_tag) finds FIRST occurrence, not matched one
+        // ─────────────────────────────────────────────────────────────────────────
+
+        /// If a stray end tag appears before the real tool call, extraction should
+        /// still find the correct tool call, not fail or extract garbage.
+        #[test]
+        fn test_qwen_end_tag_before_start_tag() {
+            // Pathological case: end tag appears before start tag
+            let buffer = r#"</tool_call>garbage<tool_call>
+{"name": "real_tool", "arguments": {"key": "value"}}
+</tool_call>remaining"#;
+
+            let result = try_extract_complete_tool_call(buffer, ModelFamily::Qwen);
+
+            // Should find the real tool call, not extract garbage
+            assert!(result.found, "Should find the valid tool call");
+            assert_eq!(result.call.as_ref().unwrap().name, "real_tool");
+            assert_eq!(result.remaining, "remaining");
+        }
+
+        /// Multiple tool calls with stray end tags should parse correctly.
+        #[test]
+        fn test_qwen_multiple_stray_end_tags() {
+            let buffer = r#"text</tool_call></tool_call><tool_call>
+{"name": "test", "arguments": {}}
+</tool_call>"#;
+
+            let result = try_extract_complete_tool_call(buffer, ModelFamily::Qwen);
+
+            assert!(result.found);
+            assert_eq!(result.call.as_ref().unwrap().name, "test");
+        }
+
+        // ─────────────────────────────────────────────────────────────────────────
+        // BUG 2: ProcessingOptions.tools is dead code
+        // Line 866: The tools field is never used in process_model_output_with_options
+        // ─────────────────────────────────────────────────────────────────────────
+
+        /// For tool validation, use process_model_output_with_validation.
+        /// ProcessingOptions is focused on parallel_tool_calls setting only.
+        #[test]
+        fn test_use_validation_function_for_tool_checking() {
+            let tool = Tool {
+                tool_type: "function".to_string(),
+                function: crate::openai::FunctionDefinition {
+                    name: "known_tool".to_string(),
+                    description: Some("A known tool".to_string()),
+                    parameters: Some(json!({
+                        "type": "object",
+                        "properties": {},
+                    })),
+                    strict: Some(true),
+                },
+            };
+
+            let output = r#"<tool_call>
+{"name": "unknown_tool", "arguments": {}}
+</tool_call>"#;
+
+            // Use the validation function (not ProcessingOptions) for tool checking
+            let result = process_model_output_with_validation(
+                output,
+                ModelFamily::Qwen,
+                &[tool],
+            );
+
+            // Tool calls are still returned, but validation errors are reported
+            assert_eq!(result.result.tool_calls.len(), 1);
+            // Unknown tool validation is separate from schema validation
+            // (schema validation only runs for tools with strict=true)
+        }
+
+        // ─────────────────────────────────────────────────────────────────────────
+        // BUG 3: DetectedCallsValidation.valid_calls misleading name
+        // Line 1104: Returns ALL calls, not just valid ones
+        // ─────────────────────────────────────────────────────────────────────────
+
+        /// The valid_calls field should only contain calls to known tools.
+        /// Currently it returns ALL calls, which is misleading.
+        #[test]
+        fn test_valid_calls_only_contains_valid() {
+            let tools = vec![make_tool("known_tool", "A known tool", json!({}))];
+
+            let detected = vec![
+                DetectedToolCall {
+                    id: "call_1".to_string(),
+                    name: "known_tool".to_string(),
+                    arguments: "{}".to_string(),
+                },
+                DetectedToolCall {
+                    id: "call_2".to_string(),
+                    name: "unknown_tool".to_string(),
+                    arguments: "{}".to_string(),
+                },
+            ];
+
+            let result = validate_detected_calls(&detected, &tools);
+
+            // Expected: valid_calls should ONLY contain known tools
+            // Current bug: valid_calls contains ALL calls
+            assert_eq!(result.unknown_tools.len(), 1);
+            assert_eq!(result.unknown_tools[0], "unknown_tool");
+
+            // This assertion will fail until bug is fixed:
+            // valid_calls should only have the known tool
+            assert_eq!(
+                result.valid_calls.len(),
+                1,
+                "valid_calls should only contain calls to known tools"
+            );
+            assert_eq!(result.valid_calls[0].name, "known_tool");
+        }
+
+        // ─────────────────────────────────────────────────────────────────────────
+        // EDGE CASE: Mismatched brackets in JSON
+        // ─────────────────────────────────────────────────────────────────────────
+
+        /// Mismatched brackets should not cause infinite loops or panics.
+        #[test]
+        fn test_mismatched_brackets_no_panic() {
+            let json_str = r#"{"key": {"unclosed": "value"}"#;
+            let result = extract_json_object(json_str, 0);
+
+            // Should return None, not panic or loop infinitely
+            assert!(result.is_none());
+        }
+
+        #[test]
+        fn test_extra_closing_bracket() {
+            let json_str = r#"{"key": "value"}}"#;
+            let result = extract_json_object(json_str, 0);
+
+            // Should extract the valid JSON, ignoring extra bracket
+            assert!(result.is_some());
+            let extracted = result.unwrap();
+            assert_eq!(extracted, r#"{"key": "value"}"#);
+        }
+
+        // ─────────────────────────────────────────────────────────────────────────
+        // EDGE CASE: Empty or whitespace inputs
+        // ─────────────────────────────────────────────────────────────────────────
+
+        #[test]
+        fn test_empty_tool_name() {
+            let output = r#"<tool_call>
+{"name": "", "arguments": {"key": "value"}}
+</tool_call>"#;
+
+            let calls = detect_tool_calls(output, ModelFamily::Qwen);
+
+            // Should still parse, empty name is valid JSON
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].name, "");
+        }
+
+        #[test]
+        fn test_whitespace_only_buffer() {
+            let buffer = "   \n\t   ";
+            let result = try_extract_complete_tool_call(buffer, ModelFamily::Qwen);
+
+            assert!(!result.found);
+            assert!(result.call.is_none());
+        }
+
+        #[test]
+        fn test_null_arguments() {
+            let output = r#"<tool_call>
+{"name": "test", "arguments": null}
+</tool_call>"#;
+
+            let calls = detect_tool_calls(output, ModelFamily::Qwen);
+
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].arguments, "null");
+        }
+
+        // ─────────────────────────────────────────────────────────────────────────
+        // EDGE CASE: Unicode and special characters
+        // ─────────────────────────────────────────────────────────────────────────
+
+        #[test]
+        fn test_unicode_in_arguments() {
+            let output = r#"<tool_call>
+{"name": "test", "arguments": {"message": "Hello 世界 🌍"}}
+</tool_call>"#;
+
+            let calls = detect_tool_calls(output, ModelFamily::Qwen);
+
+            assert_eq!(calls.len(), 1);
+            let args: serde_json::Value = serde_json::from_str(&calls[0].arguments).unwrap();
+            assert_eq!(args["message"], "Hello 世界 🌍");
+        }
+
+        #[test]
+        fn test_brackets_in_string_values() {
+            // Brackets inside strings should not confuse the parser
+            let output = r#"<tool_call>
+{"name": "test", "arguments": {"code": "arr[0] = {a: 1}"}}
+</tool_call>"#;
+
+            let calls = detect_tool_calls(output, ModelFamily::Qwen);
+
+            assert_eq!(calls.len(), 1);
+            let args: serde_json::Value = serde_json::from_str(&calls[0].arguments).unwrap();
+            assert_eq!(args["code"], "arr[0] = {a: 1}");
+        }
+
+        // ─────────────────────────────────────────────────────────────────────────
+        // EDGE CASE: Very deeply nested JSON (stress test)
+        // ─────────────────────────────────────────────────────────────────────────
+
+        #[test]
+        fn test_ten_levels_deep_nesting() {
+            let output = r#"<tool_call>
+{"name": "deep", "arguments": {"l1": {"l2": {"l3": {"l4": {"l5": {"l6": {"l7": {"l8": {"l9": {"l10": "bottom"}}}}}}}}}}}
+</tool_call>"#;
+
+            let calls = detect_tool_calls(output, ModelFamily::Qwen);
+
+            assert_eq!(calls.len(), 1);
+            let args: serde_json::Value = serde_json::from_str(&calls[0].arguments).unwrap();
+            assert_eq!(
+                args["l1"]["l2"]["l3"]["l4"]["l5"]["l6"]["l7"]["l8"]["l9"]["l10"],
+                "bottom"
+            );
+        }
+    }
+
     mod phase3_unknown_tool_logging {
         use super::*;
 
@@ -1919,10 +2165,11 @@ More text after."#;
 
             let result = validate_detected_calls(&detected, &tools);
 
-            // Unknown tool should be reported but still returned
+            // Unknown tool should be reported
             assert_eq!(result.unknown_tools.len(), 1);
             assert_eq!(result.unknown_tools[0], "unknown_tool");
-            assert_eq!(result.valid_calls.len(), 1);  // Still returned for client handling
+            // valid_calls should NOT contain unknown tools
+            assert_eq!(result.valid_calls.len(), 0);
         }
     }
 }
