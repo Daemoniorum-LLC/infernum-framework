@@ -291,9 +291,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "17fb443750974ddd994f47fd0fb9553e58065cdf978c549ba3f733f291b655c9"
 dependencies = [
  "arcanum-asymmetric",
- "arcanum-core 0.1.2",
- "arcanum-hash 0.1.2",
- "arcanum-signatures 0.1.2",
+ "arcanum-core",
+ "arcanum-hash",
+ "arcanum-signatures",
  "arcanum-symmetric",
  "serde",
  "serde_json",
@@ -307,7 +307,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "86445d7781e4a4560684393f4616a5cb1d2b98199de2cdce7f31b648dd9bad89"
 dependencies = [
  "aes-gcm",
- "arcanum-core 0.1.2",
+ "arcanum-core",
  "chacha20poly1305",
  "elliptic-curve",
  "hex",
@@ -323,41 +323,6 @@ dependencies = [
  "subtle",
  "x25519-dalek",
  "x448",
- "zeroize",
-]
-
-[[package]]
-name = "arcanum-core"
-version = "0.1.0"
-dependencies = [
- "arrayvec",
- "async-trait",
- "base32ct",
- "base64ct",
- "bech32",
- "bitvec",
- "blake3",
- "bs58",
- "bytes",
- "chrono",
- "constant_time_eq 0.3.1",
- "generic-array 1.3.5",
- "getrandom 0.2.17",
- "hex",
- "lru",
- "multibase",
- "once_cell",
- "parking_lot",
- "rand 0.8.5",
- "rand_chacha 0.3.1",
- "rand_core 0.6.4",
- "secrecy",
- "serde",
- "smallvec",
- "subtle",
- "thiserror 2.0.17",
- "typenum",
- "uuid",
  "zeroize",
 ]
 
@@ -400,27 +365,12 @@ dependencies = [
 
 [[package]]
 name = "arcanum-hash"
-version = "0.1.0"
-dependencies = [
- "arcanum-core 0.1.0",
- "arcanum-primitives 0.1.0",
- "blake3",
- "digest 0.10.7",
- "hex",
- "rand 0.8.5",
- "serde",
- "thiserror 2.0.17",
- "zeroize",
-]
-
-[[package]]
-name = "arcanum-hash"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "60a2cf19c13b11256a969c0e7db4c057c59e4313212cc160950754c457142a33"
 dependencies = [
- "arcanum-core 0.1.2",
- "arcanum-primitives 0.1.2",
+ "arcanum-core",
+ "arcanum-primitives",
  "argon2",
  "blake3",
  "digest 0.10.7",
@@ -443,10 +393,10 @@ checksum = "ec71a7370edebcb7a9814ff355b40990326b6db97367d38c017333ed858641b8"
 dependencies = [
  "arcanum-agile",
  "arcanum-asymmetric",
- "arcanum-core 0.1.2",
- "arcanum-hash 0.1.2",
+ "arcanum-core",
+ "arcanum-hash",
  "arcanum-pqc",
- "arcanum-signatures 0.1.2",
+ "arcanum-signatures",
  "arcanum-symmetric",
  "arcanum-threshold",
  "arcanum-zkp",
@@ -462,8 +412,8 @@ version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8e6fea83d3ddd39a06d3f8f2346731a9d8c6a2d5d86a6784f77cc50693e359d1"
 dependencies = [
- "arcanum-core 0.1.2",
- "arcanum-primitives 0.1.2",
+ "arcanum-core",
+ "arcanum-primitives",
  "getrandom 0.2.17",
  "hex",
  "hkdf",
@@ -481,15 +431,6 @@ dependencies = [
 
 [[package]]
 name = "arcanum-primitives"
-version = "0.1.0"
-dependencies = [
- "rayon",
- "subtle",
- "zeroize",
-]
-
-[[package]]
-name = "arcanum-primitives"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc5d848056ac91c569b46eeaa7461baa9ac5c3c454d1ff5139a833a62c303021"
@@ -501,27 +442,11 @@ dependencies = [
 
 [[package]]
 name = "arcanum-signatures"
-version = "0.1.0"
-dependencies = [
- "arcanum-core 0.1.0",
- "ed25519-dalek",
- "elliptic-curve",
- "hex",
- "rand 0.8.5",
- "rand_core 0.6.4",
- "serde",
- "signature",
- "thiserror 2.0.17",
- "zeroize",
-]
-
-[[package]]
-name = "arcanum-signatures"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "598b332c22c674e89cf15f6fdb6e13a141f681226c350704c730414f2ca764d8"
 dependencies = [
- "arcanum-core 0.1.2",
+ "arcanum-core",
  "ecdsa",
  "ed25519-dalek",
  "elliptic-curve",
@@ -547,8 +472,8 @@ dependencies = [
  "aes",
  "aes-gcm",
  "aes-gcm-siv",
- "arcanum-core 0.1.2",
- "arcanum-primitives 0.1.2",
+ "arcanum-core",
+ "arcanum-primitives",
  "chacha20",
  "chacha20poly1305",
  "cipher",
@@ -566,7 +491,7 @@ version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "522956297bcb3bf9da288056deeead6a1915ce02c050d682fae439f3ed935b27"
 dependencies = [
- "arcanum-core 0.1.2",
+ "arcanum-core",
  "curve25519-dalek",
  "frost-core",
  "frost-ed25519",
@@ -586,7 +511,7 @@ version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ae707570a8c4af7568aab44a0cf914c875ef40113b3f9ea32e8a96a00a57a5b7"
 dependencies = [
- "arcanum-core 0.1.2",
+ "arcanum-core",
  "bulletproofs",
  "curve25519-dalek",
  "curve25519-dalek-ng",
@@ -5832,8 +5757,8 @@ version = "0.1.0"
 dependencies = [
  "abaddon",
  "anyhow",
- "arcanum-core 0.1.2",
- "arcanum-hash 0.1.2",
+ "arcanum-core",
+ "arcanum-hash",
  "arcanum-symmetric",
  "async-stream",
  "async-trait",
@@ -7282,11 +7207,12 @@ dependencies = [
 name = "moloch-core"
 version = "0.1.0"
 dependencies = [
- "arcanum-hash 0.1.0",
- "arcanum-signatures 0.1.0",
+ "arcanum-hash",
+ "arcanum-signatures",
  "bincode",
  "bumpalo",
  "chrono",
+ "chrono-tz",
  "derive_more",
  "hex",
  "rand 0.8.5",
@@ -7301,11 +7227,11 @@ dependencies = [
 name = "moloch-holocrypt"
 version = "0.1.0"
 dependencies = [
- "arcanum-core 0.1.2",
- "arcanum-hash 0.1.2",
+ "arcanum-core",
+ "arcanum-hash",
  "arcanum-holocrypt",
  "arcanum-pqc",
- "arcanum-signatures 0.1.2",
+ "arcanum-signatures",
  "arcanum-symmetric",
  "arcanum-threshold",
  "arcanum-zkp",
