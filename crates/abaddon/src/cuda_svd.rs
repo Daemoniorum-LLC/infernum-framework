@@ -5,6 +5,7 @@
 //! - GPU-resident deflation with `ger` (eliminates CPU round-trips)
 //! - GPU normalization with `nrm2` + `scal`
 
+/// CUDA-accelerated SVD using cuBLAS power iteration.
 #[cfg(feature = "cuda")]
 pub mod cuda {
     use std::sync::Arc;
@@ -64,7 +65,7 @@ pub mod cuda {
             rank: usize,
             iterations: usize,
         ) -> Result<(Vec<f32>, Vec<f32>, Vec<f32>), Box<dyn std::error::Error>> {
-            let mut d_matrix: CudaSlice<f32> = self.device.htod_sync_copy(matrix)?;
+            let d_matrix: CudaSlice<f32> = self.device.htod_sync_copy(matrix)?;
             self.svd_power_iteration_gpu(d_matrix, rows, cols, rank, iterations)
         }
 
@@ -256,13 +257,14 @@ pub mod cuda {
     }
 }
 
+/// Stub module when CUDA is not enabled.
 #[cfg(not(feature = "cuda"))]
 pub mod cuda {
-    //! Stub module when CUDA is not enabled.
-
+    /// GPU SVD stub (requires CUDA feature).
     pub struct GpuSvd;
 
     impl GpuSvd {
+        /// Create new GPU SVD context (returns error without CUDA).
         pub fn new(_device: std::sync::Arc<()>) -> Result<Self, std::io::Error> {
             Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
@@ -270,6 +272,7 @@ pub mod cuda {
             ))
         }
 
+        /// Compute truncated SVD (returns error without CUDA).
         pub fn svd_power_iteration(
             &self,
             _matrix: &[f32],

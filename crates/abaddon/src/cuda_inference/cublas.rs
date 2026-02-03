@@ -46,8 +46,11 @@ pub enum CublasComputeType {
 #[repr(i32)]
 #[derive(Debug, Clone, Copy)]
 pub enum CudaDataType {
+    /// 16-bit floating point.
     F16 = 2,
+    /// 32-bit floating point.
     F32 = 0,
+    /// 16-bit brain floating point.
     BF16 = 14,
 }
 

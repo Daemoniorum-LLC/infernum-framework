@@ -13,7 +13,6 @@ use crossbeam::channel::{self, Receiver, Sender};
 
 use haagenti::holotensor::{
     HolographicEncoding, HoloTensorHeader, HoloFragment, LrdfEncoder,
-    SpectralDecoder,
 };
 use haagenti::compressive::{CompressiveSpectralEncoder, CompressiveSpectralDecoder};
 use haagenti::tensor::DType;
@@ -283,6 +282,7 @@ pub struct HoloModelConverter {
     tensors_processed: AtomicUsize,
     bytes_processed: AtomicUsize,
     /// Arena allocator for fragment buffer allocations (Phase 4 optimization)
+    #[allow(dead_code)]
     fragment_arena: super::arena::FragmentArena,
     #[cfg(feature = "cuda")]
     gpu_encoder: Option<std::sync::Arc<crate::gpu_lrdf::cuda::GpuLrdfEncoder>>,
@@ -1163,7 +1163,7 @@ impl HoloModelConverter {
             let work_tx = work_tx.clone();
             let files = Arc::clone(&files);
             let file_index = Arc::clone(&file_index);
-            let config = Arc::clone(&config);
+            let _config = Arc::clone(&config);
 
             let handle = thread::spawn(move || {
                 loop {

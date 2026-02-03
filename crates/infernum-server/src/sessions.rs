@@ -11,7 +11,7 @@ use axum::http::StatusCode;
 use axum::response::sse::{Event, Sse};
 use axum::response::IntoResponse;
 use axum::Json;
-use futures::stream::{self, Stream};
+use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, RwLock};
 use tokio_stream::wrappers::BroadcastStream;
@@ -129,21 +129,33 @@ impl AgentSession {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEventData {
     /// Agent thinking/reasoning.
-    Thought { content: String },
+    Thought {
+        /// The thought content.
+        content: String,
+    },
     /// Tool invocation.
     ToolCall {
+        /// Tool call identifier.
         id: String,
+        /// Tool name.
         name: String,
+        /// Tool input arguments.
         input: serde_json::Value,
     },
     /// Tool execution result.
     ToolResult {
+        /// Tool call identifier.
         id: String,
+        /// Tool output value.
         output: serde_json::Value,
+        /// Whether the tool executed successfully.
         success: bool,
     },
     /// Error occurred.
-    Error { message: String },
+    Error {
+        /// Error message.
+        message: String,
+    },
 }
 
 /// Session events broadcast to subscribers.
@@ -151,25 +163,38 @@ pub enum AgentEventData {
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum SessionEvent {
     /// New session started.
-    SessionStarted { session: AgentSession },
+    SessionStarted {
+        /// The newly created session.
+        session: AgentSession,
+    },
     /// Session state updated.
     SessionUpdated {
+        /// Session identifier.
         session_id: String,
+        /// Current session status.
         status: SessionStatus,
+        /// Current iteration number.
         iteration: u32,
+        /// Updated event counts.
         event_counts: EventCounts,
     },
     /// Agent event occurred within session.
     AgentEvent {
+        /// Session identifier.
         session_id: String,
+        /// The agent event data.
         #[serde(flatten)]
         data: AgentEventData,
     },
     /// Session ended.
     SessionEnded {
+        /// Session identifier.
         session_id: String,
+        /// Final session status.
         status: SessionStatus,
+        /// Total session duration in milliseconds.
         duration_ms: u64,
+        /// Final answer produced by the agent, if any.
         final_answer: Option<String>,
     },
 }

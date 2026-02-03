@@ -88,8 +88,8 @@ impl CacheStats {
 /// A cached fragment entry.
 #[derive(Debug, Clone)]
 struct CacheEntry {
-    /// Fragment identifier.
-    fragment_id: String,
+    /// Fragment identifier (stored for diagnostics; keyed in HashMap).
+    _fragment_id: String,
     /// Size in bytes.
     size: u64,
     /// Current tier.
@@ -189,7 +189,7 @@ impl FragmentCache {
         self.ensure_capacity(size, tier);
 
         let entry = CacheEntry {
-            fragment_id: fragment_id.clone(),
+            _fragment_id: fragment_id.clone(),
             size,
             tier,
             last_access: Instant::now(),
@@ -340,7 +340,7 @@ impl FragmentCache {
         });
 
         let mut freed = 0u64;
-        for (id, _, size, _) in candidates {
+        for (id, _, _size, _) in candidates {
             if freed >= needed {
                 break;
             }

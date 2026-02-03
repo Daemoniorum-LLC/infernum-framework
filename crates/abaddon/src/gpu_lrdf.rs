@@ -3,6 +3,7 @@
 //! Uses cuBLAS via cuda_svd for accelerated SVD computation, producing
 //! fragments compatible with haagenti's LrdfDecoder.
 
+/// CUDA-accelerated LRDF encoding using GPU SVD.
 #[cfg(feature = "cuda")]
 pub mod cuda {
     use std::sync::Arc;
@@ -18,6 +19,7 @@ pub mod cuda {
         gpu_svd: GpuSvd,
         num_fragments: u16,
         max_rank: usize,
+        #[allow(dead_code)]
         seed: u64,
     }
 
@@ -196,19 +198,23 @@ pub mod cuda {
     }
 }
 
+/// Stub module when CUDA is not enabled.
 #[cfg(not(feature = "cuda"))]
 pub mod cuda {
-    //! Stub module when CUDA is not enabled.
-
+    /// GPU LRDF encoder stub (requires CUDA feature).
     pub struct GpuLrdfEncoder;
 
+    /// GPU-produced holographic fragment stub.
     #[derive(Debug, Clone)]
     pub struct GpuHoloFragment {
+        /// Fragment index.
         pub index: u16,
+        /// Fragment data.
         pub data: Vec<u8>,
     }
 
     impl GpuLrdfEncoder {
+        /// Create new encoder (returns error without CUDA).
         pub fn new(
             _device: std::sync::Arc<()>,
             _num_fragments: u16,
@@ -220,10 +226,12 @@ pub mod cuda {
             ))
         }
 
+        /// Set maximum rank (no-op without CUDA).
         pub fn with_max_rank(self, _rank: usize) -> Self {
             self
         }
 
+        /// Encode 2D matrix (returns error without CUDA).
         pub fn encode_2d(
             &self,
             _data: &[f32],

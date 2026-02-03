@@ -18,7 +18,7 @@ flash-attn = ["cuda", "dep:candle-flash-attn"]
 cuda-experimental = ["cuda"]  # Experimental CUDA kernels (warp-parallel LZ4, etc.)
 mkl = ["candle-core/mkl"]
 accelerate = ["candle-core/accelerate"]
-# neural-compression = ["dep:haagenti-neural"]
+neural-compression = []  # TODO(#TBD): add dep:haagenti-neural when available
 
 [dependencies]
 infernum-core = { path = "../infernum-core", version = "0.1.0" }

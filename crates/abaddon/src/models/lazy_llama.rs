@@ -41,9 +41,8 @@
 //! ```
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
-use candle_core::{DType, Device, IndexOp, Module, Result as CandleResult, Tensor, D};
+use candle_core::{DType, Device, Module, Result as CandleResult, Tensor, D};
 use candle_nn::{Embedding, Linear};
 
 use crate::attention_cache::{attention_with_cache, CacheType, KvCache, KvCacheConfig, StandardCache};
@@ -107,6 +106,7 @@ impl ExternalKvStore {
     }
 
     /// Clear all stored caches.
+    #[allow(dead_code)]
     fn clear(&mut self) {
         self.caches.clear();
     }
@@ -598,7 +598,7 @@ impl LazyLlama {
     }
 
     fn load_norm(
-        size: usize,
+        _size: usize,
         eps: f64,
         vb: &LazyVarBuilder,
         prefix: &str,
@@ -610,8 +610,8 @@ impl LazyLlama {
     fn load_linear(
         vb: &LazyVarBuilder,
         name: &str,
-        in_dim: usize,
-        out_dim: usize,
+        _in_dim: usize,
+        _out_dim: usize,
         bias: bool,
     ) -> Result<Linear, LazyLoadError> {
         let weight = vb.get(&format!("{}.weight", name))?;
@@ -623,6 +623,7 @@ impl LazyLlama {
         Ok(Linear::new(weight, bias_tensor))
     }
 
+    #[allow(dead_code)]
     fn create_causal_mask(
         seq_len: usize,
         start_pos: usize,

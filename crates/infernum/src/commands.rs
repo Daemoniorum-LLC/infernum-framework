@@ -23,7 +23,7 @@ pub async fn serve(
     holo_target_quality: f32,
 ) -> Result<()> {
     use infernum_server::{Server, ServerConfig};
-    use std::path::Path;
+    
 
     // Require a model - from args, env var, or prompt interactively
     let model = match model {

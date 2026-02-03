@@ -34,10 +34,9 @@
 //! assert!(event.validate().is_ok());
 //! ```
 
-use chrono::Utc;
 use moloch_core::crypto::{PublicKey, SecretKey, Hash};
 use moloch_core::event::{
-    ActorId, ActorKind, AuditEvent, AuditEventBuilder, EventType, Outcome,
+    ActorId, ActorKind, AuditEvent, EventType, Outcome,
     ResourceId, ResourceKind,
 };
 use serde::{Deserialize, Serialize};
@@ -561,7 +560,6 @@ impl EncryptedIdentityStore {
     /// Save encrypted identity to a file.
     ///
     /// The file format is JSON for interoperability.
-    #[cfg(feature = "std")]
     pub fn save_to_file(encrypted: &EncryptedIdentity, path: impl AsRef<std::path::Path>) -> Result<()> {
         let json = serde_json::to_string_pretty(encrypted)
             .map_err(|e| AgentIdentityError::Serialization(e.to_string()))?;
@@ -573,7 +571,6 @@ impl EncryptedIdentityStore {
     }
 
     /// Load encrypted identity from a file.
-    #[cfg(feature = "std")]
     pub fn load_from_file(path: impl AsRef<std::path::Path>) -> Result<EncryptedIdentity> {
         let json = std::fs::read_to_string(path)
             .map_err(|e| AgentIdentityError::Serialization(format!("failed to read file: {e}")))?;

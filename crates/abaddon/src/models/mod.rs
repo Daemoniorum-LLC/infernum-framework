@@ -9,6 +9,7 @@ pub mod lazy_llama;
 pub mod lazy_qwen2;
 pub mod llama;
 pub mod qwen2;
+#[allow(dead_code)]
 mod quantized_llama;
 
 pub use lazy_llama::{LazyLlama, LazyLoadError, LazyStats};

@@ -45,8 +45,11 @@ extern "C" {
 #[repr(i32)]
 #[derive(Debug, Clone, Copy)]
 pub enum CudaMemcpyKind {
+    /// Copy from host memory to device memory.
     HostToDevice = 1,
+    /// Copy from device memory to host memory.
     DeviceToHost = 2,
+    /// Copy from device memory to device memory.
     DeviceToDevice = 3,
 }
 

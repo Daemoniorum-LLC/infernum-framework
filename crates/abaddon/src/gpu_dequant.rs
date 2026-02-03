@@ -34,11 +34,12 @@
 //! └─────────────────────────────────────────────────────────────────┘
 //! ```
 
+/// CUDA-accelerated INT4/INT8 dequantization implementation.
 #[cfg(feature = "cuda")]
 pub mod cuda {
     use std::sync::Arc;
 
-    use candle_core::{DType, Device, Tensor};
+    use candle_core::{Device, Tensor};
     use cudarc::driver::{CudaDevice, CudaSlice, LaunchAsync, LaunchConfig};
     use cudarc::nvrtc::Ptx;
 
@@ -378,32 +379,70 @@ pub mod cuda {
     /// Errors from GPU dequantization operations.
     #[derive(Debug, thiserror::Error)]
     pub enum GpuDequantError {
+        /// CUDA device initialization failed.
         #[error("Failed to initialize CUDA device {device_id}: {message}")]
-        DeviceInit { device_id: usize, message: String },
+        DeviceInit {
+            /// CUDA device ID.
+            device_id: usize,
+            /// Error message.
+            message: String,
+        },
 
+        /// Kernel loading failed.
         #[error("Failed to load kernel: {message}")]
-        KernelLoad { message: String },
+        KernelLoad {
+            /// Error message.
+            message: String,
+        },
 
+        /// Required kernel not loaded.
         #[error("Kernel not loaded: {kernel}")]
-        KernelNotLoaded { kernel: String },
+        KernelNotLoaded {
+            /// Kernel name.
+            kernel: String,
+        },
 
+        /// Kernel execution failed.
         #[error("Kernel execution failed: {message}")]
-        KernelExec { message: String },
+        KernelExec {
+            /// Error message.
+            message: String,
+        },
 
+        /// GPU memory allocation failed.
         #[error("Memory allocation failed: {message}")]
-        MemoryAlloc { message: String },
+        MemoryAlloc {
+            /// Error message.
+            message: String,
+        },
 
+        /// GPU memory copy failed.
         #[error("Memory copy failed: {message}")]
-        MemoryCopy { message: String },
+        MemoryCopy {
+            /// Error message.
+            message: String,
+        },
 
+        /// GPU synchronization failed.
         #[error("Synchronization failed: {message}")]
-        Synchronize { message: String },
+        Synchronize {
+            /// Error message.
+            message: String,
+        },
 
+        /// Invalid input data.
         #[error("Invalid input: {message}")]
-        InvalidInput { message: String },
+        InvalidInput {
+            /// Error message.
+            message: String,
+        },
 
+        /// Candle tensor creation failed.
         #[error("Tensor creation failed: {message}")]
-        TensorCreate { message: String },
+        TensorCreate {
+            /// Error message.
+            message: String,
+        },
     }
 
     /// INT4 dequantization kernel in PTX.
@@ -1055,10 +1094,9 @@ INT8_DONE:
     }
 }
 
-// Stub implementation when CUDA is not available
+/// Stub module when CUDA is not available.
 #[cfg(not(feature = "cuda"))]
 pub mod cuda {
-    //! Stub module when CUDA is not enabled.
 
     /// GPU dequantization context (stub).
     pub struct GpuDequantContext;

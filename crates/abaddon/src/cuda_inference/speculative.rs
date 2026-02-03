@@ -36,7 +36,6 @@ use std::sync::Arc;
 
 use cudarc::driver::CudaDevice;
 
-use super::arch::ModelConfig;
 use super::compute::ComputeEngine;
 use super::generate::SamplingParams;
 use super::kv_cache::KvCache;
@@ -118,6 +117,7 @@ pub struct SpeculativeDecoder {
     config: SpeculativeConfig,
 
     /// CUDA device.
+    #[allow(dead_code)]
     device: Arc<CudaDevice>,
 
     /// Consecutive rejection counter.

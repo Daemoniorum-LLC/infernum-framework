@@ -149,8 +149,8 @@ pub enum DetectionMethod {
 
 /// GPU detector that tries multiple detection methods.
 pub struct GpuDetector {
-    /// Timeout for detection commands.
-    timeout: Duration,
+    /// Timeout for detection commands (not yet wired into detection logic).
+    _timeout: Duration,
 }
 
 impl Default for GpuDetector {
@@ -163,13 +163,13 @@ impl GpuDetector {
     /// Creates a new GPU detector.
     pub fn new() -> Self {
         Self {
-            timeout: Duration::from_secs(5),
+            _timeout: Duration::from_secs(5),
         }
     }
 
     /// Creates a detector with custom timeout.
     pub fn with_timeout(timeout: Duration) -> Self {
-        Self { timeout }
+        Self { _timeout: timeout }
     }
 
     /// Detects all available GPUs.
@@ -515,7 +515,7 @@ mod tests {
     #[test]
     fn test_detector_with_timeout() {
         let detector = GpuDetector::with_timeout(Duration::from_secs(10));
-        assert_eq!(detector.timeout, Duration::from_secs(10));
+        assert_eq!(detector._timeout, Duration::from_secs(10));
     }
 
     // Integration test that actually calls nvidia-smi (if available)

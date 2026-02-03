@@ -22,7 +22,7 @@ use half::{bf16, f16};
 use haagenti::tensor::{CompressionAlgorithm, DType as HctDType, HctHeader, HctReader, FLAG_HOLOGRAPHIC};
 use haagenti::holotensor::{HoloTensorReader, HoloTensorHeader, HoloTensorDecoder, HoloFragment, HOLO_MAGIC};
 use haagenti::compressive::CompressiveSpectralDecoder;
-use haagenti::{Lz4Decompressor, ZstdDecompressor, Decompressor};
+use haagenti::{Lz4Decompressor, ZstdDecompressor};
 use std::io::{Read, Seek, SeekFrom};
 
 /// Magic bytes for V3 spectral format (DCT with bitmap + f16 coefficients)
@@ -817,14 +817,14 @@ pub fn load_hct_directory_gpu(
     device: &Device,
     dtype: DType,
 ) -> Result<HashMap<String, Tensor>, HctError> {
-    use crate::gpu_lz4::{GpuLz4Context, GpuLz4Error};
-    use std::io::{Read, Seek, SeekFrom};
+    use crate::gpu_lz4::GpuLz4Context;
+    
 
     let dir = dir.as_ref();
 
     // Try to create GPU context
     let gpu_ctx = match device {
-        Device::Cuda(cuda_dev) => {
+        Device::Cuda(_cuda_dev) => {
             // Try to get device ordinal
             match GpuLz4Context::new(0) {
                 Ok(mut ctx) => {
@@ -950,7 +950,7 @@ fn gpu_decompress_tensor(
         message: e.to_string(),
     })?;
 
-    let mut reader = BufReader::new(file);
+    let reader = BufReader::new(file);
     let mut hct_reader = HctReader::new(reader).map_err(|e| HctError::Format {
         message: format!("Failed to parse HCT: {}", e),
     })?;
@@ -1026,7 +1026,7 @@ pub fn load_hct_directory_gpu_progressive(
     dtype: DType,
     min_quality: f32,
 ) -> Result<ProgressiveLoadResult, HctError> {
-    use crate::gpu_holo::{GpuHoloContext, StreamingHoloContext};
+    use crate::gpu_holo::StreamingHoloContext;
     use crate::gpu_lz4::GpuLz4Context;
 
     let dir = dir.as_ref();
