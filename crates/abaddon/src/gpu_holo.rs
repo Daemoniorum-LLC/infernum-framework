@@ -4750,6 +4750,124 @@ pub mod cuda {
     }
 }
 
+// ==================== Phase 4: gpu_holo Tests ====================
+// Trust boundary §6 (HoloTensor Reconstruction) from GPU-CODEC-PIPELINE-TDD.md.
+
+#[cfg(test)]
+mod tests {
+    use super::cuda::*;
+
+    /// Stub test: non-CUDA build returns CudaNotEnabled.
+    #[test]
+    #[cfg(not(feature = "cuda"))]
+    fn test_holo_context_stub_not_enabled() {
+        match GpuHoloContext::new(0) {
+            Err(GpuHoloError::CudaNotEnabled) => {}
+            other => panic!("Expected CudaNotEnabled, got {:?}", other.err()),
+        }
+    }
+
+    /// Stub test: StreamingHoloContext non-CUDA build returns CudaNotEnabled.
+    #[test]
+    #[cfg(not(feature = "cuda"))]
+    fn test_streaming_holo_context_stub_not_enabled() {
+        match StreamingHoloContext::new(0, 2) {
+            Err(GpuHoloError::CudaNotEnabled) => {}
+            other => panic!("Expected CudaNotEnabled, got {:?}", other.err()),
+        }
+    }
+
+    /// CUDA: context creation succeeds with valid device.
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn test_holo_context_creation() {
+        match GpuHoloContext::new(0) {
+            Ok(ctx) => {
+                assert_eq!(ctx.device_id(), 0);
+            }
+            Err(GpuHoloError::DeviceInit { .. }) => {
+                eprintln!("Skipping: no CUDA device available");
+            }
+            Err(e) => panic!("Unexpected error: {:?}", e),
+        }
+    }
+
+    /// CUDA: spectral kernel loading.
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn test_holo_spectral_kernel_load() {
+        let mut ctx = match GpuHoloContext::new(0) {
+            Ok(ctx) => ctx,
+            Err(_) => {
+                eprintln!("Skipping: no CUDA device available");
+                return;
+            }
+        };
+
+        ctx.load_spectral_kernel().expect("spectral kernel should load");
+        // Second load should be idempotent
+        ctx.load_spectral_kernel().expect("second load should succeed");
+    }
+
+    /// CUDA: RPH kernel loading.
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn test_holo_rph_kernel_load() {
+        let mut ctx = match GpuHoloContext::new(0) {
+            Ok(ctx) => ctx,
+            Err(_) => {
+                eprintln!("Skipping: no CUDA device available");
+                return;
+            }
+        };
+
+        ctx.load_rph_kernel().expect("RPH kernel should load");
+    }
+
+    /// CUDA: LRDF kernel loading.
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn test_holo_lrdf_kernel_load() {
+        let mut ctx = match GpuHoloContext::new(0) {
+            Ok(ctx) => ctx,
+            Err(_) => {
+                eprintln!("Skipping: no CUDA device available");
+                return;
+            }
+        };
+
+        ctx.load_lrdf_kernel().expect("LRDF kernel should load");
+    }
+
+    /// CUDA: invalid device ID returns error.
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn test_holo_invalid_device() {
+        let result = GpuHoloContext::new(999);
+        assert!(result.is_err(), "Device 999 should not exist");
+    }
+
+    /// CUDA: KernelConfig defaults are sane.
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn test_holo_kernel_config_defaults() {
+        let ctx = match GpuHoloContext::new(0) {
+            Ok(ctx) => ctx,
+            Err(_) => {
+                eprintln!("Skipping: no CUDA device available");
+                return;
+            }
+        };
+
+        let config = ctx.kernel_config();
+        // Block dimensions should be reasonable (> 0 and <= 1024)
+        assert!(config.block_size_1d > 0 && config.block_size_1d <= 1024,
+            "1D block size should be 1-1024, got {}", config.block_size_1d);
+        assert!(config.block_size_2d > 0 && config.block_size_2d <= 32,
+            "2D block size should be 1-32, got {}", config.block_size_2d);
+    }
+}
+
 // Re-exports
 pub use cuda::GpuHoloContext;
 #[cfg(feature = "cuda")]

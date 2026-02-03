@@ -63,6 +63,7 @@ fn bench_message_relevance_scoring(c: &mut Criterion) {
             },
             content: format!("Message {} with some content about Rust and programming", i),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         })
         .collect();
@@ -90,6 +91,7 @@ fn bench_context_optimization(c: &mut Criterion) {
                 role: Role::User,
                 content: format!("Message {} with content", i),
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             })
             .collect();

@@ -217,4 +217,251 @@ mod tests {
             assert!(result.is_err());
         }
     }
+
+    // ==================== Phase 4: FP8 CPU Reference Tests ====================
+    // Trust boundary §4 (Quantization Math) applied to FP8 formats.
+    //
+    // These CPU reference functions match the CUDA kernel math exactly,
+    // enabling cross-validation when a GPU is available.
+
+    /// CPU reference: FP8 E4M3 → F32.
+    /// Format: sign(1) + exponent(4) + mantissa(3)
+    /// Normal:    (-1)^s * 2^(e-7) * (1 + m/8)
+    /// Subnormal: (-1)^s * 2^(-6) * (m/8)
+    /// NaN:       e=15 && m=7
+    fn fp8_e4m3_to_f32_cpu(byte: u8) -> f32 {
+        let sign = (byte >> 7) & 1;
+        let exponent = (byte >> 3) & 0xF;
+        let mantissa = byte & 0x7;
+
+        let value = if exponent == 0 {
+            if mantissa == 0 {
+                0.0
+            } else {
+                // Subnormal: 2^(-6) * (m/8)
+                (mantissa as f32 / 8.0) * 2.0f32.powi(-6)
+            }
+        } else if exponent == 15 && mantissa == 7 {
+            f32::NAN
+        } else {
+            // Normal: 2^(e-7) * (1 + m/8)
+            (1.0 + mantissa as f32 / 8.0) * 2.0f32.powi(exponent as i32 - 7)
+        };
+
+        // Apply sign uniformly (zero branch returns unsigned 0.0, negated here to -0.0)
+        if sign == 1 && !value.is_nan() { -value } else { value }
+    }
+
+    /// CPU reference: FP8 E5M2 → F32.
+    /// Format: sign(1) + exponent(5) + mantissa(2)
+    /// Normal:    (-1)^s * 2^(e-15) * (1 + m/4)
+    /// Subnormal: (-1)^s * 2^(-14) * (m/4)
+    /// Inf:       e=31, m=0
+    /// NaN:       e=31, m!=0
+    fn fp8_e5m2_to_f32_cpu(byte: u8) -> f32 {
+        let sign = (byte >> 7) & 1;
+        let exponent = (byte >> 2) & 0x1F;
+        let mantissa = byte & 0x3;
+
+        let value = if exponent == 0 {
+            if mantissa == 0 {
+                0.0
+            } else {
+                // Subnormal: 2^(-14) * (m/4)
+                (mantissa as f32 / 4.0) * 2.0f32.powi(-14)
+            }
+        } else if exponent == 31 {
+            if mantissa == 0 {
+                // Infinity (sign handled by final sign application for zero;
+                // infinity needs explicit sign since we skip it below)
+                if sign == 1 { f32::NEG_INFINITY } else { f32::INFINITY }
+            } else {
+                f32::NAN
+            }
+        } else {
+            // Normal: 2^(e-15) * (1 + m/4)
+            (1.0 + mantissa as f32 / 4.0) * 2.0f32.powi(exponent as i32 - 15)
+        };
+
+        // Apply sign uniformly (zero branch returns unsigned 0.0, negated here to -0.0)
+        if sign == 1 && !value.is_nan() && !value.is_infinite() { -value } else { value }
+    }
+
+    /// E4M3: Zero (0x00 = +0, 0x80 = -0).
+    #[test]
+    fn test_fp8_e4m3_zero() {
+        let pos_zero = fp8_e4m3_to_f32_cpu(0x00);
+        let neg_zero = fp8_e4m3_to_f32_cpu(0x80);
+        assert_eq!(pos_zero, 0.0);
+        assert_eq!(neg_zero, -0.0);
+        assert!(pos_zero.is_sign_positive());
+        assert!(neg_zero.is_sign_negative());
+    }
+
+    /// E4M3: One = 0b0_0111_000 = 0x38 → 2^(7-7) * (1+0) = 1.0.
+    #[test]
+    fn test_fp8_e4m3_one() {
+        assert_eq!(fp8_e4m3_to_f32_cpu(0x38), 1.0);
+    }
+
+    /// E4M3: Negative one = 0b1_0111_000 = 0xB8 → -1.0.
+    #[test]
+    fn test_fp8_e4m3_neg_one() {
+        assert_eq!(fp8_e4m3_to_f32_cpu(0xB8), -1.0);
+    }
+
+    /// E4M3: Max normal = 0b0_1110_111 = 0x77 → 2^7 * (1+7/8) = 240.0.
+    #[test]
+    fn test_fp8_e4m3_max_normal() {
+        let val = fp8_e4m3_to_f32_cpu(0x77);
+        assert!((val - 240.0).abs() < 0.01, "Max normal should be 240, got {}", val);
+    }
+
+    /// E4M3: Smallest subnormal = 0b0_0000_001 = 0x01 → 2^(-6) * (1/8).
+    #[test]
+    fn test_fp8_e4m3_smallest_subnormal() {
+        let val = fp8_e4m3_to_f32_cpu(0x01);
+        let expected = 2.0f32.powi(-6) / 8.0; // 1/512 ≈ 0.001953
+        assert!((val - expected).abs() < 1e-7, "Smallest subnormal: expected {}, got {}", expected, val);
+    }
+
+    /// E4M3: NaN = 0b0_1111_111 = 0x7F.
+    #[test]
+    fn test_fp8_e4m3_nan() {
+        assert!(fp8_e4m3_to_f32_cpu(0x7F).is_nan());
+    }
+
+    /// E5M2: Zero (0x00 = +0, 0x80 = -0).
+    #[test]
+    fn test_fp8_e5m2_zero() {
+        assert_eq!(fp8_e5m2_to_f32_cpu(0x00), 0.0);
+        assert!(fp8_e5m2_to_f32_cpu(0x80).is_sign_negative());
+    }
+
+    /// E5M2: One = 0b0_01111_00 = 0x3C → 2^(15-15) * (1+0) = 1.0.
+    #[test]
+    fn test_fp8_e5m2_one() {
+        assert_eq!(fp8_e5m2_to_f32_cpu(0x3C), 1.0);
+    }
+
+    /// E5M2: Infinity = 0b0_11111_00 = 0x7C.
+    #[test]
+    fn test_fp8_e5m2_infinity() {
+        assert_eq!(fp8_e5m2_to_f32_cpu(0x7C), f32::INFINITY);
+        assert_eq!(fp8_e5m2_to_f32_cpu(0xFC), f32::NEG_INFINITY);
+    }
+
+    /// E5M2: NaN = 0b0_11111_01 = 0x7D.
+    #[test]
+    fn test_fp8_e5m2_nan() {
+        assert!(fp8_e5m2_to_f32_cpu(0x7D).is_nan());
+        assert!(fp8_e5m2_to_f32_cpu(0x7E).is_nan());
+        assert!(fp8_e5m2_to_f32_cpu(0x7F).is_nan());
+    }
+
+    /// Exhaustive E4M3: verify all 256 byte values produce sane f32 results.
+    #[test]
+    fn test_fp8_e4m3_exhaustive_sanity() {
+        for byte in 0u8..=255 {
+            let val = fp8_e4m3_to_f32_cpu(byte);
+            if byte == 0x7F || byte == 0xFF {
+                assert!(val.is_nan(), "Byte 0x{:02X} should be NaN", byte);
+            } else {
+                assert!(val.is_finite(), "Byte 0x{:02X} should be finite, got {}", byte, val);
+            }
+        }
+    }
+
+    /// Exhaustive E5M2: verify all 256 byte values produce sane f32 results.
+    #[test]
+    fn test_fp8_e5m2_exhaustive_sanity() {
+        for byte in 0u8..=255 {
+            let val = fp8_e5m2_to_f32_cpu(byte);
+            let exp = (byte >> 2) & 0x1F;
+            let man = byte & 0x3;
+            if exp == 31 && man != 0 {
+                assert!(val.is_nan(), "Byte 0x{:02X} should be NaN", byte);
+            } else if exp == 31 && man == 0 {
+                assert!(val.is_infinite(), "Byte 0x{:02X} should be Inf", byte);
+            } else {
+                assert!(val.is_finite(), "Byte 0x{:02X} should be finite, got {}", byte, val);
+            }
+        }
+    }
+
+    /// CUDA cross-validation: GPU fp8_e4m3_to_f32 matches CPU reference.
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn test_fp8_e4m3_gpu_matches_cpu() {
+        use std::sync::Arc;
+        use cudarc::driver::CudaDevice;
+
+        let device = match CudaDevice::new(0) {
+            Ok(d) => Arc::new(d),
+            Err(_) => {
+                eprintln!("Skipping: no CUDA device available");
+                return;
+            }
+        };
+
+        let converter = GpuDtypeConverter::new(Arc::clone(&device))
+            .expect("converter creation");
+
+        // Test all 256 byte values
+        let input: Vec<u8> = (0..=255).collect();
+        let gpu_result = converter.fp8_e4m3_to_f32_host(&input)
+            .expect("GPU conversion");
+
+        for (byte, &gpu_val) in input.iter().zip(gpu_result.iter()) {
+            let cpu_val = fp8_e4m3_to_f32_cpu(*byte);
+            if cpu_val.is_nan() {
+                assert!(gpu_val.is_nan(), "Byte 0x{:02X}: CPU=NaN, GPU={}", byte, gpu_val);
+            } else {
+                assert_eq!(
+                    gpu_val, cpu_val,
+                    "Byte 0x{:02X}: CPU={}, GPU={}", byte, cpu_val, gpu_val
+                );
+            }
+        }
+    }
+
+    /// CUDA cross-validation: GPU fp8_e5m2_to_f32 matches CPU reference.
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn test_fp8_e5m2_gpu_matches_cpu() {
+        use std::sync::Arc;
+        use cudarc::driver::CudaDevice;
+
+        let device = match CudaDevice::new(0) {
+            Ok(d) => Arc::new(d),
+            Err(_) => {
+                eprintln!("Skipping: no CUDA device available");
+                return;
+            }
+        };
+
+        let converter = GpuDtypeConverter::new(Arc::clone(&device))
+            .expect("converter creation");
+
+        let input: Vec<u8> = (0..=255).collect();
+        let gpu_result = converter.fp8_e5m2_to_f32_host(&input)
+            .expect("GPU conversion");
+
+        for (byte, &gpu_val) in input.iter().zip(gpu_result.iter()) {
+            let cpu_val = fp8_e5m2_to_f32_cpu(*byte);
+            if cpu_val.is_nan() {
+                assert!(gpu_val.is_nan(), "Byte 0x{:02X}: CPU=NaN, GPU={}", byte, gpu_val);
+            } else if cpu_val.is_infinite() {
+                assert_eq!(
+                    gpu_val, cpu_val,
+                    "Byte 0x{:02X}: CPU=Inf, GPU={}", byte, gpu_val
+                );
+            } else {
+                assert!(
+                    (gpu_val - cpu_val).abs() < 1e-10,
+                    "Byte 0x{:02X}: CPU={}, GPU={}", byte, cpu_val, gpu_val
+                );
+            }
+        }
+    }
 }

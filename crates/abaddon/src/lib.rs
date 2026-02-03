@@ -79,7 +79,6 @@ pub mod tokenizer;
 pub mod cuda_inference;
 #[cfg(feature = "cuda")]
 pub mod cuda_svd;
-#[cfg(feature = "cuda")]
 pub mod gpu_dtype;
 #[cfg(feature = "cuda")]
 pub mod gpu_lrdf;
@@ -93,7 +92,6 @@ pub use gguf::{GgufLoader, GgufMetadata, QuantizedModelConfig};
 pub use gpu_dequant::GpuDequantContext;
 #[cfg(feature = "cuda")]
 pub use gpu_dequant::GpuDequantError;
-#[cfg(feature = "cuda")]
 pub use gpu_dequant::INT4_BLOCK_SIZE;
 pub use gpu_fused::GpuFusedContext;
 #[cfg(feature = "cuda")]

@@ -124,10 +124,15 @@ impl MockInferenceEngine {
         // Return mock response matching the actual GenerateResponse structure
         Ok(GenerateResponse {
             request_id: RequestId::new(),
+            created: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64,
             model: ModelId::from("mock-model"),
             choices: vec![Choice {
                 index: 0,
                 text: config.default_response.clone(),
+                message: None,
                 finish_reason: Some(FinishReason::Stop),
                 logprobs: None,
             }],

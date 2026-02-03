@@ -586,6 +586,7 @@ impl DynamicContextManager {
             role: message.role.clone(),
             content,
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         })
     }
@@ -658,6 +659,7 @@ mod tests {
             role: Role::System,
             content: "You are a helpful assistant.".to_string(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         };
 
@@ -671,6 +673,7 @@ mod tests {
             role: Role::Assistant,
             content: "An error occurred while processing.".to_string(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         };
 
@@ -684,6 +687,7 @@ mod tests {
             role: Role::Assistant,
             content: "```rust\nfn main() {}\n```".to_string(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         };
 
@@ -740,9 +744,9 @@ mod tests {
             .with_complexity(ContextComplexity::Simple);
 
         let messages = vec![
-            Message { role: Role::System, content: "System prompt".to_string(), name: None, tool_call_id: None },
-            Message { role: Role::User, content: "User message".to_string(), name: None, tool_call_id: None },
-            Message { role: Role::Assistant, content: "Response".to_string(), name: None, tool_call_id: None },
+            Message { role: Role::System, content: "System prompt".to_string(), name: None, tool_calls: None, tool_call_id: None },
+            Message { role: Role::User, content: "User message".to_string(), name: None, tool_calls: None, tool_call_id: None },
+            Message { role: Role::Assistant, content: "Response".to_string(), name: None, tool_calls: None, tool_call_id: None },
         ];
 
         let optimized = manager.optimize(&messages);

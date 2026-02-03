@@ -671,12 +671,14 @@ Generate {breadth} distinct approaches now:"#
                 role: Role::System,
                 content: "You are an expert problem solver exploring multiple solution paths.".to_string(),
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
             Message {
                 role: Role::User,
                 content: prompt,
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
         ];
@@ -779,12 +781,14 @@ Generate the next step:"#
                     role: Role::System,
                     content: "You are following a specific solution path step by step.".to_string(),
                     name: None,
+                    tool_calls: None,
                     tool_call_id: None,
                 },
                 Message {
                     role: Role::User,
                     content: prompt,
                     name: None,
+                    tool_calls: None,
                     tool_call_id: None,
                 },
             ];
@@ -874,12 +878,14 @@ Evaluate this approach:"#
                 role: Role::System,
                 content: "You are an objective evaluator of solution approaches.".to_string(),
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
             Message {
                 role: Role::User,
                 content: prompt,
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
         ];
@@ -1028,12 +1034,14 @@ Decompose the task now:"#
                 role: Role::System,
                 content: "You are an expert at breaking complex problems into manageable subtasks.".to_string(),
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
             Message {
                 role: Role::User,
                 content: prompt,
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
         ];
@@ -1091,12 +1099,14 @@ Assign the tool:"#
                 role: Role::System,
                 content: "You are an expert at matching tasks to tools.".to_string(),
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
             Message {
                 role: Role::User,
                 content: prompt,
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
         ];
@@ -1409,12 +1419,14 @@ impl Planner for LLMPlanner {
                 content: "You are an expert task planner. Create detailed, actionable plans."
                     .to_string(),
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
             Message {
                 role: Role::User,
                 content: prompt,
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
         ];
@@ -1470,12 +1482,14 @@ impl Planner for LLMPlanner {
                 content: "You are an expert task planner. Revise plans based on feedback."
                     .to_string(),
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
             Message {
                 role: Role::User,
                 content: prompt,
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
         ];

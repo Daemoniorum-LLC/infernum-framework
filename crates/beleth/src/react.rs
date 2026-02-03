@@ -498,12 +498,14 @@ Action Input: The current weather in Tokyo is 22°C (72°F) with partly cloudy s
                 role: Role::System,
                 content: self.system_prompt.clone(),
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
             Message {
                 role: Role::User,
                 content: objective.to_string(),
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
         ];
@@ -546,6 +548,7 @@ Action Input: The current weather in Tokyo is 22°C (72°F) with partly cloudy s
                 role: Role::Assistant,
                 content: assistant_response.clone(),
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             });
 
@@ -636,6 +639,7 @@ Action Input: The current weather in Tokyo is 22°C (72°F) with partly cloudy s
                         role: Role::User,
                         content: format!("Observation: {}", observation_msg),
                         name: Some("system".to_string()),
+                        tool_calls: None,
                         tool_call_id: None,
                     });
                 }
@@ -654,6 +658,7 @@ Action Input: The current weather in Tokyo is 22°C (72°F) with partly cloudy s
                         role: Role::User,
                         content: "Please proceed with the best approach based on available information.".to_string(),
                         name: Some("system".to_string()),
+                        tool_calls: None,
                         tool_call_id: None,
                     });
                 }
@@ -678,6 +683,7 @@ Action Input: The current weather in Tokyo is 22°C (72°F) with partly cloudy s
                     role: Role::User,
                     content: format!("Self-reflection: {}", reflection),
                     name: Some("system".to_string()),
+                    tool_calls: None,
                     tool_call_id: None,
                 });
             }
@@ -786,12 +792,14 @@ Be concise and direct."#
                 role: Role::System,
                 content: "You are a self-reflective AI evaluating your own progress.".to_string(),
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
             Message {
                 role: Role::User,
                 content: reflection_prompt,
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
         ];
@@ -833,12 +841,14 @@ Respond with only a number between 0.0 and 1.0."#
                 role: Role::System,
                 content: "You evaluate answer quality objectively.".to_string(),
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
             Message {
                 role: Role::User,
                 content: eval_prompt,
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
         ];
@@ -903,12 +913,14 @@ Respond with only a number between 0.0 and 1.0."#
                 role: Role::System,
                 content: "You summarize conversations concisely, preserving important information.".to_string(),
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
             Message {
                 role: Role::User,
                 content: summary_prompt,
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
         ];
@@ -932,6 +944,7 @@ Respond with only a number between 0.0 and 1.0."#
             role: Role::User,
             content: format!("[Previous conversation summary]\n{}", summary),
             name: Some("system".to_string()),
+            tool_calls: None,
             tool_call_id: None,
         });
         new_messages.extend(recent);

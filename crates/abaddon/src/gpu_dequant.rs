@@ -42,8 +42,9 @@ pub mod cuda {
     use cudarc::driver::{CudaDevice, CudaSlice, LaunchAsync, LaunchConfig};
     use cudarc::nvrtc::Ptx;
 
-    /// Block size for INT4 dequantization (matches GPTQ default).
-    pub const INT4_BLOCK_SIZE: usize = 128;
+    /// Block size for INT4 dequantization (HCT-native).
+    /// Re-exports the module-level constant for backward compatibility.
+    pub const INT4_BLOCK_SIZE: usize = super::INT4_BLOCK_SIZE;
 
     /// GPU dequantization context.
     ///
@@ -526,7 +527,7 @@ DONE:
     .reg .u32 %r<16>;
     .reg .f32 %f<4>;
     .reg .b16 %h<4>;
-    .reg .pred %p<2>;
+    .reg .pred %p<3>;
 
     mov.u32 %r1, %ctaid.x;
     mov.u32 %r2, %ntid.x;
@@ -558,7 +559,7 @@ DONE:
     sub.s32 %r11, %r10, %r7;
     cvt.rn.f32.s32 %f1, %r11;
 
-    mov.b16 %h1, %r6;
+    cvt.u16.u32 %h1, %r6;
     cvt.f32.f16 %f2, %h1;
     mul.f32 %f3, %f1, %f2;
     cvt.rn.f16.f32 %h2, %f3;
@@ -619,7 +620,7 @@ BLOCK_DONE:
     cvt.rn.f32.s32 %f1, %r7;
 
     // Convert scale bits to F16, then F32
-    mov.b16 %h1, %r6;
+    cvt.u16.u32 %h1, %r6;
     cvt.f32.f16 %f2, %h1;
 
     // Multiply
@@ -968,7 +969,7 @@ INT8_DONE:
 
             // 1M values
             let size = 1024 * 1024;
-            let data: Vec<i8> = (0..size).map(|i| ((i % 256) as i8).wrapping_sub(128)).collect();
+            let data: Vec<i8> = (0..size).map(|i| (((i % 256) as u8).wrapping_sub(128)) as i8).collect();
             let scale = half::f16::from_f32(0.001);
 
             let result = ctx.dequant_int8(&data, scale).unwrap();
@@ -1095,6 +1096,15 @@ pub use cuda::GpuDequantContext;
 #[cfg(feature = "cuda")]
 pub use cuda::GpuDequantError;
 
-/// INT4 block size constant (exported for use by other modules).
-#[cfg(feature = "cuda")]
-pub use cuda::INT4_BLOCK_SIZE;
+/// INT4 block size for HCT-native quantization (values per scale factor).
+///
+/// This is a format constant, not a CUDA-specific value. It must agree with
+/// `DEFAULT_BLOCK_SIZE` in `quantize.rs`. Available regardless of CUDA feature.
+pub const INT4_BLOCK_SIZE: usize = 128;
+
+// Compile-time assertion: INT4_BLOCK_SIZE must equal quantize::DEFAULT_BLOCK_SIZE.
+// If this fails, the HCT reader and quantizer disagree on block layout (see DD-1).
+const _: () = assert!(
+    INT4_BLOCK_SIZE == crate::quantize::DEFAULT_BLOCK_SIZE,
+    "INT4_BLOCK_SIZE != DEFAULT_BLOCK_SIZE: HCT and quantizer block sizes must agree"
+);

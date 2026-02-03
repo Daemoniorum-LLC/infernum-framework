@@ -1286,6 +1286,7 @@ pub async fn chat(model: Option<String>, system: Option<String>) -> Result<()> {
             role: Role::System,
             content: system_prompt.clone(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         });
     }
@@ -1331,6 +1332,7 @@ pub async fn chat(model: Option<String>, system: Option<String>) -> Result<()> {
                             role: Role::System,
                             content: system_prompt.clone(),
                             name: None,
+                            tool_calls: None,
                             tool_call_id: None,
                         });
                     }
@@ -1412,6 +1414,7 @@ pub async fn chat(model: Option<String>, system: Option<String>) -> Result<()> {
             role: Role::User,
             content: input.to_string(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         });
 
@@ -1463,6 +1466,7 @@ pub async fn chat(model: Option<String>, system: Option<String>) -> Result<()> {
                 role: Role::Assistant,
                 content: response_text,
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             });
         }
@@ -2369,6 +2373,7 @@ impl From<SerializableMessage> for Message {
             role,
             content: msg.content,
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         }
     }
@@ -3542,6 +3547,7 @@ mod tests {
             role: Role::User,
             content: "Hello!".to_string(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         };
 
@@ -3556,6 +3562,7 @@ mod tests {
             role: Role::System,
             content: "You are a helpful assistant.".to_string(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         };
 
@@ -3569,6 +3576,7 @@ mod tests {
             role: Role::Assistant,
             content: "I can help with that.".to_string(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         };
 
@@ -3582,6 +3590,7 @@ mod tests {
             role: Role::Tool,
             content: "{\"result\": 42}".to_string(),
             name: Some("calculator".to_string()),
+            tool_calls: None,
             tool_call_id: Some("call_123".to_string()),
         };
 
@@ -3619,6 +3628,7 @@ mod tests {
             role: Role::Assistant,
             content: "Roundtrip test!".to_string(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         };
 
@@ -3650,6 +3660,7 @@ mod tests {
             role: Role::User,
             content: "Hello".to_string(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         }];
 
@@ -3669,6 +3680,7 @@ mod tests {
             role: Role::User,
             content: "Hello".to_string(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         }];
 
@@ -3752,18 +3764,21 @@ mod tests {
                 role: Role::System,
                 content: "You are helpful.".to_string(),
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
             Message {
                 role: Role::User,
                 content: "Hello!".to_string(),
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
             Message {
                 role: Role::Assistant,
                 content: "Hi there!".to_string(),
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
         ];
@@ -3877,6 +3892,7 @@ mod tests {
             role: Role::User,
             content: "Hello".to_string(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         }];
 
@@ -3954,6 +3970,7 @@ mod tests {
             role: Role::User,
             content: "Hello 世界! 🎉 مرحبا".to_string(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         }];
 
@@ -3972,6 +3989,7 @@ mod tests {
             role: Role::Assistant,
             content: "Code: ```rust\nfn main() { println!(\"Hello\"); }\n```".to_string(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         }];
 
@@ -3992,6 +4010,7 @@ mod tests {
             role: Role::User,
             content: long_content.clone(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         }];
 

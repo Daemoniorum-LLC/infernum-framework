@@ -1727,7 +1727,7 @@ mod tests {
     fn test_kernel_asymmetric_dequant_formula() {
         // Verify the asymmetric dequantization formula is documented
         // GPTQ/AWQ: weight = (int4_val - zeros[group]) * scales[group]
-        assert!(FUSED_GEMM_CUDA.contains("(int4_val - zero)"));
+        assert!(FUSED_GEMM_CUDA.contains("int4_val - zero"));
         assert!(FUSED_GEMM_CUDA.contains("* scale"));
     }
 

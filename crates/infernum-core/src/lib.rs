@@ -254,6 +254,7 @@ mod tests {
             role: Role::User,
             content: "Hello!".to_string(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         };
         assert_eq!(msg.content, "Hello!");
@@ -266,6 +267,7 @@ mod tests {
             role: Role::Assistant,
             content: "Response".to_string(),
             name: Some("assistant-1".to_string()),
+            tool_calls: None,
             tool_call_id: None,
         };
         assert_eq!(msg.name, Some("assistant-1".to_string()));
@@ -330,6 +332,7 @@ mod tests {
             role: Role::User,
             content: "Hi".to_string(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         }];
         let input = PromptInput::Messages(messages);

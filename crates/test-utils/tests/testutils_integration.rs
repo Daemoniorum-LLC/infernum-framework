@@ -752,6 +752,7 @@ async fn test_mock_engine_with_fixtures() {
                         },
                         content: content.to_string(),
                         name: None,
+                        tool_calls: None,
                         tool_call_id: None,
                     })
                 })

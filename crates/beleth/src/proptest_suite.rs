@@ -149,6 +149,7 @@ proptest! {
             role: Role::User,
             content,
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         };
 
@@ -170,6 +171,7 @@ proptest! {
             role: Role::System,
             content: content.clone(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         };
 
@@ -177,6 +179,7 @@ proptest! {
             role: Role::User,
             content,
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         };
 
@@ -201,6 +204,7 @@ proptest! {
             role: Role::User,
             content,
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         };
 
