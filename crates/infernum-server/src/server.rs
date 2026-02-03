@@ -449,7 +449,10 @@ impl Server {
     }
 
     /// Creates the router.
-    fn router(&self) -> Router {
+    ///
+    /// Returns the fully-configured Axum router with all endpoints and middleware.
+    /// Useful for testing with a custom server harness.
+    pub fn router(&self) -> Router {
         let default_timeout = self.config.timeouts.default;
 
         // RAG routes with their own state (Arc<RwLock<RagState>>)
@@ -1536,6 +1539,7 @@ async fn chat_completions(
                 role,
                 content,
                 name: None,
+                tool_calls: None,
                 tool_call_id: m.tool_call_id.clone(),
             }
         })
@@ -1549,6 +1553,7 @@ async fn chat_completions(
             role: infernum_core::Role::System,
             content: format!("You are a helpful assistant.{}", tools_prompt),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         }];
         new_messages.extend(messages);

@@ -157,8 +157,8 @@ haagenti-hct = "0.1"
 comfy-table = "7.1"
 
 # Audit chain (Moloch)
-moloch-core = { path = "../../moloch/moloch-core" }
-moloch-holocrypt = { path = "../../moloch/moloch-holocrypt", default-features = false, features = ["encryption"] }
+moloch-core = { path = "../moloch/moloch-core" }
+moloch-holocrypt = { path = "../moloch/moloch-holocrypt", default-features = false, features = ["encryption"] }
 
 # Cryptography (Arcanum - Phase 4 secure storage)
 # Using crates.io versions for dogfooding
