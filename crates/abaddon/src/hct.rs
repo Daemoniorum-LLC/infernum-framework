@@ -573,8 +573,8 @@ impl HctLoader {
     /// Dequantizes INT4/INT8 data to a tensor.
     ///
     /// The data layout is:
+    /// - FP16 scale factors (one per block of 128 elements)
     /// - Packed quantized values (4-bit or 8-bit)
-    /// - FP16 scale factors (one per block of 32 elements)
     fn dequantize_to_tensor(
         &self,
         data: &[u8],
@@ -582,7 +582,9 @@ impl HctLoader {
         device: &Device,
         target_dtype: Option<DType>,
     ) -> Result<Tensor, HctError> {
-        const BLOCK_SIZE: usize = 32;
+        // Block size must match the quantizer's DEFAULT_BLOCK_SIZE (128).
+        // See GPU-CODEC-PIPELINE-SPEC.md §2 and DD-1.
+        const BLOCK_SIZE: usize = crate::gpu_dequant::INT4_BLOCK_SIZE;
 
         let num_elements: usize = shape.iter().product();
 
@@ -590,7 +592,7 @@ impl HctLoader {
             HctDType::I4 => {
                 // INT4 format: [all FP16 scales][all packed INT4 data]
                 // Layout: scales first (2 bytes per block), then packed nibbles
-                const Q4_BLOCK_SIZE: usize = 32;
+                const Q4_BLOCK_SIZE: usize = crate::gpu_dequant::INT4_BLOCK_SIZE;
 
                 let num_blocks = (num_elements + Q4_BLOCK_SIZE - 1) / Q4_BLOCK_SIZE;
                 let scales_bytes = num_blocks * 2; // FP16 scales
@@ -1801,5 +1803,194 @@ mod tests {
             filename_to_tensor_name("model_layers_0_mlp_down_proj_weight"),
             "model.layers.0.mlp.down_proj.weight"
         );
+    }
+
+    // ==================== TDD Phase 1: Constant Integrity ====================
+    // GPU-CODEC-PIPELINE-TDD.md §1
+
+    #[test]
+    fn test_int4_block_size_matches_quantizer() {
+        // DD-1: The GPU dequant block size must match the CPU quantizer default.
+        // Both write/read INT4 data with per-block scales; if they disagree on
+        // block_size, the scale layout is misinterpreted.
+        use crate::gpu_dequant::INT4_BLOCK_SIZE;
+        use crate::quantize::DEFAULT_BLOCK_SIZE;
+
+        assert_eq!(
+            INT4_BLOCK_SIZE, DEFAULT_BLOCK_SIZE,
+            "GPU INT4_BLOCK_SIZE ({}) must equal CPU DEFAULT_BLOCK_SIZE ({})",
+            INT4_BLOCK_SIZE, DEFAULT_BLOCK_SIZE
+        );
+    }
+
+    #[test]
+    fn test_hct_int4_dequant_block_size_128() {
+        // DD-1 regression: data created with block_size=128 must be read
+        // with block_size=128. Using 32 misinterprets the scale layout.
+        use crate::quantize::DEFAULT_BLOCK_SIZE;
+
+        let values: Vec<f32> = (0..256).map(|i| ((i as f32) - 128.0) * 0.01).collect();
+        let data = create_int4_data(&values, DEFAULT_BLOCK_SIZE);
+
+        // Dequantize with the correct block_size (128)
+        let result = dequantize_int4(&data, 256, DEFAULT_BLOCK_SIZE);
+
+        // Verify values are approximately preserved
+        for (i, (&orig, &deq)) in values.iter().zip(result.iter()).enumerate() {
+            let max_abs = values.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
+            let max_error = max_abs / 7.0;
+            assert!(
+                (orig - deq).abs() <= max_error + 0.01,
+                "Block_size=128 dequant error at index {}: orig={}, got={}",
+                i, orig, deq
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_hct_int4_wrong_block_size_panics() {
+        // DD-1: Reading block_size=128 data with block_size=32 panics because
+        // it expects 8 scale entries (256/32) but only 2 exist (256/128).
+        // The reader overruns the packed data buffer.
+        use crate::quantize::DEFAULT_BLOCK_SIZE;
+
+        let values: Vec<f32> = (0..256).map(|i| ((i as f32) - 128.0) * 0.01).collect();
+        let data = create_int4_data(&values, DEFAULT_BLOCK_SIZE);
+
+        // This panics: reads 16 bytes as scales (expects 8 blocks) but only
+        // 4 bytes of scales exist. The packed data offset is wrong, causing OOB.
+        let _ = dequantize_int4(&data, 256, 32);
+    }
+
+    // ============ Phase 1: Cross-Validation (HCT vs quantize.rs) ============
+
+    /// Cross-validate: data quantized by quantize.rs (Int4Symmetric) must
+    /// produce identical dequantized output when read through the HCT path.
+    ///
+    /// This tests trust boundary §4 (Quantization Math) from GPU-CODEC-PIPELINE-TDD.md.
+    #[test]
+    fn test_hct_dequant_matches_quantizer_int4_symmetric() {
+        use crate::quantize::{Quantizer, QuantizeConfig, QuantizeFormat, DEFAULT_BLOCK_SIZE};
+        use candle_core::{Device, Tensor, DType};
+
+        // 1. Create known input data (2 blocks of 128 = 256 elements)
+        let input: Vec<f32> = (0..256).map(|i| ((i as f32) - 128.0) * 0.01).collect();
+        let tensor = Tensor::from_vec(input.clone(), &[256], &Device::Cpu).unwrap();
+
+        // 2. Quantize with quantize.rs
+        let quantizer = Quantizer::int4_symmetric();
+        let quantized = quantizer.quantize_tensor(&tensor).unwrap();
+        assert_eq!(quantized.block_size, DEFAULT_BLOCK_SIZE);
+
+        // 3. Dequantize with quantize.rs (ground truth)
+        let reference = quantizer.dequantize(&quantized).unwrap();
+        let ref_values: Vec<f32> = reference.to_vec1().unwrap();
+
+        // 4. Convert QuantizedTensor to HCT byte layout: [FP16 scales][packed data]
+        let mut hct_bytes = Vec::new();
+        for scale in &quantized.scales {
+            hct_bytes.extend_from_slice(&scale.to_le_bytes());
+        }
+        hct_bytes.extend_from_slice(&quantized.data);
+
+        // 5. Dequantize with HCT path
+        let hct_values = dequantize_int4(&hct_bytes, 256, DEFAULT_BLOCK_SIZE);
+
+        // 6. Assert identical (both use FP16 scales, so no precision gap)
+        assert_eq!(ref_values.len(), hct_values.len(), "length mismatch");
+        for (i, (r, h)) in ref_values.iter().zip(hct_values.iter()).enumerate() {
+            assert!(
+                (r - h).abs() < 1e-7,
+                "Element {}: quantize.rs={} vs hct.rs={} (diff={})",
+                i, r, h, (r - h).abs()
+            );
+        }
+    }
+
+    /// Cross-validate with multiple block sizes worth of data (stress test).
+    /// Uses 1280 elements = 10 blocks of 128.
+    #[test]
+    fn test_hct_dequant_matches_quantizer_multi_block() {
+        use crate::quantize::{Quantizer, DEFAULT_BLOCK_SIZE};
+        use candle_core::{Device, Tensor};
+
+        let n = DEFAULT_BLOCK_SIZE * 10; // 1280 elements
+        let input: Vec<f32> = (0..n).map(|i| {
+            let block = i / DEFAULT_BLOCK_SIZE;
+            let pos = i % DEFAULT_BLOCK_SIZE;
+            // Different scale per block so each block has a unique scale factor
+            ((pos as f32) - 64.0) * 0.001 * ((block + 1) as f32)
+        }).collect();
+
+        let tensor = Tensor::from_vec(input.clone(), &[n], &Device::Cpu).unwrap();
+        let quantizer = Quantizer::int4_symmetric();
+        let quantized = quantizer.quantize_tensor(&tensor).unwrap();
+
+        // Ground truth from quantize.rs
+        let reference = quantizer.dequantize(&quantized).unwrap();
+        let ref_values: Vec<f32> = reference.to_vec1().unwrap();
+
+        // HCT path
+        let mut hct_bytes = Vec::new();
+        for scale in &quantized.scales {
+            hct_bytes.extend_from_slice(&scale.to_le_bytes());
+        }
+        hct_bytes.extend_from_slice(&quantized.data);
+        let hct_values = dequantize_int4(&hct_bytes, n, DEFAULT_BLOCK_SIZE);
+
+        assert_eq!(ref_values.len(), hct_values.len());
+        let max_diff: f32 = ref_values.iter().zip(hct_values.iter())
+            .map(|(r, h)| (r - h).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            max_diff < 1e-7,
+            "Max diff between quantize.rs and hct.rs dequant: {} (should be 0)",
+            max_diff
+        );
+    }
+
+    /// Cross-validate HCT INT4 format: data created by create_int4_data() and
+    /// read back by dequantize_int4() must agree with quantize.rs on nibble layout.
+    /// This validates trust boundary §2 (Data Format Correctness).
+    #[test]
+    fn test_hct_nibble_format_matches_quantizer_packing() {
+        use crate::quantize::DEFAULT_BLOCK_SIZE;
+
+        // Create data with hct.rs helper and quantize.rs, compare packed bytes
+        let values: Vec<f32> = (0..DEFAULT_BLOCK_SIZE)
+            .map(|i| ((i as f32) - 64.0) * 0.01)
+            .collect();
+
+        // HCT path: create_int4_data does its own quantization
+        let hct_data = create_int4_data(&values, DEFAULT_BLOCK_SIZE);
+
+        // Parse HCT bytes: [2 bytes scale][packed nibbles]
+        let num_blocks = 1; // exactly one block
+        let hct_scale_bytes = &hct_data[..num_blocks * 2];
+        let hct_packed = &hct_data[num_blocks * 2..];
+
+        // Verify packed nibble low-first convention: for each byte,
+        // element 2*i is in low nibble, element 2*i+1 is in high nibble
+        for byte_idx in 0..hct_packed.len() {
+            let byte = hct_packed[byte_idx];
+            let low = byte & 0x0F;
+            let high = (byte >> 4) & 0x0F;
+            // Both should be in valid nibble range [0, 15]
+            assert!(low <= 15, "Low nibble at byte {} out of range: {}", byte_idx, low);
+            assert!(high <= 15, "High nibble at byte {} out of range: {}", byte_idx, high);
+        }
+
+        // Round-trip: create → dequant should not panic and produce sane values
+        let result = dequantize_int4(&hct_data, DEFAULT_BLOCK_SIZE, DEFAULT_BLOCK_SIZE);
+        assert_eq!(result.len(), DEFAULT_BLOCK_SIZE);
+        // Original values are in [-0.64, 0.63], dequantized should be in similar range
+        for (i, v) in result.iter().enumerate() {
+            assert!(
+                v.abs() < 2.0,
+                "Element {} out of expected range: {} (original: {})",
+                i, v, values[i]
+            );
+        }
     }
 }

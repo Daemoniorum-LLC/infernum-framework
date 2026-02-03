@@ -248,7 +248,7 @@ mod tests {
     fn test_gpu_lrdf_encoder() {
         // This test requires CUDA hardware
         let device = match cudarc::driver::CudaDevice::new(0) {
-            Ok(d) => Arc::new(d),
+            Ok(d) => d,
             Err(_) => {
                 eprintln!("Skipping GPU test: no CUDA device available");
                 return;
@@ -279,7 +279,7 @@ mod tests {
     fn test_fragment_compatibility() {
         // Test that our fragments can be decoded by haagenti's decoder
         let device = match cudarc::driver::CudaDevice::new(0) {
-            Ok(d) => Arc::new(d),
+            Ok(d) => d,
             Err(_) => {
                 eprintln!("Skipping GPU test: no CUDA device available");
                 return;

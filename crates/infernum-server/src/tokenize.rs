@@ -22,17 +22,17 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::openai::ChatMessage;
+use infernum_core::types::{Message, Role};
 
 /// Request to count tokens in a prompt or messages.
-#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct TokenizeRequest {
     /// Model to use for tokenization.
     pub model: String,
 
     /// Messages to tokenize (for chat format).
     #[serde(default)]
-    pub messages: Option<Vec<ChatMessage>>,
+    pub messages: Option<Vec<Message>>,
 
     /// Raw prompt to tokenize (for completion format).
     #[serde(default)]
@@ -110,7 +110,7 @@ pub trait Tokenizer: Send + Sync {
     fn tokenize(&self, text: &str) -> Result<(Vec<String>, Vec<u32>), TokenizeError>;
 
     /// Formats chat messages into a prompt string.
-    fn format_chat(&self, messages: &[ChatMessage]) -> String;
+    fn format_chat(&self, messages: &[Message]) -> String;
 }
 
 /// Simple tokenizer that estimates ~4 chars per token.
@@ -134,11 +134,19 @@ impl Tokenizer for EstimatingTokenizer {
         Ok((tokens, ids))
     }
 
-    fn format_chat(&self, messages: &[ChatMessage]) -> String {
+    fn format_chat(&self, messages: &[Message]) -> String {
         // Simple chat format: <|role|>content
         messages
             .iter()
-            .map(|m| format!("<|{}|>{}", m.role, m.content))
+            .map(|m| {
+                let role = match m.role {
+                    Role::System => "system",
+                    Role::User => "user",
+                    Role::Assistant => "assistant",
+                    Role::Tool => "tool",
+                };
+                format!("<|{role}|>{}", m.content)
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -237,13 +245,7 @@ mod tests {
     fn test_tokenize_request_validation_both_inputs() {
         let request = TokenizeRequest {
             model: "llama-3b".to_string(),
-            messages: Some(vec![ChatMessage {
-                role: "user".to_string(),
-                content: "Hello".to_string(),
-                name: None,
-                tool_calls: None,
-                tool_call_id: None,
-            }]),
+            messages: Some(vec![Message::user("Hello")]),
             prompt: Some("Hello".to_string()),
             return_tokens: None,
         };
@@ -317,20 +319,8 @@ mod tests {
     fn test_estimating_tokenizer_format_chat() {
         let tokenizer = EstimatingTokenizer;
         let messages = vec![
-            ChatMessage {
-                role: "system".to_string(),
-                content: "You are helpful.".to_string(),
-                name: None,
-                tool_calls: None,
-                tool_call_id: None,
-            },
-            ChatMessage {
-                role: "user".to_string(),
-                content: "Hi!".to_string(),
-                name: None,
-                tool_calls: None,
-                tool_call_id: None,
-            },
+            Message::system("You are helpful."),
+            Message::user("Hi!"),
         ];
 
         let formatted = tokenizer.format_chat(&messages);
@@ -375,13 +365,7 @@ mod tests {
         let tokenizer = EstimatingTokenizer;
         let request = TokenizeRequest {
             model: "test-model".to_string(),
-            messages: Some(vec![ChatMessage {
-                role: "user".to_string(),
-                content: "What is 2+2?".to_string(),
-                name: None,
-                tool_calls: None,
-                tool_call_id: None,
-            }]),
+            messages: Some(vec![Message::user("What is 2+2?")]),
             prompt: None,
             return_tokens: None,
         };

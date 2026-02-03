@@ -275,23 +275,30 @@ impl KvCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cuda_inference::arch::Activation;
+    use crate::cuda_inference::arch::{Activation, ModelArch};
 
     fn test_config() -> ModelConfig {
         ModelConfig {
+            arch: ModelArch::Llama,
             vocab_size: 32000,
             hidden_size: 576,
             intermediate_size: 1536,
             num_layers: 4,
-            num_heads: 9,
+            num_attention_heads: 9,
             num_kv_heads: 3,
             head_dim: 64,
-            max_position_embeddings: 2048,
+            max_seq_len: 2048,
             rms_norm_eps: 1e-5,
             rope_theta: 10000.0,
             rope_scaling: None,
-            activation: Activation::SiLU,
+            attention_bias: false,
+            mlp_bias: false,
+            hidden_act: Activation::SiLU,
             tie_word_embeddings: true,
+            sliding_window: None,
+            bos_token_id: 1,
+            eos_token_id: 2,
+            pad_token_id: None,
         }
     }
 

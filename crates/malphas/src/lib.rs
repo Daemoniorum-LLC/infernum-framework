@@ -935,11 +935,13 @@ mod tests {
             response: Some(GenerateResponse {
                 request_id: RequestId::new(),
                 model: ModelId::from("test-model"),
+                created: chrono::Utc::now().timestamp(),
                 choices: vec![Choice {
                     index: 0,
                     text: "test output".to_string(),
                     finish_reason: Some(FinishReason::Stop),
                     logprobs: None,
+                    message: None,
                 }],
                 usage: Usage {
                     prompt_tokens: 10,

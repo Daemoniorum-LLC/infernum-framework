@@ -20,26 +20,24 @@
 use utoipa::openapi::security::{ApiKey, ApiKeyValue, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 
+use crate::api::{ErrorBody, ErrorCode as ApiErrorCode, ErrorResponse, ModelListEntry, ModelsResponse as ApiModelsResponse};
 use crate::error_response::{ApiError, ErrorDetail};
-use crate::openai::{
-    ChatChoice, ChatCompletionRequest, ChatCompletionResponse, ChatLogProbs, ChatMessage,
-    CompletionChoice, CompletionRequest, CompletionResponse, EmbeddingData, EmbeddingInput,
-    EmbeddingRequest, EmbeddingResponse, FunctionCall, FunctionDefinition, ModelObject,
-    ModelsResponse, TokenLogProb, Tool, ToolCall, ToolChoice, ToolChoiceFunction,
-    ToolChoiceFunctionName, TopLogProb, Usage,
-};
 use crate::responses::{HealthResponse, ModelInfo, ReadyResponse};
-use crate::tokenize::{TokenizeRequest, TokenizeResponse};
+use crate::tokenize::TokenizeResponse;
 
 /// OpenAPI documentation for the Infernum API.
+///
+/// Documents the Infernum-native API. See `INFERNUM-API-SPEC.md` for the
+/// complete wire-format specification.
 #[derive(OpenApi)]
 #[openapi(
     info(
         title = "Infernum API",
-        version = "1.0.0",
-        description = "OpenAI-compatible local LLM inference server.\n\n\
-            Infernum provides high-performance inference endpoints that are fully compatible \
-            with the OpenAI API, allowing you to use existing OpenAI SDKs and tools.",
+        version = "2.0.0",
+        description = "Infernum-native local LLM inference server.\n\n\
+            Infernum provides high-performance inference with native tool calling, \
+            structured outputs, and agentic capabilities.\n\n\
+            See INFERNUM-API-SPEC.md for the complete wire format specification.",
         license(name = "MIT", url = "https://opensource.org/licenses/MIT"),
         contact(name = "Infernum", url = "https://github.com/daemoniorum/infernum")
     ),
@@ -52,40 +50,19 @@ use crate::tokenize::{TokenizeRequest, TokenizeResponse};
         ready,
         list_models,
         tokenize,
-        chat_completions,
-        completions,
-        embeddings,
+        generate,
+        embed,
     ),
     components(
         schemas(
             HealthResponse,
             ReadyResponse,
             ModelInfo,
-            ModelsResponse,
-            ModelObject,
-            ChatCompletionRequest,
-            ChatCompletionResponse,
-            ChatMessage,
-            ChatChoice,
-            ChatLogProbs,
-            TokenLogProb,
-            TopLogProb,
-            Tool,
-            FunctionDefinition,
-            ToolCall,
-            FunctionCall,
-            ToolChoice,
-            ToolChoiceFunction,
-            ToolChoiceFunctionName,
-            CompletionRequest,
-            CompletionResponse,
-            CompletionChoice,
-            EmbeddingRequest,
-            EmbeddingInput,
-            EmbeddingResponse,
-            EmbeddingData,
-            Usage,
-            TokenizeRequest,
+            ApiModelsResponse,
+            ModelListEntry,
+            ErrorResponse,
+            ErrorBody,
+            ApiErrorCode,
             TokenizeResponse,
             ApiError,
             ErrorDetail,
@@ -95,9 +72,8 @@ use crate::tokenize::{TokenizeRequest, TokenizeResponse};
     tags(
         (name = "Health", description = "Health and readiness endpoints"),
         (name = "Models", description = "Model listing and management"),
-        (name = "Chat", description = "Chat completion endpoints"),
-        (name = "Completions", description = "Text completion endpoints"),
-        (name = "Embeddings", description = "Embedding generation endpoints"),
+        (name = "Generate", description = "Text and chat generation endpoint"),
+        (name = "Embed", description = "Embedding generation endpoint"),
         (name = "Tokenize", description = "Token counting endpoints"),
     )
 )]
@@ -145,7 +121,7 @@ pub async fn ready() {}
     path = "/v1/models",
     tag = "Models",
     responses(
-        (status = 200, description = "List of available models", body = ModelsResponse),
+        (status = 200, description = "List of available models", body = ApiModelsResponse),
         (status = 401, description = "Unauthorized", body = ApiError),
     ),
     security(
@@ -162,7 +138,7 @@ pub async fn list_models() {}
     post,
     path = "/v1/tokenize",
     tag = "Tokenize",
-    request_body = TokenizeRequest,
+    request_body = String,
     responses(
         (status = 200, description = "Token count result", body = TokenizeResponse),
         (status = 400, description = "Invalid request", body = ApiError),
@@ -174,14 +150,35 @@ pub async fn list_models() {}
 )]
 pub async fn tokenize() {}
 
-/// Create a chat completion.
+/// Generate text or chat completion.
+///
+/// Unified endpoint that accepts both text prompts (`prompt: "string"`) and
+/// chat messages (`prompt: [{role, content}]`). Supports streaming via SSE,
+/// native tool calling, and agentic mode.
+///
+/// See INFERNUM-API-SPEC.md §3 for the full request/response schema.
 #[utoipa::path(
     post,
-    path = "/v1/chat/completions",
-    tag = "Chat",
-    request_body = ChatCompletionRequest,
+    path = "/v1/generate",
+    tag = "Generate",
+    request_body(content = String, description = "GenerateRequest JSON. See INFERNUM-API-SPEC.md §3.1.",
+        example = json!({
+            "model": "llama-3.2-3b",
+            "prompt": [{"role": "user", "content": "Hello!"}],
+            "sampling": {"temperature": 0.7, "max_tokens": 4096},
+            "stream": false
+        })
+    ),
     responses(
-        (status = 200, description = "Successful completion", body = ChatCompletionResponse),
+        (status = 200, description = "Successful generation", content_type = "application/json",
+            body = String,
+            example = json!({
+                "request_id": "550e8400-e29b-41d4-a716-446655440000",
+                "model": "llama-3.2-3b",
+                "choices": [{"index": 0, "text": "Hello! How can I help?", "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 8, "total_tokens": 18}
+            })
+        ),
         (status = 400, description = "Invalid request", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
         (status = 429, description = "Rate limited", body = ApiError),
@@ -191,16 +188,32 @@ pub async fn tokenize() {}
         ("bearer_auth" = [])
     )
 )]
-pub async fn chat_completions() {}
+pub async fn generate() {}
 
-/// Create a text completion.
+/// Generate embeddings.
+///
+/// Accepts single or batch text inputs and returns vector embeddings.
+///
+/// See INFERNUM-API-SPEC.md §5 for the full request/response schema.
 #[utoipa::path(
     post,
-    path = "/v1/completions",
-    tag = "Completions",
-    request_body = CompletionRequest,
+    path = "/v1/embed",
+    tag = "Embed",
+    request_body(content = String, description = "EmbedRequest JSON. See INFERNUM-API-SPEC.md §5.1.",
+        example = json!({
+            "model": "nomic-embed-text",
+            "input": "The quick brown fox"
+        })
+    ),
     responses(
-        (status = 200, description = "Successful completion", body = CompletionResponse),
+        (status = 200, description = "Successful embedding", content_type = "application/json",
+            body = String,
+            example = json!({
+                "model": "nomic-embed-text",
+                "data": [{"index": 0, "embedding": [0.1, 0.2, 0.3]}],
+                "usage": {"prompt_tokens": 5, "total_tokens": 5}
+            })
+        ),
         (status = 400, description = "Invalid request", body = ApiError),
         (status = 401, description = "Unauthorized", body = ApiError),
         (status = 429, description = "Rate limited", body = ApiError),
@@ -210,26 +223,7 @@ pub async fn chat_completions() {}
         ("bearer_auth" = [])
     )
 )]
-pub async fn completions() {}
-
-/// Create embeddings.
-#[utoipa::path(
-    post,
-    path = "/v1/embeddings",
-    tag = "Embeddings",
-    request_body = EmbeddingRequest,
-    responses(
-        (status = 200, description = "Successful embedding", body = EmbeddingResponse),
-        (status = 400, description = "Invalid request", body = ApiError),
-        (status = 401, description = "Unauthorized", body = ApiError),
-        (status = 429, description = "Rate limited", body = ApiError),
-        (status = 503, description = "Model not loaded", body = ApiError),
-    ),
-    security(
-        ("bearer_auth" = [])
-    )
-)]
-pub async fn embeddings() {}
+pub async fn embed() {}
 
 #[cfg(test)]
 mod tests {
@@ -240,7 +234,7 @@ mod tests {
     fn test_openapi_spec_generates() {
         let spec = ApiDoc::openapi();
         assert_eq!(spec.info.title, "Infernum API");
-        assert_eq!(spec.info.version, "1.0.0");
+        assert_eq!(spec.info.version, "2.0.0");
     }
 
     #[test]
@@ -250,9 +244,16 @@ mod tests {
         assert!(spec.paths.paths.contains_key("/ready"));
         assert!(spec.paths.paths.contains_key("/v1/models"));
         assert!(spec.paths.paths.contains_key("/v1/tokenize"));
-        assert!(spec.paths.paths.contains_key("/v1/chat/completions"));
-        assert!(spec.paths.paths.contains_key("/v1/completions"));
-        assert!(spec.paths.paths.contains_key("/v1/embeddings"));
+        assert!(spec.paths.paths.contains_key("/v1/generate"));
+        assert!(spec.paths.paths.contains_key("/v1/embed"));
+    }
+
+    #[test]
+    fn test_openapi_spec_no_openai_paths() {
+        let spec = ApiDoc::openapi();
+        assert!(!spec.paths.paths.contains_key("/v1/chat/completions"));
+        assert!(!spec.paths.paths.contains_key("/v1/completions"));
+        assert!(!spec.paths.paths.contains_key("/v1/embeddings"));
     }
 
     #[test]
@@ -261,7 +262,7 @@ mod tests {
         let components = spec.components.expect("components should exist");
         let schemas = components.schemas;
         assert!(schemas.contains_key("HealthResponse"));
-        assert!(schemas.contains_key("ChatCompletionRequest"));
+        assert!(schemas.contains_key("ModelsResponse"));
         assert!(schemas.contains_key("ApiError"));
     }
 
@@ -270,6 +271,7 @@ mod tests {
         let spec = ApiDoc::openapi();
         let json = spec.to_json().expect("should serialize to JSON");
         assert!(json.contains("Infernum API"));
-        assert!(json.contains("/v1/chat/completions"));
+        assert!(json.contains("/v1/generate"));
+        assert!(json.contains("/v1/embed"));
     }
 }

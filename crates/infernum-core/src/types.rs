@@ -1,6 +1,7 @@
 //! Common types used across the Infernum ecosystem.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use uuid::Uuid;
 
 /// Unique identifier for a model.
@@ -135,7 +136,7 @@ pub enum FinishReason {
 }
 
 /// Role in a conversation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     /// System message (instructions).
@@ -148,6 +149,93 @@ pub enum Role {
     Tool,
 }
 
+/// Definition of a tool available to the model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolDefinition {
+    /// Tool name.
+    pub name: String,
+    /// Human-readable description of what the tool does.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// JSON Schema describing the tool's parameters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<Value>,
+    /// Whether to enforce strict schema adherence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strict: Option<bool>,
+}
+
+impl ToolDefinition {
+    /// Creates a new tool definition with the given name.
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            description: None,
+            parameters: None,
+            strict: None,
+        }
+    }
+
+    /// Sets the description.
+    #[must_use]
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    /// Sets the parameters schema.
+    #[must_use]
+    pub fn with_parameters(mut self, parameters: Value) -> Self {
+        self.parameters = Some(parameters);
+        self
+    }
+}
+
+/// A tool call emitted by the model.
+///
+/// Arguments are structured JSON values, not strings containing JSON.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolCall {
+    /// Unique identifier for this call.
+    pub id: String,
+    /// Name of the tool being called.
+    pub name: String,
+    /// Structured arguments (parsed JSON, not a string).
+    pub arguments: Value,
+}
+
+/// Controls how the model uses tools.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ToolControl {
+    /// String mode: "none", "auto", or "required".
+    Mode(ToolControlMode),
+    /// Force a specific tool by name.
+    Specific {
+        /// Name of the tool to call.
+        name: String,
+    },
+}
+
+/// Tool control mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolControlMode {
+    /// Model must not call tools.
+    None,
+    /// Model decides whether to call tools.
+    Auto,
+    /// Model must call at least one tool.
+    Required,
+}
+
+impl Default for ToolControl {
+    fn default() -> Self {
+        Self::Mode(ToolControlMode::Auto)
+    }
+}
+
 /// A message in a conversation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
@@ -158,6 +246,9 @@ pub struct Message {
     /// Optional name for the sender.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Tool calls emitted by the assistant.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
     /// Tool call ID (for tool responses).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
@@ -171,6 +262,7 @@ impl Message {
             role: Role::System,
             content: content.into(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         }
     }
@@ -182,6 +274,7 @@ impl Message {
             role: Role::User,
             content: content.into(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         }
     }
@@ -193,7 +286,32 @@ impl Message {
             role: Role::Assistant,
             content: content.into(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
+        }
+    }
+
+    /// Creates an assistant message with tool calls.
+    #[must_use]
+    pub fn assistant_with_tool_calls(content: impl Into<String>, tool_calls: Vec<ToolCall>) -> Self {
+        Self {
+            role: Role::Assistant,
+            content: content.into(),
+            name: None,
+            tool_calls: Some(tool_calls),
+            tool_call_id: None,
+        }
+    }
+
+    /// Creates a tool result message.
+    #[must_use]
+    pub fn tool_result(call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: Role::Tool,
+            content: content.into(),
+            name: None,
+            tool_calls: None,
+            tool_call_id: Some(call_id.into()),
         }
     }
 }
@@ -493,6 +611,7 @@ mod tests {
             role: Role::User,
             content: "Hello".to_string(),
             name: Some("Alice".to_string()),
+            tool_calls: None,
             tool_call_id: None,
         };
 
@@ -552,5 +671,171 @@ mod tests {
         assert_eq!(cloned.prompt_tokens, usage.prompt_tokens);
         assert_eq!(cloned.completion_tokens, usage.completion_tokens);
         assert_eq!(cloned.total_tokens, usage.total_tokens);
+    }
+
+    // ==========================================================================
+    // ToolDefinition tests
+    // ==========================================================================
+
+    #[test]
+    fn test_tool_definition_new() {
+        let tool = ToolDefinition::new("read_file");
+        assert_eq!(tool.name, "read_file");
+        assert!(tool.description.is_none());
+        assert!(tool.parameters.is_none());
+        assert!(tool.strict.is_none());
+    }
+
+    #[test]
+    fn test_tool_definition_builder() {
+        let tool = ToolDefinition::new("read_file")
+            .with_description("Read a file")
+            .with_parameters(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" }
+                },
+                "required": ["path"]
+            }));
+
+        assert_eq!(tool.name, "read_file");
+        assert_eq!(tool.description.as_deref(), Some("Read a file"));
+        assert!(tool.parameters.is_some());
+    }
+
+    #[test]
+    fn test_tool_definition_serialization() {
+        let tool = ToolDefinition::new("bash")
+            .with_description("Run a command");
+
+        let json = serde_json::to_string(&tool).expect("serialize");
+        assert!(json.contains("\"name\":\"bash\""));
+        assert!(json.contains("\"description\":\"Run a command\""));
+        assert!(!json.contains("parameters"));
+
+        let parsed: ToolDefinition = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed.name, "bash");
+    }
+
+    // ==========================================================================
+    // ToolCall tests
+    // ==========================================================================
+
+    #[test]
+    fn test_tool_call_structured_arguments() {
+        let call = ToolCall {
+            id: "call_1".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "src/main.rs"}),
+        };
+
+        assert_eq!(call.name, "read_file");
+        assert_eq!(call.arguments["path"], "src/main.rs");
+    }
+
+    #[test]
+    fn test_tool_call_serialization() {
+        let call = ToolCall {
+            id: "call_abc".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({"command": "ls"}),
+        };
+
+        let json = serde_json::to_string(&call).expect("serialize");
+        assert!(json.contains("\"arguments\":{"));
+        assert!(!json.contains("\\\""));
+
+        let parsed: ToolCall = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed.arguments["command"], "ls");
+    }
+
+    // ==========================================================================
+    // ToolControl tests
+    // ==========================================================================
+
+    #[test]
+    fn test_tool_control_mode_serialization() {
+        let auto = ToolControlMode::Auto;
+        let json = serde_json::to_string(&auto).expect("serialize");
+        assert_eq!(json, "\"auto\"");
+
+        let none = ToolControlMode::None;
+        let json = serde_json::to_string(&none).expect("serialize");
+        assert_eq!(json, "\"none\"");
+
+        let required = ToolControlMode::Required;
+        let json = serde_json::to_string(&required).expect("serialize");
+        assert_eq!(json, "\"required\"");
+    }
+
+    #[test]
+    fn test_tool_control_specific_serialization() {
+        let specific = ToolControl::Specific { name: "read_file".into() };
+        let json = serde_json::to_string(&specific).expect("serialize");
+        assert!(json.contains("\"name\":\"read_file\""));
+
+        let parsed: ToolControl = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed, specific);
+    }
+
+    #[test]
+    fn test_tool_control_default() {
+        let tc = ToolControl::default();
+        assert_eq!(tc, ToolControl::Mode(ToolControlMode::Auto));
+    }
+
+    // ==========================================================================
+    // Message with tool_calls tests
+    // ==========================================================================
+
+    #[test]
+    fn test_message_assistant_with_tool_calls() {
+        let msg = Message::assistant_with_tool_calls(
+            "I'll read that file.",
+            vec![ToolCall {
+                id: "call_1".into(),
+                name: "read_file".into(),
+                arguments: serde_json::json!({"path": "main.rs"}),
+            }],
+        );
+
+        assert_eq!(msg.role, Role::Assistant);
+        assert!(msg.tool_calls.is_some());
+        assert_eq!(msg.tool_calls.as_ref().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_message_tool_result() {
+        let msg = Message::tool_result("call_1", "fn main() {}");
+        assert_eq!(msg.role, Role::Tool);
+        assert_eq!(msg.tool_call_id.as_deref(), Some("call_1"));
+        assert_eq!(msg.content, "fn main() {}");
+    }
+
+    #[test]
+    fn test_message_tool_calls_omitted_when_none() {
+        let msg = Message::user("Hello");
+        let json = serde_json::to_string(&msg).expect("serialize");
+        assert!(!json.contains("tool_calls"));
+    }
+
+    #[test]
+    fn test_message_tool_calls_serialization() {
+        let msg = Message::assistant_with_tool_calls(
+            "Reading file.",
+            vec![ToolCall {
+                id: "c1".into(),
+                name: "read_file".into(),
+                arguments: serde_json::json!({"path": "lib.rs"}),
+            }],
+        );
+
+        let json = serde_json::to_string(&msg).expect("serialize");
+        assert!(json.contains("\"tool_calls\""));
+        assert!(json.contains("\"arguments\":{"));
+
+        let parsed: Message = serde_json::from_str(&json).expect("deserialize");
+        assert!(parsed.tool_calls.is_some());
+        assert_eq!(parsed.tool_calls.unwrap()[0].name, "read_file");
     }
 }

@@ -275,12 +275,14 @@ impl Agent {
                 role: Role::System,
                 content: system_prompt,
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
             Message {
                 role: Role::User,
                 content: objective.to_string(),
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
         ];
@@ -314,6 +316,7 @@ impl Agent {
                 role: Role::Assistant,
                 content: assistant_response.clone(),
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             });
 
@@ -345,6 +348,7 @@ impl Agent {
                         role: Role::User,
                         content: observation.clone(),
                         name: Some("system".to_string()),
+                        tool_calls: None,
                         tool_call_id: None,
                     });
 
@@ -520,6 +524,7 @@ impl Agent {
                     role: Role::User,
                     content: format!("Step {}: {}\nResult: {}", step.id, step.description, observation),
                     name: Some("system".to_string()),
+                    tool_calls: None,
                     tool_call_id: None,
                 });
 
@@ -536,6 +541,7 @@ impl Agent {
                         role: Role::System,
                         content: self.build_system_prompt(),
                         name: None,
+                        tool_calls: None,
                         tool_call_id: None,
                     },
                     Message {
@@ -551,6 +557,7 @@ impl Agent {
                                 .join("\n---\n")
                         ),
                         name: None,
+                        tool_calls: None,
                         tool_call_id: None,
                     },
                 ];
@@ -571,6 +578,7 @@ impl Agent {
                     role: Role::Assistant,
                     content: output.clone(),
                     name: None,
+                    tool_calls: None,
                     tool_call_id: None,
                 });
 
@@ -638,6 +646,7 @@ impl Agent {
             role: Role::System,
             content: self.build_system_prompt(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         }];
         messages.extend(self.memory.messages().iter().cloned());
@@ -691,6 +700,7 @@ impl Agent {
             role: Role::System,
             content: self.build_system_prompt(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         }];
         messages.extend(self.memory.messages().iter().cloned());

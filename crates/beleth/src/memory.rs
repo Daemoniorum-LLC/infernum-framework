@@ -294,6 +294,7 @@ impl AgentMemory {
                 role: Role::System,
                 content: format!("[Previous conversation summary: {}]", summary_text),
                 name: Some("memory_summary".to_string()),
+                tool_calls: None,
                 tool_call_id: None,
             },
         );
@@ -465,6 +466,7 @@ impl SerializableMessage {
             role,
             content: self.content.clone(),
             name: self.name.clone(),
+            tool_calls: None,
             tool_call_id: self.tool_call_id.clone(),
         }
     }
@@ -1174,6 +1176,7 @@ mod tests {
             role: Role::System,
             content: "System prompt".to_string(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         });
         memory.add_message(Message::user("User 1"));
@@ -1219,6 +1222,7 @@ mod tests {
             role: Role::System,
             content: "System".to_string(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         });
 
@@ -1242,6 +1246,7 @@ mod tests {
             role: Role::System,
             content: "System".to_string(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         });
         memory.add_message(Message::user("User"));
@@ -1262,6 +1267,7 @@ mod tests {
             role: Role::System,
             content: "System".to_string(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         });
         memory.add_message(Message::user("User"));
@@ -1310,6 +1316,7 @@ mod tests {
             role: Role::System,
             content: "Summary".to_string(),
             name: Some("memory_summary".to_string()),
+            tool_calls: None,
             tool_call_id: None,
         });
 
@@ -1347,6 +1354,7 @@ mod tests {
             role: Role::System,
             content: "System prompt".to_string(),
             name: Some("test".to_string()),
+            tool_calls: None,
             tool_call_id: None,
         };
         let serializable = SerializableMessage::from(&msg);
@@ -1395,6 +1403,7 @@ mod tests {
             role: Role::Assistant,
             content: "Response".to_string(),
             name: Some("test_name".to_string()),
+            tool_calls: None,
             tool_call_id: Some("call_123".to_string()),
         };
 

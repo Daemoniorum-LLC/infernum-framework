@@ -73,30 +73,30 @@ async fn test_health_endpoint_content_type() {
 // Validation Tests (using mock validation router)
 // ============================================================================
 
-/// Creates a router that validates chat completion requests.
+/// Creates a router that validates generate requests (mock implementation).
 fn validation_router() -> axum::Router {
     use axum::http::StatusCode;
     use axum::routing::post;
 
     axum::Router::new().route(
-        "/v1/chat/completions",
+        "/v1/generate",
         post(|Json(body): Json<serde_json::Value>| async move {
-            // Validate messages
-            let messages = body.get("messages").and_then(|m| m.as_array());
-            match messages {
+            // Validate prompt (messages or text)
+            let prompt = body.get("prompt");
+            match prompt {
                 None => {
                     return (
                         StatusCode::BAD_REQUEST,
                         Json(json!({
                             "error": {
-                                "message": "messages is required",
+                                "message": "prompt is required",
                                 "type": "invalid_request_error",
-                                "code": "invalid_messages"
+                                "code": "empty_prompt"
                             }
                         })),
                     );
                 }
-                Some(msgs) if msgs.is_empty() => {
+                Some(p) if p.is_array() && p.as_array().map_or(true, |a| a.is_empty()) => {
                     return (
                         StatusCode::BAD_REQUEST,
                         Json(json!({
@@ -111,21 +111,23 @@ fn validation_router() -> axum::Router {
                 _ => {}
             }
 
-            // Validate temperature
-            if let Some(temp) = body.get("temperature") {
-                if let Some(t) = temp.as_f64() {
-                    if !(0.0..=2.0).contains(&t) {
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            Json(json!({
-                                "error": {
-                                    "message": "temperature must be between 0 and 2",
-                                    "type": "invalid_request_error",
-                                    "code": "invalid_temperature",
-                                    "param": "temperature"
-                                }
-                            })),
-                        );
+            // Validate sampling.temperature
+            if let Some(sampling) = body.get("sampling") {
+                if let Some(temp) = sampling.get("temperature") {
+                    if let Some(t) = temp.as_f64() {
+                        if !(0.0..=2.0).contains(&t) {
+                            return (
+                                StatusCode::BAD_REQUEST,
+                                Json(json!({
+                                    "error": {
+                                        "message": "temperature must be between 0 and 2",
+                                        "type": "invalid_request_error",
+                                        "code": "invalid_temperature",
+                                        "param": "temperature"
+                                    }
+                                })),
+                            );
+                        }
                     }
                 }
             }
@@ -134,16 +136,11 @@ fn validation_router() -> axum::Router {
             (
                 StatusCode::OK,
                 Json(json!({
-                    "id": "chatcmpl-test",
-                    "object": "chat.completion",
-                    "created": 1234567890,
+                    "request_id": "gen-test-123",
                     "model": "test-model",
                     "choices": [{
                         "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": "Hello!"
-                        },
+                        "text": "Hello!",
                         "finish_reason": "stop"
                     }],
                     "usage": {
@@ -158,35 +155,35 @@ fn validation_router() -> axum::Router {
 }
 
 #[tokio::test]
-async fn test_chat_completions_success() {
+async fn test_generate_success() {
     let server = TestServer::start(validation_router()).await;
 
     let response = server
         .post_json(
-            "/v1/chat/completions",
+            "/v1/generate",
             &json!({
                 "model": "test-model",
-                "messages": [{"role": "user", "content": "Hello"}]
+                "prompt": [{"role": "user", "content": "Hello"}]
             }),
         )
         .await;
 
     assert_eq!(response.status(), 200);
     let body = json_body(response).await;
-    assert_eq!(body["object"], "chat.completion");
+    assert_eq!(body["request_id"], "gen-test-123");
     assert!(body["choices"].is_array());
 }
 
 #[tokio::test]
-async fn test_chat_completions_empty_messages_error() {
+async fn test_generate_empty_messages_error() {
     let server = TestServer::start(validation_router()).await;
 
     let response = server
         .post_json(
-            "/v1/chat/completions",
+            "/v1/generate",
             &json!({
                 "model": "test-model",
-                "messages": []
+                "prompt": []
             }),
         )
         .await;
@@ -197,16 +194,16 @@ async fn test_chat_completions_empty_messages_error() {
 }
 
 #[tokio::test]
-async fn test_chat_completions_invalid_temperature_error() {
+async fn test_generate_invalid_temperature_error() {
     let server = TestServer::start(validation_router()).await;
 
     let response = server
         .post_json(
-            "/v1/chat/completions",
+            "/v1/generate",
             &json!({
                 "model": "test-model",
-                "messages": [{"role": "user", "content": "hi"}],
-                "temperature": 5.0
+                "prompt": [{"role": "user", "content": "hi"}],
+                "sampling": {"temperature": 5.0}
             }),
         )
         .await;
@@ -218,21 +215,17 @@ async fn test_chat_completions_invalid_temperature_error() {
 }
 
 // ============================================================================
-// Contract Tests (OpenAI API Compatibility)
+// Contract Tests (Infernum API)
 // ============================================================================
 
-/// Validates a chat completion response matches OpenAI spec.
-fn validate_chat_completion_response(body: &serde_json::Value) {
-    assert!(body["id"].is_string(), "id must be string");
-    assert_eq!(body["object"], "chat.completion");
-    assert!(body["created"].is_number(), "created must be number");
+/// Validates a generate response matches Infernum spec.
+fn validate_generate_response(body: &serde_json::Value) {
+    assert!(body["request_id"].is_string(), "request_id must be string");
     assert!(body["model"].is_string(), "model must be string");
     assert!(body["choices"].is_array(), "choices must be array");
 
     for choice in body["choices"].as_array().unwrap() {
         assert!(choice["index"].is_number());
-        assert!(choice["message"].is_object());
-        assert!(choice["message"]["role"].is_string());
     }
 
     if let Some(usage) = body.get("usage") {
@@ -244,7 +237,7 @@ fn validate_chat_completion_response(body: &serde_json::Value) {
     }
 }
 
-/// Validates an error response matches OpenAI spec.
+/// Validates an error response matches Infernum error spec.
 fn validate_error_response(body: &serde_json::Value) {
     assert!(body["error"].is_object(), "error must be object");
     assert!(body["error"]["message"].is_string(), "error.message must be string");
@@ -252,33 +245,33 @@ fn validate_error_response(body: &serde_json::Value) {
 }
 
 #[tokio::test]
-async fn test_openai_chat_completion_contract() {
+async fn test_generate_contract() {
     let server = TestServer::start(validation_router()).await;
 
     let response = server
         .post_json(
-            "/v1/chat/completions",
+            "/v1/generate",
             &json!({
                 "model": "test",
-                "messages": [{"role": "user", "content": "hi"}]
+                "prompt": [{"role": "user", "content": "hi"}]
             }),
         )
         .await;
 
     let body = json_body(response).await;
-    validate_chat_completion_response(&body);
+    validate_generate_response(&body);
 }
 
 #[tokio::test]
-async fn test_openai_error_contract() {
+async fn test_error_contract() {
     let server = TestServer::start(validation_router()).await;
 
     let response = server
         .post_json(
-            "/v1/chat/completions",
+            "/v1/generate",
             &json!({
                 "model": "test",
-                "messages": []
+                "prompt": []
             }),
         )
         .await;
@@ -299,49 +292,43 @@ fn tokenize_router() -> axum::Router {
     axum::Router::new().route(
         "/v1/tokenize",
         post(|Json(body): Json<serde_json::Value>| async move {
-            // Validate request has either messages or prompt
-            let has_messages = body.get("messages").is_some();
-            let has_prompt = body.get("prompt").is_some();
+            // Validate request has prompt (text string or messages array)
+            let prompt = body.get("prompt");
 
-            if !has_messages && !has_prompt {
+            if prompt.is_none() {
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(json!({
                         "error": {
-                            "message": "either 'messages' or 'prompt' must be provided",
+                            "message": "'prompt' must be provided (text string or messages array)",
                             "type": "invalid_request_error",
-                            "code": "invalid_messages"
+                            "code": "empty_prompt"
                         }
                     })),
                 );
             }
 
-            if has_messages && has_prompt {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({
-                        "error": {
-                            "message": "provide either 'messages' or 'prompt', not both",
-                            "type": "invalid_request_error",
-                            "code": "invalid_messages"
-                        }
-                    })),
-                );
-            }
+            let prompt = prompt.expect("checked above");
 
             // Estimate token count (simple approximation)
-            let text = if has_prompt {
-                body["prompt"].as_str().unwrap_or("").to_string()
+            let text = if let Some(s) = prompt.as_str() {
+                s.to_string()
+            } else if let Some(msgs) = prompt.as_array() {
+                msgs.iter()
+                    .filter_map(|m| m["content"].as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
             } else {
-                body["messages"]
-                    .as_array()
-                    .map(|msgs| {
-                        msgs.iter()
-                            .filter_map(|m| m["content"].as_str())
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    })
-                    .unwrap_or_default()
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": {
+                            "message": "'prompt' must be a string or array of messages",
+                            "type": "invalid_request_error",
+                            "code": "empty_prompt"
+                        }
+                    })),
+                );
             };
 
             let token_count = (text.chars().count() as f64 / 4.0).ceil() as u32;
@@ -358,7 +345,7 @@ fn tokenize_router() -> axum::Router {
 }
 
 #[tokio::test]
-async fn test_tokenize_with_prompt() {
+async fn test_tokenize_with_text_prompt() {
     let server = TestServer::start(tokenize_router()).await;
 
     let response = server
@@ -378,7 +365,7 @@ async fn test_tokenize_with_prompt() {
 }
 
 #[tokio::test]
-async fn test_tokenize_with_messages() {
+async fn test_tokenize_with_messages_prompt() {
     let server = TestServer::start(tokenize_router()).await;
 
     let response = server
@@ -386,7 +373,7 @@ async fn test_tokenize_with_messages() {
             "/v1/tokenize",
             &json!({
                 "model": "llama-3b",
-                "messages": [
+                "prompt": [
                     {"role": "system", "content": "You are helpful."},
                     {"role": "user", "content": "Hi!"}
                 ]
@@ -417,49 +404,26 @@ async fn test_tokenize_no_input_error() {
     assert!(body["error"]["message"]
         .as_str()
         .unwrap()
-        .contains("messages"));
-}
-
-#[tokio::test]
-async fn test_tokenize_both_inputs_error() {
-    let server = TestServer::start(tokenize_router()).await;
-
-    let response = server
-        .post_json(
-            "/v1/tokenize",
-            &json!({
-                "model": "test-model",
-                "messages": [{"role": "user", "content": "hi"}],
-                "prompt": "Hello"
-            }),
-        )
-        .await;
-
-    assert_eq!(response.status(), 400);
-    let body = json_body(response).await;
-    assert!(body["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("not both"));
+        .contains("prompt"));
 }
 
 // ============================================================================
 // Typed Validation Tests (using real RequestValidationError)
 // ============================================================================
 
-/// Creates a router that uses the actual validation module.
+/// Creates a router that uses the actual validation module with native types.
 fn typed_validation_router() -> axum::Router {
     use axum::http::StatusCode;
     use axum::routing::post;
-    use infernum_server::openai::ChatCompletionRequest;
-    use infernum_server::validation::validate_chat_request;
+    use infernum_core::GenerateRequest;
+    use infernum_server::validation::validate_generate_request;
     use infernum_server::server::ValidationLimits;
 
     axum::Router::new().route(
-        "/v1/chat/completions",
+        "/v1/generate",
         post(|Json(body): Json<serde_json::Value>| async move {
-            // First try to parse the request
-            let req: ChatCompletionRequest = match serde_json::from_value(body.clone()) {
+            // First try to parse the request as GenerateRequest
+            let req: GenerateRequest = match serde_json::from_value(body.clone()) {
                 Ok(r) => r,
                 Err(e) => {
                     return (
@@ -484,7 +448,7 @@ fn typed_validation_router() -> axum::Router {
             };
 
             // Validate using the real validation module
-            if let Err(err) = validate_chat_request(&req, &limits) {
+            if let Err(err) = validate_generate_request(&req, &limits) {
                 let api_error = err.to_api_error("test-request-id");
                 return (StatusCode::BAD_REQUEST, Json(serde_json::to_value(api_error).unwrap()));
             }
@@ -493,16 +457,11 @@ fn typed_validation_router() -> axum::Router {
             (
                 StatusCode::OK,
                 Json(json!({
-                    "id": "chatcmpl-test",
-                    "object": "chat.completion",
-                    "created": 1234567890,
-                    "model": req.model,
+                    "request_id": "test-request-id",
+                    "model": "test",
                     "choices": [{
                         "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": "Hello from typed validation!"
-                        },
+                        "text": "Hello from typed validation!",
                         "finish_reason": "stop"
                     }],
                     "usage": {
@@ -522,10 +481,10 @@ async fn test_typed_validation_empty_messages_returns_400() {
 
     let response = server
         .post_json(
-            "/v1/chat/completions",
+            "/v1/generate",
             &json!({
                 "model": "test-model",
-                "messages": []
+                "prompt": []
             }),
         )
         .await;
@@ -550,10 +509,10 @@ async fn test_typed_validation_too_many_messages_returns_400() {
 
     let response = server
         .post_json(
-            "/v1/chat/completions",
+            "/v1/generate",
             &json!({
                 "model": "test-model",
-                "messages": messages
+                "prompt": messages
             }),
         )
         .await;
@@ -576,11 +535,11 @@ async fn test_typed_validation_invalid_temperature_returns_400() {
 
     let response = server
         .post_json(
-            "/v1/chat/completions",
+            "/v1/generate",
             &json!({
                 "model": "test-model",
-                "messages": [{"role": "user", "content": "hi"}],
-                "temperature": 3.5
+                "prompt": [{"role": "user", "content": "hi"}],
+                "sampling": {"temperature": 3.5}
             }),
         )
         .await;
@@ -600,19 +559,18 @@ async fn test_typed_validation_valid_request_returns_200() {
 
     let response = server
         .post_json(
-            "/v1/chat/completions",
+            "/v1/generate",
             &json!({
                 "model": "test-model",
-                "messages": [{"role": "user", "content": "Hello!"}],
-                "temperature": 0.7,
-                "max_tokens": 100
+                "prompt": [{"role": "user", "content": "Hello!"}],
+                "sampling": {"temperature": 0.7, "max_tokens": 100}
             }),
         )
         .await;
 
     assert_eq!(response.status(), 200);
     let body = json_body(response).await;
-    assert_eq!(body["object"], "chat.completion");
+    assert_eq!(body["request_id"], "test-request-id");
     assert!(body["choices"].is_array());
 }
 
@@ -626,7 +584,7 @@ fn auth_router() -> axum::Router {
     use axum::routing::post;
 
     axum::Router::new().route(
-        "/v1/chat/completions",
+        "/v1/generate",
         post(
             |headers: axum::http::HeaderMap, Json(body): Json<serde_json::Value>| async move {
                 // Check for Authorization header
@@ -665,13 +623,11 @@ fn auth_router() -> axum::Router {
                 (
                     StatusCode::OK,
                     Json(json!({
-                        "id": "chatcmpl-auth-test",
-                        "object": "chat.completion",
-                        "created": 1234567890,
+                        "request_id": "gen-auth-test",
                         "model": body["model"],
                         "choices": [{
                             "index": 0,
-                            "message": {"role": "assistant", "content": "Authenticated!"},
+                            "text": "Authenticated!",
                             "finish_reason": "stop"
                         }]
                     })),
@@ -692,7 +648,7 @@ fn rate_limit_router() -> axum::Router {
     let request_count = Arc::new(AtomicU32::new(0));
 
     axum::Router::new().route(
-        "/v1/chat/completions",
+        "/v1/generate",
         post({
             let request_count = request_count.clone();
             move |Json(_body): Json<serde_json::Value>| {
@@ -719,9 +675,8 @@ fn rate_limit_router() -> axum::Router {
                     (
                         StatusCode::OK,
                         Json(json!({
-                            "id": "chatcmpl-rate-test",
-                            "object": "chat.completion",
-                            "choices": [{"index": 0, "message": {"role": "assistant", "content": "OK"}}]
+                            "request_id": "gen-rate-test",
+                            "choices": [{"index": 0, "text": "OK", "finish_reason": "stop"}]
                         })),
                     )
                         .into_response()
@@ -737,10 +692,10 @@ async fn test_auth_missing_api_key_returns_401() {
 
     let client = reqwest::Client::new();
     let response = client
-        .post(&server.url("/v1/chat/completions"))
+        .post(&server.url("/v1/generate"))
         .json(&json!({
             "model": "test-model",
-            "messages": [{"role": "user", "content": "hi"}]
+            "prompt": [{"role": "user", "content": "hi"}]
         }))
         .send()
         .await
@@ -757,11 +712,11 @@ async fn test_auth_invalid_api_key_returns_401() {
 
     let client = reqwest::Client::new();
     let response = client
-        .post(&server.url("/v1/chat/completions"))
+        .post(&server.url("/v1/generate"))
         .header("Authorization", "Bearer invalid-key")
         .json(&json!({
             "model": "test-model",
-            "messages": [{"role": "user", "content": "hi"}]
+            "prompt": [{"role": "user", "content": "hi"}]
         }))
         .send()
         .await
@@ -778,11 +733,11 @@ async fn test_auth_valid_api_key_returns_200() {
 
     let client = reqwest::Client::new();
     let response = client
-        .post(&server.url("/v1/chat/completions"))
+        .post(&server.url("/v1/generate"))
         .header("Authorization", "Bearer sk-test-key-123")
         .json(&json!({
             "model": "test-model",
-            "messages": [{"role": "user", "content": "hi"}]
+            "prompt": [{"role": "user", "content": "hi"}]
         }))
         .send()
         .await
@@ -799,8 +754,8 @@ async fn test_rate_limit_returns_429() {
     // First 3 requests should succeed
     for _ in 0..3 {
         let response = client
-            .post(&server.url("/v1/chat/completions"))
-            .json(&json!({"model": "test", "messages": [{"role": "user", "content": "hi"}]}))
+            .post(&server.url("/v1/generate"))
+            .json(&json!({"model": "test", "prompt": [{"role": "user", "content": "hi"}]}))
             .send()
             .await
             .expect("request failed");
@@ -809,8 +764,8 @@ async fn test_rate_limit_returns_429() {
 
     // 4th request should be rate limited
     let response = client
-        .post(&server.url("/v1/chat/completions"))
-        .json(&json!({"model": "test", "messages": [{"role": "user", "content": "hi"}]}))
+        .post(&server.url("/v1/generate"))
+        .json(&json!({"model": "test", "prompt": [{"role": "user", "content": "hi"}]}))
         .send()
         .await
         .expect("request failed");
@@ -837,7 +792,7 @@ fn concurrent_router() -> axum::Router {
     let max_concurrent = Arc::new(AtomicU32::new(0));
 
     axum::Router::new().route(
-        "/v1/chat/completions",
+        "/v1/generate",
         post({
             let active_count = active_count.clone();
             let max_concurrent = max_concurrent.clone();
@@ -857,12 +812,11 @@ fn concurrent_router() -> axum::Router {
                     (
                         StatusCode::OK,
                         Json(json!({
-                            "id": format!("chatcmpl-{}", uuid::Uuid::new_v4()),
-                            "object": "chat.completion",
+                            "request_id": format!("gen-{}", uuid::Uuid::new_v4()),
                             "model": body["model"],
                             "choices": [{
                                 "index": 0,
-                                "message": {"role": "assistant", "content": "Response"},
+                                "text": "Response",
                                 "finish_reason": "stop"
                             }]
                         })),
@@ -882,13 +836,13 @@ async fn test_concurrent_requests() {
     let mut handles = Vec::new();
     for i in 0..10 {
         let client = client.clone();
-        let url = server.url("/v1/chat/completions");
+        let url = server.url("/v1/generate");
         let handle = tokio::spawn(async move {
             let response = client
                 .post(&url)
                 .json(&json!({
                     "model": "test-model",
-                    "messages": [{"role": "user", "content": format!("Request {}", i)}]
+                    "prompt": [{"role": "user", "content": format!("Request {}", i)}]
                 }))
                 .send()
                 .await
@@ -917,10 +871,10 @@ async fn test_error_response_includes_request_id() {
 
     let response = server
         .post_json(
-            "/v1/chat/completions",
+            "/v1/generate",
             &json!({
                 "model": "test-model",
-                "messages": []  // Invalid - empty messages
+                "prompt": []  // Invalid - empty messages
             }),
         )
         .await;
@@ -1076,11 +1030,11 @@ async fn test_request_id_propagated() {
 
     // Send request with custom request ID
     let response = client
-        .post(&server.url("/v1/chat/completions"))
+        .post(&server.url("/v1/generate"))
         .header("x-request-id", "custom-req-12345")
         .json(&json!({
             "model": "test-model",
-            "messages": []
+            "prompt": []
         }))
         .send()
         .await

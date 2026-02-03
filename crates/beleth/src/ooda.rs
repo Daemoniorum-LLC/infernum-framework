@@ -505,12 +505,14 @@ impl OodaExecutor {
                 role: Role::System,
                 content: self.system_prompt(),
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
             Message {
                 role: Role::User,
                 content: task.to_string(),
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
         ];
@@ -559,6 +561,7 @@ impl OodaExecutor {
                     iteration, decision.rationale, action_result.output
                 ),
                 name: None,
+                tool_calls: None,
                 tool_call_id: None,
             });
 
@@ -631,6 +634,7 @@ impl OodaExecutor {
             role: Role::User,
             content: prompt.to_string(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         });
 
@@ -678,6 +682,7 @@ impl OodaExecutor {
             role: Role::User,
             content: prompt,
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         });
 
@@ -733,6 +738,7 @@ Available tools: {}"#,
             role: Role::User,
             content: prompt,
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         });
 

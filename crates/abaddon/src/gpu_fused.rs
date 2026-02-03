@@ -532,7 +532,7 @@ pub mod cuda {
     ld.param.s32 %r4, [zero_point];
 
     // Convert scale to F32 for computation
-    mov.b16 %h1, %r3;
+    cvt.u16.u32 %h1, %r3;
     cvt.f32.f16 %f1, %h1;  // scale as F32
 
     // LZ4 decompression state
@@ -995,7 +995,7 @@ PAR_DONE:
     ld.param.u32 %r2, [num_values];
     ld.param.u32 %r3, [scale_bits];
 
-    mov.b16 %h1, %r3;
+    cvt.u16.u32 %h1, %r3;
     cvt.f32.f16 %f1, %h1;
 
     mov.u32 %r10, 0;  // in_pos
@@ -1471,6 +1471,118 @@ INT8_DONE:
             // LZ4: 1 token + 4 literals = 5 bytes
             assert_eq!(compressed.len(), 5);
             assert_eq!(compressed[0], 0x40); // 4 literals, 0 match
+        }
+
+        // ==================== Phase 4: Fusion Equivalence Tests ====================
+        // Trust boundary §5 (Fusion Equivalence) from GPU-CODEC-PIPELINE-TDD.md.
+        //
+        // Property: fused_lz4_int4(data) == dequant(lz4_decompress(data))
+        // The fused kernel must produce bit-identical results to the sequential pipeline.
+
+        /// Fusion equivalence: fused LZ4+INT4 produces same F16 output as
+        /// sequential LZ4 decompress → INT4 dequant.
+        #[test]
+        fn test_fused_lz4_int4_matches_sequential() {
+            if !cuda_available() {
+                eprintln!("Skipping: no CUDA device");
+                return;
+            }
+
+            let mut fused_ctx = GpuFusedContext::new(0).unwrap();
+            fused_ctx.load_lz4_int4_kernel().unwrap();
+
+            // Create INT4 test data: 8 known nibble values
+            let nibbles: Vec<u8> = vec![0, 1, 2, 3, 4, 5, 6, 7];
+            let (compressed, num_values) = create_lz4_int4_test_data(&nibbles);
+            let scale = half::f16::from_f32(0.5);
+
+            // === Fused path ===
+            let fused_result = fused_ctx.fused_lz4_int4_block(
+                &compressed, scale, 0, num_values
+            ).expect("fused kernel");
+
+            let mut fused_host = vec![half::f16::ZERO; num_values];
+            fused_ctx.device
+                .dtoh_sync_copy_into(&fused_result, &mut fused_host)
+                .expect("copy fused");
+
+            // === Sequential path (CPU reference) ===
+            // Step 1: LZ4 decompress (extract raw packed bytes)
+            // The compressed data IS the packed INT4 bytes wrapped in LZ4.
+            // For create_lz4_int4_test_data, the LZ4 payload is the packed nibbles.
+            let packed_size = (num_values + 1) / 2;
+            // Parse LZ4: token byte says how many literal bytes follow
+            let token = compressed[0];
+            let lit_len = (token >> 4) as usize;
+            let decompressed_packed = &compressed[1..1 + lit_len];
+
+            // Step 2: INT4 dequant (CPU reference)
+            let mut sequential_host = Vec::with_capacity(num_values);
+            for i in 0..num_values {
+                let byte_idx = i / 2;
+                let nibble = if i % 2 == 0 {
+                    decompressed_packed[byte_idx] & 0x0F
+                } else {
+                    (decompressed_packed[byte_idx] >> 4) & 0x0F
+                };
+                // Symmetric dequant: (nibble - 8) * scale
+                let val = ((nibble as i32) - 8) as f32 * scale.to_f32();
+                sequential_host.push(half::f16::from_f32(val));
+            }
+
+            // === Compare ===
+            assert_eq!(fused_host.len(), sequential_host.len(), "length mismatch");
+            for (i, (f, s)) in fused_host.iter().zip(sequential_host.iter()).enumerate() {
+                assert_eq!(
+                    f.to_f32(), s.to_f32(),
+                    "Element {}: fused={} vs sequential={} (nibble={})",
+                    i, f.to_f32(), s.to_f32(), nibbles[i]
+                );
+            }
+        }
+
+        /// Fusion equivalence: fused LZ4+INT8 matches sequential path.
+        #[test]
+        fn test_fused_lz4_int8_matches_sequential() {
+            if !cuda_available() {
+                eprintln!("Skipping: no CUDA device");
+                return;
+            }
+
+            let mut ctx = GpuFusedContext::new(0).unwrap();
+            ctx.load_lz4_int8_kernel().unwrap();
+
+            // Create INT8 test data: 8 known values
+            let int8_values: Vec<i8> = vec![-128, -64, -1, 0, 1, 42, 100, 127];
+            let (compressed, num_values) = create_lz4_int8_test_data(&int8_values);
+            let scale = half::f16::from_f32(0.1);
+
+            // Fused path
+            let fused_result = ctx.fused_lz4_int8_block(
+                &compressed, scale, num_values
+            ).expect("fused INT8 kernel");
+
+            let mut fused_host = vec![half::f16::ZERO; num_values];
+            ctx.device
+                .dtoh_sync_copy_into(&fused_result, &mut fused_host)
+                .expect("copy fused");
+
+            // Sequential CPU reference
+            let sequential: Vec<half::f16> = int8_values.iter()
+                .map(|&v| {
+                    let val = (v as f32) * scale.to_f32();
+                    half::f16::from_f32(val)
+                })
+                .collect();
+
+            for (i, (f, s)) in fused_host.iter().zip(sequential.iter()).enumerate() {
+                let diff = (f.to_f32() - s.to_f32()).abs();
+                assert!(
+                    diff < 0.01,
+                    "INT8 element {}: fused={} vs sequential={} (input={})",
+                    i, f.to_f32(), s.to_f32(), int8_values[i]
+                );
+            }
         }
     }
 }

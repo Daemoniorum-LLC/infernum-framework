@@ -1133,6 +1133,7 @@ impl Engine {
             role: Role::User,
             content: prompt.to_string(),
             name: None,
+            tool_calls: None,
             tool_call_id: None,
         }])
         .with_sampling(
@@ -1288,10 +1289,15 @@ impl InferenceEngine for Engine {
 
         Ok(GenerateResponse {
             request_id: request.request_id,
+            created: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64,
             model: self.metadata.id.clone(),
             choices: vec![infernum_core::response::Choice {
                 index: 0,
                 text,
+                message: None,
                 finish_reason: Some(infernum_core::FinishReason::Stop),
                 logprobs: None,
             }],
@@ -1709,10 +1715,15 @@ mod tests {
 
             Ok(GenerateResponse {
                 request_id: request.request_id,
+                created: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64,
                 model: self.metadata.id.clone(),
                 choices: vec![infernum_core::response::Choice {
                     index: 0,
                     text: "Mock response".to_string(),
+                    message: None,
                     finish_reason: Some(infernum_core::FinishReason::Stop),
                     logprobs: None,
                 }],
