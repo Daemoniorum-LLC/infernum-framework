@@ -28,6 +28,7 @@ pub mod ooda;
 pub mod planner;
 pub mod react;
 pub mod tool;
+pub mod tools;
 pub mod tracing_spans;
 pub mod wellbeing;
 pub mod wellbeing_persist;
@@ -82,3 +83,7 @@ pub use wellbeing_persist::{
     PersistedHistory, PersistedSnapshot,
 };
 pub use http_engine::{HttpEngine, HttpEngineError, SimpleMessage};
+pub use tools::{
+    BashTool, ClaudeCodeTool, EditFileTool, ListFilesTool, ReadFileTool, SearchFilesTool,
+    WriteFileTool,
+};

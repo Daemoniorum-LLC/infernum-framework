@@ -9,7 +9,7 @@ use crate::memory::AgentMemory;
 use crate::planner::{Planner, PlanningStrategy};
 use crate::tool::{ToolCall, ToolContext, ToolRegistry};
 
-use abaddon::{Engine, InferenceEngine};
+use abaddon::InferenceEngine;
 
 /// Source for agent persona/system prompt.
 #[derive(Debug, Clone)]
@@ -200,7 +200,9 @@ pub struct Agent {
     /// Planning strategy.
     pub planner: Arc<dyn Planner>,
     /// The inference engine.
-    engine: Option<Arc<Engine>>,
+    engine: Option<Arc<dyn InferenceEngine>>,
+    /// Working directory for file tools (set on ToolContext automatically).
+    working_dir: Option<std::path::PathBuf>,
 }
 
 impl Agent {
@@ -249,7 +251,7 @@ impl Agent {
     }
 
     /// Sets the inference engine.
-    pub fn set_engine(&mut self, engine: Arc<Engine>) {
+    pub fn set_engine(&mut self, engine: Arc<dyn InferenceEngine>) {
         self.engine = Some(engine);
     }
 
@@ -290,6 +292,9 @@ impl Agent {
         // Create tool context
         let mut ctx = ToolContext::new(&self.id);
         ctx.messages = messages.clone();
+        if let Some(ref wd) = self.working_dir {
+            ctx.set_state("working_dir", serde_json::json!(wd.to_string_lossy().as_ref()));
+        }
 
         // ReAct loop
         let mut final_answer = String::new();
@@ -554,6 +559,9 @@ impl Agent {
         );
 
         let mut ctx = ToolContext::new(&self.id);
+        if let Some(ref wd) = self.working_dir {
+            ctx.set_state("working_dir", serde_json::json!(wd.to_string_lossy().as_ref()));
+        }
         let mut step_results = Vec::new();
         let mut final_output = String::new();
 
@@ -854,7 +862,8 @@ pub struct AgentBuilder {
     persona: Option<Persona>,
     tools: Option<ToolRegistry>,
     planning_strategy: Option<PlanningStrategy>,
-    engine: Option<Arc<Engine>>,
+    engine: Option<Arc<dyn InferenceEngine>>,
+    working_dir: Option<std::path::PathBuf>,
 }
 
 impl AgentBuilder {
@@ -920,8 +929,19 @@ impl AgentBuilder {
 
     /// Sets the inference engine.
     #[must_use]
-    pub fn engine(mut self, engine: Arc<Engine>) -> Self {
+    pub fn engine(mut self, engine: Arc<dyn InferenceEngine>) -> Self {
         self.engine = Some(engine);
+        self
+    }
+
+    /// Sets the working directory for file tools.
+    ///
+    /// This directory is set on the `ToolContext` automatically during
+    /// agent execution. File tools validate that all paths stay within
+    /// this boundary.
+    #[must_use]
+    pub fn working_dir(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.working_dir = Some(dir.into());
         self
     }
 
@@ -939,6 +959,7 @@ impl AgentBuilder {
             memory: AgentMemory::new(),
             planner: Arc::new(crate::planner::DefaultPlanner::new(strategy)),
             engine: self.engine,
+            working_dir: self.working_dir,
         }
     }
 }

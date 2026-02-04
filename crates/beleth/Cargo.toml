@@ -41,6 +41,8 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 dashmap = { workspace = true }
 parking_lot = { workspace = true }
+regex = { workspace = true }
+glob = "0.3"
 dirs = "5.0"
 
 [dev-dependencies]
