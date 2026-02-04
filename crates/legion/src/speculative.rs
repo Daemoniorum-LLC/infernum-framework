@@ -479,8 +479,8 @@ pub struct DraftPool {
     /// Generators by band.
     generators: HashMap<FrequencyBand, DraftGenerator>,
 
-    /// Configuration.
-    config: SpeculativeLegionConfig,
+    /// Configuration (retained for future use in adaptive draft generation).
+    _config: SpeculativeLegionConfig,
 }
 
 impl DraftPool {
@@ -495,7 +495,7 @@ impl DraftPool {
             generators.insert(band, generator);
         }
 
-        Self { generators, config }
+        Self { generators, _config: config }
     }
 
     /// Selects frequency bands for the given number of agents.
@@ -602,7 +602,7 @@ impl SpeculativeLegion {
 
     /// Ranks draft paths by coherence using field interference.
     pub fn rank_paths(&self, drafts: Vec<DraftSequence>) -> Vec<RankedPath> {
-        let mut field = self.field.write();
+        let field = self.field.write();
 
         // Clear field for new ranking
         field.decay();

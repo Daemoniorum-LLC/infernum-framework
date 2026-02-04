@@ -8,7 +8,7 @@
 //! Unlike standard/quantized caches, this cache computes attention internally
 //! using fused kernels, avoiding the need to materialize full K/V tensors.
 
-use candle_core::{DType, Result as CandleResult, Tensor};
+use candle_core::{Result as CandleResult, Tensor};
 use super::KvCache;
 use crate::kv_cache_quant_cuda::cuda::CudaQuantizedKvCache as InnerCache;
 

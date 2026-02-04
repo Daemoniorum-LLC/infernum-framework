@@ -28,7 +28,6 @@ use std::sync::Arc;
 use cudarc::driver::CudaDevice;
 
 use super::arch::ModelConfig;
-use super::kv_cache::KvCache;
 use super::tensor::{GpuDType, GpuTensor};
 use super::InferenceError;
 
@@ -153,15 +152,19 @@ impl BatchSlot {
 /// that can be allocated/freed dynamically.
 pub struct SlottedKvCache {
     /// Model configuration.
+    #[allow(dead_code)]
     config: ModelConfig,
 
     /// CUDA device.
+    #[allow(dead_code)]
     device: Arc<CudaDevice>,
 
     /// Key cache [num_slots, num_layers, max_seq_len, kv_heads, head_dim].
+    #[allow(dead_code)]
     keys: GpuTensor,
 
     /// Value cache [num_slots, num_layers, max_seq_len, kv_heads, head_dim].
+    #[allow(dead_code)]
     values: GpuTensor,
 
     /// Slot metadata.
@@ -171,6 +174,7 @@ pub struct SlottedKvCache {
     num_slots: usize,
 
     /// Maximum sequence length per slot.
+    #[allow(dead_code)]
     max_seq_len: usize,
 }
 
@@ -301,6 +305,7 @@ pub struct BatchScheduler {
     kv_cache: SlottedKvCache,
 
     /// Maximum batch size.
+    #[allow(dead_code)]
     max_batch_size: usize,
 
     /// Next request ID.

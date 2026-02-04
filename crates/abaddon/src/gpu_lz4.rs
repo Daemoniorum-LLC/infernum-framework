@@ -39,13 +39,14 @@
 //! - Avoids CPU→GPU transfer of uncompressed data
 //! - Typical throughput: 10-20 GB/s on modern GPUs
 
+/// CUDA-accelerated LZ4 decompression implementation.
 #[cfg(feature = "cuda")]
 pub mod cuda {
-    use std::collections::HashMap;
+
     use std::sync::Arc;
 
     use candle_core::{DType, Device, Tensor};
-    use cudarc::driver::{CudaDevice, CudaSlice, CudaStream, DevicePtr, DeviceSlice, LaunchAsync, LaunchConfig};
+    use cudarc::driver::{CudaDevice, CudaSlice, CudaStream, DevicePtr, LaunchAsync, LaunchConfig};
     use cudarc::nvrtc::Ptx;
 
     /// GPU LZ4 decompression context.
@@ -669,7 +670,7 @@ pub mod cuda {
 
         /// Synchronizes all streams in the pool.
         pub fn synchronize_all(&self) -> Result<(), GpuLz4Error> {
-            for (i, stream) in self.streams.iter().enumerate() {
+            for (i, _stream) in self.streams.iter().enumerate() {
                 self.device
                     .synchronize()
                     .map_err(|e| GpuLz4Error::Synchronize {
@@ -937,35 +938,79 @@ pub mod cuda {
     /// Errors from GPU LZ4 operations.
     #[derive(Debug, thiserror::Error)]
     pub enum GpuLz4Error {
+        /// CUDA device initialization failed.
         #[error("Failed to initialize CUDA device {device_id}: {message}")]
-        DeviceInit { device_id: usize, message: String },
+        DeviceInit {
+            /// CUDA device ID.
+            device_id: usize,
+            /// Error message.
+            message: String,
+        },
 
+        /// CUDA stream creation failed.
         #[error("Failed to create CUDA stream {stream_id}: {message}")]
-        StreamCreate { stream_id: usize, message: String },
+        StreamCreate {
+            /// Stream index.
+            stream_id: usize,
+            /// Error message.
+            message: String,
+        },
 
+        /// Kernel loading failed.
         #[error("Failed to load LZ4 kernel: {message}")]
-        KernelLoad { message: String },
+        KernelLoad {
+            /// Error message.
+            message: String,
+        },
 
+        /// Kernel execution failed.
         #[error("Kernel execution failed: {message}")]
-        KernelExec { message: String },
+        KernelExec {
+            /// Error message.
+            message: String,
+        },
 
+        /// GPU memory allocation failed.
         #[error("Memory allocation failed: {message}")]
-        MemoryAlloc { message: String },
+        MemoryAlloc {
+            /// Error message.
+            message: String,
+        },
 
+        /// GPU memory copy failed.
         #[error("Memory copy failed: {message}")]
-        MemoryCopy { message: String },
+        MemoryCopy {
+            /// Error message.
+            message: String,
+        },
 
+        /// GPU synchronization failed.
         #[error("Synchronization failed: {message}")]
-        Synchronize { message: String },
+        Synchronize {
+            /// Error message.
+            message: String,
+        },
 
+        /// Invalid input data.
         #[error("Invalid input: {message}")]
-        InvalidInput { message: String },
+        InvalidInput {
+            /// Error message.
+            message: String,
+        },
 
+        /// Unsupported data type for decompression.
         #[error("Unsupported dtype: {dtype}")]
-        UnsupportedDtype { dtype: String },
+        UnsupportedDtype {
+            /// Data type name.
+            dtype: String,
+        },
 
+        /// Candle tensor creation failed.
         #[error("Tensor creation failed: {message}")]
-        TensorCreate { message: String },
+        TensorCreate {
+            /// Error message.
+            message: String,
+        },
     }
 
     /// LZ4 decompression kernel in PTX format.
@@ -2744,11 +2789,9 @@ WARP_DONE:
 }
 
 // Provide a no-op implementation when CUDA is not available
+/// Stub module when CUDA is not enabled.
 #[cfg(not(feature = "cuda"))]
 pub mod cuda {
-    //! Stub module when CUDA is not enabled.
-    //!
-    //! Enable the `cuda` feature for GPU-accelerated LZ4 decompression.
 
     /// Errors from GPU LZ4 operations (stub).
     #[derive(Debug, thiserror::Error)]

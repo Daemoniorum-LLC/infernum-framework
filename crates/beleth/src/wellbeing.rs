@@ -359,8 +359,8 @@ struct MonitorState {
     current_phase: OodaPhase,
     /// Phase start time.
     phase_start: Instant,
-    /// All detected signals.
-    all_signals: Vec<DistressSignal>,
+    /// All detected signals (accumulated for future diagnostic reporting).
+    _all_signals: Vec<DistressSignal>,
     /// Snapshots history.
     snapshots: VecDeque<WellbeingSnapshot>,
 }
@@ -377,7 +377,7 @@ impl MonitorState {
             current_iteration: 0,
             current_phase: OodaPhase::Observe,
             phase_start: Instant::now(),
-            all_signals: Vec::new(),
+            _all_signals: Vec::new(),
             snapshots: VecDeque::with_capacity(100),
         }
     }

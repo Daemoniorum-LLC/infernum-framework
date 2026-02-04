@@ -48,6 +48,7 @@ pub(crate) fn compile_cuda_kernel(src: &str) -> Result<Ptx, cudarc::nvrtc::Compi
 ///
 /// WMMA requires compute capability sm_70+ and proper CUDA include paths.
 /// Returns None if compilation fails (e.g., older GPU or missing headers).
+#[allow(dead_code)]
 pub(crate) fn compile_cuda_kernel_wmma(src: &str) -> Option<Ptx> {
     // Try to find CUDA toolkit include path
     let cuda_paths = [

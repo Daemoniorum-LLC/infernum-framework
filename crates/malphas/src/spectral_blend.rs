@@ -37,8 +37,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use legion::{
-    BlendComponent, BlendStats, BlendedModel, DynamicBlendController, LayerDecomposition,
-    LayerType, LayerWeights, SpectralBlend, SpectralDecomposition, SpectralMergeError,
+    BlendStats, BlendedModel, DynamicBlendController, LayerWeights, SpectralBlend, SpectralDecomposition, SpectralMergeError,
 };
 
 // ==================== Error Types ====================

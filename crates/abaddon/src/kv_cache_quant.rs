@@ -35,10 +35,13 @@ pub struct QuantizedKvCache {
     /// Value scales per token: (batch, num_kv_heads, seq_len, 1)
     v_scales: Option<Tensor>,
     /// Number of KV heads
+    #[allow(dead_code)]
     num_kv_heads: usize,
     /// Head dimension
+    #[allow(dead_code)]
     head_dim: usize,
     /// Device
+    #[allow(dead_code)]
     device: Device,
     /// Output dtype for dequantization
     dtype: DType,

@@ -40,6 +40,7 @@ pub const QUANT_BLOCK_SIZE: usize = 32;
 /// Tile size for GEMM computation.
 const TILE_M: usize = 64;
 const TILE_N: usize = 64;
+#[allow(dead_code)]
 const TILE_K: usize = 32;
 
 /// CUDA C source for fused INT4 dequant + GEMM kernel (scalar + GEMV).
@@ -826,7 +827,9 @@ extern "C" __global__ void gemm_f16_bt(
 const GEMV_BLOCK: usize = 256;
 
 /// Block size for WMMA tensor core kernels (64x64 output tiles).
+#[allow(dead_code)]
 const WMMA_BLOCK_M: usize = 64;
+#[allow(dead_code)]
 const WMMA_BLOCK_N: usize = 64;
 
 /// Fused INT4 dequant + GEMM kernel wrapper.

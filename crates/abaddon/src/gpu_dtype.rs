@@ -4,11 +4,12 @@
 //! - 4x memory expansion on CPU
 //! - Large host→device transfers (1 byte FP8 vs 4 bytes F32)
 
+/// CUDA-accelerated FP8 to F32 dtype conversion.
 #[cfg(feature = "cuda")]
 pub mod cuda {
     use std::sync::Arc;
     use cudarc::driver::{CudaDevice, CudaSlice, LaunchAsync, LaunchConfig};
-    use cudarc::nvrtc::Ptx;
+    
 
     /// GPU dtype converter for FP8 → F32 conversion.
     pub struct GpuDtypeConverter {
@@ -186,19 +187,24 @@ extern "C" __global__ void fp8_e5m2_to_f32(
     }
 }
 
+/// Stub module when CUDA is not enabled.
 #[cfg(not(feature = "cuda"))]
 pub mod cuda {
+    /// GPU dtype converter stub (requires CUDA feature).
     pub struct GpuDtypeConverter;
 
     impl GpuDtypeConverter {
+        /// Create new converter (returns error without CUDA).
         pub fn new(_device: std::sync::Arc<()>) -> Result<Self, Box<dyn std::error::Error>> {
             Err("CUDA not enabled".into())
         }
 
+        /// Convert FP8 E4M3 to F32 on host (requires CUDA).
         pub fn fp8_e4m3_to_f32_host(&self, _fp8_data: &[u8]) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
             Err("CUDA not enabled".into())
         }
 
+        /// Convert FP8 E5M2 to F32 on host (requires CUDA).
         pub fn fp8_e5m2_to_f32_host(&self, _fp8_data: &[u8]) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
             Err("CUDA not enabled".into())
         }

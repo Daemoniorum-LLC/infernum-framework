@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::quality::{FrequencyBand, QualityTarget};
-use crate::{LegionConfig, LegionError, Result};
+use crate::LegionConfig;
 
 /// How to route a task to agents.
 #[derive(Debug, Clone)]

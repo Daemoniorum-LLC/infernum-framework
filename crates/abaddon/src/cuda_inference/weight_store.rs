@@ -9,8 +9,8 @@ use std::io::BufReader;
 use std::path::Path;
 use std::sync::Arc;
 
-use cudarc::driver::{CudaDevice, CudaSlice, DeviceSlice};
-use haagenti::tensor::{CompressionAlgorithm, HctReader};
+use cudarc::driver::{CudaDevice, CudaSlice};
+use haagenti::tensor::HctReader;
 use haagenti::Lz4Decompressor;
 
 use crate::hct::HctLoader;
@@ -303,7 +303,7 @@ impl WeightStore {
             let name = filename_to_hf_name(&loader.metadata().name);
             let shape: Vec<usize> = loader.metadata().shape.iter().map(|&d| d as usize).collect();
             let dtype = loader.metadata().dtype;
-            let algorithm = loader.metadata().algorithm;
+            let _algorithm = loader.metadata().algorithm;
 
             // Open file and create reader
             let file = File::open(path)
@@ -527,7 +527,7 @@ impl WeightStore {
     fn build_layer(
         weights: &mut HashMap<String, LoadedWeight>,
         index: usize,
-        config: &ModelConfig,
+        _config: &ModelConfig,
     ) -> Result<LayerWeights, InferenceError> {
         let mut get_weight = |name: &str| -> Result<LoadedWeight, InferenceError> {
             let key = format!("layers.{}.{}", index, name);
