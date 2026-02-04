@@ -769,6 +769,7 @@ LD_LIBRARY_PATH=/usr/lib/wsl/lib cargo test -p abaddon --features cuda -- --test
 | DD-7 | HoloTensor dequant accepts runtime `block_size` parameter | Info | `gpu_holo.rs:2254` | Flexible by design. Ensure callers pass correct value. |
 | DD-8 | Six HoloTensor kernels are stubs, broken, or dead code | Medium | `gpu_holo.rs` | `idct_1d_rows` (placeholder), `idct_1d_cols` (stub), `idct_2d` (dead), `rph_accumulate` (broken PRNG), `rph_generate_projection` (dead), `lrdf_outer_product_batched` (stub). TDD roadmap: DD8-STUB-KERNEL-TDD.md |
 | DD-9 | PTX JIT rejects non-ASCII bytes, unlike offline `ptxas` | Medium | All PTX in `gpu_holo.rs`, `gpu_lz4.rs`, `gpu_dequant.rs`, `gpu_fused.rs` | Documented in §4.5.1. Blocks Sigil/Nihil dynamic PTX generation without an ASCII sanitization pass. |
+| ~~DD-10~~ | ~~Streaming LZ4 decompression returns all zeros~~ | ~~Medium~~ **Resolved** | `gpu_lz4.rs` `process_block_group()` | Fixed: per-block outputs were never copied into the main output buffer. Added `memcpy_dtod_sync` Phase 3. |
 
 ---
 
@@ -780,3 +781,4 @@ LD_LIBRARY_PATH=/usr/lib/wsl/lib cargo test -p abaddon --features cuda -- --test
 | 0.2.0 | 2026-02-03 | DD-8 implementation | Updated kernel statuses post DD-8 TDD: `idct_1d_cols`, `rph_accumulate`, `lrdf_outer_product_batched` now Working. Added §4.5.1 PTX Authoring Constraints (DD-9). Added DD-9 to register. |
 | 0.3.0 | 2026-02-04 | DD-1 resolved | Marked DD-1 as resolved — code already uses `INT4_BLOCK_SIZE` (128) with compile-time assertion. Updated Phase 1 checklist and Design Debt Register. |
 | 0.4.0 | 2026-02-04 | DD-2 resolved | Fixed warp-parallel LZ4 kernel (K3). Root cause: PTX target mismatch (sm_50 declared, sm_70+ instructions used). Split K3 into separate `lz4_warp` PTX module at `.target sm_70`. Fixed match copy overlap threshold. All 11 warp tests + proptest pass. Updated Phase 2/3 checklists, K3 status, and Design Debt Register. |
+| 0.4.1 | 2026-02-04 | DD-10 resolved | Fixed streaming LZ4 decompression (`process_block_group`). Per-block outputs were decompressed into scratch buffers but never assembled into the main output — added `memcpy_dtod_sync` copy phase. All 43 LZ4 GPU tests now pass. |

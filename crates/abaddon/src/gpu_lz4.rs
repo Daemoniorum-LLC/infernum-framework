@@ -793,12 +793,13 @@ pub mod cuda {
         fn process_block_group(
             &self,
             blocks: &[(Vec<u8>, usize)],
-            _d_output: &CudaSlice<u8>,
-            _output_offset: usize,
+            d_output: &CudaSlice<u8>,
+            output_offset: usize,
         ) -> Result<(), GpuLz4Error> {
             // For each block in the group, we:
             // 1. Transfer compressed data to GPU (async on stream i)
             // 2. Launch decompression kernel (async on stream i)
+            // 3. Copy decompressed results into the main output buffer
 
             let mut d_inputs: Vec<CudaSlice<u8>> = Vec::with_capacity(blocks.len());
             let mut d_outputs: Vec<CudaSlice<u8>> = Vec::with_capacity(blocks.len());
@@ -859,6 +860,26 @@ pub mod cuda {
                 .map_err(|e| GpuLz4Error::KernelExec {
                     message: e.to_string(),
                 })?;
+            }
+
+            // Phase 3: Copy decompressed blocks into the main output buffer
+            let mut block_offset = output_offset;
+            for ((_, uncompressed_size), d_block_output) in
+                blocks.iter().zip(d_outputs.iter())
+            {
+                if *uncompressed_size > 0 {
+                    unsafe {
+                        cudarc::driver::result::memcpy_dtod_sync(
+                            *d_output.device_ptr() + block_offset as u64,
+                            *d_block_output.device_ptr(),
+                            *uncompressed_size,
+                        )
+                    }
+                    .map_err(|e| GpuLz4Error::MemoryCopy {
+                        message: e.to_string(),
+                    })?;
+                }
+                block_offset += uncompressed_size;
             }
 
             Ok(())
