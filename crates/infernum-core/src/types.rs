@@ -34,6 +34,58 @@ impl From<&str> for ModelId {
     }
 }
 
+/// Model family for format selection.
+///
+/// Different model families require different tool calling formats,
+/// chat templates, and conversation reconstruction. This type is
+/// shared across the Infernum runtime (server, agent, tokenizer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum ModelFamily {
+    /// Qwen models (Qwen2.5, etc.) — `<tools>` / `<tool_call>` / `<tool_response>` format.
+    Qwen,
+    /// Llama models (Llama 3, etc.) — `<|python_tag|>` format.
+    Llama,
+    /// Mistral models — `[TOOL_CALLS]` format.
+    Mistral,
+    /// Unknown model family — use generic format.
+    #[default]
+    Unknown,
+}
+
+impl ModelFamily {
+    /// Detect model family from model name or path.
+    #[must_use]
+    pub fn from_model_name(name: &str) -> Self {
+        let lower = name.to_lowercase();
+        if lower.contains("qwen") {
+            Self::Qwen
+        } else if lower.contains("llama") {
+            Self::Llama
+        } else if lower.contains("mistral") || lower.contains("mixtral") {
+            Self::Mistral
+        } else {
+            Self::Unknown
+        }
+    }
+
+    /// Whether this model family has a native tool calling format.
+    #[must_use]
+    pub fn has_native_tool_format(&self) -> bool {
+        !matches!(self, Self::Unknown)
+    }
+}
+
+impl std::fmt::Display for ModelFamily {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Qwen => write!(f, "Qwen"),
+            Self::Llama => write!(f, "Llama"),
+            Self::Mistral => write!(f, "Mistral"),
+            Self::Unknown => write!(f, "Unknown"),
+        }
+    }
+}
+
 /// Unique identifier for a request.
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RequestId(pub Uuid);

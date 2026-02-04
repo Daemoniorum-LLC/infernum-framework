@@ -615,7 +615,7 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// Generates tool descriptions for prompting.
+    /// Generates tool descriptions for prompting (generic format).
     #[must_use]
     pub fn to_prompt_description(&self) -> String {
         let mut desc = String::from("Available tools:\n\n");
@@ -627,6 +627,37 @@ impl ToolRegistry {
                 serde_json::to_string_pretty(&tool.parameters_schema()).unwrap_or_default()
             ));
         }
+        desc
+    }
+
+    /// Generates tool descriptions in Qwen2.5 native format.
+    ///
+    /// Matches the format from Qwen2.5's Jinja chat template: tools wrapped
+    /// in `<tools></tools>` XML tags as full JSON function definitions.
+    ///
+    /// See TOOL-CALLING-SPEC.md §5.6.
+    #[must_use]
+    pub fn to_qwen_native_description(&self) -> String {
+        let mut desc = String::from(
+            "You may call one or more functions to assist with the user query.\n\n\
+             You are provided with function signatures within <tools></tools> XML tags:\n\
+             <tools>",
+        );
+
+        for tool_def in self.to_function_definitions() {
+            desc.push('\n');
+            desc.push_str(&serde_json::to_string(&tool_def).unwrap_or_default());
+        }
+
+        desc.push_str(
+            "\n</tools>\n\n\
+             For each function call, return a json object with function name and arguments \
+             within <tool_call></tool_call> XML tags:\n\
+             <tool_call>\n\
+             {\"name\": <function-name>, \"arguments\": <args-json-object>}\n\
+             </tool_call>",
+        );
+
         desc
     }
 

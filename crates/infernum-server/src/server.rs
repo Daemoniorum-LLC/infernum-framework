@@ -1521,15 +1521,43 @@ async fn chat_completions(
                 _ => infernum_core::Role::User,
             };
 
-            // Inject tools into the first system message, or create one if needed
+            // Inject tools into the first system message, or create one if needed.
+            // For multi-turn tool conversations, reconstruct model-native format
+            // per TOOL-CALLING-SPEC §5.5.
             let content = if role == infernum_core::Role::System && idx == 0 && !tools_prompt.is_empty() {
                 format!("{}{}", m.content, tools_prompt)
             } else if m.role == "tool" {
-                // Format tool result with tool_call_id context
-                if let Some(ref tool_call_id) = m.tool_call_id {
-                    format!("[Tool Result for {}]: {}", tool_call_id, m.content)
-                } else {
-                    format!("[Tool Result]: {}", m.content)
+                // §5.5: Format tool result in model-native format
+                match model_family {
+                    ModelFamily::Qwen => {
+                        format!("<tool_response>\n{}\n</tool_response>", m.content)
+                    }
+                    _ => {
+                        if let Some(ref tool_call_id) = m.tool_call_id {
+                            format!("[Tool Result for {}]: {}", tool_call_id, m.content)
+                        } else {
+                            format!("[Tool Result]: {}", m.content)
+                        }
+                    }
+                }
+            } else if m.role == "assistant" && m.tool_calls.is_some() {
+                // §5.5: Reconstruct native tool_call tags in assistant message content
+                match model_family {
+                    ModelFamily::Qwen => {
+                        use std::fmt::Write;
+                        let mut content = m.content.clone();
+                        if let Some(ref calls) = m.tool_calls {
+                            for tc in calls {
+                                let _ = write!(
+                                    content,
+                                    "\n<tool_call>\n{{\"name\": \"{}\", \"arguments\": {}}}\n</tool_call>",
+                                    tc.function.name, tc.function.arguments
+                                );
+                            }
+                        }
+                        content
+                    }
+                    _ => m.content.clone(),
                 }
             } else {
                 m.content.clone()
