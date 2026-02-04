@@ -18,12 +18,20 @@
 //! ```
 
 pub mod autonomy;
+pub mod context;
+pub mod coordination;
+pub mod executor;
 pub mod meta_signal;
 pub mod types;
+pub mod wellbeing_bridge;
 
 pub use autonomy::*;
+pub use context::*;
+pub use coordination::*;
+pub use executor::*;
 pub use meta_signal::*;
 pub use types::*;
+pub use wellbeing_bridge::*;
 
 use std::time::Instant;
 

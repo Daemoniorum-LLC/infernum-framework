@@ -27,6 +27,7 @@ use abaddon::{Engine, EngineConfig, InferenceEngine};
 use dantalion::{MetricsCollector, TelemetryConfig};
 use infernum_core::{GenerateRequest, ModelSource, Result, SamplingParams};
 
+use crate::agentic::run_agent;
 use crate::error_response::{api_error, ApiError, ErrorCode};
 use crate::rag::{RagState, rag_health, list_documents, document_count, index_document, delete_document, search};
 use crate::sessions::{
@@ -507,6 +508,8 @@ impl Server {
             .nest("/api/rag", rag_router)
             // Agent session endpoints (Beleth monitoring)
             .nest("/api/agent/sessions", sessions_router)
+            // Agentic loop endpoint (Beleth executor)
+            .route("/api/agent/run", post(run_agent))
             // Model cache management endpoints
             .nest("/api/cache", cache_router)
             .with_state(self.state.clone());

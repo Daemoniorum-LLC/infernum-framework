@@ -83,6 +83,7 @@
 #![allow(clippy::must_use_candidate)]
 
 pub mod admin;
+pub mod agentic;
 pub mod api;
 pub mod audit;
 pub mod auth;
@@ -272,6 +273,7 @@ pub use agent_identity::{
     AgentIdentity, AgentIdentityError, AgentIdentityExport,
     EncryptedIdentity, EncryptedIdentityStore,
 };
+pub use agentic::{AgenticRunRequest, AgenticRunError, run_agent};
 pub use audit_client::{
     AuditClient, AuditClientConfig, AuditClientError,
     SubmitEventRequest, SubmitEventResponse,

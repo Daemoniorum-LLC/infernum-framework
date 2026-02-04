@@ -91,6 +91,16 @@ pub use agentic_loop::{
     LoopSummary, MetaSignal, NaturalTermination, Permission, ResourceTermination, ResultStatus,
     StuckRequest, TerminationReason, TokenBudget, ToolError as AgenticToolError, ToolPattern,
     TransitionError, detect_meta_signal,
+    // Executor
+    DetectedCall, ExecutorConfig, LoopError, LoopExecutor, QwenToolCallDetector,
+    ToolCallDetector,
+    // Context management
+    ContextWindowManager,
+    // Multi-agent coordination
+    AgentCoordinator, AgentId, AgentIdentity, AgentRole, ResourceQuota,
+    ResourceQuotaManager, ToolLock, ToolLockManager,
+    // Wellbeing bridge
+    WellbeingAction, WellbeingBridge,
 };
 pub use http_engine::{HttpEngine, HttpEngineError, SimpleMessage};
 pub use tools::{
