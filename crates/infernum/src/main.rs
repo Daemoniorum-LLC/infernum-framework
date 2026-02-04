@@ -184,6 +184,14 @@ enum Commands {
         /// Enable verbose output (show reasoning)
         #[arg(short, long)]
         verbose: bool,
+
+        /// Working directory for file tools (defaults to current directory)
+        #[arg(short, long)]
+        working_dir: Option<std::path::PathBuf>,
+
+        /// Enable code tools (file I/O, shell, search) in addition to builtins
+        #[arg(long)]
+        code_tools: bool,
     },
 
     /// Manage configuration
@@ -628,10 +636,12 @@ async fn main() -> Result<()> {
             system,
             max_iterations,
             verbose,
+            working_dir,
+            code_tools,
         }) => {
             let model = model.or(cli.model).or(cfg.default_model.clone());
             let system = system.or(cli.system);
-            commands::agent(objective, model, system, max_iterations, verbose).await?;
+            commands::agent(objective, model, system, max_iterations, verbose, working_dir, code_tools).await?;
         },
 
         Some(Commands::Config { action }) => match action {
