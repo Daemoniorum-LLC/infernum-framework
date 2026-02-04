@@ -6,7 +6,7 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "HTTP API server with OpenAI-compatible endpoints"
+description = "HTTP API server for local LLM inference"
 readme = "README.md"
 
 [dependencies]

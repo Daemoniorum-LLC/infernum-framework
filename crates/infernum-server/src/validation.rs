@@ -19,7 +19,7 @@ use std::fmt;
 use axum::http::StatusCode;
 
 use crate::error_response::{ApiError, ErrorCode, ErrorSubcode};
-use crate::openai::{ChatCompletionRequest, CompletionRequest, EmbeddingRequest};
+use crate::api_types::{ChatCompletionRequest, CompletionRequest, EmbeddingRequest};
 use crate::server::ValidationLimits;
 
 /// Validation error for API requests.
@@ -114,7 +114,7 @@ impl RequestValidationError {
                 ErrorCode::InvalidMessages
             }
             Self::InvalidTemperature { .. } => ErrorCode::InvalidTemperature,
-            Self::InvalidTopP { .. } => ErrorCode::InvalidTemperature, // Reuse - OpenAI uses same
+            Self::InvalidTopP { .. } => ErrorCode::InvalidTemperature, // Reuse same code for range errors
             Self::InvalidMaxTokens { .. } => ErrorCode::InvalidMaxTokens,
             Self::EmptyPrompt => ErrorCode::EmptyPrompt,
             Self::PromptTooLong { .. } => ErrorCode::PromptTooLong,
@@ -368,8 +368,8 @@ pub fn validate_embedding_request(
     limits: &ValidationLimits,
 ) -> Result<(), RequestValidationError> {
     let input_count = match &req.input {
-        crate::openai::EmbeddingInput::Single(_) => 1,
-        crate::openai::EmbeddingInput::Multiple(inputs) => inputs.len(),
+        crate::api_types::EmbeddingInput::Single(_) => 1,
+        crate::api_types::EmbeddingInput::Multiple(inputs) => inputs.len(),
     };
 
     if input_count > limits.max_embedding_inputs {
@@ -429,7 +429,7 @@ pub fn validate_model_id(model: &str) -> Result<(), RequestValidationError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::openai::{ChatMessage, EmbeddingInput};
+    use crate::api_types::{ChatMessage, EmbeddingInput};
 
     fn default_limits() -> ValidationLimits {
         ValidationLimits::default()

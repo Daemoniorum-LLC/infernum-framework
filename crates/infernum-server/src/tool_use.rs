@@ -25,7 +25,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::openai::{FunctionCall, Tool, ToolCall, ToolChoice};
+use crate::api_types::{FunctionCall, Tool, ToolCall, ToolChoice};
 
 // Re-export ModelFamily from infernum-core (shared across server + agent crates)
 pub use infernum_core::ModelFamily;
@@ -62,7 +62,7 @@ pub struct DetectedToolCall {
 }
 
 impl DetectedToolCall {
-    /// Convert to OpenAI ToolCall format.
+    /// Convert to API ToolCall format.
     #[must_use]
     pub fn to_tool_call(&self) -> ToolCall {
         ToolCall {
@@ -1268,7 +1268,7 @@ impl StreamingToolDetector {
 /// Agent-centric SSE event types.
 ///
 /// Designed for AI agent consumption - complete, typed, immediately parseable.
-/// NOT OpenAI format. See INFERNUM-SPEC.md §10 for rationale.
+/// Infernum-native format. See INFERNUM-SPEC.md §10 for rationale.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SseEvent {
@@ -1421,7 +1421,7 @@ mod tests {
     fn make_tool(name: &str, description: &str, params: serde_json::Value) -> Tool {
         Tool {
             tool_type: "function".to_string(),
-            function: crate::openai::FunctionDefinition {
+            function: crate::api_types::FunctionDefinition {
                 name: name.to_string(),
                 description: Some(description.to_string()),
                 parameters: Some(params),
@@ -1760,7 +1760,7 @@ More text after."#;
 
     #[test]
     fn test_should_include_tools_specific_tool() {
-        use crate::openai::{ToolChoiceFunction, ToolChoiceFunctionName};
+        use crate::api_types::{ToolChoiceFunction, ToolChoiceFunctionName};
         let choice = ToolChoice::Tool(ToolChoiceFunction {
             choice_type: "function".to_string(),
             function: ToolChoiceFunctionName {
@@ -1783,7 +1783,7 @@ More text after."#;
 
     #[test]
     fn test_get_forced_tool_specific() {
-        use crate::openai::{ToolChoiceFunction, ToolChoiceFunctionName};
+        use crate::api_types::{ToolChoiceFunction, ToolChoiceFunctionName};
         let choice = ToolChoice::Tool(ToolChoiceFunction {
             choice_type: "function".to_string(),
             function: ToolChoiceFunctionName {
@@ -2113,7 +2113,7 @@ More text after."#;
         fn test_process_validates_strict_tools() {
             let tool = Tool {
                 tool_type: "function".to_string(),
-                function: crate::openai::FunctionDefinition {
+                function: crate::api_types::FunctionDefinition {
                     name: "get_weather".to_string(),
                     description: Some("Get weather".to_string()),
                     parameters: Some(json!({
@@ -2259,7 +2259,7 @@ More text after."#;
         fn test_use_validation_function_for_tool_checking() {
             let tool = Tool {
                 tool_type: "function".to_string(),
-                function: crate::openai::FunctionDefinition {
+                function: crate::api_types::FunctionDefinition {
                     name: "known_tool".to_string(),
                     description: Some("A known tool".to_string()),
                     parameters: Some(json!({

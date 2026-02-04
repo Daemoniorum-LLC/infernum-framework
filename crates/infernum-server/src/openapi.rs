@@ -249,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn test_openapi_spec_no_openai_paths() {
+    fn test_openapi_spec_no_legacy_paths() {
         let spec = ApiDoc::openapi();
         assert!(!spec.paths.paths.contains_key("/v1/chat/completions"));
         assert!(!spec.paths.paths.contains_key("/v1/completions"));

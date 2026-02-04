@@ -13,7 +13,7 @@
 //! | `/ready` | GET | Readiness check (returns model status) |
 //! | `/metrics` | GET | Prometheus metrics |
 //!
-//! ## OpenAI-Compatible Endpoints
+//! ## Inference Endpoints
 //!
 //! | Endpoint | Method | Description |
 //! |----------|--------|-------------|
@@ -40,7 +40,7 @@
 //!
 //! # Error Responses
 //!
-//! All errors follow the OpenAI error format:
+//! All errors follow a structured JSON format:
 //!
 //! ```json
 //! {

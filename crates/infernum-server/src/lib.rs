@@ -1,10 +1,9 @@
 //! # Infernum Server
 //!
-//! HTTP API server with OpenAI-compatible endpoints for local LLM inference.
+//! HTTP API server for local LLM inference.
 //!
 //! ## Features
 //!
-//! - **OpenAI API Compatibility**: Drop-in replacement for OpenAI's API
 //! - **Chat Completions**: `/v1/chat/completions` with streaming support
 //! - **Text Completions**: `/v1/completions` for raw text generation
 //! - **Embeddings**: `/v1/embeddings` for vector generation
@@ -38,7 +37,7 @@
 //! ## Modules
 //!
 //! - [`auth`]: Authentication and scope-based authorization
-//! - [`openai`]: OpenAI-compatible request/response types
+//! - [`api_types`]: API request/response wire types
 //! - [`security`]: Rate limiting, security headers, and CORS
 //! - [`server`]: HTTP server configuration and handlers
 //!
@@ -100,7 +99,7 @@ pub mod gpu_metrics;
 pub mod grpc;
 pub mod handlers;
 pub mod observability;
-pub mod openai;
+pub mod api_types;
 pub mod openapi;
 pub mod priority;
 pub mod queue;
@@ -174,7 +173,7 @@ pub use error_response::{
     api_error, api_error_with_message, handle_internal_error, sanitize_error, ApiError,
     ApiErrorBuilder, ErrorCode, ErrorDetail, ErrorSubcode, ErrorType, RetryInfo,
 };
-pub use openai::{
+pub use api_types::{
     ChatChoice, ChatCompletionRequest, ChatCompletionResponse, ChatLogProbs, ChatMessage,
     CompletionChoice, CompletionRequest, CompletionResponse, EmbeddingData, EmbeddingInput,
     EmbeddingRequest, EmbeddingResponse, FunctionCall, FunctionDefinition, ModelObject,

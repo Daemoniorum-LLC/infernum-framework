@@ -1,4 +1,4 @@
-//! HTTP server implementation with OpenAI-compatible API endpoints.
+//! HTTP server implementation for the Infernum API.
 //!
 //! Provides a production-ready server that interfaces with the Abaddon inference engine
 //! for text generation, chat completions, and embeddings.
@@ -40,7 +40,7 @@ use crate::speculative_engine::{SpeculativeEngine, SpeculativeEngineBuilder, Spe
 use crate::validation::validate_chat_request;
 use crate::batching::{BatchConfig, BatchScheduler};
 use crate::request_batcher::{BatcherConfig, BatcherHandle, RequestBatcher};
-use crate::openai::{
+use crate::api_types::{
     ChatChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage, CompletionChoice,
     CompletionRequest, CompletionResponse, EmbeddingData, EmbeddingInput, EmbeddingRequest,
     EmbeddingResponse, EmbeddingUsage, ModelObject, ModelsResponse, ToolChoice, Usage,
@@ -489,7 +489,7 @@ impl Server {
             .route("/ready", get(ready))
             // Metrics endpoint (Prometheus format)
             .route("/metrics", get(prometheus_metrics))
-            // OpenAI-compatible API endpoints
+            // Inference API endpoints
             .route("/v1/models", get(list_models))
             .route("/v1/tokenize", post(tokenize))
             .route("/v1/chat/completions", post(chat_completions))
@@ -1328,7 +1328,7 @@ async fn unload_model(State(state): State<Arc<AppState>>) -> Response {
         .into_response()
 }
 
-// === OpenAI-Compatible Endpoints ===
+// === API Endpoints ===
 
 async fn list_models(State(state): State<Arc<AppState>>) -> Json<ModelsResponse> {
     let engine = state.engine.read().await;
@@ -1393,7 +1393,7 @@ async fn chat_completions(
     Json(req): Json<ChatCompletionRequest>,
 ) -> Response {
     let start = Instant::now();
-    let request_id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
+    let request_id = format!("inf-chat-{}", uuid::Uuid::new_v4());
     let error_request_id = request_id.clone(); // Clone for error handling
 
     tracing::debug!(request_id = %request_id, model = %req.model, "Chat completion request");
@@ -1613,7 +1613,7 @@ async fn chat_completions(
         sampling = sampling.with_frequency_penalty(frequency_penalty);
     }
     // Apply a default repetition penalty if no penalty specified to prevent loops
-    // OpenAI's presence/frequency penalties work differently but achieve similar goals
+    // Presence/frequency penalties map to repetition penalty when neither is set
     if req.presence_penalty.is_none() && req.frequency_penalty.is_none() {
         sampling = sampling.with_repetition_penalty(1.1);
     }
@@ -2004,7 +2004,7 @@ async fn completions(
     Json(req): Json<CompletionRequest>,
 ) -> Response {
     let start = Instant::now();
-    let request_id = format!("cmpl-{}", uuid::Uuid::new_v4());
+    let request_id = format!("inf-cmpl-{}", uuid::Uuid::new_v4());
     let error_request_id = request_id.clone();
 
     tracing::debug!(request_id = %request_id, model = %req.model, "Completion request");

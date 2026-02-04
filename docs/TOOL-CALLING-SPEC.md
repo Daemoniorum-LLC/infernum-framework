@@ -697,7 +697,7 @@ mod spec_compliance {
 
 ### Core Modules (Phases 1-3)
 - `src/tool_use.rs` - Tool formatting and detection
-- `src/openai.rs` - OpenAI-compatible types
+- `src/api_types.rs` - API wire types
 
 ### Agent Runtime (Phase 4)
 - `src/tool_executor.rs` - Server-side execution (Phase 4.2)
@@ -762,7 +762,7 @@ pub struct DetectedToolCall {
 }
 
 impl DetectedToolCall {
-    /// Get arguments as JSON string for OpenAI API compatibility
+    /// Get arguments as JSON string for API wire format
     pub fn arguments_string(&self) -> String { ... }
 }
 ```

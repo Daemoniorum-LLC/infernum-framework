@@ -35,7 +35,7 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
-use crate::openai::{ChatCompletionRequest, CompletionRequest};
+use crate::api_types::{ChatCompletionRequest, CompletionRequest};
 
 /// Default maximum number of in-flight requests to track.
 pub const DEFAULT_MAX_IN_FLIGHT: usize = 1000;
@@ -630,7 +630,7 @@ mod tests {
     fn make_chat_request(model: &str, content: &str, temp: f32) -> ChatCompletionRequest {
         ChatCompletionRequest {
             model: model.to_string(),
-            messages: vec![crate::openai::ChatMessage {
+            messages: vec![crate::api_types::ChatMessage {
                 role: "user".to_string(),
                 content: content.to_string(),
                 name: None,

@@ -1,7 +1,6 @@
-//! OpenAI-compatible API types.
+//! Infernum API wire types.
 //!
-//! This module provides types that mirror the OpenAI API specification for drop-in
-//! compatibility with existing OpenAI client libraries and tools.
+//! This module defines the request/response types for Infernum's HTTP API.
 //!
 //! # Supported Endpoints
 //!
@@ -15,7 +14,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use infernum_server::openai::{ChatCompletionRequest, ChatMessage};
+//! use infernum_server::{ChatCompletionRequest, ChatMessage};
 //!
 //! // Parse an incoming request
 //! let json = r#"{
@@ -36,11 +35,10 @@
 //! content in [`ChatDelta`]. The server sends these as Server-Sent Events (SSE)
 //! with the `data: ` prefix.
 //!
-//! # Compatibility Notes
+//! # Wire Format Notes
 //!
-//! - All fields match the OpenAI API specification
 //! - Optional fields use `Option<T>` for proper deserialization
-//! - Response IDs use the format `chatcmpl-{uuid}` or `cmpl-{uuid}`
+//! - Response IDs use the format `inf-chat-{uuid}` or `inf-cmpl-{uuid}`
 //! - The `finish_reason` field uses lowercase values: `stop`, `length`, `tool_calls`
 
 use serde::{Deserialize, Serialize};
@@ -50,7 +48,7 @@ use crate::structured::ResponseFormat;
 
 // === Chat Completions ===
 
-/// Chat completion request (OpenAI-compatible).
+/// Chat completion request.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ChatCompletionRequest {
     /// Model to use.
@@ -311,7 +309,7 @@ pub struct ChatDelta {
 
 // === Text Completions ===
 
-/// Text completion request (OpenAI-compatible).
+/// Text completion request.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct CompletionRequest {
     /// Model to use.
@@ -399,7 +397,7 @@ pub struct LogProbs {
 
 // === Embeddings ===
 
-/// Embedding request (OpenAI-compatible).
+/// Embedding request.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct EmbeddingRequest {
     /// Model to use.
@@ -477,7 +475,7 @@ pub struct ModelObject {
     pub object: String,
     /// Creation timestamp.
     pub created: i64,
-    /// Owner (e.g., "openai", "infernum").
+    /// Owner (e.g., "infernum", "huggingface").
     pub owned_by: String,
 }
 
@@ -531,7 +529,7 @@ mod tests {
     #[test]
     fn test_chat_response_serialization() {
         let response = ChatCompletionResponse {
-            id: "chatcmpl-123".to_string(),
+            id: "inf-chat-123".to_string(),
             object: "chat.completion".to_string(),
             created: 1677652288,
             model: "gpt-4".to_string(),
@@ -551,7 +549,7 @@ mod tests {
         };
 
         let json = serde_json::to_string(&response).unwrap();
-        assert!(json.contains("chatcmpl-123"));
+        assert!(json.contains("inf-chat-123"));
         assert!(json.contains("Hello!"));
         // logprobs and tool_calls should be omitted when None
         assert!(!json.contains("logprobs"));
@@ -638,7 +636,7 @@ mod tests {
     #[test]
     fn test_chat_response_with_logprobs() {
         let response = ChatCompletionResponse {
-            id: "chatcmpl-456".to_string(),
+            id: "inf-chat-456".to_string(),
             object: "chat.completion".to_string(),
             created: 1677652288,
             model: "gpt-4".to_string(),
