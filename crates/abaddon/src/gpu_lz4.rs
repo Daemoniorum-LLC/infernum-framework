@@ -87,39 +87,48 @@ pub mod cuda {
                 return Ok(());
             }
 
-            // The LZ4 kernel is embedded as PTX at compile time.
-            // The warp-parallel kernel (K3) is only registered when
-            // cuda-experimental is enabled (see DD-5 in GPU-CODEC-PIPELINE-SPEC.md).
+            // Load main PTX module (K1 + K2, sm_50) — always available.
             let ptx = Self::get_lz4_ptx();
-
-            #[cfg(feature = "cuda-experimental")]
-            let entry_points: &[&str] = &[
-                "lz4_decompress_block",
-                "lz4_decompress_blocks_parallel",
-                "lz4_decompress_blocks_warp",
-            ];
-            #[cfg(not(feature = "cuda-experimental"))]
-            let entry_points: &[&str] = &[
-                "lz4_decompress_block",
-                "lz4_decompress_blocks_parallel",
-            ];
-
             self.device
-                .load_ptx(ptx, "lz4_decompress", entry_points)
+                .load_ptx(
+                    ptx,
+                    "lz4_decompress",
+                    &["lz4_decompress_block", "lz4_decompress_blocks_parallel"],
+                )
                 .map_err(|e| GpuLz4Error::KernelLoad {
                     message: e.to_string(),
                 })?;
+
+            // Load warp PTX module (K3, sm_70) — requires cuda-experimental.
+            // K3 uses shfl.sync and bar.warp.sync which need sm_70+ (Volta).
+            // See DD-2 in GPU-CODEC-PIPELINE-SPEC.md.
+            #[cfg(feature = "cuda-experimental")]
+            {
+                let warp_ptx = Self::get_lz4_warp_ptx();
+                self.device
+                    .load_ptx(
+                        warp_ptx,
+                        "lz4_warp",
+                        &["lz4_decompress_blocks_warp"],
+                    )
+                    .map_err(|e| GpuLz4Error::KernelLoad {
+                        message: e.to_string(),
+                    })?;
+            }
 
             self.kernel_loaded = true;
             Ok(())
         }
 
-        /// Returns the embedded LZ4 PTX kernel.
+        /// Returns the embedded LZ4 PTX kernel (K1 + K2, sm_50).
         fn get_lz4_ptx() -> Ptx {
-            // LZ4 decompression kernel in PTX
-            // This is a simplified implementation for demonstration
-            // A production version would use NVIDIA's nvCOMP or similar
             Ptx::from_src(LZ4_KERNEL_PTX)
+        }
+
+        /// Returns the embedded warp-parallel LZ4 PTX kernel (K3, sm_70).
+        #[cfg(feature = "cuda-experimental")]
+        fn get_lz4_warp_ptx() -> Ptx {
+            Ptx::from_src(LZ4_WARP_KERNEL_PTX)
         }
 
         /// Decompresses a single LZ4 block on GPU.
@@ -426,12 +435,12 @@ pub mod cuda {
                     message: e.to_string(),
                 })?;
 
-            // Launch warp-parallel decompression kernel
+            // Launch warp-parallel decompression kernel (from lz4_warp module)
             let func = self
                 .device
-                .get_func("lz4_decompress", "lz4_decompress_blocks_warp")
+                .get_func("lz4_warp", "lz4_decompress_blocks_warp")
                 .ok_or_else(|| GpuLz4Error::KernelLoad {
-                    message: "Warp kernel not found".to_string(),
+                    message: "Warp kernel not found (lz4_warp module)".to_string(),
                 })?;
 
             // One warp (32 threads) per LZ4 block
@@ -968,10 +977,10 @@ pub mod cuda {
         TensorCreate { message: String },
     }
 
-    /// LZ4 decompression kernel in PTX format.
+    /// LZ4 decompression kernels K1 and K2 in PTX format (sm_50).
     ///
     /// This implements the LZ4 block format decompression on GPU.
-    /// Each thread handles the sequential decompression of one block.
+    /// K1: single-block, K2: multi-block parallel (thread 0 per block).
     ///
     /// LZ4 Block Format:
     /// - Token byte: 4 bits literal length + 4 bits match length
@@ -1310,6 +1319,17 @@ BLOCK_MATCH_DONE:
 BLOCK_DONE:
     ret;
 }
+"#;
+
+    /// Warp-parallel LZ4 decompression kernel K3 in PTX format (sm_70).
+    ///
+    /// Requires sm_70+ (Volta) for shfl.sync and bar.warp.sync instructions.
+    /// Feature-gated behind `cuda-experimental` (DD-2).
+    #[cfg(feature = "cuda-experimental")]
+    const LZ4_WARP_KERNEL_PTX: &str = r#"
+.version 7.0
+.target sm_70
+.address_size 64
 
 // Warp-parallel multi-block decompression kernel
 // Uses all 32 threads in warp for parallel literal/match copying
@@ -1518,14 +1538,14 @@ WARP_LIT_COPY_DONE:
     // Match source = out_pos - offset
     sub.u32 %r50, %r11, %r33;  // match_src
 
-    // For overlapping copies (offset < match_length), we need sequential for those parts
-    // For non-overlapping, we can do parallel
-    // Simple approach: if offset >= 32, use full parallel, else use partial
+    // For overlapping copies (offset < match_length), we need sequential
+    // to correctly handle RLE-like patterns where later bytes depend on earlier writes.
+    // Parallel only when offset >= match_length (no overlap at all).
 
-    setp.lt.u32 %p11, %r33, 32;
+    setp.lt.u32 %p11, %r33, %r32;
     @%p11 bra WARP_MATCH_SEQUENTIAL;
 
-    // Parallel match copy (offset >= 32, no overlap in warp)
+    // Parallel match copy (offset >= match_length, no overlap)
     mov.u32 %r51, %r2;  // start at lane
 
 WARP_MATCH_PARALLEL:

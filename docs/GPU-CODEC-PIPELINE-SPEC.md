@@ -277,14 +277,18 @@ Warp-parallel decompression (32 threads cooperate per block).
 ```
 Parameters: Same as K2
 Launch: grid=(num_blocks, 1, 1), block=(32, 1, 1) — all 32 threads cooperate
-Status: BROKEN — produces garbage output
+Target: sm_70+ (Volta) — requires shfl.sync and bar.warp.sync
+PTX Module: lz4_warp (separate from K1/K2 module)
+Status: Working (experimental, cuda-experimental feature)
 ```
 
-**Bug:** Thread coordination failure in literal copy offsets. The 32 warp threads
-fail to correctly partition literal copies and match operations. Output contains
-near-zero garbage values instead of correct decompressed data. Four tests fail:
-`test_decompress_to_f32_slice`, `test_decompress_to_f16_slice`,
-`test_warp_parallel_basic`, `test_warp_parallel_matches_sequential`.
+**Resolved (DD-2):** Root cause was PTX target mismatch — K3 used `shfl.sync.idx.b32`
+and `bar.warp.sync` (sm_70+ instructions) but declared `.target sm_50`. Per NVIDIA
+PTX ISA: "behavior is undefined" when using features beyond declared target. The JIT
+accepted the PTX but generated incorrect machine code for sync instructions. Fix:
+split K3 into separate PTX module targeting `.target sm_70`. Secondary fix: changed
+parallel match copy threshold from `offset >= 32` to `offset >= match_length` to
+prevent overlap when source and destination regions intersect. All 11 warp tests pass.
 
 ### 4.2 Dequantization Kernels
 
@@ -693,16 +697,17 @@ only that the GPU implementation matches the mathematical definition of the enco
 
 ### Phase 2: Feature-Gate Broken Warp Kernel
 
-- [ ] Gate `lz4_decompress_blocks_warp` behind `#[cfg(feature = "cuda-experimental")]`
-- [ ] Remove warp kernel from default `GpuLz4Context` API
-- [ ] Update tests: warp tests only run with `cuda-experimental` feature
-- [ ] Document in spec: K3 status changed from "Broken" to "Experimental"
+- [x] Gate `lz4_decompress_blocks_warp` behind `#[cfg(feature = "cuda-experimental")]`
+- [x] Remove warp kernel from default `GpuLz4Context` API
+- [x] Update tests: warp tests only run with `cuda-experimental` feature
+- [x] Document in spec: K3 status changed from "Broken" to "Working (experimental)"
 
 ### Phase 3: Fix Warp-Parallel LZ4 Kernel
 
-- [ ] Root-cause the thread coordination bug (literal copy offset distribution)
-- [ ] Implement correct warp-cooperative LZ4 decompression
-- [ ] Verify byte-exact match with K1/K2 for all test vectors
+- [x] Root-cause the thread coordination bug → PTX target mismatch (sm_50 vs sm_70+)
+- [x] Fix: split K3 into separate PTX module (`lz4_warp`) targeting `.target sm_70`
+- [x] Fix: match copy overlap threshold (`offset >= match_length` instead of `>= 32`)
+- [x] Verify byte-exact match with K1/K2 for all test vectors (11/11 pass + proptest)
 - [ ] Benchmark throughput improvement over K2
 
 ### Phase 4: Pipeline Integration Tests
@@ -756,7 +761,7 @@ LD_LIBRARY_PATH=/usr/lib/wsl/lib cargo test -p abaddon --features cuda -- --test
 | ID | Issue | Severity | Location | Resolution |
 |----|-------|:--------:|----------|------------|
 | ~~DD-1~~ | ~~`Q4_BLOCK_SIZE=32` in HCT reader vs quantizer's 128~~ | ~~Critical~~ **Resolved** | `hct.rs:587,595` | Fixed: references `INT4_BLOCK_SIZE` (128) + compile-time assertion. |
-| DD-2 | Warp LZ4 kernel produces garbage output | **High** | `gpu_lz4.rs` K3 | Feature-gate (Phase 2), fix (Phase 3). |
+| ~~DD-2~~ | ~~Warp LZ4 kernel produces garbage output~~ | ~~High~~ **Resolved** | `gpu_lz4.rs` K3 | Fixed: PTX target sm_50→sm_70 + match copy overlap threshold. Split into `lz4_warp` module. |
 | DD-3 | CUDA context not thread-safe across parallel tests | Medium | All GPU modules | Run with `--test-threads=1`. Consider per-test context isolation. |
 | DD-4 | INT8 scale passed as u32 (upper 16 bits wasted) | Low | `gpu_dequant.rs` K6, `gpu_fused.rs` K9 | PTX limitation — u32 is minimum param width. Not actionable. |
 | DD-5 | Fused GEMM `QUANT_BLOCK_SIZE=32` differs from `INT4_BLOCK_SIZE=128` | Low | `fused_gemm.rs:38` | By design — GPTQ/AWQ vs HCT. No fix needed. Documented in Section 2.1. |
@@ -774,3 +779,4 @@ LD_LIBRARY_PATH=/usr/lib/wsl/lib cargo test -p abaddon --features cuda -- --test
 | 0.1.0 | 2026-02-03 | Codebase audit | Initial spec from source audit. Documented 14+ kernels across 6 modules. Identified DD-1 (critical block size bug), DD-2 (broken warp kernel), DD-8 (stub kernels). |
 | 0.2.0 | 2026-02-03 | DD-8 implementation | Updated kernel statuses post DD-8 TDD: `idct_1d_cols`, `rph_accumulate`, `lrdf_outer_product_batched` now Working. Added §4.5.1 PTX Authoring Constraints (DD-9). Added DD-9 to register. |
 | 0.3.0 | 2026-02-04 | DD-1 resolved | Marked DD-1 as resolved — code already uses `INT4_BLOCK_SIZE` (128) with compile-time assertion. Updated Phase 1 checklist and Design Debt Register. |
+| 0.4.0 | 2026-02-04 | DD-2 resolved | Fixed warp-parallel LZ4 kernel (K3). Root cause: PTX target mismatch (sm_50 declared, sm_70+ instructions used). Split K3 into separate `lz4_warp` PTX module at `.target sm_70`. Fixed match copy overlap threshold. All 11 warp tests + proptest pass. Updated Phase 2/3 checklists, K3 status, and Design Debt Register. |
