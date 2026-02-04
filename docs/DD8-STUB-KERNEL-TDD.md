@@ -36,8 +36,8 @@ Bit-exact for PRNG sequences.
 | 1 | `holo_spectral_idct_1d_rows` | Placeholder (writes zeros) | **Implement** | Critical |
 | 2 | `holo_spectral_idct_1d_cols` | Pure stub (`ret`) | **Implement** | Critical |
 | 3 | `holo_rph_accumulate` | Broken XORShift PRNG + pointer bug | **Fix** | High |
-| 4 | `holo_spectral_idct_2d` | Pure stub (`ret`), never called | **Remove** | Low |
-| 5 | `holo_rph_generate_projection` | Pure stub (`ret`), never called | **Remove** | Low |
+| 4 | `holo_spectral_idct_2d` | Pure stub (`ret`), never called | **Retain (DD-8 stub)** | Low |
+| 5 | `holo_rph_generate_projection` | Pure stub (`ret`), never called | **Retain (DD-8 stub)** | Low |
 | 6 | `holo_lrdf_outer_product_batched` | Pure stub (`ret`) | **Implement** | Medium |
 
 All code lives in `crates/abaddon/src/gpu_holo.rs`.
@@ -520,36 +520,43 @@ ld.global.f32 %proj_val, [%proj_addr];
 
 ---
 
-## Phase 4: Remove Dead Stubs
+## Phase 4: Retain Stubs with Design Debt Annotations
 
 **Priority: Low.** These kernels are loaded into PTX modules but never called
-from Rust code. They add dead code to the compiled PTX and noise to the
-kernel load list.
+from Rust code today. They are retained as part of the active Holo research
+program — Infernum targets frontier-model inference (70B+) on a single 24GB
+VRAM GPU, and these stubs represent planned optimization paths once Nihil
+replaces Candle as the tensor backend.
 
-### §C4.1 Remove `holo_spectral_idct_2d`
+### §C4.1 Retain `holo_spectral_idct_2d`
 
-- **PTX definition:** `gpu_holo.rs:1736–1746` (pure stub)
-- **Loaded at:** `load_spectral_kernel()` line 386
-- **Callers:** Zero — `get_func("holo_spectral", "holo_spectral_idct_2d")` never called
-- **Rationale:** Separable row + col IDCT (Phase 1 + 2) achieves the same result.
+- **PTX definition:** `gpu_holo.rs` (pure stub with DD-8 design debt comment)
+- **Loaded at:** `load_spectral_kernel()` entry point list
+- **Callers:** Zero — currently unused, separable row + col handles 2D IDCT
+- **Future rationale:** A fused 2D IDCT kernel could improve cache locality
+  by avoiding the intermediate buffer in the separable path. Profile the
+  separable path under Nihil before implementing.
+- **Design debt comment added:** References DD-8, documents intended use case.
 
-Action: Remove PTX entry, remove from `load_ptx()` kernel list.
+Action: Retain PTX stub. Annotate with DD-8 design debt comment.
 
-### §C4.2 Remove `holo_rph_generate_projection`
+### §C4.2 Retain `holo_rph_generate_projection`
 
-- **PTX definition:** `gpu_holo.rs:1868–1878` (pure stub)
-- **Loaded at:** `load_rph_kernel()` line 411
-- **Callers:** Zero — `get_func("holo_rph", "holo_rph_generate_projection")` never called
-- **Rationale:** RPH flow receives pre-computed projections from fragment data.
-  On-GPU projection generation was planned but never needed.
+- **PTX definition:** `gpu_holo.rs` (pure stub with DD-8 design debt comment)
+- **Loaded at:** `load_rph_kernel()` entry point list
+- **Callers:** Zero — RPH currently receives projections from fragment data
+- **Future rationale:** On-GPU projection generation becomes relevant once
+  Nihil replaces Candle and RPH reconstruction becomes latency-critical.
+  Could enable batched RPH accumulation without host-side projection transfer.
+- **Design debt comment added:** References DD-8, documents intended use case.
 
-Action: Remove PTX entry, remove from `load_ptx()` kernel list.
+Action: Retain PTX stub. Annotate with DD-8 design debt comment.
 
 ### §C4.3 Verification
 
-After removal, existing tests must still pass. Specifically verify:
-- `load_spectral_kernel()` succeeds without the removed entries
-- `load_rph_kernel()` succeeds without the removed entries
+After annotation, existing tests must still pass. Specifically verify:
+- `load_spectral_kernel()` loads all entries including the retained stub
+- `load_rph_kernel()` loads all entries including the retained stub
 - All Phase 4 (GPU-CODEC-PIPELINE-TDD) tests still pass
 
 ---
@@ -721,7 +728,7 @@ COMP_DONE:
 | 1 | Spectral IDCT rows | Partial spectral reconstruction | — |
 | 2 | Spectral IDCT cols | Full spectral reconstruction | Phase 1 |
 | 3 | RPH XORShift + pointer fix | Full RPH reconstruction | — |
-| 4 | Remove dead stubs | Cleanup | Phases 1–3 |
+| 4 | Retain stubs with DD-8 annotations | Annotate for Nihil migration | Phases 1–3 |
 | 5 | LRDF batched outer product | Performance optimization | — |
 
 Phases 1+2, 3, and 5 are independent and can be developed in parallel.
@@ -737,7 +744,7 @@ PTX constant strings.
 | 1. Spectral IDCT rows | 2 | 1 | 3 |
 | 2. Spectral IDCT cols | 2 | 1 | 3 |
 | 3. RPH PRNG fix | 4 | 0 | 4 |
-| 4. Remove dead stubs | 1 | 0 | 1 |
+| 4. Retain stubs (annotated) | 1 | 0 | 1 |
 | 5. LRDF batched | 2 | 1 | 3 |
 | **Total** | **11** | **3** | **14** |
 
@@ -750,3 +757,4 @@ Plus updates to 2 existing tests (§S2.4).
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 0.1.0 | 2026-02-03 | Codebase audit | Initial roadmap from DD-8 analysis. Covers 6 kernels: 3 implement, 1 fix, 2 remove. |
+| 0.2.0 | 2026-02-03 | Post-implementation | Phase 4 changed from "Remove" to "Retain" — stubs are part of active Holo research for Nihil migration. Annotated with DD-8 design debt comments. |

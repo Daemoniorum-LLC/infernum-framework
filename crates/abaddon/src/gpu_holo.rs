@@ -383,6 +383,7 @@ pub mod cuda {
                         "holo_spectral_accumulate",
                         "holo_spectral_idct_1d_rows",
                         "holo_spectral_idct_1d_cols",
+                        "holo_spectral_idct_2d", // DD-8 stub: retained for future Nihil optimization
                     ],
                 )
                 .map_err(|e| GpuHoloError::KernelLoad {
@@ -407,6 +408,7 @@ pub mod cuda {
                     &[
                         "holo_rph_accumulate",
                         "holo_rph_finalize",
+                        "holo_rph_generate_projection", // DD-8 stub: retained for future RPH batching
                     ],
                 )
                 .map_err(|e| GpuHoloError::KernelLoad {
@@ -2020,6 +2022,22 @@ COL_EXIT:
     ret;
 }
 
+// DD-8 STUB: Fused 2D IDCT kernel.
+// Currently unused - separable row + col IDCT handles 2D reconstruction.
+// Potential future optimization: a single-pass 2D IDCT could reduce kernel
+// launch overhead and improve cache locality for large tensors. Profile
+// separable path under Nihil before implementing.
+.visible .entry holo_spectral_idct_2d(
+    .param .u64 input_ptr,
+    .param .u64 output_ptr,
+    .param .u32 width,
+    .param .u32 height
+)
+{
+    .reg .u32 %tmp;
+    mov.u32 %tmp, 0;
+    ret;
+}
 "#;
 
     /// RPH (random projection) kernel PTX source.
@@ -2169,6 +2187,24 @@ EXIT:
     ret;
 }
 
+// DD-8 STUB: On-GPU projection matrix generation.
+// Currently unused - projections arrive pre-computed in fragment data and
+// random weights are generated on-the-fly in holo_rph_accumulate.
+// Future use: pre-generating the full projection matrix on-GPU could enable
+// batched RPH accumulation and avoid redundant PRNG work across fragments
+// sharing the same seed. Relevant once Nihil replaces Candle and RPH
+// reconstruction becomes latency-critical.
+.visible .entry holo_rph_generate_projection(
+    .param .u64 output_ptr,
+    .param .u32 row,
+    .param .u32 col,
+    .param .u32 rows,
+    .param .u32 cols,
+    .param .u64 seed
+)
+{
+    ret;
+}
 "#;
 
     /// LRDF (low-rank distributed) kernel PTX source.
