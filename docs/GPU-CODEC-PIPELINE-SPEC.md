@@ -125,7 +125,7 @@ interchangeable:
 
 | ID | Location | Current | Correct | Impact |
 |----|----------|---------|---------|--------|
-| **DD-1** | `hct.rs:593` | `Q4_BLOCK_SIZE = 32` | **128** | HCT reader misinterprets scale layout. Reads one scale per 32 values but the quantizer wrote one scale per 128 values. Produces garbage dequantized output for INT4 HCT tensors loaded via CPU path. |
+| ~~**DD-1**~~ | `hct.rs:587,595` | ~~`Q4_BLOCK_SIZE = 32`~~ `INT4_BLOCK_SIZE` (128) | **128** | **Resolved.** Both constants now reference `gpu_dequant::INT4_BLOCK_SIZE` (128). Compile-time assertion at `gpu_dequant.rs:1349` enforces `INT4_BLOCK_SIZE == DEFAULT_BLOCK_SIZE`. Regression tests at `hct.rs:1816`. |
 
 ---
 
@@ -688,8 +688,8 @@ only that the GPU implementation matches the mathematical definition of the enco
 - [x] Document canonical constants (INT4_BLOCK_SIZE=128, QUANT_BLOCK_SIZE=32)
 - [x] Identify hct.rs Q4_BLOCK_SIZE bug (DD-1)
 - [x] Write initial spec (this document)
-- [ ] Fix `hct.rs:593` — change `Q4_BLOCK_SIZE` from 32 to 128
-- [ ] Add compile-time assertion: `const_assert!(INT4_BLOCK_SIZE == DEFAULT_BLOCK_SIZE)`
+- [x] Fix `hct.rs:593` — `Q4_BLOCK_SIZE` now references `gpu_dequant::INT4_BLOCK_SIZE` (128)
+- [x] Add compile-time assertion: `gpu_dequant.rs:1349` enforces `INT4_BLOCK_SIZE == DEFAULT_BLOCK_SIZE`
 
 ### Phase 2: Feature-Gate Broken Warp Kernel
 
@@ -755,7 +755,7 @@ LD_LIBRARY_PATH=/usr/lib/wsl/lib cargo test -p abaddon --features cuda -- --test
 
 | ID | Issue | Severity | Location | Resolution |
 |----|-------|:--------:|----------|------------|
-| DD-1 | `Q4_BLOCK_SIZE=32` in HCT reader vs quantizer's 128 | **Critical** | `hct.rs:593` | Change to 128. Phase 1. |
+| ~~DD-1~~ | ~~`Q4_BLOCK_SIZE=32` in HCT reader vs quantizer's 128~~ | ~~Critical~~ **Resolved** | `hct.rs:587,595` | Fixed: references `INT4_BLOCK_SIZE` (128) + compile-time assertion. |
 | DD-2 | Warp LZ4 kernel produces garbage output | **High** | `gpu_lz4.rs` K3 | Feature-gate (Phase 2), fix (Phase 3). |
 | DD-3 | CUDA context not thread-safe across parallel tests | Medium | All GPU modules | Run with `--test-threads=1`. Consider per-test context isolation. |
 | DD-4 | INT8 scale passed as u32 (upper 16 bits wasted) | Low | `gpu_dequant.rs` K6, `gpu_fused.rs` K9 | PTX limitation — u32 is minimum param width. Not actionable. |
@@ -773,3 +773,4 @@ LD_LIBRARY_PATH=/usr/lib/wsl/lib cargo test -p abaddon --features cuda -- --test
 |---------|------|--------|---------|
 | 0.1.0 | 2026-02-03 | Codebase audit | Initial spec from source audit. Documented 14+ kernels across 6 modules. Identified DD-1 (critical block size bug), DD-2 (broken warp kernel), DD-8 (stub kernels). |
 | 0.2.0 | 2026-02-03 | DD-8 implementation | Updated kernel statuses post DD-8 TDD: `idct_1d_cols`, `rph_accumulate`, `lrdf_outer_product_batched` now Working. Added §4.5.1 PTX Authoring Constraints (DD-9). Added DD-9 to register. |
+| 0.3.0 | 2026-02-04 | DD-1 resolved | Marked DD-1 as resolved — code already uses `INT4_BLOCK_SIZE` (128) with compile-time assertion. Updated Phase 1 checklist and Design Debt Register. |
