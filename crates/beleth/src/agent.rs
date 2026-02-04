@@ -331,17 +331,21 @@ impl Agent {
                 AgentAction::ToolCall(tool_call) => {
                     tracing::info!(tool = %tool_call.name, "Executing tool");
 
-                    // Execute the tool
-                    let result = self.tools.execute(&tool_call, &ctx).await?;
-
-                    // Add observation to messages
-                    let observation = if result.success {
-                        format!("Observation: {}", result.output)
-                    } else {
-                        format!(
-                            "Observation: Tool error - {}",
-                            result.error.unwrap_or_default()
-                        )
+                    // Execute the tool — catch errors as observations instead of crashing
+                    let observation = match self.tools.execute(&tool_call, &ctx).await {
+                        Ok(result) if result.success => {
+                            format!("Observation: {}", result.output)
+                        }
+                        Ok(result) => {
+                            format!(
+                                "Observation: Tool error - {}",
+                                result.error.unwrap_or_default()
+                            )
+                        }
+                        Err(e) => {
+                            tracing::warn!(tool = %tool_call.name, error = %e, "Tool execution failed");
+                            format!("Observation: Tool execution failed - {}", e)
+                        }
                     };
 
                     messages.push(Message {
