@@ -2622,6 +2622,94 @@ WARP_DONE:
             }
         }
 
+        // ==================== K2 vs K3 Throughput Benchmark ====================
+
+        /// Benchmarks K2 (sequential per-block) vs K3 (warp-parallel) throughput
+        /// across multiple data sizes and compression patterns.
+        #[test]
+        #[cfg(feature = "cuda-experimental")]
+        fn bench_warp_vs_parallel_throughput() {
+            if !cuda_available() {
+                eprintln!("Skipping benchmark: no CUDA device available");
+                return;
+            }
+
+            let mut ctx = GpuLz4Context::new(0).expect("context creation");
+            ctx.load_kernel().expect("kernel load");
+
+            let scenarios: Vec<(&str, Vec<u8>)> = vec![
+                // Literals-only (incompressible random-ish data)
+                ("4KB literals", (0..4096).map(|i| ((i * 7 + 13) % 256) as u8).collect()),
+                // Patterned data (good compression ratio, many matches)
+                ("64KB patterned", (0..65536).map(|i| (i % 251) as u8).collect()),
+                // Repeated data (extreme compression)
+                ("64KB repeated", vec![0xAB_u8; 65536]),
+                // Multi-block: 16 x 4KB blocks
+                ("16x4KB mixed", (0..65536).map(|i| ((i * 31 + i / 256) % 256) as u8).collect()),
+            ];
+
+            let warmup_iters = 3;
+            let bench_iters = 20;
+
+            eprintln!("\n=== K2 vs K3 Throughput Benchmark ===");
+            eprintln!("{:<18} {:>12} {:>12} {:>10}", "Scenario", "K2 (GB/s)", "K3 (GB/s)", "Speedup");
+            eprintln!("{}", "-".repeat(56));
+
+            for (name, original) in &scenarios {
+                let compressed = lz4_flex::block::compress_prepend_size(original);
+                let raw_compressed = &compressed[4..];
+
+                // For multi-block scenario, split into 4KB chunks
+                let (blocks, total_bytes) = if name.starts_with("16x") {
+                    let chunks: Vec<(Vec<u8>, usize)> = original
+                        .chunks(4096)
+                        .map(|chunk| {
+                            let comp = lz4_flex::block::compress_prepend_size(chunk);
+                            (comp[4..].to_vec(), chunk.len())
+                        })
+                        .collect();
+                    let total = original.len();
+                    (chunks, total)
+                } else {
+                    (vec![(raw_compressed.to_vec(), original.len())], original.len())
+                };
+
+                // Warmup
+                for _ in 0..warmup_iters {
+                    let _ = ctx.decompress_blocks_parallel(&blocks);
+                    let _ = ctx.decompress_blocks_warp_parallel(&blocks);
+                }
+
+                // Benchmark K2
+                let start = std::time::Instant::now();
+                for _ in 0..bench_iters {
+                    let result = ctx.decompress_blocks_parallel(&blocks).expect("K2");
+                    // Force sync to measure actual kernel time
+                    let _ = ctx.device.dtoh_sync_copy(&result);
+                }
+                let k2_elapsed = start.elapsed();
+
+                // Benchmark K3
+                let start = std::time::Instant::now();
+                for _ in 0..bench_iters {
+                    let result = ctx.decompress_blocks_warp_parallel(&blocks).expect("K3");
+                    let _ = ctx.device.dtoh_sync_copy(&result);
+                }
+                let k3_elapsed = start.elapsed();
+
+                let bytes_total = (total_bytes * bench_iters) as f64;
+                let k2_gbps = bytes_total / k2_elapsed.as_secs_f64() / 1e9;
+                let k3_gbps = bytes_total / k3_elapsed.as_secs_f64() / 1e9;
+                let speedup = k3_gbps / k2_gbps;
+
+                eprintln!(
+                    "{:<18} {:>10.3}   {:>10.3}   {:>8.2}x",
+                    name, k2_gbps, k3_gbps, speedup
+                );
+            }
+            eprintln!("{}", "=".repeat(56));
+        }
+
         // ==================== Direct GPU Slice Tests (Phase 4.1) ====================
 
         #[test]

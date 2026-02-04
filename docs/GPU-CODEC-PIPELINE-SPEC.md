@@ -290,6 +290,19 @@ split K3 into separate PTX module targeting `.target sm_70`. Secondary fix: chan
 parallel match copy threshold from `offset >= 32` to `offset >= match_length` to
 prevent overlap when source and destination regions intersect. All 11 warp tests pass.
 
+**Throughput (K2 vs K3, RTX-series via WSL2):**
+
+| Workload | K2 (GB/s) | K3 (GB/s) | Speedup |
+|----------|-----------|-----------|---------|
+| 4KB literals | 0.015 | 0.017 | 1.18x |
+| 64KB patterned | 0.021 | 0.031 | 1.48x |
+| 64KB repeated | 0.020 | 0.031 | 1.52x |
+| 16x4KB multi-block | 0.241 | 0.612 | 2.54x |
+
+Multi-block workloads benefit most from warp cooperation. Absolute throughput is
+launch-overhead-dominated at these sizes; real-world weight tensors (MB-scale) will
+show higher absolute GB/s for both kernels.
+
 ### 4.2 Dequantization Kernels
 
 **Source:** `crates/abaddon/src/gpu_dequant.rs`
@@ -708,7 +721,7 @@ only that the GPU implementation matches the mathematical definition of the enco
 - [x] Fix: split K3 into separate PTX module (`lz4_warp`) targeting `.target sm_70`
 - [x] Fix: match copy overlap threshold (`offset >= match_length` instead of `>= 32`)
 - [x] Verify byte-exact match with K1/K2 for all test vectors (11/11 pass + proptest)
-- [ ] Benchmark throughput improvement over K2
+- [x] Benchmark throughput improvement over K2: 1.2-2.5x speedup (4KB→64KB, single/multi-block)
 
 ### Phase 4: Pipeline Integration Tests
 
