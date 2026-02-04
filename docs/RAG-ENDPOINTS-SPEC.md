@@ -1,6 +1,6 @@
 # RAG HTTP Endpoints Implementation Spec
 
-**Status:** Ready for Implementation (2026-01-10 audit: Stolas exists, Observer client ready, server routes needed)
+**Status:** Implemented (2026-02-04 audit: All 5 endpoints live in `infernum-server/src/rag.rs`. Remaining gaps: MockEmbedder→EngineEmbedder, InMemoryStore→LanceDB)
 **Author:** Observer Agent
 **Date:** 2025-12-27
 **Target:** infernum-server
@@ -348,8 +348,10 @@ Add tests in `infernum-server/tests/rag_test.rs` covering:
 
 ## Acceptance Criteria
 
-- [ ] All 5 endpoints implemented and returning correct response formats
-- [ ] RAG state persists across server restarts
+- [x] All 5 endpoints implemented and returning correct response formats
+- [ ] RAG state persists across server restarts (needs LanceDB backend via `lance` feature)
 - [ ] Observer UI shows documents and allows search when backend is running
-- [ ] Error responses are consistent and informative
+- [x] Error responses are consistent and informative
 - [ ] Basic integration tests pass
+- [ ] Real embeddings via EngineEmbedder (currently MockEmbedder with 384-dim random vectors)
+- [ ] Vector store deletion on document delete (InMemoryStore limitation)

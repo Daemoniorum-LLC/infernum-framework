@@ -1,7 +1,7 @@
 # Tool Calling Specification
 
-**Version:** 1.4.0
-**Status:** Phase 5 Complete, Active Design Debt (§11.4)
+**Version:** 1.5.0
+**Status:** Phase 5 Complete, All Design Debt Retired
 **Date:** 2026-02-04
 **Prerequisite:** ROADMAP.md Phase 1.3
 
@@ -794,36 +794,31 @@ pub struct AppState {
 
 **Impact:** All Phase 4-5 infrastructure now accessible from request handlers. 954 tests passing.
 
-### 11.4 Non-Native Tool Calling Format
+### 11.4 Non-Native Tool Calling Format ✅ RESOLVED
 
-**Status:** Open (discovered 2026-02-04)
+**Status:** Resolved 2026-02-04
 
 **Gap discovered during runtime testing:** When Qwen2.5-7B-Instruct receives tool
 definitions in markdown-style format (the previous §5.1 format) without an explicit
 system message, it sometimes outputs raw JSON instead of `<tool_call>` tagged responses.
 Root cause: the prompt format diverges from the model's training template.
 
-**Three components affected:**
+**Three components fixed:**
 
-1. **Server tool prompt** (`tool_use.rs:format_tools_qwen`): Uses markdown-style
-   `## tool_name / Parameters:` format instead of `<tools></tools>` XML with JSON
-   function definitions.
+1. **Server tool prompt** (`tool_use.rs:format_tools_qwen`): Now uses native Qwen
+   `<tools></tools>` XML with full JSON function definitions per §5.1.
 
 2. **Server multi-turn messages** (`server.rs` message builder):
-   - Tool results formatted as `[Tool Result for {id}]: {content}` instead of
-     `<tool_response>` tags.
-   - Assistant messages with `tool_calls` don't reconstruct `<tool_call>` tags
-     in content — they just clone the (often empty) content string.
+   - Tool results wrapped in `<tool_response></tool_response>` tags for Qwen (§5.5).
+   - Assistant messages with `tool_calls` reconstruct `<tool_call>` tags in content.
 
-3. **Beleth agent prompt** (`agent.rs:build_system_prompt`): Uses generic
-   `Action: / Action Input:` text protocol regardless of model. Models with
-   native tool calling support (Qwen2.5, Llama 3, etc.) produce more reliable
-   results when prompted in their training format.
+3. **Beleth agent prompt** (`agent.rs:build_system_prompt`): Model-family-aware
+   dispatch — Qwen uses `to_qwen_native_description()` with native tags, unknown
+   models fall back to generic `Action: / Action Input:` format (§5.6).
 
-**Resolution plan:**
-- Fix server-side format (§5.1 updated, §5.5 added) — affects `tool_use.rs` and `server.rs`
-- Add model-aware formatting to Beleth (§5.6 added) — affects `agent.rs` and `tool.rs`
-- Both generic and native formats remain supported; model family determines selection
+**Impact:** All three layers (server prompt, multi-turn messages, agent prompt) now
+use model-native tool calling format. Both native and generic formats remain supported;
+model family determines selection. Existing tests validate format selection.
 
 ---
 
@@ -840,3 +835,4 @@ Root cause: the prompt format diverges from the model's training template.
 | 1.2.0 | 2026-02-02 | §11.2 RESOLVED: DetectedToolCall.arguments refactored from `String` to `serde_json::Value`. Structured access without parsing. Added `arguments_string()` for API compat. 954 tests passing. |
 | 1.3.0 | 2026-02-02 | §11.3 RESOLVED: Tool infrastructure wired into AppState. ToolExecutor, AgentCoordinator, ToolConnectionPool, ToolMetricsCollector now accessible from request handlers. All design debt retired. 954 tests passing. |
 | 1.4.0 | 2026-02-04 | §11.4 OPENED: Non-native tool calling format discovered during runtime testing. §1 reframed from OpenAI-compatible to Infernum native runtime. §5.1 updated to Qwen2.5 native training format. §5.5 added for multi-turn conversation format. §5.6 added for Beleth model-aware tool calling. |
+| 1.5.0 | 2026-02-04 | §11.4 RESOLVED: All three components (server prompt, multi-turn messages, Beleth agent) verified using native format. All design debt retired. |

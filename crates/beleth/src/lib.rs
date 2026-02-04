@@ -20,6 +20,7 @@
 #![allow(clippy::must_use_candidate)]
 
 pub mod agent;
+pub mod agentic_loop;
 pub mod dynamic_context;
 pub mod http_engine;
 pub mod long_term_memory;
@@ -81,6 +82,15 @@ pub use wellbeing::{
 pub use wellbeing_persist::{
     default_history_path, load_history, load_or_create_history, save_history, HistorySummary,
     PersistedHistory, PersistedSnapshot,
+};
+pub use agentic_loop::{
+    AgenticLoop, AgenticToolResult, AttemptSummary, AutonomyGrant, AutonomyGrantBuilder,
+    Confidence, CompressionEvent, CompressionStrategy, ContextMessage, ContextWindow,
+    DetectionConfig, ExecutionOutcome, ExplorationBranch, ExternalTermination,
+    IterationOutcome, LoopConfig, LoopEvent, LoopState, LoopStateSnapshot, LoopStatus,
+    LoopSummary, MetaSignal, NaturalTermination, Permission, ResourceTermination, ResultStatus,
+    StuckRequest, TerminationReason, TokenBudget, ToolError as AgenticToolError, ToolPattern,
+    TransitionError, detect_meta_signal,
 };
 pub use http_engine::{HttpEngine, HttpEngineError, SimpleMessage};
 pub use tools::{
