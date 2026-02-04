@@ -1598,43 +1598,34 @@ WARP_DONE:
         }
 
         /// Creates a simple LZ4-compressed block containing only literals (no matches).
-        /// This is the simplest valid LZ4 block format.
+        /// This is the simplest valid LZ4 block format: a single "last sequence"
+        /// with all data as literals and no match section.
         ///
-        /// Format: [token][literals]
-        /// Token = (literal_length << 4) | match_length_base
-        /// For literals-only: match_length_base = 0 (no match follows)
+        /// Format: [token][extension_bytes...][literal_data]
+        /// Token high nibble = min(literal_length, 15), low nibble = 0 (last sequence)
+        /// If literal_length >= 15, extension bytes encode the remainder.
+        ///
+        /// This encodes all data in ONE sequence. In LZ4, only the last sequence
+        /// may omit the match section; all intermediate sequences must have one.
         fn create_literals_only_lz4(data: &[u8]) -> Vec<u8> {
+            let literal_length = data.len();
             let mut result = Vec::new();
-            let mut remaining = data;
 
-            while !remaining.is_empty() {
-                let chunk_size = remaining.len().min(255 + 15); // Max per token without extended
-                let (chunk, rest) = remaining.split_at(chunk_size.min(remaining.len()));
-                remaining = rest;
-
-                if chunk_size <= 14 {
-                    // Simple case: literal length fits in 4 bits
-                    // Use 0x0F for match length to indicate "last sequence" (no offset follows)
-                    result.push(((chunk.len() as u8) << 4) | 0);
-                    result.extend_from_slice(chunk);
-                } else if chunk_size <= 15 + 254 {
-                    // Need one extension byte
-                    result.push(0xF0); // literal length = 15, match = 0
-                    result.push((chunk_size - 15) as u8);
-                    result.extend_from_slice(chunk);
-                } else {
-                    // Need multiple extension bytes (255 each until < 255)
-                    result.push(0xF0);
-                    let mut ext_len = chunk_size - 15;
-                    while ext_len >= 255 {
-                        result.push(255);
-                        ext_len -= 255;
-                    }
-                    result.push(ext_len as u8);
-                    result.extend_from_slice(chunk);
+            if literal_length < 15 {
+                // Literal length fits in the token's high nibble
+                result.push((literal_length as u8) << 4);
+            } else {
+                // Token: literal_length_base = 15, match = 0 (last sequence)
+                result.push(0xF0);
+                let mut remaining = literal_length - 15;
+                while remaining >= 255 {
+                    result.push(255);
+                    remaining -= 255;
                 }
+                result.push(remaining as u8);
             }
 
+            result.extend_from_slice(data);
             result
         }
 
@@ -2345,6 +2336,212 @@ WARP_DONE:
                     );
                 }
             }
+        }
+
+        // ==================== Phase 3: Warp Kernel with Real LZ4 (Matches) ====================
+        // These tests use lz4_flex to produce real compressed data containing
+        // match sequences, validating the warp kernel's parallel match copy path.
+
+        /// §3.4: Warp kernel produces byte-identical output to parallel kernel
+        /// for data with LZ4 match sequences (not just literals).
+        #[test]
+        #[cfg(feature = "cuda-experimental")]
+        fn test_warp_matches_parallel_real_lz4() {
+            if !cuda_available() {
+                eprintln!("Skipping test: no CUDA device available");
+                return;
+            }
+
+            let mut ctx = GpuLz4Context::new(0).expect("context creation");
+            ctx.load_kernel().expect("kernel load");
+
+            // Data with repeated patterns → LZ4 match sequences
+            let original: Vec<u8> = (0..1024).map(|i| (i % 13) as u8).collect();
+            let compressed = lz4_flex::block::compress_prepend_size(&original);
+            // lz4_flex prepends a 4-byte little-endian size; strip it for raw block
+            let raw_compressed = &compressed[4..];
+
+            let blocks = vec![(raw_compressed.to_vec(), original.len())];
+
+            let parallel_result = ctx.decompress_blocks_parallel(&blocks).expect("parallel");
+            let warp_result = ctx.decompress_blocks_warp_parallel(&blocks).expect("warp");
+
+            let mut parallel_host = vec![0u8; original.len()];
+            let mut warp_host = vec![0u8; original.len()];
+
+            ctx.device
+                .dtoh_sync_copy_into(&parallel_result, &mut parallel_host)
+                .expect("copy parallel");
+            ctx.device
+                .dtoh_sync_copy_into(&warp_result, &mut warp_host)
+                .expect("copy warp");
+
+            assert_eq!(
+                parallel_host, original,
+                "Parallel kernel should produce correct output"
+            );
+            assert_eq!(
+                warp_host, parallel_host,
+                "Warp kernel must match parallel kernel for data with matches"
+            );
+        }
+
+        /// §3.4: Warp kernel handles large data with both literal and match sequences.
+        /// Uses 64KB of patterned data that compresses well with LZ4.
+        #[test]
+        #[cfg(feature = "cuda-experimental")]
+        fn test_warp_large_data_with_matches() {
+            if !cuda_available() {
+                eprintln!("Skipping test: no CUDA device available");
+                return;
+            }
+
+            let mut ctx = GpuLz4Context::new(0).expect("context creation");
+            ctx.load_kernel().expect("kernel load");
+
+            // 64KB of repeating pattern → many LZ4 match sequences
+            let original: Vec<u8> = (0..65536).map(|i| (i % 251) as u8).collect();
+            let compressed = lz4_flex::block::compress_prepend_size(&original);
+            let raw_compressed = &compressed[4..];
+
+            let blocks = vec![(raw_compressed.to_vec(), original.len())];
+
+            let parallel_result = ctx.decompress_blocks_parallel(&blocks).expect("parallel");
+            let warp_result = ctx.decompress_blocks_warp_parallel(&blocks).expect("warp");
+
+            let mut parallel_host = vec![0u8; original.len()];
+            let mut warp_host = vec![0u8; original.len()];
+
+            ctx.device
+                .dtoh_sync_copy_into(&parallel_result, &mut parallel_host)
+                .expect("copy parallel");
+            ctx.device
+                .dtoh_sync_copy_into(&warp_result, &mut warp_host)
+                .expect("copy warp");
+
+            assert_eq!(parallel_host, original, "Parallel kernel correctness");
+            assert_eq!(
+                warp_host, parallel_host,
+                "Warp kernel must match parallel for 64KB data with matches.\n\
+                 First divergence at byte {}",
+                warp_host
+                    .iter()
+                    .zip(parallel_host.iter())
+                    .position(|(w, p)| w != p)
+                    .unwrap_or(warp_host.len())
+            );
+        }
+
+        /// §3.4: Warp kernel handles multiple blocks with real LZ4 data.
+        #[test]
+        #[cfg(feature = "cuda-experimental")]
+        fn test_warp_multi_block_real_lz4() {
+            if !cuda_available() {
+                eprintln!("Skipping test: no CUDA device available");
+                return;
+            }
+
+            let mut ctx = GpuLz4Context::new(0).expect("context creation");
+            ctx.load_kernel().expect("kernel load");
+
+            // Multiple blocks with different patterns
+            let originals: Vec<Vec<u8>> = vec![
+                (0..256).map(|i| (i % 7) as u8).collect(),     // small, repetitive
+                (0..4096).map(|i| (i % 37) as u8).collect(),   // medium, moderate compression
+                (0..512).map(|i| ((i * 7 + 3) % 256) as u8).collect(), // pseudo-random
+                vec![0xAA; 2048],                                // highly repetitive
+            ];
+
+            let blocks: Vec<(Vec<u8>, usize)> = originals
+                .iter()
+                .map(|orig| {
+                    let compressed = lz4_flex::block::compress_prepend_size(orig);
+                    (compressed[4..].to_vec(), orig.len())
+                })
+                .collect();
+
+            let parallel_result = ctx.decompress_blocks_parallel(&blocks).expect("parallel");
+            let warp_result = ctx.decompress_blocks_warp_parallel(&blocks).expect("warp");
+
+            let total_size: usize = originals.iter().map(|o| o.len()).sum();
+            let mut parallel_host = vec![0u8; total_size];
+            let mut warp_host = vec![0u8; total_size];
+
+            ctx.device
+                .dtoh_sync_copy_into(&parallel_result, &mut parallel_host)
+                .expect("copy parallel");
+            ctx.device
+                .dtoh_sync_copy_into(&warp_result, &mut warp_host)
+                .expect("copy warp");
+
+            // Verify each block
+            let mut offset = 0;
+            for (i, orig) in originals.iter().enumerate() {
+                let p_block = &parallel_host[offset..offset + orig.len()];
+                let w_block = &warp_host[offset..offset + orig.len()];
+
+                assert_eq!(
+                    p_block,
+                    orig.as_slice(),
+                    "Parallel block {} incorrect",
+                    i
+                );
+                assert_eq!(
+                    w_block, p_block,
+                    "Warp block {} diverges from parallel at byte {}",
+                    i,
+                    w_block
+                        .iter()
+                        .zip(p_block.iter())
+                        .position(|(w, p)| w != p)
+                        .unwrap_or(w_block.len())
+                );
+                offset += orig.len();
+            }
+        }
+
+        /// §3.4: Warp kernel handles small-offset matches (overlap requiring sequential copy).
+        /// This specifically tests the sequential fallback path (offset < 32).
+        #[test]
+        #[cfg(feature = "cuda-experimental")]
+        fn test_warp_small_offset_matches() {
+            if !cuda_available() {
+                eprintln!("Skipping test: no CUDA device available");
+                return;
+            }
+
+            let mut ctx = GpuLz4Context::new(0).expect("context creation");
+            ctx.load_kernel().expect("kernel load");
+
+            // Data designed to produce small-offset matches:
+            // Repeating short pattern → LZ4 offset will be small (e.g., 4)
+            let original: Vec<u8> = "ABCDABCDABCDABCDABCDABCDABCDABCD"
+                .repeat(100)
+                .into_bytes();
+
+            let compressed = lz4_flex::block::compress_prepend_size(&original);
+            let raw_compressed = &compressed[4..];
+
+            let blocks = vec![(raw_compressed.to_vec(), original.len())];
+
+            let parallel_result = ctx.decompress_blocks_parallel(&blocks).expect("parallel");
+            let warp_result = ctx.decompress_blocks_warp_parallel(&blocks).expect("warp");
+
+            let mut parallel_host = vec![0u8; original.len()];
+            let mut warp_host = vec![0u8; original.len()];
+
+            ctx.device
+                .dtoh_sync_copy_into(&parallel_result, &mut parallel_host)
+                .expect("copy parallel");
+            ctx.device
+                .dtoh_sync_copy_into(&warp_result, &mut warp_host)
+                .expect("copy warp");
+
+            assert_eq!(parallel_host, original, "Parallel correctness");
+            assert_eq!(
+                warp_host, parallel_host,
+                "Warp must match parallel for small-offset (overlapping) matches"
+            );
         }
 
         // ==================== Feature-Gate Boundary Tests (Phase 2) ====================

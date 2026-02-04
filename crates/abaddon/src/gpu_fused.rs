@@ -1757,6 +1757,154 @@ INT8_DONE:
                 similarity
             );
         }
+
+        // ==================== Phase 4: §5.3 Fusion Bit-Identical Property Test ====================
+        // GPU-CODEC-PIPELINE-TDD.md §5.3: Fused LZ4+INT4 produces bit-identical
+        // output to the sequential CPU dequant path for arbitrary inputs.
+
+        mod fusion_proptest {
+            use super::*;
+            use proptest::prelude::*;
+
+            proptest! {
+                #![proptest_config(ProptestConfig::with_cases(20))]
+                #[test]
+                fn fused_matches_cpu_sequential_arbitrary(
+                    nibbles in proptest::collection::vec(0u8..16u8, 2..128),
+                    scale_f32 in 0.01f32..5.0f32,
+                    zero_point in 0i8..=15i8,
+                ) {
+                    if !cuda_available() {
+                        return Ok(());
+                    }
+
+                    let scale = half::f16::from_f32(scale_f32);
+                    let num_values = nibbles.len();
+                    let (compressed, _) = create_lz4_int4_test_data(&nibbles);
+
+                    // Fused GPU path
+                    let mut ctx = GpuFusedContext::new(0).unwrap();
+                    ctx.load_lz4_int4_kernel().unwrap();
+                    let fused_result = ctx
+                        .fused_lz4_int4_block(&compressed, scale, zero_point, num_values)
+                        .unwrap();
+                    let mut fused_host = vec![half::f16::ZERO; num_values];
+                    ctx.device
+                        .dtoh_sync_copy_into(&fused_result, &mut fused_host)
+                        .unwrap();
+
+                    // Sequential CPU reference: (nibble - zero_point) * scale → F16
+                    for (i, &nibble) in nibbles.iter().enumerate() {
+                        let expected = half::f16::from_f32(
+                            (nibble as i32 - zero_point as i32) as f32 * scale.to_f32(),
+                        );
+                        prop_assert_eq!(
+                            fused_host[i].to_bits(),
+                            expected.to_bits(),
+                            "Fusion bit mismatch at {}: nibble={}, zp={}, scale={:.4}, \
+                             fused={:?}, expected={:?}",
+                            i, nibble, zero_point, scale.to_f32(), fused_host[i], expected
+                        );
+                    }
+                }
+            }
+        }
+
+        // ==================== Phase 4: §8.3 Pipeline E — FP8 Conversion ====================
+        // GPU-CODEC-PIPELINE-TDD.md §8.3: End-to-end FP8 E4M3 → F32 pipeline
+        // verifying GPU conversion matches hand-computed known values.
+
+        #[test]
+        fn test_pipeline_e_fp8_e4m3_known_values() {
+            if !cuda_available() {
+                eprintln!("Skipping: no CUDA device");
+                return;
+            }
+
+            use std::sync::Arc;
+
+            let device = match cudarc::driver::CudaDevice::new(0) {
+                Ok(d) => Arc::new(d),
+                Err(_) => {
+                    eprintln!("Skipping: no CUDA device");
+                    return;
+                }
+            };
+
+            let converter =
+                crate::gpu_dtype::cuda::GpuDtypeConverter::new(Arc::clone(&device))
+                    .expect("FP8 converter creation");
+
+            // Representative FP8 E4M3 values spanning the encoding range:
+            // (byte, expected_f32)
+            let test_cases: Vec<(u8, f32)> = vec![
+                (0x00, 0.0),     // +0
+                (0x38, 1.0),     // 2^(7-7) * (1+0/8) = 1.0
+                (0xB8, -1.0),    // -1.0
+                (0x3C, 1.5),     // 2^(7-7) * (1+4/8) = 1.5
+                (0x40, 2.0),     // 2^(8-7) * (1+0/8) = 2.0
+                (0x01, 0.001953125), // subnormal: 2^(-6) * (1/8) = 1/512
+                (0x77, 240.0),   // max normal: 2^(14-7) * (1+7/8) = 128 * 1.875 = 240
+            ];
+
+            let fp8_bytes: Vec<u8> = test_cases.iter().map(|(b, _)| *b).collect();
+            let gpu_result = converter
+                .fp8_e4m3_to_f32_host(&fp8_bytes)
+                .expect("GPU FP8 conversion");
+
+            for (i, ((byte, expected), &gpu_val)) in
+                test_cases.iter().zip(gpu_result.iter()).enumerate()
+            {
+                assert!(
+                    (gpu_val - expected).abs() < 1e-7,
+                    "Pipeline E: FP8 byte 0x{:02X} at index {}: expected={}, gpu={}",
+                    byte,
+                    i,
+                    expected,
+                    gpu_val,
+                );
+            }
+
+            // Verify batch conversion: all 254 non-NaN bytes match CPU reference
+            let all_bytes: Vec<u8> = (0u8..=0xFEu8).collect(); // skip 0x7F (NaN)
+            let all_gpu = converter
+                .fp8_e4m3_to_f32_host(&all_bytes)
+                .expect("batch GPU conversion");
+
+            for (byte, &gpu_val) in all_bytes.iter().zip(all_gpu.iter()) {
+                // Inline CPU reference for FP8 E4M3
+                let sign = (byte >> 7) & 1;
+                let exp = (byte >> 3) & 0xF;
+                let man = byte & 0x7;
+
+                let cpu_val = if exp == 0 {
+                    if man == 0 {
+                        if sign == 1 { -0.0 } else { 0.0 }
+                    } else {
+                        let v = (man as f32 / 8.0) * 2.0f32.powi(-6);
+                        if sign == 1 { -v } else { v }
+                    }
+                } else if exp == 15 && man == 7 {
+                    f32::NAN
+                } else {
+                    let v = (1.0 + man as f32 / 8.0) * 2.0f32.powi(exp as i32 - 7);
+                    if sign == 1 { -v } else { v }
+                };
+
+                if cpu_val.is_nan() {
+                    assert!(gpu_val.is_nan(), "0x{:02X}: expected NaN, got {}", byte, gpu_val);
+                } else {
+                    assert_eq!(
+                        gpu_val.to_bits(),
+                        cpu_val.to_bits(),
+                        "Pipeline E batch: byte 0x{:02X}, cpu={}, gpu={}",
+                        byte,
+                        cpu_val,
+                        gpu_val,
+                    );
+                }
+            }
+        }
     }
 }
 
