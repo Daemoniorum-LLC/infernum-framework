@@ -455,8 +455,8 @@ callers must cast F32 → F16 themselves. See DD-6.
 |--------|-----------|--------|
 | `holo_spectral_accumulate` | `(indices, values, coeffs, mask, num_coeffs, buffer_size)` | Working |
 | `holo_spectral_idct_1d_rows` | `(input, output, width, height)` | Working |
-| `holo_spectral_idct_1d_cols` | `(input, output, width, height)` | **Stub** (returns immediately) |
-| `holo_spectral_idct_2d` | `(input, output, width, height)` | **Stub** (returns immediately) |
+| `holo_spectral_idct_1d_cols` | `(input, output, width, height)` | Working |
+| `holo_spectral_idct_2d` | `(input, output, width, height)` | **Stub** (DD-8, retained for Nihil) |
 | `holo_spectral_idct_f16` | `(coeffs, output, width, height)` | Working (F32 → F16 IDCT) |
 
 #### RPH (Random Projection Hash) Kernels
@@ -465,14 +465,14 @@ callers must cast F32 → F16 themselves. See DD-6.
 |--------|-----------|--------|
 | `holo_rph_accumulate` | `(projection, output, proj_dim, output_dim, seed)` | Working |
 | `holo_rph_finalize` | `(input, output, size, num_projections)` | Working |
-| `holo_rph_generate_projection` | `(output, row, col, rows, cols, seed)` | **Stub** |
+| `holo_rph_generate_projection` | `(output, row, col, rows, cols, seed)` | **Stub** (DD-8, retained for Nihil) |
 
 #### LRDF (Low-Rank Decomposition) Kernels
 
 | Kernel | Parameters | Status |
 |--------|-----------|--------|
 | `holo_lrdf_outer_product` | `(u, v, output, sigma, rows, cols)` | Working |
-| `holo_lrdf_outer_product_batched` | `(u, v, sigma, output, num_components, rows, cols)` | **Stub** |
+| `holo_lrdf_outer_product_batched` | `(u, v, sigma, output, num_components, rows, cols)` | Working |
 
 #### Utility Kernels
 
@@ -484,6 +484,25 @@ callers must cast F32 → F16 themselves. See DD-6.
 | `holo_coalesced_accumulate_v4` | `(src, dst, num_elements)` | Working (vectorized) |
 | `holo_coalesced_idct_tile` | `(coeffs, output, width, height, tile_size)` | Working (shared mem) |
 | `holo_coalesced_f32_to_f16_v4` | `(input, output, size)` | Working (vectorized) |
+
+### 4.5.1 PTX Authoring Constraints
+
+All HoloTensor kernels (and any future hand-written PTX) are embedded as Rust
+string constants and compiled at runtime via the CUDA JIT (`cudarc::driver`).
+The JIT imposes constraints that differ from the offline `ptxas` compiler:
+
+| Constraint | Detail | Discovered |
+|-----------|--------|------------|
+| **ASCII-only encoding** | The JIT rejects any non-ASCII byte in the PTX source, including in comments. `ptxas` (offline) accepts UTF-8 comments without issue. | DD-8 Phase 5 (LRDF `Σ` in comment), Phase 4 (em-dash `—` in comment) |
+| **No scientific notation in immediates** | Floating-point literals like `5.96e-08` may fail. Use `div.full.f32` with a power-of-two denominator instead. | DD-8 Phase 3 (RPH float conversion) |
+| **No negative float immediates** | `add.f32 %r, %r, -1.0` fails. Use `sub.f32 %r, %r, 1.0` instead. | DD-8 Phase 3 (RPH float conversion) |
+| **No predicated `mov` on some architectures** | `@%p mov.u64 %r, 1` may fail. Use a branch-based pattern: `@%p bra SKIP; mov.u64 %r, 1; SKIP:` | DD-8 Phase 3 (RPH seed initialization) |
+
+**Implication for Sigil/Nihil integration:** If Nihil or any Sigil-based tooling
+generates PTX dynamically, the emission layer must sanitize or strip comments
+before JIT compilation. Sigil's use of Unicode mathematical notation (`Σ`, `∈`,
+`→`, `∀`, `∞`) is incompatible with the PTX JIT even in non-functional positions.
+A dedicated ASCII sanitization pass at the PTX emission boundary is required.
 
 ### 4.6 Fused Dequant + GEMM Kernels
 
@@ -744,6 +763,7 @@ LD_LIBRARY_PATH=/usr/lib/wsl/lib cargo test -p abaddon --features cuda -- --test
 | DD-6 | FP8 kernels output F32, no direct F16 path | Low | `gpu_dtype.rs` | Add `fp8_to_f16` kernels. Future optimization. |
 | DD-7 | HoloTensor dequant accepts runtime `block_size` parameter | Info | `gpu_holo.rs:2254` | Flexible by design. Ensure callers pass correct value. |
 | DD-8 | Six HoloTensor kernels are stubs, broken, or dead code | Medium | `gpu_holo.rs` | `idct_1d_rows` (placeholder), `idct_1d_cols` (stub), `idct_2d` (dead), `rph_accumulate` (broken PRNG), `rph_generate_projection` (dead), `lrdf_outer_product_batched` (stub). TDD roadmap: DD8-STUB-KERNEL-TDD.md |
+| DD-9 | PTX JIT rejects non-ASCII bytes, unlike offline `ptxas` | Medium | All PTX in `gpu_holo.rs`, `gpu_lz4.rs`, `gpu_dequant.rs`, `gpu_fused.rs` | Documented in §4.5.1. Blocks Sigil/Nihil dynamic PTX generation without an ASCII sanitization pass. |
 
 ---
 
@@ -752,3 +772,4 @@ LD_LIBRARY_PATH=/usr/lib/wsl/lib cargo test -p abaddon --features cuda -- --test
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 0.1.0 | 2026-02-03 | Codebase audit | Initial spec from source audit. Documented 14+ kernels across 6 modules. Identified DD-1 (critical block size bug), DD-2 (broken warp kernel), DD-8 (stub kernels). |
+| 0.2.0 | 2026-02-03 | DD-8 implementation | Updated kernel statuses post DD-8 TDD: `idct_1d_cols`, `rph_accumulate`, `lrdf_outer_product_batched` now Working. Added §4.5.1 PTX Authoring Constraints (DD-9). Added DD-9 to register. |
