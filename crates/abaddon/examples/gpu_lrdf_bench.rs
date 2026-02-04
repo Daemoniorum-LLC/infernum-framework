@@ -46,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         use cudarc::driver::CudaDevice;
 
         let device = CudaDevice::new(0)?;
-        let encoder = GpuLrdfEncoder::new(device, num_fragments)?
+        let encoder = GpuLrdfEncoder::new(device, num_fragments, 42)?
             .with_max_rank(max_rank);
 
         let start = Instant::now();
@@ -73,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         use cudarc::driver::CudaDevice;
 
         let device = CudaDevice::new(0)?;
-        let encoder = GpuLrdfEncoder::new(device, num_fragments)?
+        let encoder = GpuLrdfEncoder::new(device, num_fragments, 42)?
             .with_max_rank(max_rank);
 
         let gpu_fragments = encoder.encode_2d(&data, rows, cols)?;

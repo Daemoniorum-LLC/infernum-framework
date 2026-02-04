@@ -4866,6 +4866,222 @@ mod tests {
         assert!(config.block_size_2d > 0 && config.block_size_2d <= 32,
             "2D block size should be 1-32, got {}", config.block_size_2d);
     }
+
+    // ==================== TDD Phase 4: HoloTensor Reconstruction Tests ====================
+    // GPU-CODEC-PIPELINE-TDD.md §6.1-6.5
+
+    /// Helper to build an LRDF fragment with one rank-1 SVD component.
+    /// Format: [rows: u32][cols: u32][num_components: u32][sigma: f32][u: f32*rows][v: f32*cols]
+    #[cfg(feature = "cuda")]
+    fn make_lrdf_fragment(index: u16, rows: usize, cols: usize, sigma: f32, u: &[f32], v: &[f32]) -> haagenti::holotensor::HoloFragment {
+        assert_eq!(u.len(), rows);
+        assert_eq!(v.len(), cols);
+        let mut data = Vec::new();
+        data.extend_from_slice(&(rows as u32).to_le_bytes());
+        data.extend_from_slice(&(cols as u32).to_le_bytes());
+        data.extend_from_slice(&1u32.to_le_bytes()); // 1 component
+        data.extend_from_slice(&sigma.to_le_bytes());
+        for &val in u {
+            data.extend_from_slice(&val.to_le_bytes());
+        }
+        for &val in v {
+            data.extend_from_slice(&val.to_le_bytes());
+        }
+        haagenti::holotensor::HoloFragment::new(index, data)
+    }
+
+    /// §6.2: LRDF rank-1 outer product reconstruction.
+    ///
+    /// A single fragment with one component: sigma * u * v^T.
+    /// Verifies GPU reconstruction matches the expected outer product.
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn test_lrdf_rank1_reconstruction() {
+        let mut ctx = match GpuHoloContext::new(0) {
+            Ok(ctx) => ctx,
+            Err(_) => {
+                eprintln!("Skipping: no CUDA device available");
+                return;
+            }
+        };
+        ctx.load_lrdf_kernel().expect("LRDF kernel should load");
+
+        let rows = 3;
+        let cols = 2;
+        let u = vec![1.0f32, 2.0, 3.0];
+        let v = vec![4.0f32, 5.0];
+        let sigma = 2.0f32;
+
+        let fragment = make_lrdf_fragment(0, rows, cols, sigma, &u, &v);
+
+        // Build header
+        let header = haagenti::holotensor::HoloTensorHeader::new(
+            haagenti::holotensor::HolographicEncoding::LowRankDistributed,
+            haagenti::DType::F32,
+            vec![rows as u64, cols as u64],
+            1, // total fragments
+        );
+
+        // Reconstruct
+        let gpu_result = ctx.reconstruct(&header, &[fragment]).unwrap();
+        let host = ctx.copy_to_host(&gpu_result).unwrap();
+
+        // Expected: sigma * u_i * v_j (row-major)
+        let expected = vec![
+            2.0 * 1.0 * 4.0, 2.0 * 1.0 * 5.0, // row 0: 8, 10
+            2.0 * 2.0 * 4.0, 2.0 * 2.0 * 5.0, // row 1: 16, 20
+            2.0 * 3.0 * 4.0, 2.0 * 3.0 * 5.0, // row 2: 24, 30
+        ];
+
+        assert_eq!(host.len(), expected.len());
+        for (i, (e, g)) in expected.iter().zip(host.iter()).enumerate() {
+            assert!(
+                (e - g).abs() < 1e-4,
+                "LRDF rank-1 mismatch at {}: expected={}, got={}", i, e, g
+            );
+        }
+    }
+
+    /// §6.2: LRDF multi-component reconstruction (2 rank-1 terms).
+    ///
+    /// Two fragments each contributing one rank-1 component.
+    /// Result should be sigma1 * u1 * v1^T + sigma2 * u2 * v2^T.
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn test_lrdf_multi_component_reconstruction() {
+        let mut ctx = match GpuHoloContext::new(0) {
+            Ok(ctx) => ctx,
+            Err(_) => {
+                eprintln!("Skipping: no CUDA device available");
+                return;
+            }
+        };
+        ctx.load_lrdf_kernel().expect("LRDF kernel should load");
+
+        let rows = 2;
+        let cols = 2;
+
+        // Component 1: 1.0 * [1, 0] * [1, 0]^T = [[1, 0], [0, 0]]
+        let frag0 = make_lrdf_fragment(0, rows, cols, 1.0, &[1.0, 0.0], &[1.0, 0.0]);
+        // Component 2: 1.0 * [0, 1] * [0, 1]^T = [[0, 0], [0, 1]]
+        let frag1 = make_lrdf_fragment(1, rows, cols, 1.0, &[0.0, 1.0], &[0.0, 1.0]);
+
+        let header = haagenti::holotensor::HoloTensorHeader::new(
+            haagenti::holotensor::HolographicEncoding::LowRankDistributed,
+            haagenti::DType::F32,
+            vec![rows as u64, cols as u64],
+            2,
+        );
+
+        let gpu_result = ctx.reconstruct(&header, &[frag0, frag1]).unwrap();
+        let host = ctx.copy_to_host(&gpu_result).unwrap();
+
+        // Expected: identity matrix [[1, 0], [0, 1]]
+        let expected = vec![1.0, 0.0, 0.0, 1.0];
+
+        assert_eq!(host.len(), expected.len());
+        for (i, (e, g)) in expected.iter().zip(host.iter()).enumerate() {
+            assert!(
+                (e - g).abs() < 1e-4,
+                "LRDF multi-comp mismatch at {}: expected={}, got={}", i, e, g
+            );
+        }
+    }
+
+    /// §6.5: F32 → F16 conversion kernel correctness.
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn test_holo_f32_to_f16_conversion() {
+        let mut ctx = match GpuHoloContext::new(0) {
+            Ok(ctx) => ctx,
+            Err(_) => {
+                eprintln!("Skipping: no CUDA device available");
+                return;
+            }
+        };
+        ctx.load_fused_kernel().expect("fused kernel should load");
+
+        let input = vec![1.0f32, 0.5, -1.0, 0.0, 100.0, -0.001];
+        let d_input = ctx.device().htod_copy(input.clone()).unwrap();
+
+        let d_output = ctx.convert_f32_to_f16(&d_input).unwrap();
+
+        let mut host_f16 = vec![half::f16::ZERO; input.len()];
+        ctx.device().dtoh_sync_copy_into(&d_output, &mut host_f16).unwrap();
+
+        for (i, (&f32_val, &f16_val)) in input.iter().zip(host_f16.iter()).enumerate() {
+            let expected = half::f16::from_f32(f32_val);
+            assert_eq!(
+                f16_val.to_bits(), expected.to_bits(),
+                "F32→F16 wrong at {}: input={}, got=0x{:04X}, expected=0x{:04X}",
+                i, f32_val, f16_val.to_bits(), expected.to_bits()
+            );
+        }
+    }
+
+    /// §6.5: scale_values utility kernel.
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn test_holo_scale_values() {
+        let mut ctx = match GpuHoloContext::new(0) {
+            Ok(ctx) => ctx,
+            Err(_) => {
+                eprintln!("Skipping: no CUDA device available");
+                return;
+            }
+        };
+        ctx.load_fused_kernel().expect("fused kernel should load");
+
+        let data = vec![1.0f32, 2.0, 3.0, 4.0];
+        let mut d_data = ctx.device().htod_copy(data.clone()).unwrap();
+
+        ctx.scale_values(&mut d_data, 0.5).unwrap();
+
+        let mut host = vec![0.0f32; data.len()];
+        ctx.device().dtoh_sync_copy_into(&d_data, &mut host).unwrap();
+
+        let expected = vec![0.5, 1.0, 1.5, 2.0];
+        for (i, (e, g)) in expected.iter().zip(host.iter()).enumerate() {
+            assert!(
+                (e - g).abs() < 1e-6,
+                "Scale mismatch at {}: expected={}, got={}", i, e, g
+            );
+        }
+    }
+
+    /// §6.2: LRDF convenience reconstruct_lrdf produces correct GpuTensor.
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn test_lrdf_convenience_reconstruct() {
+        let mut ctx = match GpuHoloContext::new(0) {
+            Ok(ctx) => ctx,
+            Err(_) => {
+                eprintln!("Skipping: no CUDA device available");
+                return;
+            }
+        };
+        ctx.load_lrdf_kernel().expect("LRDF kernel should load");
+
+        let rows = 4;
+        let cols = 4;
+        // Identity-like: sigma=1 for each basis vector pair
+        let frag = make_lrdf_fragment(0, rows, cols, 1.0, &[1.0, 1.0, 1.0, 1.0], &[1.0, 1.0, 1.0, 1.0]);
+
+        let tensor = ctx.reconstruct_lrdf(&[frag], rows, cols).unwrap();
+
+        assert_eq!(tensor.rows(), rows);
+        assert_eq!(tensor.cols(), cols);
+        assert_eq!(tensor.len(), rows * cols);
+
+        let host = tensor.to_host().unwrap();
+        // All 1s outer product: every element should be 1.0
+        for (i, &val) in host.iter().enumerate() {
+            assert!(
+                (val - 1.0).abs() < 1e-4,
+                "reconstruct_lrdf all-ones mismatch at {}: got={}", i, val
+            );
+        }
+    }
 }
 
 // Re-exports

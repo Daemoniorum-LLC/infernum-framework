@@ -1052,6 +1052,193 @@ INT8_DONE:
                 assert!((val.to_f32() - 1.5).abs() < 0.01);
             }
         }
+
+        // ==================== TDD Phase 1: GPU vs CPU Cross-Validation ====================
+        // GPU-CODEC-PIPELINE-TDD.md §4.1-4.2
+        //
+        // Trust boundary: GPU dequantization MUST produce values matching the CPU
+        // quantize.rs reference within F16 rounding tolerance.
+
+        /// §4.1: GPU INT4 dequant matches quantize.rs CPU reference.
+        ///
+        /// Quantize with quantize.rs, dequantize with both CPU (quantize.rs)
+        /// and GPU (gpu_dequant), verify they agree.
+        #[test]
+        fn test_int4_gpu_matches_cpu_reference() {
+            if !cuda_available() {
+                eprintln!("Skipping: no CUDA device");
+                return;
+            }
+
+            use crate::quantize::{Quantizer, DEFAULT_BLOCK_SIZE};
+            use candle_core::{Device, Tensor};
+
+            // Create known input: 2 blocks (256 elements) with mixed values
+            let input: Vec<f32> = (0..256)
+                .map(|i| ((i as f32) - 128.0) * 0.05)
+                .collect();
+            let tensor = Tensor::from_vec(input.clone(), &[256], &Device::Cpu).unwrap();
+
+            // Quantize with quantize.rs
+            let quantizer = Quantizer::int4_symmetric();
+            let quantized = quantizer.quantize_tensor(&tensor).unwrap();
+            assert_eq!(quantized.block_size, DEFAULT_BLOCK_SIZE);
+
+            // CPU dequantize (ground truth)
+            let cpu_reference = quantizer.dequantize(&quantized).unwrap();
+            let cpu_values: Vec<f32> = cpu_reference.to_vec1().unwrap();
+
+            // GPU dequantize
+            let mut ctx = GpuDequantContext::new(0).unwrap();
+            ctx.load_int4_kernel().unwrap();
+
+            // GPU kernel convention: (nibble - zero_point) * scale
+            // quantize.rs packs symmetric INT4 as (q + 8) & 0x0F, so nibbles are [0,15]
+            // and zero_points is None. To match CPU dequant (which subtracts 8 internally),
+            // we must pass zero_point=8 to the GPU kernel.
+            let num_blocks = (quantized.num_values + DEFAULT_BLOCK_SIZE - 1) / DEFAULT_BLOCK_SIZE;
+            let zp_for_gpu: Vec<i8> = match &quantized.zero_points {
+                Some(zp) => zp.clone(),
+                None => vec![8i8; num_blocks], // symmetric packing offset
+            };
+
+            let gpu_result = ctx
+                .dequant_int4(
+                    &quantized.data,
+                    &quantized.scales,
+                    Some(&zp_for_gpu),
+                    quantized.num_values,
+                )
+                .unwrap();
+
+            let mut gpu_f16 = vec![half::f16::ZERO; quantized.num_values];
+            ctx.device
+                .dtoh_sync_copy_into(&gpu_result, &mut gpu_f16)
+                .unwrap();
+            let gpu_values: Vec<f32> = gpu_f16.iter().map(|h| h.to_f32()).collect();
+
+            // CPU dequant returns F32 computed from F16 scale, GPU outputs F16.
+            // Both use the same F16 scale, so max error is F16 rounding (~0.01 for these ranges).
+            assert_eq!(cpu_values.len(), gpu_values.len());
+            for (i, (cpu, gpu)) in cpu_values.iter().zip(gpu_values.iter()).enumerate() {
+                assert!(
+                    (cpu - gpu).abs() < 0.01,
+                    "INT4 GPU vs CPU mismatch at {}: cpu={}, gpu={} (diff={})",
+                    i,
+                    cpu,
+                    gpu,
+                    (cpu - gpu).abs()
+                );
+            }
+        }
+
+        /// §4.1 stress: GPU INT4 dequant matches CPU for 10 blocks (1280 values).
+        #[test]
+        fn test_int4_gpu_matches_cpu_multi_block() {
+            if !cuda_available() {
+                eprintln!("Skipping: no CUDA device");
+                return;
+            }
+
+            use crate::quantize::{Quantizer, DEFAULT_BLOCK_SIZE};
+            use candle_core::{Device, Tensor};
+
+            let n = DEFAULT_BLOCK_SIZE * 10;
+            let input: Vec<f32> = (0..n)
+                .map(|i| {
+                    let block = i / DEFAULT_BLOCK_SIZE;
+                    let pos = i % DEFAULT_BLOCK_SIZE;
+                    ((pos as f32) - 64.0) * 0.001 * ((block + 1) as f32)
+                })
+                .collect();
+
+            let tensor = Tensor::from_vec(input.clone(), &[n], &Device::Cpu).unwrap();
+            let quantizer = Quantizer::int4_symmetric();
+            let quantized = quantizer.quantize_tensor(&tensor).unwrap();
+
+            // CPU reference
+            let cpu_ref = quantizer.dequantize(&quantized).unwrap();
+            let cpu_values: Vec<f32> = cpu_ref.to_vec1().unwrap();
+
+            // GPU dequantize — same zero_point=8 convention as single-block test
+            let mut ctx = GpuDequantContext::new(0).unwrap();
+            ctx.load_int4_kernel().unwrap();
+
+            let num_blocks = (quantized.num_values + DEFAULT_BLOCK_SIZE - 1) / DEFAULT_BLOCK_SIZE;
+            let zp_for_gpu: Vec<i8> = match &quantized.zero_points {
+                Some(zp) => zp.clone(),
+                None => vec![8i8; num_blocks],
+            };
+
+            let gpu_result = ctx
+                .dequant_int4(
+                    &quantized.data,
+                    &quantized.scales,
+                    Some(&zp_for_gpu),
+                    quantized.num_values,
+                )
+                .unwrap();
+            let mut gpu_f16 = vec![half::f16::ZERO; n];
+            ctx.device
+                .dtoh_sync_copy_into(&gpu_result, &mut gpu_f16)
+                .unwrap();
+            let gpu_values: Vec<f32> = gpu_f16.iter().map(|h| h.to_f32()).collect();
+
+            let max_diff: f32 = cpu_values
+                .iter()
+                .zip(gpu_values.iter())
+                .map(|(c, g)| (c - g).abs())
+                .fold(0.0f32, f32::max);
+            assert!(
+                max_diff < 0.01,
+                "Max INT4 GPU vs CPU diff across {} values: {} (should be < 0.01)",
+                n,
+                max_diff
+            );
+        }
+
+        /// §4.2: GPU INT8 dequant matches CPU reference.
+        #[test]
+        fn test_int8_gpu_matches_cpu_reference() {
+            if !cuda_available() {
+                eprintln!("Skipping: no CUDA device");
+                return;
+            }
+
+            // Create INT8 data (as i8) and known scale
+            let data: Vec<i8> = (0..256).map(|i| (i as u8) as i8).collect();
+            let scale = half::f16::from_f32(0.05);
+
+            // CPU reference: value * scale
+            let cpu_values: Vec<f32> = data
+                .iter()
+                .map(|&v| (v as f32) * scale.to_f32())
+                .collect();
+
+            // GPU dequantize: takes &[i8] and a single f16 scale
+            let mut ctx = GpuDequantContext::new(0).unwrap();
+            ctx.load_int8_kernel().unwrap();
+            let gpu_result = ctx.dequant_int8(&data, scale).unwrap();
+            let mut gpu_f16 = vec![half::f16::ZERO; data.len()];
+            ctx.device
+                .dtoh_sync_copy_into(&gpu_result, &mut gpu_f16)
+                .unwrap();
+            let gpu_values: Vec<f32> = gpu_f16.iter().map(|h| h.to_f32()).collect();
+
+            // GPU outputs F16 then we read back as F32. CPU computes in F32.
+            // F16 has ~0.1% relative error, so for values around 4.0 the abs
+            // error can be ~0.004. Use 0.01 tolerance (same as INT4 tests).
+            for (i, (cpu, gpu)) in cpu_values.iter().zip(gpu_values.iter()).enumerate() {
+                assert!(
+                    (cpu - gpu).abs() < 0.01,
+                    "INT8 GPU vs CPU mismatch at {}: cpu={}, gpu={} (diff={})",
+                    i,
+                    cpu,
+                    gpu,
+                    (cpu - gpu).abs()
+                );
+            }
+        }
     }
 }
 

@@ -255,7 +255,7 @@ mod tests {
             }
         };
 
-        let encoder = GpuLrdfEncoder::new(device, 4).unwrap().with_max_rank(8);
+        let encoder = GpuLrdfEncoder::new(device, 4, 42).unwrap().with_max_rank(8);
 
         // Create test matrix
         let rows = 64;
@@ -286,7 +286,7 @@ mod tests {
             }
         };
 
-        let encoder = GpuLrdfEncoder::new(device, 4).unwrap().with_max_rank(16);
+        let encoder = GpuLrdfEncoder::new(device, 4, 42).unwrap().with_max_rank(16);
 
         let rows = 32;
         let cols = 32;
