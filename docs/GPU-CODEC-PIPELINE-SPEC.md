@@ -743,7 +743,7 @@ LD_LIBRARY_PATH=/usr/lib/wsl/lib cargo test -p abaddon --features cuda -- --test
 | DD-5 | Fused GEMM `QUANT_BLOCK_SIZE=32` differs from `INT4_BLOCK_SIZE=128` | Low | `fused_gemm.rs:38` | By design — GPTQ/AWQ vs HCT. No fix needed. Documented in Section 2.1. |
 | DD-6 | FP8 kernels output F32, no direct F16 path | Low | `gpu_dtype.rs` | Add `fp8_to_f16` kernels. Future optimization. |
 | DD-7 | HoloTensor dequant accepts runtime `block_size` parameter | Info | `gpu_holo.rs:2254` | Flexible by design. Ensure callers pass correct value. |
-| DD-8 | Four HoloTensor kernels are stubs (return immediately) | Medium | `gpu_holo.rs` | `idct_1d_cols`, `idct_2d`, `rph_generate_projection`, `lrdf_outer_product_batched`. Implement or remove. |
+| DD-8 | Six HoloTensor kernels are stubs, broken, or dead code | Medium | `gpu_holo.rs` | `idct_1d_rows` (placeholder), `idct_1d_cols` (stub), `idct_2d` (dead), `rph_accumulate` (broken PRNG), `rph_generate_projection` (dead), `lrdf_outer_product_batched` (stub). TDD roadmap: DD8-STUB-KERNEL-TDD.md |
 
 ---
 
