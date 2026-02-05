@@ -334,6 +334,7 @@ impl Engine {
                 *target_quality,
                 *vram_budget,
                 *ram_budget,
+                arch_type,
             );
         }
 
@@ -428,8 +429,9 @@ impl Engine {
 
     /// Loads a model using lazy layer-by-layer loading for 405B+ models.
     ///
-    /// This uses `LazyLlama` which loads decoder layers on-demand during inference,
-    /// enabling 405B inference on systems with limited memory (24GB VRAM + 80GB RAM).
+    /// This uses `LazyLlama` or `LazyQwen2` (based on architecture) which loads
+    /// decoder layers on-demand during inference, enabling 405B inference on
+    /// systems with limited memory (24GB VRAM + 80GB RAM).
     #[allow(clippy::too_many_arguments)]
     fn load_model_lazy(
         files: &ModelFiles,
@@ -441,10 +443,11 @@ impl Engine {
         target_quality: f32,
         vram_budget: u64,
         ram_budget: u64,
+        arch_type: ArchitectureType,
     ) -> Result<LoadedModel> {
         use crate::holotensor::tiered_loading::{TieredConfig, TieredHoloLoader};
         use crate::lazy_varbuilder::LazyVarBuilder;
-        use crate::models::{LazyLlama, LlamaConfig};
+        use crate::models::{LazyLlama, LazyQwen2, LlamaConfig, Qwen2Config};
 
         tracing::info!(
             directory = %directory.display(),
@@ -581,31 +584,75 @@ impl Engine {
             "Calculated layer budget from VRAM"
         );
 
-        // Build Llama config
-        let llama_config = LlamaConfig {
-            hidden_size: model_config.hidden_size.unwrap_or(16384),        // 405B default
-            intermediate_size: model_config.intermediate_size.unwrap_or(53248), // 405B default
-            vocab_size: model_config.vocab_size.unwrap_or(128256),
-            num_hidden_layers: model_config.num_hidden_layers.unwrap_or(126),   // 405B has 126 layers
-            num_attention_heads: model_config.num_attention_heads.unwrap_or(128),
-            num_key_value_heads: model_config.num_key_value_heads,
-            rms_norm_eps: model_config.rms_norm_eps.unwrap_or(1e-5),
-            rope_theta: model_config.rope_theta.unwrap_or(500000.0),
-            max_position_embeddings: model_config.max_position_embeddings.unwrap_or(131072),
-            tie_word_embeddings: model_config.tie_word_embeddings.unwrap_or(false),
-            bos_token_id: model_config.bos_token_id,
-            eos_token_id: model_config.eos_token_ids().first().copied(),
-            rope_scaling: model_config.rope_scaling.clone(),
-        };
+        // Get EOS token ID for config
+        let eos_token_id_config = model_config.eos_token_ids().first().copied();
 
-        // Load LazyLlama (only embedding, norm, lm_head loaded initially)
-        let lazy_llama = LazyLlama::load(llama_config, lazy_vb, max_loaded_layers).map_err(|e| {
-            infernum_core::Error::ModelLoad {
-                message: format!("Failed to load LazyLlama: {}", e),
+        // Load the appropriate lazy model based on architecture
+        let model = match arch_type {
+            ArchitectureType::Qwen2 => {
+                tracing::info!("Loading LazyQwen2 model (Qwen2 architecture detected)");
+
+                // Build Qwen2 config
+                let qwen2_config = Qwen2Config {
+                    hidden_size: model_config.hidden_size.unwrap_or(5120),        // 14B default
+                    intermediate_size: model_config.intermediate_size.unwrap_or(13824), // 14B default
+                    vocab_size: model_config.vocab_size.unwrap_or(152064),
+                    num_hidden_layers: model_config.num_hidden_layers.unwrap_or(48),   // 14B has 48 layers
+                    num_attention_heads: model_config.num_attention_heads.unwrap_or(40),
+                    num_key_value_heads: model_config.num_key_value_heads,
+                    rms_norm_eps: model_config.rms_norm_eps.unwrap_or(1e-6),  // Qwen2 uses 1e-6
+                    rope_theta: model_config.rope_theta.unwrap_or(1000000.0), // Qwen2 uses 1M
+                    max_position_embeddings: model_config.max_position_embeddings.unwrap_or(32768),
+                    tie_word_embeddings: model_config.tie_word_embeddings.unwrap_or(false),
+                    bos_token_id: model_config.bos_token_id,
+                    eos_token_id: eos_token_id_config,
+                    use_sliding_window: false,
+                    sliding_window: None,
+                };
+
+                let lazy_qwen2 = LazyQwen2::load(qwen2_config, lazy_vb, max_loaded_layers).map_err(|e| {
+                    infernum_core::Error::ModelLoad {
+                        message: format!("Failed to load LazyQwen2: {}", e),
+                    }
+                })?;
+
+                ModelKind::LazyQwen2(lazy_qwen2)
             }
-        })?;
+            ArchitectureType::Llama | ArchitectureType::Unknown => {
+                if arch_type == ArchitectureType::Unknown {
+                    tracing::warn!(
+                        "Unknown architecture, defaulting to LazyLlama. Model may not work correctly."
+                    );
+                } else {
+                    tracing::info!("Loading LazyLlama model (Llama architecture detected)");
+                }
 
-        let model = ModelKind::LazyLlama(lazy_llama);
+                // Build Llama config
+                let llama_config = LlamaConfig {
+                    hidden_size: model_config.hidden_size.unwrap_or(16384),        // 405B default
+                    intermediate_size: model_config.intermediate_size.unwrap_or(53248), // 405B default
+                    vocab_size: model_config.vocab_size.unwrap_or(128256),
+                    num_hidden_layers: model_config.num_hidden_layers.unwrap_or(126),   // 405B has 126 layers
+                    num_attention_heads: model_config.num_attention_heads.unwrap_or(128),
+                    num_key_value_heads: model_config.num_key_value_heads,
+                    rms_norm_eps: model_config.rms_norm_eps.unwrap_or(1e-5),
+                    rope_theta: model_config.rope_theta.unwrap_or(500000.0),
+                    max_position_embeddings: model_config.max_position_embeddings.unwrap_or(131072),
+                    tie_word_embeddings: model_config.tie_word_embeddings.unwrap_or(false),
+                    bos_token_id: model_config.bos_token_id,
+                    eos_token_id: eos_token_id_config,
+                    rope_scaling: model_config.rope_scaling.clone(),
+                };
+
+                let lazy_llama = LazyLlama::load(llama_config, lazy_vb, max_loaded_layers).map_err(|e| {
+                    infernum_core::Error::ModelLoad {
+                        message: format!("Failed to load LazyLlama: {}", e),
+                    }
+                })?;
+
+                ModelKind::LazyLlama(lazy_llama)
+            }
+        };
 
         // Load tokenizer
         let tokenizer = if let Some(tokenizer_path) = &files.tokenizer {
@@ -616,12 +663,19 @@ impl Engine {
             });
         };
 
-        let eos_token_id = model_config.eos_token_ids().first().copied().unwrap_or(128001); // Llama 3 EOS
+        // Get EOS token with architecture-appropriate default
+        let eos_token_id = model_config.eos_token_ids().first().copied().unwrap_or(
+            match arch_type {
+                ArchitectureType::Qwen2 => 151643,   // Qwen2 EOS token
+                _ => 128001,                         // Llama 3 EOS token
+            }
+        );
 
         let elapsed = start.elapsed();
         tracing::info!(
             elapsed_ms = elapsed.as_millis(),
-            "LazyLlama base loaded (layers will load on-demand during inference)"
+            architecture = arch_type.name(),
+            "Lazy model base loaded (layers will load on-demand during inference)"
         );
 
         Ok(LoadedModel {
