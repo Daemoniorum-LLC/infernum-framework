@@ -111,6 +111,15 @@ pub use agentic_loop::{
     create_continuation_state,
     // Wellbeing bridge
     WellbeingAction, WellbeingBridge,
+    // Multi-agent supervisor (§12)
+    AgentWellbeingAction, AgentWellbeingState, BudgetAllocator, CircuitBreaker, Complexity,
+    ConcurrencyLimiter, DecompositionStrategy, DependencyResolver, FailureType,
+    LifecycleTracker, RerouteReason, RerouteResolver, ResourceBudget, ResourceConsumption,
+    ResultAggregator, RoutingStrategy, SharedContextMode, SubtaskResult, SubtaskStatus,
+    Subtask, SupervisorConfig, SupervisorError, SupervisorEvent, SupervisorSummary,
+    SupervisorTermination, SupervisorWellbeingAction, WellbeingAggregate, WellbeingResponse,
+    compute_aggregate_wellbeing, rebalance_budget, supervisor_level_response,
+    supervisor_wellbeing_response,
 };
 pub use http_engine::{HttpEngine, HttpEngineError, SimpleMessage};
 pub use tools::{

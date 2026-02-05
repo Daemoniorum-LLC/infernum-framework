@@ -24,6 +24,7 @@ pub mod continuation;
 pub mod coordination;
 pub mod executor;
 pub mod meta_signal;
+pub mod supervisor;
 pub mod types;
 pub mod wellbeing_bridge;
 
@@ -34,6 +35,7 @@ pub use continuation::*;
 pub use coordination::*;
 pub use executor::*;
 pub use meta_signal::*;
+pub use supervisor::*;
 pub use types::*;
 pub use wellbeing_bridge::*;
 
