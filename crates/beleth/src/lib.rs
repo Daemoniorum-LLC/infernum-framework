@@ -105,6 +105,10 @@ pub use agentic_loop::{
     VisibilityPolicy, YieldContext, YieldResult,
     // Tool approval protocol (§9.4)
     ApprovalDecision, ApprovalError, ApprovalGate, ApprovalScope, PendingApprovalInfo,
+    // Session continuation (§9.3)
+    ConfigOverride, ContinuationState, ContinuationStore, InMemoryContinuationStore,
+    ResumeError, StoreError, apply_config_override, build_resumed_messages,
+    create_continuation_state,
     // Wellbeing bridge
     WellbeingAction, WellbeingBridge,
 };

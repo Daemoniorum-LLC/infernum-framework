@@ -517,6 +517,11 @@ pub struct LoopSummary {
     pub tool_results_summary: Vec<AgenticToolResult>,
     /// Whether the loop can be resumed.
     pub can_resume: bool,
+    /// Continuation token for resuming (present when `can_resume` is `true`).
+    ///
+    /// Pass this token to the continuation API to resume the loop with
+    /// additional context or extended resource budgets.
+    pub continuation_token: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

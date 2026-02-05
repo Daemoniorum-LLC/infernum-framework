@@ -20,6 +20,7 @@
 pub mod approval;
 pub mod autonomy;
 pub mod context;
+pub mod continuation;
 pub mod coordination;
 pub mod executor;
 pub mod meta_signal;
@@ -29,6 +30,7 @@ pub mod wellbeing_bridge;
 pub use approval::*;
 pub use autonomy::*;
 pub use context::*;
+pub use continuation::*;
 pub use coordination::*;
 pub use executor::*;
 pub use meta_signal::*;
@@ -351,11 +353,15 @@ impl AgenticLoop {
 
         let partial_answer = self.last_generation_output.clone();
 
+        let termination = self
+            .termination_reason
+            .clone()
+            .unwrap_or(TerminationReason::Natural(NaturalTermination::TaskComplete));
+
+        let can_resume = termination.is_resumable();
+
         LoopSummary {
-            termination: self
-                .termination_reason
-                .clone()
-                .unwrap_or(TerminationReason::Natural(NaturalTermination::TaskComplete)),
+            termination,
             iterations_completed: self.iteration,
             tool_calls_made: self.tool_calls_made,
             tokens_generated: self.tokens_generated,
@@ -363,8 +369,8 @@ impl AgenticLoop {
             partial_answer,
             exploration_summary: self.exploration_branches.clone(),
             tool_results_summary: self.tool_results.clone(),
-            can_resume: !self.state.is_terminal()
-                || matches!(self.state, LoopState::Stuck | LoopState::Yielded),
+            can_resume,
+            continuation_token: None, // Set by the executor when stored
         }
     }
 
