@@ -17,6 +17,7 @@
 //!                                      → Executing → Integrating → (continue → Generating)
 //! ```
 
+pub mod approval;
 pub mod autonomy;
 pub mod context;
 pub mod coordination;
@@ -25,6 +26,7 @@ pub mod meta_signal;
 pub mod types;
 pub mod wellbeing_bridge;
 
+pub use approval::*;
 pub use autonomy::*;
 pub use context::*;
 pub use coordination::*;

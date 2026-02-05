@@ -103,6 +103,8 @@ pub use agentic_loop::{
     AssistancePriority, AssistanceRequest, AssistanceResponse, CoordinationError,
     CoordinationEvent, Discovery, PendingAssistance, PendingYield, SharedContext,
     VisibilityPolicy, YieldContext, YieldResult,
+    // Tool approval protocol (§9.4)
+    ApprovalDecision, ApprovalError, ApprovalGate, ApprovalScope, PendingApprovalInfo,
     // Wellbeing bridge
     WellbeingAction, WellbeingBridge,
 };
