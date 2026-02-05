@@ -99,6 +99,10 @@ pub use agentic_loop::{
     // Multi-agent coordination
     AgentCoordinator, AgentId, AgentIdentity, AgentRole, ResourceQuota,
     ResourceQuotaManager, ToolLock, ToolLockManager,
+    // Coordination primitives (§7.2)
+    AssistancePriority, AssistanceRequest, AssistanceResponse, CoordinationError,
+    CoordinationEvent, Discovery, PendingAssistance, PendingYield, SharedContext,
+    VisibilityPolicy, YieldContext, YieldResult,
     // Wellbeing bridge
     WellbeingAction, WellbeingBridge,
 };
