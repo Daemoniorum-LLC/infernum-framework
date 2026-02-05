@@ -165,9 +165,14 @@ impl Config {
         config.cors = CorsConfig::from_env();
 
         // Model - auto-detect HCT directories and convert to holo:// URL
+        // Set INFERNUM_HCT_EAGER=1 to use fast eager loading instead of lazy layer swapping
         if let Ok(model) = std::env::var("INFERNUM_MODEL") {
             if !model.is_empty() {
-                let model_source = if !model.starts_with("holo://") && is_hct_model(&model) {
+                let use_eager_hct = std::env::var("INFERNUM_HCT_EAGER")
+                    .map(|v| v == "1" || v.to_lowercase() == "true")
+                    .unwrap_or(false);
+
+                let model_source = if !model.starts_with("holo://") && is_hct_model(&model) && !use_eager_hct {
                     // Get HoloTensor quality parameters from env, with defaults
                     let min_quality = std::env::var("INFERNUM_HOLO_MIN_QUALITY")
                         .ok()
@@ -185,9 +190,15 @@ impl Config {
                     tracing::info!(
                         original = %model,
                         holo_url = %holo_url,
-                        "Auto-detected HCT model directory, using HoloTensor loader"
+                        "Auto-detected HCT model directory, using HoloTensor lazy loader"
                     );
                     holo_url
+                } else if is_hct_model(&model) && use_eager_hct {
+                    tracing::info!(
+                        model = %model,
+                        "HCT model with eager loading (INFERNUM_HCT_EAGER=1)"
+                    );
+                    model
                 } else {
                     model
                 };

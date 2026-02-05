@@ -43,7 +43,15 @@ pub async fn serve(
     };
 
     // Auto-detect HCT models and enable HoloTensor mode
-    let holo = holo || is_hct_model(&model);
+    // INFERNUM_HCT_EAGER=1 disables lazy loading for HCT models that fit in VRAM
+    let use_eager_hct = std::env::var("INFERNUM_HCT_EAGER")
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false);
+    let holo = if use_eager_hct {
+        holo // Don't auto-enable for HCT if eager mode requested
+    } else {
+        holo || is_hct_model(&model)
+    };
 
     // Allow env vars to override quality settings
     let holo_min_quality = std::env::var("INFERNUM_HOLO_MIN_QUALITY")
