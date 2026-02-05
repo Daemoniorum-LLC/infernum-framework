@@ -1596,12 +1596,14 @@ dependencies = [
  "dashmap",
  "dirs 5.0.1",
  "futures",
+ "glob",
  "grimoire-loader",
  "infernum-core",
  "malphas",
  "mockall",
  "parking_lot",
  "proptest",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
@@ -7207,6 +7209,8 @@ dependencies = [
 [[package]]
 name = "moloch-core"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5c094d224273391c11d07202641092d980eacfc1d2b15e0901ae54c81fbf7d9"
 dependencies = [
  "arcanum-hash",
  "arcanum-signatures",
@@ -7227,6 +7231,8 @@ dependencies = [
 [[package]]
 name = "moloch-holocrypt"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46e38d0a87d97e05f030493477f6dc2f4b49ec295666102d3ace7088fcef7bae"
 dependencies = [
  "arcanum-core",
  "arcanum-hash",

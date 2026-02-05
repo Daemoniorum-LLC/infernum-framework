@@ -9,7 +9,7 @@ use crate::memory::AgentMemory;
 use crate::planner::{Planner, PlanningStrategy};
 use crate::tool::{ToolCall, ToolContext, ToolRegistry};
 
-use abaddon::{Engine, InferenceEngine};
+use abaddon::InferenceEngine;
 
 /// Source for agent persona/system prompt.
 #[derive(Debug, Clone)]
@@ -200,7 +200,9 @@ pub struct Agent {
     /// Planning strategy.
     pub planner: Arc<dyn Planner>,
     /// The inference engine.
-    engine: Option<Arc<Engine>>,
+    engine: Option<Arc<dyn InferenceEngine>>,
+    /// Working directory for file tools (set on ToolContext automatically).
+    working_dir: Option<std::path::PathBuf>,
 }
 
 impl Agent {
@@ -249,7 +251,7 @@ impl Agent {
     }
 
     /// Sets the inference engine.
-    pub fn set_engine(&mut self, engine: Arc<Engine>) {
+    pub fn set_engine(&mut self, engine: Arc<dyn InferenceEngine>) {
         self.engine = Some(engine);
     }
 
@@ -290,6 +292,9 @@ impl Agent {
         // Create tool context
         let mut ctx = ToolContext::new(&self.id);
         ctx.messages = messages.clone();
+        if let Some(ref wd) = self.working_dir {
+            ctx.set_state("working_dir", serde_json::json!(wd.to_string_lossy().as_ref()));
+        }
 
         // ReAct loop
         let mut final_answer = String::new();
@@ -331,17 +336,21 @@ impl Agent {
                 AgentAction::ToolCall(tool_call) => {
                     tracing::info!(tool = %tool_call.name, "Executing tool");
 
-                    // Execute the tool
-                    let result = self.tools.execute(&tool_call, &ctx).await?;
-
-                    // Add observation to messages
-                    let observation = if result.success {
-                        format!("Observation: {}", result.output)
-                    } else {
-                        format!(
-                            "Observation: Tool error - {}",
-                            result.error.unwrap_or_default()
-                        )
+                    // Execute the tool — catch errors as observations instead of crashing
+                    let observation = match self.tools.execute(&tool_call, &ctx).await {
+                        Ok(result) if result.success => {
+                            format!("Observation: {}", result.output)
+                        }
+                        Ok(result) => {
+                            format!(
+                                "Observation: Tool error - {}",
+                                result.error.unwrap_or_default()
+                            )
+                        }
+                        Err(e) => {
+                            tracing::warn!(tool = %tool_call.name, error = %e, "Tool execution failed");
+                            format!("Observation: Tool execution failed - {}", e)
+                        }
                     };
 
                     messages.push(Message {
@@ -385,25 +394,54 @@ impl Agent {
         Ok(final_answer)
     }
 
+    /// Returns the model family based on the persona's model ID.
+    fn model_family(&self) -> infernum_core::ModelFamily {
+        self.persona
+            .model
+            .as_ref()
+            .map(|m| infernum_core::ModelFamily::from_model_name(&m.0))
+            .unwrap_or_default()
+    }
+
     /// Builds the system prompt with tool information.
+    ///
+    /// Uses model-native format when the model supports it (per TOOL-CALLING-SPEC §5.6),
+    /// falling back to generic Action: / Action Input: format for unknown models.
     fn build_system_prompt(&self) -> String {
         let base_prompt = self.system_prompt();
-        let tools_desc = self.tools.to_prompt_description();
 
-        format!(
-            "{}\n\n## Tools\n\n{}\n\n## Instructions\n\n\
-            When you need to use a tool, respond with:\n\
-            Action: <tool_name>\n\
-            Action Input: <json_parameters>\n\n\
-            After receiving the observation, continue reasoning.\n\n\
-            When you have the final answer, respond with:\n\
-            Final Answer: <your_answer>\n\n\
-            Always think step by step. Use Thought: to express your reasoning.",
-            base_prompt, tools_desc
-        )
+        match self.model_family() {
+            infernum_core::ModelFamily::Qwen => {
+                let tools_desc = self.tools.to_qwen_native_description();
+                format!(
+                    "{}\n\n{}\n\n\
+                    When you have the final answer, respond with:\n\
+                    Final Answer: <your_answer>\n\n\
+                    Always think step by step.",
+                    base_prompt, tools_desc
+                )
+            }
+            _ => {
+                let tools_desc = self.tools.to_prompt_description();
+                format!(
+                    "{}\n\n## Tools\n\n{}\n\n## Instructions\n\n\
+                    When you need to use a tool, respond with:\n\
+                    Action: <tool_name>\n\
+                    Action Input: <json_parameters>\n\n\
+                    After receiving the observation, continue reasoning.\n\n\
+                    When you have the final answer, respond with:\n\
+                    Final Answer: <your_answer>\n\n\
+                    Always think step by step. Use Thought: to express your reasoning.",
+                    base_prompt, tools_desc
+                )
+            }
+        }
     }
 
     /// Parses the agent's response to extract actions.
+    ///
+    /// Detects both model-native `<tool_call>` tags (§5.6) and generic
+    /// `Action: / Action Input:` format for backwards compatibility.
     fn parse_action(&self, response: &str) -> AgentAction {
         let response = response.trim();
 
@@ -417,7 +455,12 @@ impl Agent {
             return AgentAction::FinalAnswer(answer.trim().to_string());
         }
 
-        // Check for action/tool call
+        // Check for native <tool_call> tags (§5.6 — Qwen, Llama, etc.)
+        if let Some(call) = self.parse_native_tool_call(response) {
+            return AgentAction::ToolCall(call);
+        }
+
+        // Check for generic Action: / Action Input: format
         let mut action_name = None;
         let mut action_input = None;
 
@@ -459,6 +502,28 @@ impl Agent {
         AgentAction::Continue
     }
 
+    /// Parse a native `<tool_call>` tag from model output.
+    ///
+    /// Returns the first tool call found within `<tool_call></tool_call>` tags.
+    /// Takes `&self` for method dispatch even though not currently needed —
+    /// future model-family-specific parsing variants may use it.
+    #[allow(clippy::unused_self)]
+    fn parse_native_tool_call(&self, response: &str) -> Option<ToolCall> {
+        let start_tag = "<tool_call>";
+        let end_tag = "</tool_call>";
+
+        let start = response.find(start_tag)?;
+        let content_start = start + start_tag.len();
+        let end = response[content_start..].find(end_tag)?;
+        let json_str = response[content_start..content_start + end].trim();
+
+        let parsed: serde_json::Value = serde_json::from_str(json_str).ok()?;
+        let name = parsed.get("name")?.as_str()?.to_string();
+        let params = parsed.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+
+        Some(ToolCall { name, params })
+    }
+
     /// Adds a message to the agent's memory.
     pub fn add_message(&mut self, message: Message) {
         self.memory.add_message(message);
@@ -494,6 +559,9 @@ impl Agent {
         );
 
         let mut ctx = ToolContext::new(&self.id);
+        if let Some(ref wd) = self.working_dir {
+            ctx.set_state("working_dir", serde_json::json!(wd.to_string_lossy().as_ref()));
+        }
         let mut step_results = Vec::new();
         let mut final_output = String::new();
 
@@ -794,7 +862,8 @@ pub struct AgentBuilder {
     persona: Option<Persona>,
     tools: Option<ToolRegistry>,
     planning_strategy: Option<PlanningStrategy>,
-    engine: Option<Arc<Engine>>,
+    engine: Option<Arc<dyn InferenceEngine>>,
+    working_dir: Option<std::path::PathBuf>,
 }
 
 impl AgentBuilder {
@@ -860,8 +929,19 @@ impl AgentBuilder {
 
     /// Sets the inference engine.
     #[must_use]
-    pub fn engine(mut self, engine: Arc<Engine>) -> Self {
+    pub fn engine(mut self, engine: Arc<dyn InferenceEngine>) -> Self {
         self.engine = Some(engine);
+        self
+    }
+
+    /// Sets the working directory for file tools.
+    ///
+    /// This directory is set on the `ToolContext` automatically during
+    /// agent execution. File tools validate that all paths stay within
+    /// this boundary.
+    #[must_use]
+    pub fn working_dir(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.working_dir = Some(dir.into());
         self
     }
 
@@ -879,6 +959,7 @@ impl AgentBuilder {
             memory: AgentMemory::new(),
             planner: Arc::new(crate::planner::DefaultPlanner::new(strategy)),
             engine: self.engine,
+            working_dir: self.working_dir,
         }
     }
 }
@@ -1742,5 +1823,126 @@ Action: search
         let prompt = persona.resolve_system_prompt().await;
         // Should contain the persona_id in the fallback message
         assert!(prompt.contains("nonexistent-test-persona"));
+    }
+
+    // =========================================================================
+    // Spec §5.6: Beleth Agent Native Format Tests
+    //
+    // These tests validate TOOL-CALLING-SPEC.md §5.6. When the agent's model
+    // is Qwen, it should use native tool calling format instead of generic
+    // Action: / Action Input: text protocol.
+    // =========================================================================
+
+    #[test]
+    fn test_build_system_prompt_qwen_uses_native_format() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(crate::tool::CalculatorTool));
+
+        let agent = Agent::builder()
+            .model("Qwen/Qwen2.5-7B-Instruct")
+            .tools(registry)
+            .build();
+
+        let prompt = agent.build_system_prompt();
+
+        // §5.6: Qwen model must use <tools> XML tags with JSON definitions
+        assert!(
+            prompt.contains("<tools>"),
+            "Qwen agent should use <tools> tag in system prompt"
+        );
+        assert!(
+            prompt.contains("</tools>"),
+            "Qwen agent should close <tools> tag"
+        );
+        assert!(
+            prompt.contains("\"type\":\"function\""),
+            "Qwen agent should use JSON function definitions"
+        );
+
+        // §5.6: Must use native preamble
+        assert!(
+            prompt.contains("You may call one or more functions"),
+            "Qwen agent should use native preamble"
+        );
+
+        // §5.6: Must NOT use generic Action: format
+        assert!(
+            !prompt.contains("Action: <tool_name>"),
+            "Qwen agent must not use generic Action: format"
+        );
+    }
+
+    #[test]
+    fn test_build_system_prompt_unknown_model_uses_generic_format() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(crate::tool::CalculatorTool));
+
+        let agent = Agent::builder()
+            .tools(registry)
+            .build();
+
+        let prompt = agent.build_system_prompt();
+
+        // Unknown model (no model set) should fall back to generic format
+        assert!(
+            prompt.contains("Action: <tool_name>"),
+            "Unknown model should use generic Action: format"
+        );
+    }
+
+    #[test]
+    fn test_parse_action_detects_native_tool_call_tags() {
+        let agent = Agent::builder()
+            .model("Qwen/Qwen2.5-7B-Instruct")
+            .build();
+
+        let response = r#"<tool_call>
+{"name": "calculator", "arguments": {"expression": "2+2"}}
+</tool_call>"#;
+
+        match agent.parse_action(response) {
+            AgentAction::ToolCall(call) => {
+                assert_eq!(call.name, "calculator");
+                assert_eq!(call.params["expression"], "2+2");
+            }
+            other => panic!("Expected ToolCall from native format, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_action_detects_native_with_text_before() {
+        let agent = Agent::builder()
+            .model("Qwen/Qwen2.5-7B-Instruct")
+            .build();
+
+        let response = r#"I'll calculate that for you.
+<tool_call>
+{"name": "calculator", "arguments": {"expression": "15*7"}}
+</tool_call>"#;
+
+        match agent.parse_action(response) {
+            AgentAction::ToolCall(call) => {
+                assert_eq!(call.name, "calculator");
+                assert_eq!(call.params["expression"], "15*7");
+            }
+            other => panic!("Expected ToolCall, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_action_generic_still_works_with_qwen_model() {
+        // §5.6: Backwards compatibility — generic format should still parse
+        let agent = Agent::builder()
+            .model("Qwen/Qwen2.5-7B-Instruct")
+            .build();
+
+        let response = "Thought: I need to calculate.\nAction: calculator\nAction Input: {\"expression\": \"3+3\"}";
+
+        match agent.parse_action(response) {
+            AgentAction::ToolCall(call) => {
+                assert_eq!(call.name, "calculator");
+            }
+            other => panic!("Expected ToolCall from generic format, got {:?}", other),
+        }
     }
 }

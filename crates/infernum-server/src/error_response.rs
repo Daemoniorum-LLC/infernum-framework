@@ -1,7 +1,6 @@
 //! Standardized error response types for the Infernum API.
 //!
-//! This module provides a comprehensive error handling system compatible
-//! with OpenAI's API error format, including:
+//! This module provides a comprehensive error handling system including:
 //!
 //! - Machine-readable error codes for programmatic handling
 //! - Human-readable messages with recovery hints
@@ -92,7 +91,7 @@ pub struct RetryInfo {
     pub after_seconds: Option<u64>,
 }
 
-/// Error type categories aligned with OpenAI API.
+/// Error type categories for the Infernum API.
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorType {

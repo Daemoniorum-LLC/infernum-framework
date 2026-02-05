@@ -176,7 +176,7 @@ async fn smoke_http_chat_completion() {
     let body = json_body(resp).await;
     eprintln!("[smoke] HTTP response: {}", serde_json::to_string_pretty(&body).unwrap_or_default());
 
-    // Verify OpenAI-compatible response structure.
+    // Verify API response structure.
     assert!(
         body["choices"].is_array(),
         "response should have choices array"

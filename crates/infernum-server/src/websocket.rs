@@ -51,7 +51,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
-use crate::openai::ChatCompletionRequest;
+use crate::api_types::ChatCompletionRequest;
 
 /// WebSocket connection state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,8 +187,8 @@ impl UsageInfo {
     }
 }
 
-impl From<crate::openai::Usage> for UsageInfo {
-    fn from(usage: crate::openai::Usage) -> Self {
+impl From<crate::api_types::Usage> for UsageInfo {
+    fn from(usage: crate::api_types::Usage) -> Self {
         Self {
             prompt_tokens: usage.prompt_tokens,
             completion_tokens: usage.completion_tokens,
@@ -806,9 +806,9 @@ mod tests {
     }
 
     #[test]
-    fn test_usage_info_from_openai() {
-        let openai_usage = crate::openai::Usage::new(200, 100);
-        let usage: UsageInfo = openai_usage.into();
+    fn test_usage_info_from_api_types() {
+        let api_usage = crate::api_types::Usage::new(200, 100);
+        let usage: UsageInfo = api_usage.into();
 
         assert_eq!(usage.prompt_tokens, 200);
         assert_eq!(usage.completion_tokens, 100);
@@ -1097,7 +1097,7 @@ mod tests {
     fn make_test_request() -> ChatCompletionRequest {
         ChatCompletionRequest {
             model: "test-model".to_string(),
-            messages: vec![crate::openai::ChatMessage {
+            messages: vec![crate::api_types::ChatMessage {
                 role: "user".to_string(),
                 content: "Hello".to_string(),
                 name: None,

@@ -432,7 +432,7 @@ pub mod cuda {
                         "holo_spectral_accumulate",
                         "holo_spectral_idct_1d_rows",
                         "holo_spectral_idct_1d_cols",
-                        "holo_spectral_idct_2d",
+                        "holo_spectral_idct_2d", // DD-8 stub: retained for future Nihil optimization
                     ],
                 )
                 .map_err(|e| GpuHoloError::KernelLoad {
@@ -457,7 +457,7 @@ pub mod cuda {
                     &[
                         "holo_rph_accumulate",
                         "holo_rph_finalize",
-                        "holo_rph_generate_projection",
+                        "holo_rph_generate_projection", // DD-8 stub: retained for future RPH batching
                     ],
                 )
                 .map_err(|e| GpuHoloError::KernelLoad {
@@ -1462,6 +1462,161 @@ pub mod cuda {
             Ok(())
         }
 
+        /// Batched LRDF accumulation: processes all SVD components in a single kernel launch.
+        ///
+        /// Packs all components' u, v, sigma into contiguous GPU arrays and calls
+        /// `holo_lrdf_outer_product_batched`. More efficient than the per-component
+        /// approach for fragments with many components.
+        pub fn accumulate_lrdf_batched(
+            &self,
+            fragment: &HoloFragment,
+            accumulator: &mut AccumulatorState,
+        ) -> Result<(), GpuHoloError> {
+            if !self.lrdf_kernel_loaded {
+                return Err(GpuHoloError::KernelNotLoaded {
+                    kernel: "holo_lrdf".to_string(),
+                });
+            }
+
+            let (output, rows, cols) = match accumulator {
+                AccumulatorState::LowRankDistributed {
+                    ref mut output,
+                    rows,
+                    cols,
+                    ..
+                } => (output, *rows, *cols),
+                _ => {
+                    return Err(GpuHoloError::InvalidInput {
+                        message: "Expected LRDF accumulator".to_string(),
+                    })
+                }
+            };
+
+            let fragment_data = &fragment.data;
+            if fragment_data.len() < 12 {
+                return Err(GpuHoloError::FragmentDecode {
+                    message: "Fragment too small for LRDF header".to_string(),
+                });
+            }
+
+            let frag_rows = u32::from_le_bytes([
+                fragment_data[0], fragment_data[1], fragment_data[2], fragment_data[3],
+            ]) as usize;
+            let frag_cols = u32::from_le_bytes([
+                fragment_data[4], fragment_data[5], fragment_data[6], fragment_data[7],
+            ]) as usize;
+            let num_comps = u32::from_le_bytes([
+                fragment_data[8], fragment_data[9], fragment_data[10], fragment_data[11],
+            ]) as usize;
+
+            if frag_rows != rows || frag_cols != cols {
+                return Err(GpuHoloError::FragmentDecode {
+                    message: format!(
+                        "Fragment dimensions {}x{} don't match accumulator {}x{}",
+                        frag_rows, frag_cols, rows, cols
+                    ),
+                });
+            }
+
+            if num_comps == 0 {
+                return Ok(());
+            }
+
+            let component_size = 4 + rows * 4 + cols * 4;
+            let expected_size = 12 + num_comps * component_size;
+            if fragment_data.len() < expected_size {
+                return Err(GpuHoloError::FragmentDecode {
+                    message: format!(
+                        "Fragment size mismatch for batched LRDF: expected {}, got {}",
+                        expected_size, fragment_data.len()
+                    ),
+                });
+            }
+
+            // Pack all components into contiguous arrays
+            let mut all_sigma = Vec::with_capacity(num_comps);
+            let mut all_u = Vec::with_capacity(num_comps * rows);
+            let mut all_v = Vec::with_capacity(num_comps * cols);
+
+            let mut offset = 12;
+            for _ in 0..num_comps {
+                let sigma = f32::from_le_bytes([
+                    fragment_data[offset], fragment_data[offset + 1],
+                    fragment_data[offset + 2], fragment_data[offset + 3],
+                ]);
+                all_sigma.push(sigma);
+                offset += 4;
+
+                for _ in 0..rows {
+                    let val = f32::from_le_bytes([
+                        fragment_data[offset], fragment_data[offset + 1],
+                        fragment_data[offset + 2], fragment_data[offset + 3],
+                    ]);
+                    all_u.push(val);
+                    offset += 4;
+                }
+
+                for _ in 0..cols {
+                    let val = f32::from_le_bytes([
+                        fragment_data[offset], fragment_data[offset + 1],
+                        fragment_data[offset + 2], fragment_data[offset + 3],
+                    ]);
+                    all_v.push(val);
+                    offset += 4;
+                }
+            }
+
+            // Upload packed arrays to GPU
+            let d_sigma = self.device.htod_copy(all_sigma)
+                .map_err(|e| GpuHoloError::MemoryAlloc { message: e.to_string() })?;
+            let d_u = self.device.htod_copy(all_u)
+                .map_err(|e| GpuHoloError::MemoryAlloc { message: e.to_string() })?;
+            let d_v = self.device.htod_copy(all_v)
+                .map_err(|e| GpuHoloError::MemoryAlloc { message: e.to_string() })?;
+
+            // Single kernel launch for all components
+            let func = self
+                .device
+                .get_func("holo_lrdf", "holo_lrdf_outer_product_batched")
+                .ok_or_else(|| GpuHoloError::KernelNotLoaded {
+                    kernel: "holo_lrdf_outer_product_batched".to_string(),
+                })?;
+
+            let block_size = 16u32;
+            let grid_x = ((cols as u32) + block_size - 1) / block_size;
+            let grid_y = ((rows as u32) + block_size - 1) / block_size;
+
+            let cfg = LaunchConfig {
+                grid_dim: (grid_x.max(1), grid_y.max(1), 1),
+                block_dim: (block_size, block_size, 1),
+                shared_mem_bytes: 0,
+            };
+
+            unsafe {
+                func.launch(
+                    cfg,
+                    (
+                        &d_u,
+                        &d_v,
+                        &d_sigma,
+                        &mut *output,
+                        num_comps as u32,
+                        rows as u32,
+                        cols as u32,
+                    ),
+                )
+            }
+            .map_err(|e| GpuHoloError::KernelExec {
+                message: e.to_string(),
+            })?;
+
+            if let AccumulatorState::LowRankDistributed { num_components, .. } = accumulator {
+                *num_components += num_comps as u32;
+            }
+
+            Ok(())
+        }
+
         /// Finalizes LRDF reconstruction (no additional processing needed).
         pub fn finalize_lrdf(
             &self,
@@ -1713,7 +1868,9 @@ EXIT:
     ret;
 }
 
-// 1D IDCT on rows
+// 1D IDCT (Type-III DCT) on rows
+// x[n] = sqrt(2/N) * [ X[0]/sqrt(2) + sum_{k=1}^{N-1} X[k] * cos(pi*(2n+1)*k / (2N)) ]
+// One thread per row, inner loop over width columns.
 // Args: input, output, width, height
 .visible .entry holo_spectral_idct_1d_rows(
     .param .u64 input_ptr,
@@ -1722,12 +1879,12 @@ EXIT:
     .param .u32 height
 )
 {
-    .reg .u32 %row, %col, %w, %h, %tmp;
-    .reg .u64 %in_addr, %out_addr;
-    .reg .f32 %sum, %val, %cos_val, %scale, %pi, %n_f;
+    .reg .u32 %row, %col, %k, %w, %h, %tmp, %n2p1;
+    .reg .u64 %in_base, %out_addr, %coeff_addr;
+    .reg .f32 %sum, %val, %cos_val, %scale, %pi_2n, %angle, %w_f, %k_f, %n2p1_f;
     .reg .pred %p;
 
-    // Get row index
+    // Get row index = blockIdx.x * blockDim.x + threadIdx.x
     mov.u32 %row, %ctaid.x;
     mov.u32 %tmp, %ntid.x;
     mul.lo.u32 %row, %row, %tmp;
@@ -1736,39 +1893,87 @@ EXIT:
 
     ld.param.u32 %h, [height];
     setp.ge.u32 %p, %row, %h;
-    @%p bra EXIT;
+    @%p bra ROW_EXIT;
 
     ld.param.u32 %w, [width];
-    ld.param.u64 %in_addr, [input_ptr];
+    ld.param.u64 %in_base, [input_ptr];
     ld.param.u64 %out_addr, [output_ptr];
 
-    // Compute row offset
-    mul.lo.u32 %col, %row, %w;
-    mad.wide.u32 %in_addr, %col, 4, %in_addr;
-    mad.wide.u32 %out_addr, %col, 4, %out_addr;
+    // Compute row base offsets: in_base += row * width * 4, out_addr += row * width * 4
+    mul.lo.u32 %tmp, %row, %w;
+    mad.wide.u32 %in_base, %tmp, 4, %in_base;
+    mad.wide.u32 %out_addr, %tmp, 4, %out_addr;
 
-    // IDCT for each output position
+    // Pre-compute scale = sqrt(2.0 / width)
+    cvt.rn.f32.u32 %w_f, %w;
+    mov.f32 %scale, 2.0;
+    div.full.f32 %scale, %scale, %w_f;
+    sqrt.approx.f32 %scale, %scale;
+
+    // Pre-compute pi_2n = PI / (2 * width)
+    mov.f32 %pi_2n, 3.14159265358979;
+    mov.f32 %angle, 2.0;
+    mul.f32 %angle, %angle, %w_f;
+    div.full.f32 %pi_2n, %pi_2n, %angle;
+
+    // For each output column n = 0..width
     mov.u32 %col, 0;
-LOOP:
+ROW_COL_LOOP:
     setp.ge.u32 %p, %col, %w;
-    @%p bra END_LOOP;
+    @%p bra ROW_COL_END;
 
-    // Simple IDCT sum (placeholder - real impl would use shared mem)
-    mov.f32 %sum, 0.0;
+    // DC term: sum = X[0] * scale * (1/sqrt(2))
+    ld.global.f32 %val, [%in_base];
+    mul.f32 %sum, %val, %scale;
+    mul.f32 %sum, %sum, 0.7071067811865476;
 
-    // Store result
+    // Pre-compute (2*col + 1) as float for AC loop
+    mul.lo.u32 %n2p1, %col, 2;
+    add.u32 %n2p1, %n2p1, 1;
+    cvt.rn.f32.u32 %n2p1_f, %n2p1;
+
+    // AC terms: sum += X[k] * scale * cos((2n+1) * k * pi_2n)
+    mov.u32 %k, 1;
+ROW_AC_LOOP:
+    setp.ge.u32 %p, %k, %w;
+    @%p bra ROW_AC_END;
+
+    // Load X[k] from in_base + k * 4
+    mad.wide.u32 %coeff_addr, %k, 4, %in_base;
+    ld.global.f32 %val, [%coeff_addr];
+
+    // angle = (2n+1) * k * pi_2n
+    cvt.rn.f32.u32 %k_f, %k;
+    mul.f32 %angle, %n2p1_f, %k_f;
+    mul.f32 %angle, %angle, %pi_2n;
+
+    cos.approx.f32 %cos_val, %angle;
+
+    // sum += X[k] * scale * cos(angle)
+    mul.f32 %val, %val, %scale;
+    fma.rn.f32 %sum, %val, %cos_val, %sum;
+
+    add.u32 %k, %k, 1;
+    bra ROW_AC_LOOP;
+
+ROW_AC_END:
+    // Store result at output[row * width + col]
     st.global.f32 [%out_addr], %sum;
 
     add.u64 %out_addr, %out_addr, 4;
     add.u32 %col, %col, 1;
-    bra LOOP;
+    bra ROW_COL_LOOP;
 
-END_LOOP:
-EXIT:
+ROW_COL_END:
+ROW_EXIT:
     ret;
 }
 
-// 1D IDCT on columns (placeholder - not yet implemented)
+// 1D IDCT (Type-III DCT) on columns
+// x[n] = sqrt(2/H) * [ X[0]/sqrt(2) + sum_{k=1}^{H-1} X[k] * cos(pi*(2n+1)*k / (2H)) ]
+// One thread per column, inner loop over height rows.
+// Column access pattern: input[k * width + col], output[n * width + col]
+// Args: input, output, width, height
 .visible .entry holo_spectral_idct_1d_cols(
     .param .u64 input_ptr,
     .param .u64 output_ptr,
@@ -1776,12 +1981,101 @@ EXIT:
     .param .u32 height
 )
 {
-    .reg .u32 %tmp;
-    mov.u32 %tmp, 0;
+    .reg .u32 %col, %row, %k, %w, %h, %tmp, %n2p1;
+    .reg .u64 %in_base, %out_base, %coeff_addr, %out_addr;
+    .reg .f32 %sum, %val, %cos_val, %scale, %pi_2n, %angle, %h_f, %k_f, %n2p1_f;
+    .reg .pred %p;
+
+    // Get column index = blockIdx.x * blockDim.x + threadIdx.x
+    mov.u32 %col, %ctaid.x;
+    mov.u32 %tmp, %ntid.x;
+    mul.lo.u32 %col, %col, %tmp;
+    mov.u32 %tmp, %tid.x;
+    add.u32 %col, %col, %tmp;
+
+    ld.param.u32 %w, [width];
+    setp.ge.u32 %p, %col, %w;
+    @%p bra COL_EXIT;
+
+    ld.param.u32 %h, [height];
+    ld.param.u64 %in_base, [input_ptr];
+    ld.param.u64 %out_base, [output_ptr];
+
+    // Pre-compute scale = sqrt(2.0 / height)
+    cvt.rn.f32.u32 %h_f, %h;
+    mov.f32 %scale, 2.0;
+    div.full.f32 %scale, %scale, %h_f;
+    sqrt.approx.f32 %scale, %scale;
+
+    // Pre-compute pi_2n = PI / (2 * height)
+    mov.f32 %pi_2n, 3.14159265358979;
+    mov.f32 %angle, 2.0;
+    mul.f32 %angle, %angle, %h_f;
+    div.full.f32 %pi_2n, %pi_2n, %angle;
+
+    // For each output row n = 0..height
+    mov.u32 %row, 0;
+COL_ROW_LOOP:
+    setp.ge.u32 %p, %row, %h;
+    @%p bra COL_ROW_END;
+
+    // DC term: sum = input[0 * width + col] * scale * (1/sqrt(2))
+    mad.wide.u32 %coeff_addr, %col, 4, %in_base;
+    ld.global.f32 %val, [%coeff_addr];
+    mul.f32 %sum, %val, %scale;
+    mul.f32 %sum, %sum, 0.7071067811865476;
+
+    // Pre-compute (2*row + 1) as float for AC loop
+    mul.lo.u32 %n2p1, %row, 2;
+    add.u32 %n2p1, %n2p1, 1;
+    cvt.rn.f32.u32 %n2p1_f, %n2p1;
+
+    // AC terms: sum += input[k*width+col] * scale * cos((2n+1) * k * pi_2n)
+    mov.u32 %k, 1;
+COL_AC_LOOP:
+    setp.ge.u32 %p, %k, %h;
+    @%p bra COL_AC_END;
+
+    // Load coefficient: input[k * width + col]
+    mul.lo.u32 %tmp, %k, %w;
+    add.u32 %tmp, %tmp, %col;
+    mad.wide.u32 %coeff_addr, %tmp, 4, %in_base;
+    ld.global.f32 %val, [%coeff_addr];
+
+    // angle = (2*row+1) * k * pi_2n
+    cvt.rn.f32.u32 %k_f, %k;
+    mul.f32 %angle, %n2p1_f, %k_f;
+    mul.f32 %angle, %angle, %pi_2n;
+
+    cos.approx.f32 %cos_val, %angle;
+
+    // sum += input[k*w+col] * scale * cos(angle)
+    mul.f32 %val, %val, %scale;
+    fma.rn.f32 %sum, %val, %cos_val, %sum;
+
+    add.u32 %k, %k, 1;
+    bra COL_AC_LOOP;
+
+COL_AC_END:
+    // Store result at output[row * width + col]
+    mul.lo.u32 %tmp, %row, %w;
+    add.u32 %tmp, %tmp, %col;
+    mad.wide.u32 %out_addr, %tmp, 4, %out_base;
+    st.global.f32 [%out_addr], %sum;
+
+    add.u32 %row, %row, 1;
+    bra COL_ROW_LOOP;
+
+COL_ROW_END:
+COL_EXIT:
     ret;
 }
 
-// Combined 2D IDCT (placeholder - not yet implemented)
+// DD-8 STUB: Fused 2D IDCT kernel.
+// Currently unused - separable row + col IDCT handles 2D reconstruction.
+// Potential future optimization: a single-pass 2D IDCT could reduce kernel
+// launch overhead and improve cache locality for large tensors. Profile
+// separable path under Nihil before implementing.
 .visible .entry holo_spectral_idct_2d(
     .param .u64 input_ptr,
     .param .u64 output_ptr,
@@ -1802,7 +2096,9 @@ EXIT:
 .address_size 64
 
 // Accumulate projection into output buffer
-// Uses on-the-fly projection matrix generation
+// Uses on-the-fly random weight generation via XORShift64 PRNG.
+// Each thread handles one output element, iterating over projection dims.
+// Reference: haagenti-hct SeededRng (xorshift64: <<13, >>7, <<17)
 .visible .entry holo_rph_accumulate(
     .param .u64 projection_ptr,
     .param .u64 output_ptr,
@@ -1812,11 +2108,11 @@ EXIT:
 )
 {
     .reg .u32 %gid, %out_idx, %proj_d, %out_d, %tmp, %i;
-    .reg .u64 %proj_addr, %out_addr, %rng_state;
-    .reg .f32 %sum, %proj_val, %rand_val, %out_val;
+    .reg .u64 %proj_base, %proj_addr, %out_addr, %rng_state, %tmp64;
+    .reg .f32 %sum, %proj_val, %rand_val, %out_val, %scale;
     .reg .pred %p;
 
-    // Get output index
+    // Get output index = blockIdx.x * blockDim.x + threadIdx.x
     mov.u32 %gid, %ctaid.x;
     mov.u32 %tmp, %ntid.x;
     mul.lo.u32 %gid, %gid, %tmp;
@@ -1825,52 +2121,79 @@ EXIT:
 
     ld.param.u32 %out_d, [output_dim];
     setp.ge.u32 %p, %out_idx, %out_d;
-    @%p bra EXIT;
+    @%p bra RPH_EXIT;
 
-    ld.param.u64 %proj_addr, [projection_ptr];
+    // Save projection base pointer (Bug fix: don't modify in loop)
+    ld.param.u64 %proj_base, [projection_ptr];
     ld.param.u32 %proj_d, [proj_dim];
-    ld.param.u64 %rng_state, [seed];
 
-    // Compute contribution from this projection
+    // Per-thread PRNG initialization:
+    // state = seed + 1 (matching SeededRng::new wrapping_add(1))
+    // then XOR with out_idx spread across both halves for decorrelation
+    ld.param.u64 %rng_state, [seed];
+    add.u64 %rng_state, %rng_state, 1;
+    cvt.u64.u32 %tmp64, %out_idx;
+    shl.b64 %rng_state, %rng_state, 1;
+    xor.b64 %rng_state, %rng_state, %tmp64;
+    shl.b64 %tmp64, %tmp64, 32;
+    xor.b64 %rng_state, %rng_state, %tmp64;
+    // Ensure non-zero (XORShift64 produces 0 forever from state=0)
+    setp.ne.u64 %p, %rng_state, 0;
+    @%p bra RPH_SEED_OK;
+    mov.u64 %rng_state, 1;
+RPH_SEED_OK:
+
+    // scale = 1.0 / sqrt(proj_dim)
+    cvt.rn.f32.u32 %scale, %proj_d;
+    sqrt.approx.f32 %scale, %scale;
+    rcp.approx.f32 %scale, %scale;
+
     mov.f32 %sum, 0.0;
 
-    // Sum projection * random_weight for each projection dimension
+    // Sum projection[i] * random_weight for each projection dimension
     mov.u32 %i, 0;
-PROJ_LOOP:
+RPH_PROJ_LOOP:
     setp.ge.u32 %p, %i, %proj_d;
-    @%p bra END_PROJ;
+    @%p bra RPH_END_PROJ;
 
-    // Load projection value
-    mad.wide.u32 %proj_addr, %i, 4, %proj_addr;
+    // Load projection value: proj_base + i * 4
+    mad.wide.u32 %proj_addr, %i, 4, %proj_base;
     ld.global.f32 %proj_val, [%proj_addr];
 
-    // Generate random weight (simplified xorshift)
-    shr.u64 %rng_state, %rng_state, 12;
-    xor.b64 %rng_state, %rng_state, %rng_state;
-    shl.b64 %rng_state, %rng_state, 25;
-    xor.b64 %rng_state, %rng_state, %rng_state;
+    // XORShift64: x ^= x << 13; x ^= x >> 7; x ^= x << 17
+    shl.b64 %tmp64, %rng_state, 13;
+    xor.b64 %rng_state, %rng_state, %tmp64;
+    shr.u64 %tmp64, %rng_state, 7;
+    xor.b64 %rng_state, %rng_state, %tmp64;
+    shl.b64 %tmp64, %rng_state, 17;
+    xor.b64 %rng_state, %rng_state, %tmp64;
 
-    // Convert to float [-1, 1]
-    cvt.rn.f32.u64 %rand_val, %rng_state;
-    mul.f32 %rand_val, %rand_val, 0.0000000001;
+    // Convert to float [-1, 1):
+    // Take bits 40-63 (24 bits) -> [0, 2^24), divide by 2^23 -> [0, 2), sub 1 -> [-1, 1)
+    shr.u64 %tmp64, %rng_state, 40;
+    cvt.rn.f32.u64 %rand_val, %tmp64;
+    div.full.f32 %rand_val, %rand_val, 8388608.0;
+    sub.f32 %rand_val, %rand_val, 1.0;
 
-    // Accumulate
+    // Apply projection scale
+    mul.f32 %rand_val, %rand_val, %scale;
+
+    // Accumulate: sum += proj_val * rand_val
     fma.rn.f32 %sum, %proj_val, %rand_val, %sum;
 
     add.u32 %i, %i, 1;
-    bra PROJ_LOOP;
+    bra RPH_PROJ_LOOP;
 
-END_PROJ:
-    // Add to output (atomic for concurrent accumulation)
+RPH_END_PROJ:
+    // Store to output: output[out_idx] += sum
     ld.param.u64 %out_addr, [output_ptr];
     mad.wide.u32 %out_addr, %out_idx, 4, %out_addr;
 
-    // Load current, add, store (should be atomic)
     ld.global.f32 %out_val, [%out_addr];
     add.f32 %out_val, %out_val, %sum;
     st.global.f32 [%out_addr], %out_val;
 
-EXIT:
+RPH_EXIT:
     ret;
 }
 
@@ -1913,7 +2236,13 @@ EXIT:
     ret;
 }
 
-// Generate projection matrix element (deterministic)
+// DD-8 STUB: On-GPU projection matrix generation.
+// Currently unused - projections arrive pre-computed in fragment data and
+// random weights are generated on-the-fly in holo_rph_accumulate.
+// Future use: pre-generating the full projection matrix on-GPU could enable
+// batched RPH accumulation and avoid redundant PRNG work across fragments
+// sharing the same seed. Relevant once Nihil replaces Candle and RPH
+// reconstruction becomes latency-critical.
 .visible .entry holo_rph_generate_projection(
     .param .u64 output_ptr,
     .param .u32 row,
@@ -1999,7 +2328,9 @@ EXIT:
     ret;
 }
 
-// Batched outer products for multiple components
+// Batched outer products: output += sum_i sigma[i] * u[i] * v[i]^T
+// Memory layout: u = [u0(rows), u1(rows), ...], v = [v0(cols), v1(cols), ...], sigma = [s0, s1, ...]
+// Each thread (row, col) accumulates all components in registers, single write to output.
 .visible .entry holo_lrdf_outer_product_batched(
     .param .u64 u_ptr,
     .param .u64 v_ptr,
@@ -2010,6 +2341,82 @@ EXIT:
     .param .u32 cols
 )
 {
+    .reg .u32 %row, %col, %r, %c, %nc, %idx, %tmp, %i, %off;
+    .reg .u64 %u_base, %v_base, %sig_base, %out_addr, %addr;
+    .reg .f32 %u_val, %v_val, %sig_val, %prod, %out_val, %sum;
+    .reg .pred %p;
+
+    // Get 2D thread position: col = blockIdx.x * blockDim.x + threadIdx.x
+    mov.u32 %col, %ctaid.x;
+    mov.u32 %tmp, %ntid.x;
+    mul.lo.u32 %col, %col, %tmp;
+    mov.u32 %tmp, %tid.x;
+    add.u32 %col, %col, %tmp;
+
+    // row = blockIdx.y * blockDim.y + threadIdx.y
+    mov.u32 %row, %ctaid.y;
+    mov.u32 %tmp, %ntid.y;
+    mul.lo.u32 %row, %row, %tmp;
+    mov.u32 %tmp, %tid.y;
+    add.u32 %row, %row, %tmp;
+
+    // Bounds check
+    ld.param.u32 %r, [rows];
+    ld.param.u32 %c, [cols];
+    setp.ge.u32 %p, %row, %r;
+    @%p bra BATCH_EXIT;
+    setp.ge.u32 %p, %col, %c;
+    @%p bra BATCH_EXIT;
+
+    // Load base pointers and component count
+    ld.param.u64 %u_base, [u_ptr];
+    ld.param.u64 %v_base, [v_ptr];
+    ld.param.u64 %sig_base, [sigma_ptr];
+    ld.param.u32 %nc, [num_components];
+
+    // Accumulate all components in registers
+    mov.f32 %sum, 0.0;
+    mov.u32 %i, 0;
+
+BATCH_COMP_LOOP:
+    setp.ge.u32 %p, %i, %nc;
+    @%p bra BATCH_COMP_END;
+
+    // sigma[i]: sig_base + i * 4
+    mad.wide.u32 %addr, %i, 4, %sig_base;
+    ld.global.f32 %sig_val, [%addr];
+
+    // u[i * rows + row]: u_base + (i * rows + row) * 4
+    mul.lo.u32 %off, %i, %r;
+    add.u32 %off, %off, %row;
+    mad.wide.u32 %addr, %off, 4, %u_base;
+    ld.global.f32 %u_val, [%addr];
+
+    // v[i * cols + col]: v_base + (i * cols + col) * 4
+    mul.lo.u32 %off, %i, %c;
+    add.u32 %off, %off, %col;
+    mad.wide.u32 %addr, %off, 4, %v_base;
+    ld.global.f32 %v_val, [%addr];
+
+    // sum += sigma[i] * u[i][row] * v[i][col]
+    mul.f32 %prod, %u_val, %v_val;
+    fma.rn.f32 %sum, %sig_val, %prod, %sum;
+
+    add.u32 %i, %i, 1;
+    bra BATCH_COMP_LOOP;
+
+BATCH_COMP_END:
+    // output[row * cols + col] += sum
+    ld.param.u64 %out_addr, [output_ptr];
+    mul.lo.u32 %idx, %row, %c;
+    add.u32 %idx, %idx, %col;
+    mad.wide.u32 %out_addr, %idx, 4, %out_addr;
+
+    ld.global.f32 %out_val, [%out_addr];
+    add.f32 %out_val, %out_val, %sum;
+    st.global.f32 [%out_addr], %out_val;
+
+BATCH_EXIT:
     ret;
 }
 "#;
@@ -4805,6 +5212,8 @@ pub mod cuda {
 #[cfg(test)]
 mod tests {
     use super::cuda::*;
+    #[cfg(feature = "cuda")]
+    use cudarc::driver::LaunchAsync;
 
     /// Stub test: non-CUDA build returns CudaNotEnabled.
     #[test]
@@ -5130,6 +5539,695 @@ mod tests {
                 "reconstruct_lrdf all-ones mismatch at {}: got={}", i, val
             );
         }
+    }
+
+    // ==================== Phase 5: §L4 LRDF Batched Outer Product ====================
+
+    /// Helper to build a multi-component LRDF fragment.
+    /// Format: [rows: u32][cols: u32][num_components: u32]([sigma: f32][u: f32*rows][v: f32*cols])*
+    #[cfg(feature = "cuda")]
+    fn make_lrdf_multi_fragment(
+        index: u16,
+        rows: usize,
+        cols: usize,
+        components: &[(f32, Vec<f32>, Vec<f32>)], // [(sigma, u, v), ...]
+    ) -> haagenti::holotensor::HoloFragment {
+        let mut data = Vec::new();
+        data.extend_from_slice(&(rows as u32).to_le_bytes());
+        data.extend_from_slice(&(cols as u32).to_le_bytes());
+        data.extend_from_slice(&(components.len() as u32).to_le_bytes());
+        for (sigma, u, v) in components {
+            assert_eq!(u.len(), rows);
+            assert_eq!(v.len(), cols);
+            data.extend_from_slice(&sigma.to_le_bytes());
+            for &val in u {
+                data.extend_from_slice(&val.to_le_bytes());
+            }
+            for &val in v {
+                data.extend_from_slice(&val.to_le_bytes());
+            }
+        }
+        haagenti::holotensor::HoloFragment::new(index, data)
+    }
+
+    /// §L4.1: Single-component batched matches unbatched single outer product.
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn test_lrdf_batched_single_matches_unbatched() {
+        let mut ctx = match GpuHoloContext::new(0) {
+            Ok(ctx) => ctx,
+            Err(_) => {
+                eprintln!("Skipping: no CUDA device available");
+                return;
+            }
+        };
+        ctx.load_lrdf_kernel().expect("LRDF kernel should load");
+
+        let rows = 4;
+        let cols = 3;
+        let sigma = 2.5f32;
+        let u = vec![1.0, 0.5, 0.25, 0.125];
+        let v = vec![0.3, 0.6, 0.9];
+
+        // Unbatched: single outer product
+        let frag_single = make_lrdf_fragment(0, rows, cols, sigma, &u, &v);
+        let header = haagenti::holotensor::HoloTensorHeader::new(
+            haagenti::holotensor::HolographicEncoding::LowRankDistributed,
+            haagenti::DType::F32,
+            vec![rows as u64, cols as u64],
+            1,
+        );
+        let mut acc_single = ctx.create_accumulator(&header).unwrap();
+        ctx.accumulate_lrdf(&frag_single, &mut acc_single).unwrap();
+        let result_single = ctx.finalize_lrdf(&acc_single).unwrap();
+        let host_single = ctx.copy_to_host(&result_single).unwrap();
+
+        // Batched: same data through batched path
+        let frag_batched = make_lrdf_multi_fragment(0, rows, cols, &[(sigma, u, v)]);
+        let mut acc_batched = ctx.create_accumulator(&header).unwrap();
+        ctx.accumulate_lrdf_batched(&frag_batched, &mut acc_batched).unwrap();
+        let result_batched = ctx.finalize_lrdf(&acc_batched).unwrap();
+        let host_batched = ctx.copy_to_host(&result_batched).unwrap();
+
+        assert_eq!(host_single.len(), host_batched.len());
+        for (i, (&s, &b)) in host_single.iter().zip(host_batched.iter()).enumerate() {
+            assert!(
+                (s - b).abs() < 1e-5,
+                "Batched vs unbatched mismatch at {}: single={}, batched={}", i, s, b
+            );
+        }
+    }
+
+    /// §L4.2: Multi-component batched matches sequential single calls.
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn test_lrdf_batched_multi_matches_sequential() {
+        let mut ctx = match GpuHoloContext::new(0) {
+            Ok(ctx) => ctx,
+            Err(_) => {
+                eprintln!("Skipping: no CUDA device available");
+                return;
+            }
+        };
+        ctx.load_lrdf_kernel().expect("LRDF kernel should load");
+
+        let rows = 4;
+        let cols = 3;
+        let components = vec![
+            (2.0f32, vec![1.0, 0.0, 0.0, 0.0], vec![1.0, 0.0, 0.0]),
+            (1.5f32, vec![0.0, 1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]),
+            (0.8f32, vec![0.0, 0.0, 1.0, 0.0], vec![0.0, 0.0, 1.0]),
+        ];
+
+        let header = haagenti::holotensor::HoloTensorHeader::new(
+            haagenti::holotensor::HolographicEncoding::LowRankDistributed,
+            haagenti::DType::F32,
+            vec![rows as u64, cols as u64],
+            1,
+        );
+
+        // Sequential: 3 separate single-component fragments
+        let mut acc_seq = ctx.create_accumulator(&header).unwrap();
+        for (i, (sigma, ref u, ref v)) in components.iter().enumerate() {
+            let frag = make_lrdf_fragment(i as u16, rows, cols, *sigma, u, v);
+            ctx.accumulate_lrdf(&frag, &mut acc_seq).unwrap();
+        }
+        let result_seq = ctx.finalize_lrdf(&acc_seq).unwrap();
+        let host_seq = ctx.copy_to_host(&result_seq).unwrap();
+
+        // Batched: all 3 components in single fragment
+        let frag_batched = make_lrdf_multi_fragment(0, rows, cols, &components);
+        let mut acc_batched = ctx.create_accumulator(&header).unwrap();
+        ctx.accumulate_lrdf_batched(&frag_batched, &mut acc_batched).unwrap();
+        let result_batched = ctx.finalize_lrdf(&acc_batched).unwrap();
+        let host_batched = ctx.copy_to_host(&result_batched).unwrap();
+
+        assert_eq!(host_seq.len(), host_batched.len());
+        for (i, (&s, &b)) in host_seq.iter().zip(host_batched.iter()).enumerate() {
+            assert!(
+                (s - b).abs() < 1e-5,
+                "Batched vs sequential mismatch at {}: seq={}, batched={}", i, s, b
+            );
+        }
+
+        // Verify expected values: diagonal-like pattern
+        // output[0][0] = 2.0, output[1][1] = 1.5, output[2][2] = 0.8, rest ~0
+        assert!((host_batched[0] - 2.0).abs() < 1e-5, "Expected 2.0 at [0,0]");
+        assert!((host_batched[4] - 1.5).abs() < 1e-5, "Expected 1.5 at [1,1]");
+        assert!((host_batched[8] - 0.8).abs() < 1e-5, "Expected 0.8 at [2,2]");
+    }
+
+    // ==================== Phase 4: §6.1 Spectral IDCT Reconstruction ====================
+    // GPU-CODEC-PIPELINE-TDD.md §6.1: Spectral accumulation and IDCT reconstruction.
+
+    /// Helper to build a legacy spectral fragment.
+    /// Format: [num_coeffs: u32][indices: u32...][values: f32...]
+    #[cfg(feature = "cuda")]
+    fn make_spectral_fragment(
+        frag_index: u16,
+        coeffs: &[(u32, f32)],
+    ) -> haagenti::holotensor::HoloFragment {
+        let num_coeffs = coeffs.len() as u32;
+        let mut data = Vec::new();
+        data.extend_from_slice(&num_coeffs.to_le_bytes());
+        for &(idx, _) in coeffs {
+            data.extend_from_slice(&idx.to_le_bytes());
+        }
+        for &(_, val) in coeffs {
+            data.extend_from_slice(&val.to_le_bytes());
+        }
+        haagenti::holotensor::HoloFragment::new(frag_index, data)
+    }
+
+    /// §6.1 + §S1.1: DC-only spectral coefficient accumulates correctly and
+    /// reconstructs to a constant output.
+    ///
+    /// A single DC coefficient (index 0) should land at position 0 in the
+    /// coefficient buffer with all other positions zero. Full reconstruction
+    /// (accumulate → IDCT rows → IDCT cols) should produce a uniform constant
+    /// equal to DC / sqrt(width) (for height=1, col IDCT is identity).
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn test_spectral_dc_only_produces_constant_output() {
+        let mut ctx = match GpuHoloContext::new(0) {
+            Ok(ctx) => ctx,
+            Err(_) => {
+                eprintln!("Skipping: no CUDA device available");
+                return;
+            }
+        };
+        ctx.load_spectral_kernel().expect("spectral kernel should load");
+
+        let width = 8;
+        let height = 1;
+        let dc_value = 4.0f32;
+
+        let fragment = make_spectral_fragment(0, &[(0, dc_value)]);
+
+        let header = haagenti::holotensor::HoloTensorHeader::new(
+            haagenti::holotensor::HolographicEncoding::Spectral,
+            haagenti::DType::F32,
+            vec![height as u64, width as u64],
+            1,
+        );
+
+        // Accumulate and verify coefficients directly
+        let mut accumulator = ctx.create_accumulator(&header).unwrap();
+        ctx.accumulate_spectral(&fragment, &mut accumulator).unwrap();
+
+        if let AccumulatorState::Spectral { ref coefficients, .. } = accumulator {
+            let host_coeffs = ctx.copy_to_host(coefficients).unwrap();
+            assert_eq!(host_coeffs.len(), width * height);
+
+            // DC coefficient at index 0 should equal the input value
+            assert!(
+                (host_coeffs[0] - dc_value).abs() < 1e-6,
+                "DC coefficient: expected {}, got {}",
+                dc_value,
+                host_coeffs[0]
+            );
+
+            // All other positions should be zero
+            for (i, &val) in host_coeffs[1..].iter().enumerate() {
+                assert!(
+                    val.abs() < 1e-6,
+                    "Non-DC position {} should be 0, got {}",
+                    i + 1,
+                    val
+                );
+            }
+        } else {
+            panic!("Expected Spectral accumulator variant");
+        }
+
+        // Full reconstruction: DC-only IDCT should produce constant output.
+        // For 1D (height=1): x[n] = DC * sqrt(2/N) * 1/sqrt(2) = DC / sqrt(N)
+        let result = ctx.finalize_spectral(&accumulator).unwrap();
+        let output = ctx.copy_to_host(&result).unwrap();
+        let expected = dc_value / (width as f32).sqrt();
+        for (i, &val) in output.iter().enumerate() {
+            assert!(
+                (val - expected).abs() < 1e-3,
+                "DC reconstruction at {}: expected {:.6}, got {:.6}",
+                i, expected, val
+            );
+        }
+    }
+
+    /// §6.1: Sparse spectral coefficients accumulate at correct indices.
+    ///
+    /// Verifies the accumulation kernel places coefficient values at the
+    /// correct positions in the frequency buffer, with zeros elsewhere.
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn test_spectral_sparse_accumulation_correct_indices() {
+        let mut ctx = match GpuHoloContext::new(0) {
+            Ok(ctx) => ctx,
+            Err(_) => {
+                eprintln!("Skipping: no CUDA device available");
+                return;
+            }
+        };
+        ctx.load_spectral_kernel().expect("spectral kernel should load");
+
+        let width = 4;
+        let height = 4;
+        let total_size = width * height;
+
+        let header = haagenti::holotensor::HoloTensorHeader::new(
+            haagenti::holotensor::HolographicEncoding::Spectral,
+            haagenti::DType::F32,
+            vec![height as u64, width as u64],
+            1,
+        );
+
+        // Create accumulator and accumulate a sparse fragment
+        let mut accumulator = ctx.create_accumulator(&header).unwrap();
+        let coeffs = [(0u32, 1.0f32), (3, 2.0), (7, 3.0), (15, 4.0)];
+        let fragment = make_spectral_fragment(0, &coeffs);
+        ctx.accumulate_spectral(&fragment, &mut accumulator).unwrap();
+
+        // Read back coefficient buffer from accumulator
+        if let AccumulatorState::Spectral { ref coefficients, .. } = accumulator {
+            let host_coeffs = ctx.copy_to_host(coefficients).unwrap();
+            assert_eq!(host_coeffs.len(), total_size);
+
+            // Indexed positions should have the accumulated values
+            assert!(
+                (host_coeffs[0] - 1.0).abs() < 1e-6,
+                "Index 0: expected 1.0, got {}", host_coeffs[0]
+            );
+            assert!(
+                (host_coeffs[3] - 2.0).abs() < 1e-6,
+                "Index 3: expected 2.0, got {}", host_coeffs[3]
+            );
+            assert!(
+                (host_coeffs[7] - 3.0).abs() < 1e-6,
+                "Index 7: expected 3.0, got {}", host_coeffs[7]
+            );
+            assert!(
+                (host_coeffs[15] - 4.0).abs() < 1e-6,
+                "Index 15: expected 4.0, got {}", host_coeffs[15]
+            );
+
+            // All non-indexed positions should be zero
+            for (i, &val) in host_coeffs.iter().enumerate() {
+                if ![0, 3, 7, 15].contains(&i) {
+                    assert!(
+                        val.abs() < 1e-6,
+                        "Non-indexed position {} should be 0, got {}", i, val
+                    );
+                }
+            }
+        } else {
+            panic!("Expected Spectral accumulator variant");
+        }
+    }
+
+    // ==================== DD-8 §S1.2: Single AC Coefficient Row IDCT ====================
+
+    /// §S1.2: A single AC coefficient at index k produces a cosine wave.
+    /// x[n] = amplitude * sqrt(2/N) * cos(π(2n+1)k / 2N)
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn test_idct_1d_rows_single_ac() {
+        let mut ctx = match GpuHoloContext::new(0) {
+            Ok(ctx) => ctx,
+            Err(_) => {
+                eprintln!("Skipping: no CUDA device available");
+                return;
+            }
+        };
+        ctx.load_spectral_kernel().expect("spectral kernel should load");
+
+        let width = 8;
+        let height = 1;
+        let k = 1usize; // First AC frequency
+        let amplitude = 3.0f32;
+
+        // Create coefficient buffer with single AC at index k
+        let mut coeffs = vec![0.0f32; width * height];
+        coeffs[k] = amplitude;
+
+        // Upload and run row IDCT directly
+        let d_input = ctx.device().htod_copy(coeffs).unwrap();
+        let d_output: cudarc::driver::CudaSlice<f32> =
+            ctx.device().alloc_zeros(width * height).unwrap();
+
+        let func = ctx
+            .device()
+            .get_func("holo_spectral", "holo_spectral_idct_1d_rows")
+            .unwrap();
+        let cfg = cudarc::driver::LaunchConfig {
+            grid_dim: (1, 1, 1),
+            block_dim: (256, 1, 1),
+            shared_mem_bytes: (width * 4) as u32,
+        };
+        unsafe {
+            func.launch(cfg, (&d_input, &d_output, width as u32, height as u32))
+        }
+        .unwrap();
+        ctx.device().synchronize().unwrap();
+
+        let host = ctx.copy_to_host(&d_output).unwrap();
+        let scale = (2.0 / width as f32).sqrt();
+        let pi_2n = std::f32::consts::PI / (2.0 * width as f32);
+
+        for n in 0..width {
+            let expected =
+                amplitude * scale * ((2 * n + 1) as f32 * k as f32 * pi_2n).cos();
+            assert!(
+                (host[n] - expected).abs() < 1e-3,
+                "AC[{}] row IDCT at {}: expected {:.6}, got {:.6}",
+                k,
+                n,
+                expected,
+                host[n]
+            );
+        }
+    }
+
+    // ==================== DD-8 §S2.3: End-to-End 2D IDCT ====================
+
+    /// §S2.3: Full 2D IDCT pipeline — accumulate DCT coefficients, finalize,
+    /// compare with CPU reference (`haagenti_core::dct::idct_1d_direct`).
+    ///
+    /// Uses a known 4×4 spatial signal → DCT-II → GPU IDCT → compare.
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn test_spectral_2d_idct_end_to_end() {
+        let mut ctx = match GpuHoloContext::new(0) {
+            Ok(ctx) => ctx,
+            Err(_) => {
+                eprintln!("Skipping: no CUDA device available");
+                return;
+            }
+        };
+        ctx.load_spectral_kernel().expect("spectral kernel should load");
+
+        let width = 4;
+        let height = 4;
+
+        // Known spatial signal
+        let spatial: Vec<f32> = (0..width * height)
+            .map(|i| (i as f32 * 0.3).sin())
+            .collect();
+
+        // Compute DCT-II coefficients using CPU reference
+        let mut dct_coeffs = vec![0.0f32; width * height];
+        haagenti_core::dct::dct_2d(&spatial, &mut dct_coeffs, width, height);
+
+        // Build spectral fragments from all non-zero coefficients
+        let mut coeff_pairs: Vec<(u32, f32)> = Vec::new();
+        for (i, &c) in dct_coeffs.iter().enumerate() {
+            if c.abs() > 1e-10 {
+                coeff_pairs.push((i as u32, c));
+            }
+        }
+        let fragment = make_spectral_fragment(0, &coeff_pairs);
+
+        let header = haagenti::holotensor::HoloTensorHeader::new(
+            haagenti::holotensor::HolographicEncoding::Spectral,
+            haagenti::DType::F32,
+            vec![height as u64, width as u64],
+            1,
+        );
+
+        // GPU reconstruction
+        let mut acc = ctx.create_accumulator(&header).unwrap();
+        ctx.accumulate_spectral(&fragment, &mut acc).unwrap();
+        let result = ctx.finalize_spectral(&acc).unwrap();
+        let gpu_output = ctx.copy_to_host(&result).unwrap();
+
+        // CPU reference IDCT for comparison
+        let mut cpu_output = vec![0.0f32; width * height];
+        haagenti_core::dct::idct_2d(&dct_coeffs, &mut cpu_output, width, height);
+
+        for (i, (&orig, &recon)) in cpu_output.iter().zip(gpu_output.iter()).enumerate() {
+            assert!(
+                (orig - recon).abs() < 1e-2,
+                "2D IDCT at {}: cpu_reference={:.6}, gpu={:.6}, diff={:.6}",
+                i,
+                orig,
+                recon,
+                (orig - recon).abs()
+            );
+        }
+    }
+
+    // ==================== DD-8 §S1.3: GPU vs CPU Proptest ====================
+
+    mod idct_proptest {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(20))]
+            #[test]
+            fn gpu_idct_2d_matches_cpu_reference(
+                dim in prop::sample::select(vec![4usize, 8]),
+                coeffs_raw in proptest::collection::vec(-5.0f32..5.0f32, 64),
+            ) {
+                let mut ctx = match GpuHoloContext::new(0) {
+                    Ok(ctx) => ctx,
+                    Err(_) => { return Ok(()); }
+                };
+                ctx.load_spectral_kernel().unwrap();
+
+                let width = dim;
+                let height = dim;
+                let total = width * height;
+                let coeffs: Vec<f32> = coeffs_raw[..total].to_vec();
+
+                // CPU reference
+                let mut cpu_output = vec![0.0f32; total];
+                haagenti_core::dct::idct_2d(&coeffs, &mut cpu_output, width, height);
+
+                // GPU: upload coefficients directly, run finalize_spectral_direct
+                let d_coeffs = ctx.device().htod_copy(coeffs).unwrap();
+
+                // Create spectral accumulator and inject coefficients directly
+                let acc = AccumulatorState::Spectral {
+                    coefficients: d_coeffs,
+                    present_mask: ctx.device().alloc_zeros(total).unwrap(),
+                    width,
+                    height,
+                };
+                let result = ctx.finalize_spectral(&acc).unwrap();
+                let gpu_output = ctx.copy_to_host(&result).unwrap();
+
+                for (i, (&cpu, &gpu)) in cpu_output.iter().zip(gpu_output.iter()).enumerate() {
+                    prop_assert!(
+                        (cpu - gpu).abs() < 0.05,
+                        "IDCT 2D mismatch at {}: cpu={:.6}, gpu={:.6}, diff={:.6}",
+                        i, cpu, gpu, (cpu - gpu).abs()
+                    );
+                }
+            }
+        }
+    }
+
+    // ==================== Phase 4: §6.3 RPH Determinism ====================
+    // GPU-CODEC-PIPELINE-TDD.md §6.3: Same seed produces same output.
+
+    /// Helper to build an RPH fragment.
+    /// Format: [proj_dim: u32][seed_offset: u64][projection: f32...]
+    #[cfg(feature = "cuda")]
+    fn make_rph_fragment(
+        frag_index: u16,
+        proj_dim: usize,
+        seed_offset: u64,
+        projection: &[f32],
+    ) -> haagenti::holotensor::HoloFragment {
+        assert_eq!(projection.len(), proj_dim);
+        let mut data = Vec::new();
+        data.extend_from_slice(&(proj_dim as u32).to_le_bytes());
+        data.extend_from_slice(&seed_offset.to_le_bytes());
+        for &val in projection {
+            data.extend_from_slice(&val.to_le_bytes());
+        }
+        haagenti::holotensor::HoloFragment::new(frag_index, data)
+    }
+
+    /// §R2.2 + §R2.3: RPH reconstruction produces non-zero output and is deterministic.
+    ///
+    /// Two runs of accumulate+finalize with identical inputs (same header, same seed,
+    /// same fragments) must produce bit-identical, non-zero outputs.
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn test_rph_deterministic_same_seed() {
+        let mut ctx = match GpuHoloContext::new(0) {
+            Ok(ctx) => ctx,
+            Err(_) => {
+                eprintln!("Skipping: no CUDA device available");
+                return;
+            }
+        };
+        ctx.load_rph_kernel().expect("RPH kernel should load");
+
+        let proj_dim = 8;
+        let projection: Vec<f32> = (0..proj_dim).map(|i| (i as f32 + 1.0) * 0.5).collect();
+
+        let header = haagenti::holotensor::HoloTensorHeader::new(
+            haagenti::holotensor::HolographicEncoding::RandomProjection,
+            haagenti::DType::F32,
+            vec![4, 4], // 4x4 = 16 output elements
+            1,
+        );
+
+        // First run: accumulate + finalize
+        let frag1 = make_rph_fragment(0, proj_dim, 42, &projection);
+        let mut acc1 = ctx.create_accumulator(&header).unwrap();
+        ctx.accumulate_rph(&frag1, &mut acc1).unwrap();
+        let result1 = ctx.finalize_rph(&acc1).unwrap();
+        let host1 = ctx.copy_to_host(&result1).unwrap();
+
+        // Second run with identical inputs
+        let frag2 = make_rph_fragment(0, proj_dim, 42, &projection);
+        let mut acc2 = ctx.create_accumulator(&header).unwrap();
+        ctx.accumulate_rph(&frag2, &mut acc2).unwrap();
+        let result2 = ctx.finalize_rph(&acc2).unwrap();
+        let host2 = ctx.copy_to_host(&result2).unwrap();
+
+        assert_eq!(host1.len(), host2.len(), "Output lengths must match");
+        assert_eq!(host1.len(), 16, "Output should be 4x4 = 16 elements");
+
+        // §R2.2: Output must be non-zero (XORShift PRNG fixed)
+        assert!(
+            host1.iter().any(|v| *v != 0.0),
+            "RPH output should be non-zero after XORShift PRNG fix"
+        );
+
+        // §R2.3: Determinism — bit-identical across runs
+        for (i, (v1, v2)) in host1.iter().zip(host2.iter()).enumerate() {
+            assert_eq!(
+                v1.to_bits(),
+                v2.to_bits(),
+                "RPH determinism violation at {}: run1={}, run2={}",
+                i, v1, v2
+            );
+        }
+    }
+
+    /// §R2.3: Different seeds produce different RPH output.
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn test_rph_different_seeds_diverge() {
+        let mut ctx = match GpuHoloContext::new(0) {
+            Ok(ctx) => ctx,
+            Err(_) => {
+                eprintln!("Skipping: no CUDA device available");
+                return;
+            }
+        };
+        ctx.load_rph_kernel().expect("RPH kernel should load");
+
+        let proj_dim = 8;
+        let projection: Vec<f32> = (0..proj_dim).map(|i| (i as f32 + 1.0) * 0.5).collect();
+
+        let header = haagenti::holotensor::HoloTensorHeader::new(
+            haagenti::holotensor::HolographicEncoding::RandomProjection,
+            haagenti::DType::F32,
+            vec![4, 4],
+            1,
+        );
+
+        // Run with seed_offset=42
+        let frag_a = make_rph_fragment(0, proj_dim, 42, &projection);
+        let mut acc_a = ctx.create_accumulator(&header).unwrap();
+        ctx.accumulate_rph(&frag_a, &mut acc_a).unwrap();
+        let result_a = ctx.finalize_rph(&acc_a).unwrap();
+        let host_a = ctx.copy_to_host(&result_a).unwrap();
+
+        // Run with seed_offset=999
+        let frag_b = make_rph_fragment(0, proj_dim, 999, &projection);
+        let mut acc_b = ctx.create_accumulator(&header).unwrap();
+        ctx.accumulate_rph(&frag_b, &mut acc_b).unwrap();
+        let result_b = ctx.finalize_rph(&acc_b).unwrap();
+        let host_b = ctx.copy_to_host(&result_b).unwrap();
+
+        // Different seeds must produce different output
+        let differs = host_a
+            .iter()
+            .zip(host_b.iter())
+            .any(|(a, b)| a.to_bits() != b.to_bits());
+        assert!(
+            differs,
+            "Different seed offsets should produce different RPH output"
+        );
+    }
+
+    /// §6.3: RPH accumulate pipeline exercises fragment parsing and state tracking.
+    ///
+    /// Verifies the full RPH pipeline: fragment construction, kernel load,
+    /// accumulation, and finalization all complete without error.
+    /// The accumulator state (num_projections) is correctly incremented.
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn test_rph_accumulate_pipeline_state_tracking() {
+        let mut ctx = match GpuHoloContext::new(0) {
+            Ok(ctx) => ctx,
+            Err(_) => {
+                eprintln!("Skipping: no CUDA device available");
+                return;
+            }
+        };
+        ctx.load_rph_kernel().expect("RPH kernel should load");
+
+        let frag_proj_dim = 8;
+        let projection: Vec<f32> = (0..frag_proj_dim).map(|i| (i as f32 + 1.0) * 0.5).collect();
+
+        let header = haagenti::holotensor::HoloTensorHeader::new(
+            haagenti::holotensor::HolographicEncoding::RandomProjection,
+            haagenti::DType::F32,
+            vec![4, 4],
+            1,
+        );
+
+        let mut acc = ctx.create_accumulator(&header).unwrap();
+
+        // Verify initial state.
+        // Accumulator proj_dim is compute_projection_dim(16) = max(sqrt(16), 16) = 16,
+        // which differs from the fragment's proj_dim (8).
+        if let AccumulatorState::RandomProjection {
+            num_projections,
+            proj_dim: pd,
+            output_dim: od,
+            ..
+        } = &acc
+        {
+            assert_eq!(*num_projections, 0, "Initial num_projections should be 0");
+            assert_eq!(*pd, 16, "proj_dim = max(sqrt(output_dim), 16) = 16");
+            assert_eq!(*od, 16, "output_dim should be 4*4=16");
+        } else {
+            panic!("Expected RandomProjection accumulator");
+        }
+
+        // Accumulate two fragments with different seed_offsets
+        let frag_a = make_rph_fragment(0, frag_proj_dim, 42, &projection);
+        ctx.accumulate_rph(&frag_a, &mut acc).unwrap();
+
+        if let AccumulatorState::RandomProjection { num_projections, .. } = &acc {
+            assert_eq!(*num_projections, 1, "num_projections should be 1 after first accumulate");
+        }
+
+        let frag_b = make_rph_fragment(1, frag_proj_dim, 999, &projection);
+        ctx.accumulate_rph(&frag_b, &mut acc).unwrap();
+
+        if let AccumulatorState::RandomProjection { num_projections, .. } = &acc {
+            assert_eq!(*num_projections, 2, "num_projections should be 2 after second accumulate");
+        }
+
+        // Finalize and verify output shape
+        let result = ctx.finalize_rph(&acc).unwrap();
+        let host = ctx.copy_to_host(&result).unwrap();
+        assert_eq!(host.len(), 16, "Finalized output should be 4*4=16 elements");
+
+        // After XORShift PRNG fix, output should be non-zero
+        assert!(
+            host.iter().any(|v| *v != 0.0),
+            "RPH pipeline output should be non-zero after PRNG fix"
+        );
     }
 }
 

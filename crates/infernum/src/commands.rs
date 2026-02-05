@@ -1482,6 +1482,8 @@ pub async fn agent(
     system: Option<String>,
     max_iterations: u32,
     _verbose: bool,
+    working_dir: Option<std::path::PathBuf>,
+    code_tools: bool,
 ) -> Result<()> {
     use beleth::{Agent, ToolRegistry};
 
@@ -1503,9 +1505,16 @@ pub async fn agent(
     println!("\x1b[1m🤖 Infernum Agent\x1b[0m");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!();
+    // Resolve working directory (default to cwd) early so we can display it
+    let wd = working_dir
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+
     println!("\x1b[1mObjective:\x1b[0m {}", objective);
     println!("\x1b[1mModel:\x1b[0m {}", model_id);
     println!("\x1b[1mMax iterations:\x1b[0m {}", max_iterations);
+    if code_tools {
+        println!("\x1b[1mWorking dir:\x1b[0m {}", wd.display());
+    }
     println!();
 
     // Load model
@@ -1529,7 +1538,11 @@ pub async fn agent(
     spinner.finish_and_clear();
 
     // Set up tools
-    let tools = ToolRegistry::with_builtins();
+    let tools = if code_tools {
+        ToolRegistry::with_code_tools()
+    } else {
+        ToolRegistry::with_builtins()
+    };
 
     println!("\x1b[1mAvailable tools:\x1b[0m");
     for tool in tools.tools() {
@@ -1542,7 +1555,8 @@ pub async fn agent(
         .id("cli-agent")
         .max_iterations(max_iterations)
         .tools(tools)
-        .engine(engine);
+        .engine(engine)
+        .working_dir(&wd);
 
     // Set system prompt if provided
     if let Some(sys) = system {

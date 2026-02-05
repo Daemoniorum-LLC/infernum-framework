@@ -156,9 +156,9 @@ haagenti-hct = "0.1"
 # Table formatting
 comfy-table = "7.1"
 
-# Audit chain (Moloch)
-moloch-core = { path = "../moloch/moloch-core" }
-moloch-holocrypt = { path = "../moloch/moloch-holocrypt", default-features = false, features = ["encryption"] }
+# Audit chain (Moloch) - published to crates.io
+moloch-core = "0.1.0"
+moloch-holocrypt = { version = "0.1.0", default-features = false, features = ["encryption"] }
 
 # Cryptography (Arcanum - Phase 4 secure storage)
 # Using crates.io versions for dogfooding

@@ -1278,6 +1278,63 @@ INT8_DONE:
                 );
             }
         }
+
+        // ==================== Phase 4: §4.3 INT4 Dequant Property Test ====================
+        // GPU-CODEC-PIPELINE-TDD.md §4.3: Property — GPU INT4 dequant produces
+        // bit-exact F16 values matching the formula (nibble - zp) * scale.
+
+        mod dequant_proptest {
+            use super::*;
+            use proptest::prelude::*;
+
+            proptest! {
+                #![proptest_config(ProptestConfig::with_cases(20))]
+                #[test]
+                fn int4_gpu_matches_cpu_arbitrary(
+                    packed in proptest::collection::vec(any::<u8>(), 64..=64),
+                    scale_f32 in 0.01f32..5.0f32,
+                    zero_point in 0i8..=15i8,
+                ) {
+                    if !cuda_available() {
+                        return Ok(());
+                    }
+
+                    let num_values = 128; // 64 bytes = 128 nibbles = 1 block
+                    let scale = half::f16::from_f32(scale_f32);
+                    let scales = vec![scale];
+                    let zps = [zero_point];
+
+                    let mut ctx = GpuDequantContext::new(0).unwrap();
+                    ctx.load_int4_kernel().unwrap();
+                    let gpu_result = ctx
+                        .dequant_int4(&packed, &scales, Some(&zps[..]), num_values)
+                        .unwrap();
+                    let mut gpu_f16 = vec![half::f16::ZERO; num_values];
+                    ctx.device
+                        .dtoh_sync_copy_into(&gpu_result, &mut gpu_f16)
+                        .unwrap();
+
+                    // CPU reference: (nibble - zero_point) * scale → round to F16
+                    for i in 0..num_values {
+                        let nibble = if i % 2 == 0 {
+                            packed[i / 2] & 0x0F
+                        } else {
+                            (packed[i / 2] >> 4) & 0x0F
+                        };
+                        let expected = half::f16::from_f32(
+                            (nibble as i32 - zero_point as i32) as f32 * scale.to_f32(),
+                        );
+                        prop_assert_eq!(
+                            gpu_f16[i].to_bits(),
+                            expected.to_bits(),
+                            "INT4 dequant 0-ULP violation at {}: nibble={}, zp={}, scale={:.4}, \
+                             gpu={:?}, expected={:?}",
+                            i, nibble, zero_point, scale.to_f32(), gpu_f16[i], expected
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 

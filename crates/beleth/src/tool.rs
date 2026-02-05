@@ -562,6 +562,39 @@ impl ToolRegistry {
         registry
     }
 
+    /// Creates a registry with built-in tools plus code-relevant tools.
+    ///
+    /// Includes file I/O (read, write, edit), search (list, grep), and
+    /// shell execution. Does NOT include `claude_code` — use
+    /// [`with_all_tools`](Self::with_all_tools) for that.
+    #[must_use]
+    pub fn with_code_tools() -> Self {
+        use crate::tools::{
+            BashTool, EditFileTool, ListFilesTool, ReadFileTool, SearchFilesTool, WriteFileTool,
+        };
+
+        let mut registry = Self::with_builtins();
+        registry.register(Arc::new(ReadFileTool));
+        registry.register(Arc::new(WriteFileTool));
+        registry.register(Arc::new(EditFileTool));
+        registry.register(Arc::new(ListFilesTool));
+        registry.register(Arc::new(SearchFilesTool));
+        registry.register(Arc::new(BashTool::default()));
+        registry
+    }
+
+    /// Creates a registry with all tools, including Claude Code delegation.
+    ///
+    /// Requires the `claude` CLI to be installed and on `$PATH`.
+    #[must_use]
+    pub fn with_all_tools() -> Self {
+        use crate::tools::ClaudeCodeTool;
+
+        let mut registry = Self::with_code_tools();
+        registry.register(Arc::new(ClaudeCodeTool::new()));
+        registry
+    }
+
     /// Registers a tool.
     pub fn register(&mut self, tool: Arc<dyn Tool>) {
         self.tools.insert(tool.name().to_string(), tool);
@@ -615,7 +648,7 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// Generates tool descriptions for prompting.
+    /// Generates tool descriptions for prompting (generic format).
     #[must_use]
     pub fn to_prompt_description(&self) -> String {
         let mut desc = String::from("Available tools:\n\n");
@@ -627,6 +660,37 @@ impl ToolRegistry {
                 serde_json::to_string_pretty(&tool.parameters_schema()).unwrap_or_default()
             ));
         }
+        desc
+    }
+
+    /// Generates tool descriptions in Qwen2.5 native format.
+    ///
+    /// Matches the format from Qwen2.5's Jinja chat template: tools wrapped
+    /// in `<tools></tools>` XML tags as full JSON function definitions.
+    ///
+    /// See TOOL-CALLING-SPEC.md §5.6.
+    #[must_use]
+    pub fn to_qwen_native_description(&self) -> String {
+        let mut desc = String::from(
+            "You may call one or more functions to assist with the user query.\n\n\
+             You are provided with function signatures within <tools></tools> XML tags:\n\
+             <tools>",
+        );
+
+        for tool_def in self.to_function_definitions() {
+            desc.push('\n');
+            desc.push_str(&serde_json::to_string(&tool_def).unwrap_or_default());
+        }
+
+        desc.push_str(
+            "\n</tools>\n\n\
+             For each function call, return a json object with function name and arguments \
+             within <tool_call></tool_call> XML tags:\n\
+             <tool_call>\n\
+             {\"name\": <function-name>, \"arguments\": <args-json-object>}\n\
+             </tool_call>",
+        );
+
         desc
     }
 

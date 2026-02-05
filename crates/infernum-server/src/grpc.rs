@@ -826,7 +826,7 @@ impl InfernumService for MockInfernumService {
 
         // Simulate response
         let response = ChatCompletionResponse {
-            id: format!("chatcmpl-{}", uuid::Uuid::new_v4()),
+            id: format!("inf-chat-{}", uuid::Uuid::new_v4()),
             object: "chat.completion".to_string(),
             created: chrono::Utc::now().timestamp(),
             model: request.model.clone(),
@@ -852,7 +852,7 @@ impl InfernumService for MockInfernumService {
 
         let (tx, rx) = mpsc::channel(10);
         let model = request.model.clone();
-        let id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
+        let id = format!("inf-chat-{}", uuid::Uuid::new_v4());
         let created = chrono::Utc::now().timestamp();
 
         tokio::spawn(async move {
@@ -919,7 +919,7 @@ impl InfernumService for MockInfernumService {
         self.metrics.record_request();
 
         let response = CompletionResponse {
-            id: format!("cmpl-{}", uuid::Uuid::new_v4()),
+            id: format!("inf-cmpl-{}", uuid::Uuid::new_v4()),
             object: "text_completion".to_string(),
             created: chrono::Utc::now().timestamp(),
             model: request.model.clone(),
@@ -944,7 +944,7 @@ impl InfernumService for MockInfernumService {
 
         let (tx, rx) = mpsc::channel(10);
         let model = request.model.clone();
-        let id = format!("cmpl-{}", uuid::Uuid::new_v4());
+        let id = format!("inf-cmpl-{}", uuid::Uuid::new_v4());
         let created = chrono::Utc::now().timestamp();
 
         tokio::spawn(async move {

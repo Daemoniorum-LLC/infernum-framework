@@ -24,7 +24,7 @@ use std::time::Duration;
 
 /// Benchmarks chat completion request validation.
 fn bench_chat_request_validation(c: &mut Criterion) {
-    use infernum_server::openai::ChatCompletionRequest;
+    use infernum_server::api_types::ChatCompletionRequest;
 
     let _limits = ValidationLimits::default();
 
@@ -217,7 +217,7 @@ fn bench_observability(c: &mut Criterion) {
 
 /// Benchmarks response serialization.
 fn bench_json_serialization(c: &mut Criterion) {
-    use infernum_server::openai::{ChatChoice, ChatCompletionResponse, ChatMessage, Usage};
+    use infernum_server::api_types::{ChatChoice, ChatCompletionResponse, ChatMessage, Usage};
 
     // Small response
     let small_response = ChatCompletionResponse {
@@ -286,7 +286,7 @@ fn bench_json_serialization(c: &mut Criterion) {
 
 /// Simulates request processing throughput.
 fn bench_request_throughput(c: &mut Criterion) {
-    use infernum_server::openai::ChatCompletionRequest;
+    use infernum_server::api_types::ChatCompletionRequest;
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     let limiter = RateLimiter::new(RateLimitConfig::high_throughput());

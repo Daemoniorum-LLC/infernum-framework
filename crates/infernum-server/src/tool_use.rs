@@ -25,7 +25,10 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::openai::{FunctionCall, Tool, ToolCall, ToolChoice};
+use crate::api_types::{FunctionCall, Tool, ToolCall, ToolChoice};
+
+// Re-export ModelFamily from infernum-core (shared across server + agent crates)
+pub use infernum_core::ModelFamily;
 
 /// Static regex for detecting tool calls (compiled once).
 static TOOL_CALL_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -47,37 +50,6 @@ fn get_tool_call_extract_regex() -> &'static Regex {
     })
 }
 
-/// Model family for tool format selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ModelFamily {
-    /// Qwen models (Qwen2.5, etc.)
-    Qwen,
-    /// Llama models (Llama 3, etc.)
-    Llama,
-    /// Mistral models
-    Mistral,
-    /// Unknown model family - use generic format
-    #[default]
-    Unknown,
-}
-
-impl ModelFamily {
-    /// Detect model family from model name.
-    #[must_use]
-    pub fn from_model_name(name: &str) -> Self {
-        let lower = name.to_lowercase();
-        if lower.contains("qwen") {
-            Self::Qwen
-        } else if lower.contains("llama") {
-            Self::Llama
-        } else if lower.contains("mistral") || lower.contains("mixtral") {
-            Self::Mistral
-        } else {
-            Self::Unknown
-        }
-    }
-}
-
 /// A detected tool call from model output.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DetectedToolCall {
@@ -90,7 +62,7 @@ pub struct DetectedToolCall {
 }
 
 impl DetectedToolCall {
-    /// Convert to OpenAI ToolCall format.
+    /// Convert to API ToolCall format.
     #[must_use]
     pub fn to_tool_call(&self) -> ToolCall {
         ToolCall {
@@ -141,54 +113,43 @@ pub fn format_tools_for_prompt(tools: &[Tool], model_family: ModelFamily) -> Str
     }
 }
 
-/// Format tools in Qwen style.
+/// Format tools in Qwen2.5 native style.
+///
+/// Matches the exact format from Qwen2.5's Jinja chat template in
+/// `tokenizer_config.json`. Tools are wrapped in `<tools></tools>` XML tags
+/// as full JSON function definitions, and the instruction text matches the
+/// native training format verbatim.
+///
+/// See TOOL-CALLING-SPEC.md §5.1.
 fn format_tools_qwen(tools: &[Tool]) -> String {
-    let mut result = String::from("\n\n# Tools\n\nYou have access to the following tools:\n");
+    let mut result = String::from(
+        "\n\n# Tools\n\n\
+         You may call one or more functions to assist with the user query.\n\n\
+         You are provided with function signatures within <tools></tools> XML tags:\n\
+         <tools>",
+    );
 
     for tool in tools {
-        result.push_str("\n## ");
-        result.push_str(&tool.function.name);
-        result.push('\n');
-
-        if let Some(desc) = &tool.function.description {
-            result.push('\n');
-            result.push_str(desc);
-            result.push('\n');
-        }
-
-        if let Some(params) = &tool.function.parameters {
-            result.push_str("\nParameters:\n");
-            if let Some(props) = params.get("properties") {
-                if let Some(obj) = props.as_object() {
-                    let required: Vec<&str> = params
-                        .get("required")
-                        .and_then(|r| r.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|v| v.as_str())
-                                .collect()
-                        })
-                        .unwrap_or_default();
-
-                    for (name, schema) in obj {
-                        let type_str = schema.get("type").and_then(|t| t.as_str()).unwrap_or("any");
-                        let is_required = required.contains(&name.as_str());
-                        let req_str = if is_required { ", required" } else { "" };
-
-                        result.push_str(&format!("- {name} ({type_str}{req_str})"));
-
-                        if let Some(desc) = schema.get("description").and_then(|d| d.as_str()) {
-                            result.push_str(": ");
-                            result.push_str(desc);
-                        }
-                        result.push('\n');
-                    }
-                }
+        let func_json = serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": tool.function.name,
+                "description": tool.function.description,
+                "parameters": tool.function.parameters
             }
-        }
+        });
+        result.push('\n');
+        result.push_str(&serde_json::to_string(&func_json).unwrap_or_default());
     }
 
-    result.push_str("\nTo use a tool, respond with:\n<tool_call>\n{\"name\": \"tool_name\", \"arguments\": {\"arg1\": \"value1\"}}\n</tool_call>\n");
+    result.push_str(
+        "\n</tools>\n\n\
+         For each function call, return a json object with function name and arguments \
+         within <tool_call></tool_call> XML tags:\n\
+         <tool_call>\n\
+         {\"name\": <function-name>, \"arguments\": <args-json-object>}\n\
+         </tool_call>",
+    );
 
     result
 }
@@ -1296,7 +1257,7 @@ impl StreamingToolDetector {
 /// Agent-centric SSE event types.
 ///
 /// Designed for AI agent consumption - complete, typed, immediately parseable.
-/// NOT OpenAI format. See INFERNUM-SPEC.md §10 for rationale.
+/// Infernum-native format. See INFERNUM-SPEC.md §10 for rationale.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SseEvent {
@@ -1449,7 +1410,7 @@ mod tests {
     fn make_tool(name: &str, description: &str, params: serde_json::Value) -> Tool {
         Tool {
             tool_type: "function".to_string(),
-            function: crate::openai::FunctionDefinition {
+            function: crate::api_types::FunctionDefinition {
                 name: name.to_string(),
                 description: Some(description.to_string()),
                 parameters: Some(params),
@@ -1512,8 +1473,14 @@ mod tests {
         assert!(result.is_empty());
     }
 
+    // === Spec §5.1: Qwen Native Format Tests ===
+    //
+    // These tests validate TOOL-CALLING-SPEC.md §5.1 (Qwen Format).
+    // Qwen2.5 native format uses <tools></tools> XML tags with full JSON
+    // function definitions, NOT markdown-style descriptions.
+
     #[test]
-    fn test_format_single_tool_qwen() {
+    fn test_format_single_tool_qwen_native() {
         let tool = make_tool(
             "get_weather",
             "Get current weather for a location",
@@ -1531,15 +1498,46 @@ mod tests {
 
         let result = format_tools_for_prompt(&[tool], ModelFamily::Qwen);
 
-        assert!(result.contains("# Tools"));
-        assert!(result.contains("## get_weather"));
-        assert!(result.contains("Get current weather for a location"));
-        assert!(result.contains("- location (string, required): City name"));
-        assert!(result.contains("<tool_call>"));
+        // §5.1: Must use native preamble
+        assert!(result.contains("# Tools"), "Missing '# Tools' header");
+        assert!(
+            result.contains("You may call one or more functions to assist with the user query"),
+            "Missing native preamble text"
+        );
+
+        // §5.1: Tools wrapped in <tools></tools> XML tags
+        assert!(result.contains("<tools>"), "Missing <tools> opening tag");
+        assert!(result.contains("</tools>"), "Missing </tools> closing tag");
+
+        // §5.1: Each tool as full JSON function definition
+        assert!(
+            result.contains("\"type\":\"function\""),
+            "Tool not serialized as JSON function definition"
+        );
+        assert!(
+            result.contains("\"name\":\"get_weather\""),
+            "Tool name not in JSON format"
+        );
+
+        // §5.1: Must NOT use old markdown format
+        assert!(
+            !result.contains("## get_weather"),
+            "Still using old markdown-style format"
+        );
+        assert!(
+            !result.contains("Parameters:\n-"),
+            "Still using old markdown parameter list"
+        );
+
+        // §5.1: Instruction text for tool call format
+        assert!(
+            result.contains("<tool_call>"),
+            "Missing <tool_call> instruction"
+        );
     }
 
     #[test]
-    fn test_format_multiple_tools() {
+    fn test_format_multiple_tools_qwen_native() {
         let tools = vec![
             make_tool("tool_a", "First tool", json!({"type": "object", "properties": {}})),
             make_tool("tool_b", "Second tool", json!({"type": "object", "properties": {}})),
@@ -1547,10 +1545,17 @@ mod tests {
 
         let result = format_tools_for_prompt(&tools, ModelFamily::Qwen);
 
-        assert!(result.contains("## tool_a"));
-        assert!(result.contains("## tool_b"));
-        assert!(result.contains("First tool"));
-        assert!(result.contains("Second tool"));
+        // Both tools must appear as JSON function definitions inside <tools> tags
+        assert!(result.contains("<tools>"));
+        assert!(result.contains("</tools>"));
+        assert!(result.contains("\"name\":\"tool_a\""));
+        assert!(result.contains("\"name\":\"tool_b\""));
+        assert!(result.contains("\"description\":\"First tool\""));
+        assert!(result.contains("\"description\":\"Second tool\""));
+
+        // Must NOT use old markdown headers
+        assert!(!result.contains("## tool_a"));
+        assert!(!result.contains("## tool_b"));
     }
 
     // === Tool Detection Tests ===
@@ -1744,7 +1749,7 @@ More text after."#;
 
     #[test]
     fn test_should_include_tools_specific_tool() {
-        use crate::openai::{ToolChoiceFunction, ToolChoiceFunctionName};
+        use crate::api_types::{ToolChoiceFunction, ToolChoiceFunctionName};
         let choice = ToolChoice::Tool(ToolChoiceFunction {
             choice_type: "function".to_string(),
             function: ToolChoiceFunctionName {
@@ -1767,7 +1772,7 @@ More text after."#;
 
     #[test]
     fn test_get_forced_tool_specific() {
-        use crate::openai::{ToolChoiceFunction, ToolChoiceFunctionName};
+        use crate::api_types::{ToolChoiceFunction, ToolChoiceFunctionName};
         let choice = ToolChoice::Tool(ToolChoiceFunction {
             choice_type: "function".to_string(),
             function: ToolChoiceFunctionName {
@@ -2097,7 +2102,7 @@ More text after."#;
         fn test_process_validates_strict_tools() {
             let tool = Tool {
                 tool_type: "function".to_string(),
-                function: crate::openai::FunctionDefinition {
+                function: crate::api_types::FunctionDefinition {
                     name: "get_weather".to_string(),
                     description: Some("Get weather".to_string()),
                     parameters: Some(json!({
@@ -2243,7 +2248,7 @@ More text after."#;
         fn test_use_validation_function_for_tool_checking() {
             let tool = Tool {
                 tool_type: "function".to_string(),
-                function: crate::openai::FunctionDefinition {
+                function: crate::api_types::FunctionDefinition {
                     name: "known_tool".to_string(),
                     description: Some("A known tool".to_string()),
                     parameters: Some(json!({

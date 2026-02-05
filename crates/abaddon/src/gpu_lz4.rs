@@ -88,39 +88,48 @@ pub mod cuda {
                 return Ok(());
             }
 
-            // The LZ4 kernel is embedded as PTX at compile time.
-            // The warp-parallel kernel (K3) is only registered when
-            // cuda-experimental is enabled (see DD-5 in GPU-CODEC-PIPELINE-SPEC.md).
+            // Load main PTX module (K1 + K2, sm_50) — always available.
             let ptx = Self::get_lz4_ptx();
-
-            #[cfg(feature = "cuda-experimental")]
-            let entry_points: &[&str] = &[
-                "lz4_decompress_block",
-                "lz4_decompress_blocks_parallel",
-                "lz4_decompress_blocks_warp",
-            ];
-            #[cfg(not(feature = "cuda-experimental"))]
-            let entry_points: &[&str] = &[
-                "lz4_decompress_block",
-                "lz4_decompress_blocks_parallel",
-            ];
-
             self.device
-                .load_ptx(ptx, "lz4_decompress", entry_points)
+                .load_ptx(
+                    ptx,
+                    "lz4_decompress",
+                    &["lz4_decompress_block", "lz4_decompress_blocks_parallel"],
+                )
                 .map_err(|e| GpuLz4Error::KernelLoad {
                     message: e.to_string(),
                 })?;
+
+            // Load warp PTX module (K3, sm_70) — requires cuda-experimental.
+            // K3 uses shfl.sync and bar.warp.sync which need sm_70+ (Volta).
+            // See DD-2 in GPU-CODEC-PIPELINE-SPEC.md.
+            #[cfg(feature = "cuda-experimental")]
+            {
+                let warp_ptx = Self::get_lz4_warp_ptx();
+                self.device
+                    .load_ptx(
+                        warp_ptx,
+                        "lz4_warp",
+                        &["lz4_decompress_blocks_warp"],
+                    )
+                    .map_err(|e| GpuLz4Error::KernelLoad {
+                        message: e.to_string(),
+                    })?;
+            }
 
             self.kernel_loaded = true;
             Ok(())
         }
 
-        /// Returns the embedded LZ4 PTX kernel.
+        /// Returns the embedded LZ4 PTX kernel (K1 + K2, sm_50).
         fn get_lz4_ptx() -> Ptx {
-            // LZ4 decompression kernel in PTX
-            // This is a simplified implementation for demonstration
-            // A production version would use NVIDIA's nvCOMP or similar
             Ptx::from_src(LZ4_KERNEL_PTX)
+        }
+
+        /// Returns the embedded warp-parallel LZ4 PTX kernel (K3, sm_70).
+        #[cfg(feature = "cuda-experimental")]
+        fn get_lz4_warp_ptx() -> Ptx {
+            Ptx::from_src(LZ4_WARP_KERNEL_PTX)
         }
 
         /// Decompresses a single LZ4 block on GPU.
@@ -427,12 +436,12 @@ pub mod cuda {
                     message: e.to_string(),
                 })?;
 
-            // Launch warp-parallel decompression kernel
+            // Launch warp-parallel decompression kernel (from lz4_warp module)
             let func = self
                 .device
-                .get_func("lz4_decompress", "lz4_decompress_blocks_warp")
+                .get_func("lz4_warp", "lz4_decompress_blocks_warp")
                 .ok_or_else(|| GpuLz4Error::KernelLoad {
-                    message: "Warp kernel not found".to_string(),
+                    message: "Warp kernel not found (lz4_warp module)".to_string(),
                 })?;
 
             // One warp (32 threads) per LZ4 block
@@ -785,12 +794,13 @@ pub mod cuda {
         fn process_block_group(
             &self,
             blocks: &[(Vec<u8>, usize)],
-            _d_output: &CudaSlice<u8>,
-            _output_offset: usize,
+            d_output: &CudaSlice<u8>,
+            output_offset: usize,
         ) -> Result<(), GpuLz4Error> {
             // For each block in the group, we:
             // 1. Transfer compressed data to GPU (async on stream i)
             // 2. Launch decompression kernel (async on stream i)
+            // 3. Copy decompressed results into the main output buffer
 
             let mut d_inputs: Vec<CudaSlice<u8>> = Vec::with_capacity(blocks.len());
             let mut d_outputs: Vec<CudaSlice<u8>> = Vec::with_capacity(blocks.len());
@@ -851,6 +861,26 @@ pub mod cuda {
                 .map_err(|e| GpuLz4Error::KernelExec {
                     message: e.to_string(),
                 })?;
+            }
+
+            // Phase 3: Copy decompressed blocks into the main output buffer
+            let mut block_offset = output_offset;
+            for ((_, uncompressed_size), d_block_output) in
+                blocks.iter().zip(d_outputs.iter())
+            {
+                if *uncompressed_size > 0 {
+                    unsafe {
+                        cudarc::driver::result::memcpy_dtod_sync(
+                            *d_output.device_ptr() + block_offset as u64,
+                            *d_block_output.device_ptr(),
+                            *uncompressed_size,
+                        )
+                    }
+                    .map_err(|e| GpuLz4Error::MemoryCopy {
+                        message: e.to_string(),
+                    })?;
+                }
+                block_offset += uncompressed_size;
             }
 
             Ok(())
@@ -1013,10 +1043,10 @@ pub mod cuda {
         },
     }
 
-    /// LZ4 decompression kernel in PTX format.
+    /// LZ4 decompression kernels K1 and K2 in PTX format (sm_50).
     ///
     /// This implements the LZ4 block format decompression on GPU.
-    /// Each thread handles the sequential decompression of one block.
+    /// K1: single-block, K2: multi-block parallel (thread 0 per block).
     ///
     /// LZ4 Block Format:
     /// - Token byte: 4 bits literal length + 4 bits match length
@@ -1355,6 +1385,17 @@ BLOCK_MATCH_DONE:
 BLOCK_DONE:
     ret;
 }
+"#;
+
+    /// Warp-parallel LZ4 decompression kernel K3 in PTX format (sm_70).
+    ///
+    /// Requires sm_70+ (Volta) for shfl.sync and bar.warp.sync instructions.
+    /// Feature-gated behind `cuda-experimental` (DD-2).
+    #[cfg(feature = "cuda-experimental")]
+    const LZ4_WARP_KERNEL_PTX: &str = r#"
+.version 7.0
+.target sm_70
+.address_size 64
 
 // Warp-parallel multi-block decompression kernel
 // Uses all 32 threads in warp for parallel literal/match copying
@@ -1563,14 +1604,14 @@ WARP_LIT_COPY_DONE:
     // Match source = out_pos - offset
     sub.u32 %r50, %r11, %r33;  // match_src
 
-    // For overlapping copies (offset < match_length), we need sequential for those parts
-    // For non-overlapping, we can do parallel
-    // Simple approach: if offset >= 32, use full parallel, else use partial
+    // For overlapping copies (offset < match_length), we need sequential
+    // to correctly handle RLE-like patterns where later bytes depend on earlier writes.
+    // Parallel only when offset >= match_length (no overlap at all).
 
-    setp.lt.u32 %p11, %r33, 32;
+    setp.lt.u32 %p11, %r33, %r32;
     @%p11 bra WARP_MATCH_SEQUENTIAL;
 
-    // Parallel match copy (offset >= 32, no overlap in warp)
+    // Parallel match copy (offset >= match_length, no overlap)
     mov.u32 %r51, %r2;  // start at lane
 
 WARP_MATCH_PARALLEL:
@@ -1643,43 +1684,34 @@ WARP_DONE:
         }
 
         /// Creates a simple LZ4-compressed block containing only literals (no matches).
-        /// This is the simplest valid LZ4 block format.
+        /// This is the simplest valid LZ4 block format: a single "last sequence"
+        /// with all data as literals and no match section.
         ///
-        /// Format: [token][literals]
-        /// Token = (literal_length << 4) | match_length_base
-        /// For literals-only: match_length_base = 0 (no match follows)
+        /// Format: [token][extension_bytes...][literal_data]
+        /// Token high nibble = min(literal_length, 15), low nibble = 0 (last sequence)
+        /// If literal_length >= 15, extension bytes encode the remainder.
+        ///
+        /// This encodes all data in ONE sequence. In LZ4, only the last sequence
+        /// may omit the match section; all intermediate sequences must have one.
         fn create_literals_only_lz4(data: &[u8]) -> Vec<u8> {
+            let literal_length = data.len();
             let mut result = Vec::new();
-            let mut remaining = data;
 
-            while !remaining.is_empty() {
-                let chunk_size = remaining.len().min(255 + 15); // Max per token without extended
-                let (chunk, rest) = remaining.split_at(chunk_size.min(remaining.len()));
-                remaining = rest;
-
-                if chunk_size <= 14 {
-                    // Simple case: literal length fits in 4 bits
-                    // Use 0x0F for match length to indicate "last sequence" (no offset follows)
-                    result.push(((chunk.len() as u8) << 4) | 0);
-                    result.extend_from_slice(chunk);
-                } else if chunk_size <= 15 + 254 {
-                    // Need one extension byte
-                    result.push(0xF0); // literal length = 15, match = 0
-                    result.push((chunk_size - 15) as u8);
-                    result.extend_from_slice(chunk);
-                } else {
-                    // Need multiple extension bytes (255 each until < 255)
-                    result.push(0xF0);
-                    let mut ext_len = chunk_size - 15;
-                    while ext_len >= 255 {
-                        result.push(255);
-                        ext_len -= 255;
-                    }
-                    result.push(ext_len as u8);
-                    result.extend_from_slice(chunk);
+            if literal_length < 15 {
+                // Literal length fits in the token's high nibble
+                result.push((literal_length as u8) << 4);
+            } else {
+                // Token: literal_length_base = 15, match = 0 (last sequence)
+                result.push(0xF0);
+                let mut remaining = literal_length - 15;
+                while remaining >= 255 {
+                    result.push(255);
+                    remaining -= 255;
                 }
+                result.push(remaining as u8);
             }
 
+            result.extend_from_slice(data);
             result
         }
 
@@ -2392,6 +2424,212 @@ WARP_DONE:
             }
         }
 
+        // ==================== Phase 3: Warp Kernel with Real LZ4 (Matches) ====================
+        // These tests use lz4_flex to produce real compressed data containing
+        // match sequences, validating the warp kernel's parallel match copy path.
+
+        /// §3.4: Warp kernel produces byte-identical output to parallel kernel
+        /// for data with LZ4 match sequences (not just literals).
+        #[test]
+        #[cfg(feature = "cuda-experimental")]
+        fn test_warp_matches_parallel_real_lz4() {
+            if !cuda_available() {
+                eprintln!("Skipping test: no CUDA device available");
+                return;
+            }
+
+            let mut ctx = GpuLz4Context::new(0).expect("context creation");
+            ctx.load_kernel().expect("kernel load");
+
+            // Data with repeated patterns → LZ4 match sequences
+            let original: Vec<u8> = (0..1024).map(|i| (i % 13) as u8).collect();
+            let compressed = lz4_flex::block::compress_prepend_size(&original);
+            // lz4_flex prepends a 4-byte little-endian size; strip it for raw block
+            let raw_compressed = &compressed[4..];
+
+            let blocks = vec![(raw_compressed.to_vec(), original.len())];
+
+            let parallel_result = ctx.decompress_blocks_parallel(&blocks).expect("parallel");
+            let warp_result = ctx.decompress_blocks_warp_parallel(&blocks).expect("warp");
+
+            let mut parallel_host = vec![0u8; original.len()];
+            let mut warp_host = vec![0u8; original.len()];
+
+            ctx.device
+                .dtoh_sync_copy_into(&parallel_result, &mut parallel_host)
+                .expect("copy parallel");
+            ctx.device
+                .dtoh_sync_copy_into(&warp_result, &mut warp_host)
+                .expect("copy warp");
+
+            assert_eq!(
+                parallel_host, original,
+                "Parallel kernel should produce correct output"
+            );
+            assert_eq!(
+                warp_host, parallel_host,
+                "Warp kernel must match parallel kernel for data with matches"
+            );
+        }
+
+        /// §3.4: Warp kernel handles large data with both literal and match sequences.
+        /// Uses 64KB of patterned data that compresses well with LZ4.
+        #[test]
+        #[cfg(feature = "cuda-experimental")]
+        fn test_warp_large_data_with_matches() {
+            if !cuda_available() {
+                eprintln!("Skipping test: no CUDA device available");
+                return;
+            }
+
+            let mut ctx = GpuLz4Context::new(0).expect("context creation");
+            ctx.load_kernel().expect("kernel load");
+
+            // 64KB of repeating pattern → many LZ4 match sequences
+            let original: Vec<u8> = (0..65536).map(|i| (i % 251) as u8).collect();
+            let compressed = lz4_flex::block::compress_prepend_size(&original);
+            let raw_compressed = &compressed[4..];
+
+            let blocks = vec![(raw_compressed.to_vec(), original.len())];
+
+            let parallel_result = ctx.decompress_blocks_parallel(&blocks).expect("parallel");
+            let warp_result = ctx.decompress_blocks_warp_parallel(&blocks).expect("warp");
+
+            let mut parallel_host = vec![0u8; original.len()];
+            let mut warp_host = vec![0u8; original.len()];
+
+            ctx.device
+                .dtoh_sync_copy_into(&parallel_result, &mut parallel_host)
+                .expect("copy parallel");
+            ctx.device
+                .dtoh_sync_copy_into(&warp_result, &mut warp_host)
+                .expect("copy warp");
+
+            assert_eq!(parallel_host, original, "Parallel kernel correctness");
+            assert_eq!(
+                warp_host, parallel_host,
+                "Warp kernel must match parallel for 64KB data with matches.\n\
+                 First divergence at byte {}",
+                warp_host
+                    .iter()
+                    .zip(parallel_host.iter())
+                    .position(|(w, p)| w != p)
+                    .unwrap_or(warp_host.len())
+            );
+        }
+
+        /// §3.4: Warp kernel handles multiple blocks with real LZ4 data.
+        #[test]
+        #[cfg(feature = "cuda-experimental")]
+        fn test_warp_multi_block_real_lz4() {
+            if !cuda_available() {
+                eprintln!("Skipping test: no CUDA device available");
+                return;
+            }
+
+            let mut ctx = GpuLz4Context::new(0).expect("context creation");
+            ctx.load_kernel().expect("kernel load");
+
+            // Multiple blocks with different patterns
+            let originals: Vec<Vec<u8>> = vec![
+                (0..256).map(|i| (i % 7) as u8).collect(),     // small, repetitive
+                (0..4096).map(|i| (i % 37) as u8).collect(),   // medium, moderate compression
+                (0..512).map(|i| ((i * 7 + 3) % 256) as u8).collect(), // pseudo-random
+                vec![0xAA; 2048],                                // highly repetitive
+            ];
+
+            let blocks: Vec<(Vec<u8>, usize)> = originals
+                .iter()
+                .map(|orig| {
+                    let compressed = lz4_flex::block::compress_prepend_size(orig);
+                    (compressed[4..].to_vec(), orig.len())
+                })
+                .collect();
+
+            let parallel_result = ctx.decompress_blocks_parallel(&blocks).expect("parallel");
+            let warp_result = ctx.decompress_blocks_warp_parallel(&blocks).expect("warp");
+
+            let total_size: usize = originals.iter().map(|o| o.len()).sum();
+            let mut parallel_host = vec![0u8; total_size];
+            let mut warp_host = vec![0u8; total_size];
+
+            ctx.device
+                .dtoh_sync_copy_into(&parallel_result, &mut parallel_host)
+                .expect("copy parallel");
+            ctx.device
+                .dtoh_sync_copy_into(&warp_result, &mut warp_host)
+                .expect("copy warp");
+
+            // Verify each block
+            let mut offset = 0;
+            for (i, orig) in originals.iter().enumerate() {
+                let p_block = &parallel_host[offset..offset + orig.len()];
+                let w_block = &warp_host[offset..offset + orig.len()];
+
+                assert_eq!(
+                    p_block,
+                    orig.as_slice(),
+                    "Parallel block {} incorrect",
+                    i
+                );
+                assert_eq!(
+                    w_block, p_block,
+                    "Warp block {} diverges from parallel at byte {}",
+                    i,
+                    w_block
+                        .iter()
+                        .zip(p_block.iter())
+                        .position(|(w, p)| w != p)
+                        .unwrap_or(w_block.len())
+                );
+                offset += orig.len();
+            }
+        }
+
+        /// §3.4: Warp kernel handles small-offset matches (overlap requiring sequential copy).
+        /// This specifically tests the sequential fallback path (offset < 32).
+        #[test]
+        #[cfg(feature = "cuda-experimental")]
+        fn test_warp_small_offset_matches() {
+            if !cuda_available() {
+                eprintln!("Skipping test: no CUDA device available");
+                return;
+            }
+
+            let mut ctx = GpuLz4Context::new(0).expect("context creation");
+            ctx.load_kernel().expect("kernel load");
+
+            // Data designed to produce small-offset matches:
+            // Repeating short pattern → LZ4 offset will be small (e.g., 4)
+            let original: Vec<u8> = "ABCDABCDABCDABCDABCDABCDABCDABCD"
+                .repeat(100)
+                .into_bytes();
+
+            let compressed = lz4_flex::block::compress_prepend_size(&original);
+            let raw_compressed = &compressed[4..];
+
+            let blocks = vec![(raw_compressed.to_vec(), original.len())];
+
+            let parallel_result = ctx.decompress_blocks_parallel(&blocks).expect("parallel");
+            let warp_result = ctx.decompress_blocks_warp_parallel(&blocks).expect("warp");
+
+            let mut parallel_host = vec![0u8; original.len()];
+            let mut warp_host = vec![0u8; original.len()];
+
+            ctx.device
+                .dtoh_sync_copy_into(&parallel_result, &mut parallel_host)
+                .expect("copy parallel");
+            ctx.device
+                .dtoh_sync_copy_into(&warp_result, &mut warp_host)
+                .expect("copy warp");
+
+            assert_eq!(parallel_host, original, "Parallel correctness");
+            assert_eq!(
+                warp_host, parallel_host,
+                "Warp must match parallel for small-offset (overlapping) matches"
+            );
+        }
+
         // ==================== Feature-Gate Boundary Tests (Phase 2) ====================
 
         /// Trust boundary §7: Verifies the warp method is not available
@@ -2427,6 +2665,94 @@ WARP_DONE:
                 let _: fn(&GpuLz4Context, &[(Vec<u8>, usize)]) -> Result<CudaSlice<u8>, GpuLz4Error> =
                     GpuLz4Context::decompress_blocks_warp_parallel;
             }
+        }
+
+        // ==================== K2 vs K3 Throughput Benchmark ====================
+
+        /// Benchmarks K2 (sequential per-block) vs K3 (warp-parallel) throughput
+        /// across multiple data sizes and compression patterns.
+        #[test]
+        #[cfg(feature = "cuda-experimental")]
+        fn bench_warp_vs_parallel_throughput() {
+            if !cuda_available() {
+                eprintln!("Skipping benchmark: no CUDA device available");
+                return;
+            }
+
+            let mut ctx = GpuLz4Context::new(0).expect("context creation");
+            ctx.load_kernel().expect("kernel load");
+
+            let scenarios: Vec<(&str, Vec<u8>)> = vec![
+                // Literals-only (incompressible random-ish data)
+                ("4KB literals", (0..4096).map(|i| ((i * 7 + 13) % 256) as u8).collect()),
+                // Patterned data (good compression ratio, many matches)
+                ("64KB patterned", (0..65536).map(|i| (i % 251) as u8).collect()),
+                // Repeated data (extreme compression)
+                ("64KB repeated", vec![0xAB_u8; 65536]),
+                // Multi-block: 16 x 4KB blocks
+                ("16x4KB mixed", (0..65536).map(|i| ((i * 31 + i / 256) % 256) as u8).collect()),
+            ];
+
+            let warmup_iters = 3;
+            let bench_iters = 20;
+
+            eprintln!("\n=== K2 vs K3 Throughput Benchmark ===");
+            eprintln!("{:<18} {:>12} {:>12} {:>10}", "Scenario", "K2 (GB/s)", "K3 (GB/s)", "Speedup");
+            eprintln!("{}", "-".repeat(56));
+
+            for (name, original) in &scenarios {
+                let compressed = lz4_flex::block::compress_prepend_size(original);
+                let raw_compressed = &compressed[4..];
+
+                // For multi-block scenario, split into 4KB chunks
+                let (blocks, total_bytes) = if name.starts_with("16x") {
+                    let chunks: Vec<(Vec<u8>, usize)> = original
+                        .chunks(4096)
+                        .map(|chunk| {
+                            let comp = lz4_flex::block::compress_prepend_size(chunk);
+                            (comp[4..].to_vec(), chunk.len())
+                        })
+                        .collect();
+                    let total = original.len();
+                    (chunks, total)
+                } else {
+                    (vec![(raw_compressed.to_vec(), original.len())], original.len())
+                };
+
+                // Warmup
+                for _ in 0..warmup_iters {
+                    let _ = ctx.decompress_blocks_parallel(&blocks);
+                    let _ = ctx.decompress_blocks_warp_parallel(&blocks);
+                }
+
+                // Benchmark K2
+                let start = std::time::Instant::now();
+                for _ in 0..bench_iters {
+                    let result = ctx.decompress_blocks_parallel(&blocks).expect("K2");
+                    // Force sync to measure actual kernel time
+                    let _ = ctx.device.dtoh_sync_copy(&result);
+                }
+                let k2_elapsed = start.elapsed();
+
+                // Benchmark K3
+                let start = std::time::Instant::now();
+                for _ in 0..bench_iters {
+                    let result = ctx.decompress_blocks_warp_parallel(&blocks).expect("K3");
+                    let _ = ctx.device.dtoh_sync_copy(&result);
+                }
+                let k3_elapsed = start.elapsed();
+
+                let bytes_total = (total_bytes * bench_iters) as f64;
+                let k2_gbps = bytes_total / k2_elapsed.as_secs_f64() / 1e9;
+                let k3_gbps = bytes_total / k3_elapsed.as_secs_f64() / 1e9;
+                let speedup = k3_gbps / k2_gbps;
+
+                eprintln!(
+                    "{:<18} {:>10.3}   {:>10.3}   {:>8.2}x",
+                    name, k2_gbps, k3_gbps, speedup
+                );
+            }
+            eprintln!("{}", "=".repeat(56));
         }
 
         // ==================== Direct GPU Slice Tests (Phase 4.1) ====================

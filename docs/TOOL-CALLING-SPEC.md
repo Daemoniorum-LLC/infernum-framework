@@ -1,36 +1,37 @@
 # Tool Calling Specification
 
-**Version:** 1.3.0
-**Status:** Phase 5 Complete, All Design Debt Resolved ✅
-**Date:** 2026-02-02
+**Version:** 1.5.0
+**Status:** Phase 5 Complete, All Design Debt Retired
+**Date:** 2026-02-04
 **Prerequisite:** ROADMAP.md Phase 1.3
 
 ---
 
 ## 1. Overview
 
-This specification defines tool calling behavior for the `/v1/chat/completions` endpoint, following the OpenAI-compatible API specification.
+This specification defines tool calling behavior for Infernum's native runtime, including the `/v1/chat/completions` endpoint and the Beleth agent framework.
 
 ### 1.1 Scope
 
 **In Scope:**
 - Accepting tools in chat completion requests
-- Formatting tools into model-specific prompts
+- Formatting tools into **model-native** prompts (matching each model's training format)
 - Detecting tool calls in model output
 - Returning tool_calls in responses
-- Handling tool result messages
+- Formatting multi-turn tool conversations in model-native format
 - Server-side tool execution with policy control (Phase 4)
 - Agent-centric observability and coordination (Phase 5)
+- Beleth model-aware tool calling across all execution strategies (ReAct, ToT, OODA)
 
 **Out of Scope:**
-- Custom tool runtime environments (use Beleth directly)
+- Custom tool runtime environments
 - Tool marketplace/discovery (future consideration)
 
 ### 1.2 Architecture Decision
 
 Tool calling supports **both patterns**:
 
-1. **Client-side execution** (OpenAI-compatible, Phases 1-3)
+1. **Client-side execution** (API, Phases 1-3)
 2. **Server-side execution** (Agent runtime, Phases 4-5)
 
 ```
@@ -249,7 +250,11 @@ After executing a tool, client sends result:
 
 ### 5.1 Qwen Format
 
-Qwen models use a specific format for tools:
+Qwen2.5 models use a native tool calling format defined in their training chat template
+(extracted from `tokenizer_config.json` Jinja template). The format uses `<tools></tools>` XML
+tags with full JSON function definitions and structured multi-turn conversation tags.
+
+**System Message with Tools:**
 
 ```
 <|im_start|>system
@@ -257,21 +262,24 @@ You are a helpful assistant.
 
 # Tools
 
-You have access to the following tools:
+You may call one or more functions to assist with the user query.
 
-## get_weather
+You are provided with function signatures within <tools></tools> XML tags:
+<tools>
+{"type": "function", "function": {"name": "get_weather", "description": "Get current weather for a location", "parameters": {"type": "object", "properties": {"location": {"type": "string", "description": "City name"}}, "required": ["location"]}}}
+</tools>
 
-Get current weather for a location
-
-Parameters:
-- location (string, required): City name
-
-To use a tool, respond with:
+For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
 <tool_call>
-{"name": "get_weather", "arguments": {"location": "Seattle"}}
+{"name": <function-name>, "arguments": <args-json-object>}
 </tool_call>
 <|im_end|>
 ```
+
+**Key requirements:**
+- Each tool is serialized as a complete `{"type": "function", "function": {...}}` JSON object
+- Tools are wrapped in `<tools></tools>` XML tags, one JSON object per line
+- Instruction text matches the native training format verbatim
 
 ### 5.2 Llama Format
 
@@ -288,6 +296,120 @@ Tool calls are detected by parsing model output for:
 - `<|python_tag|>` markers (Llama)
 - `[TOOL_CALLS]` markers (Mistral)
 - `{"name": "...", "arguments": ...}` JSON patterns
+
+### 5.5 Multi-Turn Conversation Format
+
+When a tool calling conversation spans multiple turns, the conversation history
+MUST be reconstructed in each model's native format. This is critical for models
+to understand the conversation flow and produce correct tool calls.
+
+#### 5.5.1 Qwen Multi-Turn Format
+
+**Assistant message with tool call:**
+
+The assistant's tool call output MUST be reconstructed with `<tool_call>` tags
+in the message content, even when the original response is stored as a structured
+`tool_calls` array in the API:
+
+```
+<|im_start|>assistant
+<tool_call>
+{"name": "get_weather", "arguments": {"location": "Seattle"}}
+</tool_call>
+<|im_end|>
+```
+
+**Tool result message:**
+
+Tool results MUST be wrapped in `<tool_response></tool_response>` tags and
+sent as a `user` role message (Qwen2.5's training template uses `user` role
+for tool responses):
+
+```
+<|im_start|>user
+<tool_response>
+{"temperature": 62, "condition": "cloudy"}
+</tool_response>
+<|im_end|>
+```
+
+**Complete multi-turn example:**
+
+```
+<|im_start|>system
+You are a helpful assistant.
+{tools_prompt}
+<|im_end|>
+<|im_start|>user
+What's the weather in Seattle?
+<|im_end|>
+<|im_start|>assistant
+<tool_call>
+{"name": "get_weather", "arguments": {"location": "Seattle"}}
+</tool_call>
+<|im_end|>
+<|im_start|>user
+<tool_response>
+{"temperature": 62, "condition": "cloudy"}
+</tool_response>
+<|im_end|>
+<|im_start|>assistant
+The weather in Seattle is currently 62°F and cloudy.
+<|im_end|>
+```
+
+#### 5.5.2 Implementation Requirements
+
+For each model family, the message-building pipeline MUST:
+
+1. **Reconstruct assistant tool_calls**: When an assistant message has a `tool_calls`
+   array, embed the calls in the content using the model's native tool call syntax.
+2. **Format tool results**: When a `tool` role message is encountered, wrap the
+   content in the model's native tool response syntax.
+3. **Preserve text content**: If an assistant message has both `content` and
+   `tool_calls`, the text content MUST be preserved alongside the reconstructed tags.
+
+### 5.6 Beleth Agent Native Format
+
+Beleth's agent execution strategies (ReAct, ToT, OODA) MUST use model-native
+tool calling format when the model supports it, rather than generic text-based
+`Action: / Action Input:` format.
+
+**Rationale:** Models trained with native tool calling formats (e.g., Qwen2.5's
+`<tool_call>` syntax) produce more reliable tool calls when prompted in their
+training format. Generic ReAct-style prompting works but sacrifices the model's
+built-in tool calling capability.
+
+**Architecture:**
+
+```
+┌────────────────────────────────────────────────────┐
+│                   Beleth Agent                      │
+├────────────────────────────────────────────────────┤
+│                                                     │
+│  Model-Aware Tool Formatter                         │
+│  ┌──────────────┐  ┌────────────┐  ┌──────────┐   │
+│  │ Qwen Native  │  │ Llama      │  │ Generic  │   │
+│  │ <tools>      │  │ <|python_  │  │ Action:  │   │
+│  │ <tool_call>  │  │  tag|>     │  │ Action   │   │
+│  │ <tool_resp>  │  │            │  │  Input:  │   │
+│  └──────────────┘  └────────────┘  └──────────┘   │
+│         │                │               │          │
+│         └────────────────┼───────────────┘          │
+│                          ▼                          │
+│              build_system_prompt()                   │
+│              parse_action()                          │
+│                                                     │
+│  ReAct  │  ToT  │  OODA  │  Hierarchical            │
+└────────────────────────────────────────────────────┘
+```
+
+**Implementation approach:**
+- `build_system_prompt()` uses `ModelFamily` to select native or generic format
+- `parse_action()` detects both native format (`<tool_call>` tags) and generic
+  format (`Action: / Action Input:`) for backwards compatibility
+- Tool results are formatted in native `<tool_response>` tags when supported
+- `ToolRegistry::to_prompt_description()` gains a model-family-aware variant
 
 ---
 
@@ -575,7 +697,7 @@ mod spec_compliance {
 
 ### Core Modules (Phases 1-3)
 - `src/tool_use.rs` - Tool formatting and detection
-- `src/openai.rs` - OpenAI-compatible types
+- `src/api_types.rs` - API wire types
 
 ### Agent Runtime (Phase 4)
 - `src/tool_executor.rs` - Server-side execution (Phase 4.2)
@@ -640,7 +762,7 @@ pub struct DetectedToolCall {
 }
 
 impl DetectedToolCall {
-    /// Get arguments as JSON string for OpenAI API compatibility
+    /// Get arguments as JSON string for API wire format
     pub fn arguments_string(&self) -> String { ... }
 }
 ```
@@ -672,6 +794,32 @@ pub struct AppState {
 
 **Impact:** All Phase 4-5 infrastructure now accessible from request handlers. 954 tests passing.
 
+### 11.4 Non-Native Tool Calling Format ✅ RESOLVED
+
+**Status:** Resolved 2026-02-04
+
+**Gap discovered during runtime testing:** When Qwen2.5-7B-Instruct receives tool
+definitions in markdown-style format (the previous §5.1 format) without an explicit
+system message, it sometimes outputs raw JSON instead of `<tool_call>` tagged responses.
+Root cause: the prompt format diverges from the model's training template.
+
+**Three components fixed:**
+
+1. **Server tool prompt** (`tool_use.rs:format_tools_qwen`): Now uses native Qwen
+   `<tools></tools>` XML with full JSON function definitions per §5.1.
+
+2. **Server multi-turn messages** (`server.rs` message builder):
+   - Tool results wrapped in `<tool_response></tool_response>` tags for Qwen (§5.5).
+   - Assistant messages with `tool_calls` reconstruct `<tool_call>` tags in content.
+
+3. **Beleth agent prompt** (`agent.rs:build_system_prompt`): Model-family-aware
+   dispatch — Qwen uses `to_qwen_native_description()` with native tags, unknown
+   models fall back to generic `Action: / Action Input:` format (§5.6).
+
+**Impact:** All three layers (server prompt, multi-turn messages, agent prompt) now
+use model-native tool calling format. Both native and generic formats remain supported;
+model family determines selection. Existing tests validate format selection.
+
 ---
 
 ## 12. Revision History
@@ -686,3 +834,5 @@ pub struct AppState {
 | 1.1.0 | 2026-02-02 | §11.1 RESOLVED: ToolChoice refactored from `String(String)` to typed `Mode(ToolChoiceMode)`. Compile-time safety achieved. 951 tests passing. |
 | 1.2.0 | 2026-02-02 | §11.2 RESOLVED: DetectedToolCall.arguments refactored from `String` to `serde_json::Value`. Structured access without parsing. Added `arguments_string()` for API compat. 954 tests passing. |
 | 1.3.0 | 2026-02-02 | §11.3 RESOLVED: Tool infrastructure wired into AppState. ToolExecutor, AgentCoordinator, ToolConnectionPool, ToolMetricsCollector now accessible from request handlers. All design debt retired. 954 tests passing. |
+| 1.4.0 | 2026-02-04 | §11.4 OPENED: Non-native tool calling format discovered during runtime testing. §1 reframed from OpenAI-compatible to Infernum native runtime. §5.1 updated to Qwen2.5 native training format. §5.5 added for multi-turn conversation format. §5.6 added for Beleth model-aware tool calling. |
+| 1.5.0 | 2026-02-04 | §11.4 RESOLVED: All three components (server prompt, multi-turn messages, Beleth agent) verified using native format. All design debt retired. |

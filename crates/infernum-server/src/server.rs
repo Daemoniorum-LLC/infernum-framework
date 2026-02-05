@@ -1,4 +1,4 @@
-//! HTTP server implementation with OpenAI-compatible API endpoints.
+//! HTTP server implementation for the Infernum API.
 //!
 //! Provides a production-ready server that interfaces with the Abaddon inference engine
 //! for text generation, chat completions, and embeddings.
@@ -27,6 +27,7 @@ use abaddon::{Engine, EngineConfig, InferenceEngine};
 use dantalion::{MetricsCollector, TelemetryConfig};
 use infernum_core::{GenerateRequest, ModelSource, Result, SamplingParams};
 
+use crate::agentic::run_agent;
 use crate::error_response::{api_error, ApiError, ErrorCode};
 use crate::rag::{RagState, rag_health, list_documents, document_count, index_document, delete_document, search};
 use crate::sessions::{
@@ -40,7 +41,7 @@ use crate::speculative_engine::{SpeculativeEngine, SpeculativeEngineBuilder};
 use crate::validation::validate_chat_request;
 use crate::batching::{BatchConfig, BatchScheduler};
 use crate::request_batcher::{BatcherConfig, BatcherHandle, RequestBatcher};
-use crate::openai::{
+use crate::api_types::{
     ChatChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage, CompletionChoice,
     CompletionRequest, CompletionResponse, EmbeddingData, EmbeddingInput, EmbeddingRequest,
     EmbeddingResponse, EmbeddingUsage, ModelObject, ModelsResponse, ToolChoice, Usage,
@@ -489,7 +490,7 @@ impl Server {
             .route("/ready", get(ready))
             // Metrics endpoint (Prometheus format)
             .route("/metrics", get(prometheus_metrics))
-            // OpenAI-compatible API endpoints
+            // Inference API endpoints
             .route("/v1/models", get(list_models))
             .route("/v1/tokenize", post(tokenize))
             .route("/v1/chat/completions", post(chat_completions))
@@ -507,6 +508,8 @@ impl Server {
             .nest("/api/rag", rag_router)
             // Agent session endpoints (Beleth monitoring)
             .nest("/api/agent/sessions", sessions_router)
+            // Agentic loop endpoint (Beleth executor)
+            .route("/api/agent/run", post(run_agent))
             // Model cache management endpoints
             .nest("/api/cache", cache_router)
             .with_state(self.state.clone());
@@ -1328,7 +1331,7 @@ async fn unload_model(State(state): State<Arc<AppState>>) -> Response {
         .into_response()
 }
 
-// === OpenAI-Compatible Endpoints ===
+// === API Endpoints ===
 
 async fn list_models(State(state): State<Arc<AppState>>) -> Json<ModelsResponse> {
     let engine = state.engine.read().await;
@@ -1393,7 +1396,7 @@ async fn chat_completions(
     Json(req): Json<ChatCompletionRequest>,
 ) -> Response {
     let start = Instant::now();
-    let request_id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
+    let request_id = format!("inf-chat-{}", uuid::Uuid::new_v4());
     let error_request_id = request_id.clone(); // Clone for error handling
 
     tracing::debug!(request_id = %request_id, model = %req.model, "Chat completion request");
@@ -1521,15 +1524,43 @@ async fn chat_completions(
                 _ => infernum_core::Role::User,
             };
 
-            // Inject tools into the first system message, or create one if needed
+            // Inject tools into the first system message, or create one if needed.
+            // For multi-turn tool conversations, reconstruct model-native format
+            // per TOOL-CALLING-SPEC §5.5.
             let content = if role == infernum_core::Role::System && idx == 0 && !tools_prompt.is_empty() {
                 format!("{}{}", m.content, tools_prompt)
             } else if m.role == "tool" {
-                // Format tool result with tool_call_id context
-                if let Some(ref tool_call_id) = m.tool_call_id {
-                    format!("[Tool Result for {}]: {}", tool_call_id, m.content)
-                } else {
-                    format!("[Tool Result]: {}", m.content)
+                // §5.5: Format tool result in model-native format
+                match model_family {
+                    ModelFamily::Qwen => {
+                        format!("<tool_response>\n{}\n</tool_response>", m.content)
+                    }
+                    _ => {
+                        if let Some(ref tool_call_id) = m.tool_call_id {
+                            format!("[Tool Result for {}]: {}", tool_call_id, m.content)
+                        } else {
+                            format!("[Tool Result]: {}", m.content)
+                        }
+                    }
+                }
+            } else if m.role == "assistant" && m.tool_calls.is_some() {
+                // §5.5: Reconstruct native tool_call tags in assistant message content
+                match model_family {
+                    ModelFamily::Qwen => {
+                        use std::fmt::Write;
+                        let mut content = m.content.clone();
+                        if let Some(ref calls) = m.tool_calls {
+                            for tc in calls {
+                                let _ = write!(
+                                    content,
+                                    "\n<tool_call>\n{{\"name\": \"{}\", \"arguments\": {}}}\n</tool_call>",
+                                    tc.function.name, tc.function.arguments
+                                );
+                            }
+                        }
+                        content
+                    }
+                    _ => m.content.clone(),
                 }
             } else {
                 m.content.clone()
@@ -1585,7 +1616,7 @@ async fn chat_completions(
         sampling = sampling.with_frequency_penalty(frequency_penalty);
     }
     // Apply a default repetition penalty if no penalty specified to prevent loops
-    // OpenAI's presence/frequency penalties work differently but achieve similar goals
+    // Presence/frequency penalties map to repetition penalty when neither is set
     if req.presence_penalty.is_none() && req.frequency_penalty.is_none() {
         sampling = sampling.with_repetition_penalty(1.1);
     }
@@ -1976,7 +2007,7 @@ async fn completions(
     Json(req): Json<CompletionRequest>,
 ) -> Response {
     let start = Instant::now();
-    let request_id = format!("cmpl-{}", uuid::Uuid::new_v4());
+    let request_id = format!("inf-cmpl-{}", uuid::Uuid::new_v4());
     let error_request_id = request_id.clone();
 
     tracing::debug!(request_id = %request_id, model = %req.model, "Completion request");

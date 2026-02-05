@@ -34,7 +34,7 @@ pub use request::{EmbedRequest, GenerateRequest, PromptInput};
 pub use response::{EmbedResponse, GenerateResponse, TokenInfo};
 pub use sampling::SamplingParams;
 pub use streaming::TokenStream;
-pub use types::*;
+pub use types::*; // Includes ModelFamily, ModelId, Role, Message, ToolCall, ToolDefinition, etc.
 
 #[cfg(test)]
 mod tests {
