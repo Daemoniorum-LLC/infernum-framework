@@ -415,15 +415,15 @@ async fn test_tokenize_no_input_error() {
 fn typed_validation_router() -> axum::Router {
     use axum::http::StatusCode;
     use axum::routing::post;
-    use infernum_core::GenerateRequest;
-    use infernum_server::validation::validate_generate_request;
-    use infernum_server::server::ValidationLimits;
+    use infernum_server::ChatCompletionRequest;
+    use infernum_server::validation::validate_chat_request;
+    use infernum_server::ValidationLimits;
 
     axum::Router::new().route(
-        "/v1/generate",
+        "/v1/chat/completions",
         post(|Json(body): Json<serde_json::Value>| async move {
-            // First try to parse the request as GenerateRequest
-            let req: GenerateRequest = match serde_json::from_value(body.clone()) {
+            // Parse as ChatCompletionRequest (OpenAI-compatible format)
+            let req: ChatCompletionRequest = match serde_json::from_value(body.clone()) {
                 Ok(r) => r,
                 Err(e) => {
                     return (
@@ -448,9 +448,9 @@ fn typed_validation_router() -> axum::Router {
             };
 
             // Validate using the real validation module
-            if let Err(err) = validate_generate_request(&req, &limits) {
+            if let Err(err) = validate_chat_request(&req, &limits) {
                 let api_error = err.to_api_error("test-request-id");
-                return (StatusCode::BAD_REQUEST, Json(serde_json::to_value(api_error).unwrap()));
+                return (StatusCode::BAD_REQUEST, Json(serde_json::to_value(api_error).unwrap_or_default()));
             }
 
             // Success response
@@ -481,10 +481,10 @@ async fn test_typed_validation_empty_messages_returns_400() {
 
     let response = server
         .post_json(
-            "/v1/generate",
+            "/v1/chat/completions",
             &json!({
                 "model": "test-model",
-                "prompt": []
+                "messages": []
             }),
         )
         .await;
@@ -509,10 +509,10 @@ async fn test_typed_validation_too_many_messages_returns_400() {
 
     let response = server
         .post_json(
-            "/v1/generate",
+            "/v1/chat/completions",
             &json!({
                 "model": "test-model",
-                "prompt": messages
+                "messages": messages
             }),
         )
         .await;
@@ -535,11 +535,11 @@ async fn test_typed_validation_invalid_temperature_returns_400() {
 
     let response = server
         .post_json(
-            "/v1/generate",
+            "/v1/chat/completions",
             &json!({
                 "model": "test-model",
-                "prompt": [{"role": "user", "content": "hi"}],
-                "sampling": {"temperature": 3.5}
+                "messages": [{"role": "user", "content": "hi"}],
+                "temperature": 3.5
             }),
         )
         .await;
@@ -559,11 +559,12 @@ async fn test_typed_validation_valid_request_returns_200() {
 
     let response = server
         .post_json(
-            "/v1/generate",
+            "/v1/chat/completions",
             &json!({
                 "model": "test-model",
-                "prompt": [{"role": "user", "content": "Hello!"}],
-                "sampling": {"temperature": 0.7, "max_tokens": 100}
+                "messages": [{"role": "user", "content": "Hello!"}],
+                "temperature": 0.7,
+                "max_tokens": 100
             }),
         )
         .await;
@@ -871,10 +872,10 @@ async fn test_error_response_includes_request_id() {
 
     let response = server
         .post_json(
-            "/v1/generate",
+            "/v1/chat/completions",
             &json!({
                 "model": "test-model",
-                "prompt": []  // Invalid - empty messages
+                "messages": []  // Invalid - empty messages
             }),
         )
         .await;
@@ -1030,11 +1031,11 @@ async fn test_request_id_propagated() {
 
     // Send request with custom request ID
     let response = client
-        .post(&server.url("/v1/generate"))
+        .post(&server.url("/v1/chat/completions"))
         .header("x-request-id", "custom-req-12345")
         .json(&json!({
             "model": "test-model",
-            "prompt": []
+            "messages": []
         }))
         .send()
         .await

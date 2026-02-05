@@ -6,7 +6,7 @@
 //! [`KvCache`] trait, allowing use of standard caches, quantized caches,
 //! or CUDA-accelerated caches.
 
-use candle_core::{DType, Device, IndexOp, Module, Result as CandleResult, Tensor, D};
+use candle_core::{DType, Device, Module, Result as CandleResult, Tensor, D};
 use candle_nn::{embedding, linear_no_bias, Embedding, Linear, VarBuilder};
 use serde::Deserialize;
 
@@ -254,6 +254,7 @@ struct Attention {
 }
 
 impl Attention {
+    #[allow(dead_code)]
     fn load(config: &LlamaConfig, vb: VarBuilder) -> CandleResult<Self> {
         Self::load_with_cache_type(config, vb, CacheType::Standard)
     }
@@ -398,6 +399,7 @@ struct DecoderLayer {
 }
 
 impl DecoderLayer {
+    #[allow(dead_code)]
     fn load(config: &LlamaConfig, vb: VarBuilder) -> CandleResult<Self> {
         Self::load_with_cache_type(config, vb, CacheType::Standard)
     }

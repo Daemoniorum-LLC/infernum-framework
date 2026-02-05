@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use candle_core::quantized::{gguf_file, QTensor};
-use candle_core::{DType, Device, IndexOp, Module, Result as CandleResult, Tensor, D};
+use candle_core::{DType, Device, Module, Result as CandleResult, Tensor, D};
 
 use crate::gguf::{GgufLoader, QuantizedModelConfig};
 

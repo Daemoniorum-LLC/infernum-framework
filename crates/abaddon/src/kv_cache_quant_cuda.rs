@@ -23,6 +23,7 @@
 //! 2. Softmax
 //! 3. Compute attn @ V with on-the-fly dequantization of V
 
+/// CUDA-accelerated INT8 KV cache quantization and fused attention.
 #[cfg(feature = "cuda")]
 pub mod cuda {
     use std::sync::Arc;
@@ -510,6 +511,7 @@ extern "C" __global__ void int8_qk_attention_decode(
         // For attn@V: naive kernel is used (tiled V has too much sync overhead).
         const TILED_QK_THRESHOLD: usize = 128;  // Use tiled kernel for kv_len > TILE_KV
         const TILE_KV: usize = 128;             // Must match TILE_KV in kernel
+        #[allow(dead_code)]
         const TILE_KV_AV: usize = 64;           // Must match TILE_KV_AV in kernel
         const WARP_SIZE: usize = 32;
 
@@ -820,6 +822,7 @@ extern "C" __global__ void int8_qk_attention_decode(
 
         /// Launch tiled attn @ V kernel with shared memory.
         #[allow(clippy::too_many_arguments)]
+        #[allow(dead_code)]
         fn launch_attn_v_tiled(
             &self,
             attn: &CudaSlice<f32>,
@@ -871,19 +874,36 @@ extern "C" __global__ void int8_qk_attention_decode(
     pub enum Int8AttentionError {
         /// Device initialization error.
         #[error("Failed to initialize CUDA device {device_id}: {message}")]
-        DeviceInit { device_id: usize, message: String },
+        DeviceInit {
+            /// CUDA device ID.
+            device_id: usize,
+            /// Error message.
+            message: String,
+        },
         /// Kernel compilation error.
         #[error("Failed to compile kernel: {message}")]
-        KernelCompile { message: String },
+        KernelCompile {
+            /// Error message.
+            message: String,
+        },
         /// Kernel not loaded error.
         #[error("Kernel not loaded: {kernel}")]
-        KernelNotLoaded { kernel: String },
+        KernelNotLoaded {
+            /// Kernel name.
+            kernel: String,
+        },
         /// Kernel execution error.
         #[error("Kernel execution failed: {message}")]
-        KernelExec { message: String },
+        KernelExec {
+            /// Error message.
+            message: String,
+        },
         /// Tensor conversion error.
         #[error("Tensor conversion failed: {message}")]
-        TensorConvert { message: String },
+        TensorConvert {
+            /// Error message.
+            message: String,
+        },
     }
 
     /// CUDA-accelerated INT8 KV cache with fused attention kernels.
@@ -904,6 +924,7 @@ extern "C" __global__ void int8_qk_attention_decode(
         /// Number of KV heads.
         num_kv_heads: usize,
         /// Head dimension.
+        #[allow(dead_code)]
         head_dim: usize,
         /// Current sequence length.
         seq_len: usize,
@@ -1357,6 +1378,7 @@ pub struct OptimizedQuantizedKvCache {
     /// Head dimension
     head_dim: usize,
     /// Device
+    #[allow(dead_code)]
     device: Device,
     /// Output dtype
     dtype: DType,

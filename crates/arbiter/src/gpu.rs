@@ -5,8 +5,8 @@
 //! 2. rocm-smi (AMD GPUs)
 //! 3. System fallback (generic detection)
 
-use std::process::Command;
-use std::time::Duration;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 use thiserror::Error;
 
 /// Errors from GPU detection.
@@ -160,7 +160,7 @@ impl Default for GpuDetector {
 }
 
 impl GpuDetector {
-    /// Creates a new GPU detector.
+    /// Creates a new GPU detector with a 5-second timeout.
     pub fn new() -> Self {
         Self {
             timeout: Duration::from_secs(5),
@@ -170,6 +170,42 @@ impl GpuDetector {
     /// Creates a detector with custom timeout.
     pub fn with_timeout(timeout: Duration) -> Self {
         Self { timeout }
+    }
+
+    /// Runs a command with the configured timeout.
+    ///
+    /// Spawns the process and polls `try_wait` until it exits or the timeout
+    /// elapses. On timeout the child is killed and `GpuDetectionError::Timeout`
+    /// is returned.
+    fn run_with_timeout(&self, cmd: &mut Command) -> Result<std::process::Output> {
+        let mut child = cmd
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| GpuDetectionError::CommandFailed(e.to_string()))?;
+
+        let start = Instant::now();
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => {
+                    // Child exited — collect stdout/stderr.
+                    return child
+                        .wait_with_output()
+                        .map_err(|e| GpuDetectionError::CommandFailed(e.to_string()));
+                }
+                Ok(None) => {
+                    if start.elapsed() >= self.timeout {
+                        let _ = child.kill();
+                        let _ = child.wait(); // Reap zombie.
+                        return Err(GpuDetectionError::Timeout(self.timeout));
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(e) => {
+                    return Err(GpuDetectionError::CommandFailed(e.to_string()));
+                }
+            }
+        }
     }
 
     /// Detects all available GPUs.
@@ -222,13 +258,12 @@ impl GpuDetector {
 
     /// Detects NVIDIA GPUs using nvidia-smi.
     fn detect_nvidia(&self) -> Result<GpuDetectionResult> {
-        let output = Command::new("nvidia-smi")
-            .args([
+        let output = self.run_with_timeout(
+            Command::new("nvidia-smi").args([
                 "--query-gpu=index,name,memory.total,memory.free,driver_version,compute_cap",
                 "--format=csv,noheader,nounits",
-            ])
-            .output()
-            .map_err(|e| GpuDetectionError::CommandFailed(e.to_string()))?;
+            ]),
+        )?;
 
         if !output.status.success() {
             return Err(GpuDetectionError::CommandFailed(
@@ -292,10 +327,9 @@ impl GpuDetector {
 
     /// Detects AMD GPUs using rocm-smi.
     fn detect_amd(&self) -> Result<GpuDetectionResult> {
-        let output = Command::new("rocm-smi")
-            .args(["--showmeminfo", "vram", "--json"])
-            .output()
-            .map_err(|e| GpuDetectionError::CommandFailed(e.to_string()))?;
+        let output = self.run_with_timeout(
+            Command::new("rocm-smi").args(["--showmeminfo", "vram", "--json"]),
+        )?;
 
         if !output.status.success() {
             return Err(GpuDetectionError::CommandFailed(
@@ -337,10 +371,9 @@ impl GpuDetector {
     #[cfg(target_os = "macos")]
     fn detect_apple(&self) -> Result<GpuDetectionResult> {
         // Use system_profiler to get GPU info
-        let output = Command::new("system_profiler")
-            .args(["SPDisplaysDataType", "-json"])
-            .output()
-            .map_err(|e| GpuDetectionError::CommandFailed(e.to_string()))?;
+        let output = self.run_with_timeout(
+            Command::new("system_profiler").args(["SPDisplaysDataType", "-json"]),
+        )?;
 
         if !output.status.success() {
             return Err(GpuDetectionError::CommandFailed(
@@ -350,10 +383,9 @@ impl GpuDetector {
 
         // For Apple Silicon, unified memory is shared
         // We'll estimate GPU portion as ~75% of total RAM
-        let sysctl_output = Command::new("sysctl")
-            .args(["-n", "hw.memsize"])
-            .output()
-            .map_err(|e| GpuDetectionError::CommandFailed(e.to_string()))?;
+        let sysctl_output = self.run_with_timeout(
+            Command::new("sysctl").args(["-n", "hw.memsize"]),
+        )?;
 
         let total_ram = String::from_utf8_lossy(&sysctl_output.stdout)
             .trim()

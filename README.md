@@ -2,7 +2,7 @@
 
 > *"From the depths, intelligence rises"*
 
-**Blazingly fast local LLM inference for the command line and beyond.**
+**Local LLM inference for the command line and beyond.**
 
 Infernum is a high-performance LLM inference framework written in Rust, designed to run large language models locally with exceptional speed and minimal setup. Drop-in OpenAI API compatibility means your existing tools just work.
 

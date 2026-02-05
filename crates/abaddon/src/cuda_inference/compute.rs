@@ -39,6 +39,7 @@ use super::InferenceError;
 /// Main compute engine for transformer inference.
 pub struct ComputeEngine {
     /// CUDA device.
+    #[allow(dead_code)]
     device: Arc<CudaDevice>,
 
     /// Model configuration.
@@ -430,7 +431,7 @@ impl ComputeEngine {
         ])?;
 
         // Output buffer
-        let mut attn_out = self.attn_out_buffer.slice_dim0(0, seq_len)?;
+        let attn_out = self.attn_out_buffer.slice_dim0(0, seq_len)?;
         let mut attn_out_4d = attn_out.reshape(vec![
             1,
             self.config.num_attention_heads,
@@ -605,7 +606,7 @@ impl ComputeEngine {
         input_ids: &[u32],
     ) -> Result<GpuTensor, InferenceError> {
         let seq_len = input_ids.len();
-        let hidden_size = self.config.hidden_size;
+        let _hidden_size = self.config.hidden_size;
 
         // Copy token IDs to GPU
         let token_bytes: Vec<u8> = input_ids

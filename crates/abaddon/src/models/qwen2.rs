@@ -20,7 +20,7 @@
 //! beyond the generic [`crate::attention_cache::CacheType`]. Both are compatible
 //! with the underlying cache implementations.
 
-use candle_core::{DType, Device, IndexOp, Module, Result as CandleResult, Tensor, D};
+use candle_core::{DType, Device, Module, Result as CandleResult, Tensor, D};
 use candle_nn::{embedding, linear, linear_no_bias, Embedding, Linear, VarBuilder};
 use serde::Deserialize;
 
@@ -239,6 +239,7 @@ impl Default for CacheType {
 }
 
 impl Attention {
+    #[allow(dead_code)]
     fn load(
         config: &Qwen2Config,
         vb: VarBuilder,

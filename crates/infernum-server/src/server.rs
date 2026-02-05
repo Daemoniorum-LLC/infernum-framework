@@ -37,7 +37,7 @@ use crate::model_cache::{
     ModelCacheState, list_cached_models, delete_cached_model, convert_model, download_model,
     find_model_path, is_holotensor_model,
 };
-use crate::speculative_engine::{SpeculativeEngine, SpeculativeEngineBuilder, SpeculativeEngineConfig, SpeculativeEngineError};
+use crate::speculative_engine::{SpeculativeEngine, SpeculativeEngineBuilder};
 use crate::validation::validate_chat_request;
 use crate::batching::{BatchConfig, BatchScheduler};
 use crate::request_batcher::{BatcherConfig, BatcherHandle, RequestBatcher};

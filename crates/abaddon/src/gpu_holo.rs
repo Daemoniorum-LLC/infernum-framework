@@ -54,6 +54,7 @@
 //! └─────────────────────────────────────────────────────────────────────────────┘
 //! ```
 
+/// CUDA-accelerated holographic tensor reconstruction.
 #[cfg(feature = "cuda")]
 pub mod cuda {
     use std::sync::Arc;
@@ -61,7 +62,7 @@ pub mod cuda {
     use cudarc::driver::{CudaDevice, CudaSlice, DeviceSlice, LaunchAsync, LaunchConfig};
     use cudarc::nvrtc::Ptx;
     use haagenti::holotensor::{HoloFragment, HoloTensorHeader, HolographicEncoding, QualityCurve};
-    use parking_lot::Mutex;
+    
 
     // Haagenti's FFT-capable DCT context (when haagenti-gpu feature is enabled)
     #[cfg(feature = "haagenti-gpu")]
@@ -74,55 +75,102 @@ pub mod cuda {
     pub enum GpuHoloError {
         /// CUDA device initialization failed.
         #[error("Failed to initialize CUDA device {device_id}: {message}")]
-        DeviceInit { device_id: usize, message: String },
+        DeviceInit {
+            /// CUDA device ID.
+            device_id: usize,
+            /// Error message.
+            message: String,
+        },
 
         /// Kernel loading failed.
         #[error("Failed to load kernel: {message}")]
-        KernelLoad { message: String },
+        KernelLoad {
+            /// Error message.
+            message: String,
+        },
 
         /// Kernel not loaded.
         #[error("Kernel not loaded: {kernel}")]
-        KernelNotLoaded { kernel: String },
+        KernelNotLoaded {
+            /// Kernel name.
+            kernel: String,
+        },
 
         /// Kernel execution failed.
         #[error("Kernel execution failed: {message}")]
-        KernelExec { message: String },
+        KernelExec {
+            /// Error message.
+            message: String,
+        },
 
         /// Memory allocation failed.
         #[error("Memory allocation failed: {message}")]
-        MemoryAlloc { message: String },
+        MemoryAlloc {
+            /// Error message.
+            message: String,
+        },
 
         /// Memory copy failed.
         #[error("Memory copy failed: {message}")]
-        MemoryCopy { message: String },
+        MemoryCopy {
+            /// Error message.
+            message: String,
+        },
 
         /// Synchronization failed.
         #[error("Synchronization failed: {message}")]
-        Synchronize { message: String },
+        Synchronize {
+            /// Error message.
+            message: String,
+        },
 
         /// Invalid input data.
         #[error("Invalid input: {message}")]
-        InvalidInput { message: String },
+        InvalidInput {
+            /// Error message.
+            message: String,
+        },
 
         /// Insufficient fragments for reconstruction.
         #[error("Insufficient fragments: need at least {min_required}, have {available}")]
-        InsufficientFragments { min_required: u16, available: u16 },
+        InsufficientFragments {
+            /// Minimum fragments required.
+            min_required: u16,
+            /// Number of fragments available.
+            available: u16,
+        },
 
         /// Unsupported encoding.
         #[error("Unsupported encoding: {encoding:?}")]
-        UnsupportedEncoding { encoding: HolographicEncoding },
+        UnsupportedEncoding {
+            /// The unsupported encoding type.
+            encoding: HolographicEncoding,
+        },
 
         /// Fragment decode error.
         #[error("Fragment decode error: {message}")]
-        FragmentDecode { message: String },
+        FragmentDecode {
+            /// Error message.
+            message: String,
+        },
 
         /// Stream creation failed.
         #[error("Failed to create CUDA stream {stream_id}: {message}")]
-        StreamCreate { stream_id: usize, message: String },
+        StreamCreate {
+            /// Stream index.
+            stream_id: usize,
+            /// Error message.
+            message: String,
+        },
 
         /// Quality target not reached.
         #[error("Quality target {target} not reached, current quality: {current}")]
-        QualityNotReached { target: f32, current: f32 },
+        QualityNotReached {
+            /// Target quality score.
+            target: f32,
+            /// Current quality score.
+            current: f32,
+        },
     }
 
     // ==================== Accumulator State ====================
@@ -160,8 +208,9 @@ pub mod cuda {
             output: CudaSlice<f32>,
             /// Number of components accumulated
             num_components: u32,
-            /// Matrix dimensions
+            /// Number of matrix rows.
             rows: usize,
+            /// Number of matrix columns.
             cols: usize,
         },
     }
@@ -987,7 +1036,7 @@ pub mod cuda {
                 });
             }
 
-            let (projection_sum, num_projections, proj_dim, output_dim, seed) = match accumulator {
+            let (projection_sum, _num_projections, _proj_dim, output_dim, seed) = match accumulator {
                 AccumulatorState::RandomProjection {
                     projection_sum,
                     num_projections,
@@ -2931,7 +2980,7 @@ EXIT4:
             // For robustness, just compute a reasonable fit
             let a0 = points.first().map(|&(_, y)| y).unwrap_or(0.0);
             let a1 = if n > 1.0 {
-                (points.last().map(|&(_, y)| y).unwrap_or(1.0) - a0)
+                points.last().map(|&(_, y)| y).unwrap_or(1.0) - a0
             } else {
                 1.0
             };

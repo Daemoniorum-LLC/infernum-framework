@@ -71,11 +71,21 @@ use crate::quality::QualityCurve;
 pub enum SpectralMergeError {
     /// Dimension mismatch between models.
     #[error("Dimension mismatch: expected {expected}, got {actual}")]
-    DimensionMismatch { expected: String, actual: String },
+    DimensionMismatch {
+        /// Expected dimension.
+        expected: String,
+        /// Actual dimension found.
+        actual: String,
+    },
 
     /// Layer count mismatch.
     #[error("Layer count mismatch: expected {expected}, got {actual}")]
-    LayerCountMismatch { expected: usize, actual: usize },
+    LayerCountMismatch {
+        /// Expected layer count.
+        expected: usize,
+        /// Actual layer count found.
+        actual: usize,
+    },
 
     /// No models to blend.
     #[error("No models added to blend")]
@@ -83,19 +93,33 @@ pub enum SpectralMergeError {
 
     /// Invalid weight.
     #[error("Invalid weight {weight}: weights must be positive")]
-    InvalidWeight { weight: f32 },
+    InvalidWeight {
+        /// The invalid weight value.
+        weight: f32,
+    },
 
     /// Model not found.
     #[error("Model not found: {name}")]
-    ModelNotFound { name: String },
+    ModelNotFound {
+        /// Name of the model that was not found.
+        name: String,
+    },
 
     /// Layer not found.
     #[error("Layer {index} not found (model has {count} layers)")]
-    LayerNotFound { index: usize, count: usize },
+    LayerNotFound {
+        /// Requested layer index.
+        index: usize,
+        /// Total number of layers in the model.
+        count: usize,
+    },
 
     /// Invalid quality level.
     #[error("Invalid quality level {quality}: must be in range [0.0, 1.0]")]
-    InvalidQuality { quality: f32 },
+    InvalidQuality {
+        /// The invalid quality value.
+        quality: f32,
+    },
 
     /// Decomposition failed.
     #[error("Decomposition failed: {0}")]

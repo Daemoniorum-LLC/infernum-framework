@@ -2,7 +2,6 @@
 //!
 //! Supports multiple transformer architectures with a unified interface.
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use super::InferenceError;
@@ -348,7 +347,12 @@ pub enum RopeScaling {
     /// Dynamic NTK scaling.
     Dynamic(f32),
     /// YaRN scaling.
-    Yarn { factor: f32, original_max_len: usize },
+    Yarn {
+        /// Scaling factor.
+        factor: f32,
+        /// Original maximum sequence length before scaling.
+        original_max_len: usize,
+    },
 }
 
 impl RopeScaling {

@@ -172,6 +172,7 @@ pub struct Speculative405B<D: DraftModel, T: TargetModel = crate::models::lazy_l
     /// Device for tensor operations.
     device: Device,
     /// Data type.
+    #[allow(dead_code)]
     dtype: DType,
     /// Accumulated statistics.
     stats: Mutex<Speculative405BStats>,
