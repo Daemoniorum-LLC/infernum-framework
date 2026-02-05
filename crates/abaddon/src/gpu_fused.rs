@@ -1536,8 +1536,10 @@ INT8_DONE:
             let scale = half::f16::from_f32(0.5);
 
             // === Fused path ===
+            // zero_point=8 because pack_int4_signed adds 8 to convert [-8,7] → [0,15],
+            // and the fused kernel does (nibble - zero_point) * scale.
             let fused_result = fused_ctx.fused_lz4_int4_block(
-                &compressed, scale, 0, num_values
+                &compressed, scale, 8, num_values
             ).expect("fused kernel");
 
             let mut fused_host = vec![half::f16::ZERO; num_values];
@@ -1622,6 +1624,177 @@ INT8_DONE:
                     i, f.to_f32(), s.to_f32(), int8_values[i]
                 );
             }
+        }
+
+        // ==================== Phase 4: Pipeline Integration Tests ====================
+        // GPU-CODEC-PIPELINE-TDD.md §8.1, §8.2
+
+        /// §8.1 + §8.2: Pipeline A (sequential LZ4→INT4) matches Pipeline B (fused LZ4+INT4).
+        ///
+        /// Both pipelines start from the same LZ4-compressed INT4 data and must produce
+        /// identical F16 output, proving the fused optimization is semantically equivalent.
+        #[test]
+        fn test_pipeline_a_vs_b_sequential_vs_fused_int4() {
+            if !cuda_available() {
+                eprintln!("Skipping: no CUDA device");
+                return;
+            }
+
+            use crate::quantize::{Quantizer, DEFAULT_BLOCK_SIZE};
+            use candle_core::{Device, Tensor};
+
+            // 1. Create realistic tensor data and quantize
+            let original: Vec<f32> = (0..512)
+                .map(|i| ((i as f32) / 512.0 - 0.5) * 2.0)
+                .collect();
+            let tensor = Tensor::from_vec(original.clone(), &[512], &Device::Cpu).unwrap();
+            let quantizer = Quantizer::int4_symmetric();
+            let quantized = quantizer.quantize_tensor(&tensor).unwrap();
+
+            // 2. LZ4-compress the packed INT4 data
+            let compressed = lz4_flex::block::compress_prepend_size(&quantized.data);
+            // Strip the 4-byte size prefix that lz4_flex adds
+            let lz4_data = &compressed[4..];
+
+            // 3. Pipeline A: sequential LZ4 decompress → INT4 dequant
+            let mut lz4_ctx = crate::gpu_lz4::GpuLz4Context::new(0).unwrap();
+            lz4_ctx.load_kernel().unwrap();
+            let d_decompressed = lz4_ctx
+                .decompress_block(lz4_data, quantized.data.len())
+                .unwrap();
+            let mut decompressed_host = vec![0u8; quantized.data.len()];
+            lz4_ctx.cuda_device().dtoh_sync_copy_into(&d_decompressed, &mut decompressed_host).unwrap();
+
+            // INT4 dequant (sequential path via CPU, since Pipeline A reference is CPU)
+            let num_blocks = (quantized.num_values + DEFAULT_BLOCK_SIZE - 1) / DEFAULT_BLOCK_SIZE;
+            let mut sequential_f16: Vec<half::f16> = Vec::with_capacity(quantized.num_values);
+            for i in 0..quantized.num_values {
+                let byte_idx = i / 2;
+                let nibble = if i % 2 == 0 {
+                    decompressed_host[byte_idx] & 0x0F
+                } else {
+                    (decompressed_host[byte_idx] >> 4) & 0x0F
+                };
+                let block_idx = i / DEFAULT_BLOCK_SIZE;
+                let scale = quantized.scales[block_idx].to_f32();
+                let val = ((nibble as i32) - 8) as f32 * scale;
+                sequential_f16.push(half::f16::from_f32(val));
+            }
+
+            // 4. Pipeline B: fused LZ4+INT4
+            let mut fused_ctx = GpuFusedContext::new(0).unwrap();
+            fused_ctx.load_lz4_int4_kernel().unwrap();
+
+            // Fused kernel processes one block_size at a time with a single scale
+            // For multi-block data, we process block by block
+            let block_packed_size = DEFAULT_BLOCK_SIZE / 2; // 64 bytes per block of 128 nibbles
+            let mut fused_f16: Vec<half::f16> = Vec::new();
+
+            for block_idx in 0..num_blocks {
+                let start = block_idx * block_packed_size;
+                let end = ((block_idx + 1) * block_packed_size).min(quantized.data.len());
+                let block_packed = &quantized.data[start..end];
+                let block_num_values = if block_idx == num_blocks - 1 {
+                    quantized.num_values - block_idx * DEFAULT_BLOCK_SIZE
+                } else {
+                    DEFAULT_BLOCK_SIZE
+                };
+
+                // LZ4-compress each block individually for fused kernel
+                let block_compressed = lz4_flex::block::compress_prepend_size(block_packed);
+                let block_lz4 = &block_compressed[4..];
+
+                let fused_result = fused_ctx
+                    .fused_lz4_int4_block(
+                        block_lz4,
+                        quantized.scales[block_idx],
+                        8, // symmetric offset
+                        block_num_values,
+                    )
+                    .unwrap();
+
+                let mut block_host = vec![half::f16::ZERO; block_num_values];
+                fused_ctx
+                    .device
+                    .dtoh_sync_copy_into(&fused_result, &mut block_host)
+                    .unwrap();
+                fused_f16.extend_from_slice(&block_host);
+            }
+
+            // 5. Compare
+            assert_eq!(sequential_f16.len(), fused_f16.len(), "length mismatch");
+            let max_diff: f32 = sequential_f16
+                .iter()
+                .zip(fused_f16.iter())
+                .map(|(s, f)| (s.to_f32() - f.to_f32()).abs())
+                .fold(0.0f32, f32::max);
+            assert!(
+                max_diff < 0.01,
+                "Pipeline A vs B max diff: {} (should be < 0.01)",
+                max_diff
+            );
+        }
+
+        /// §8.4: Pipeline F — HoloTensor LRDF end-to-end.
+        ///
+        /// Full pipeline: encode with GPU LRDF encoder → reconstruct with GPU HoloContext.
+        /// Tests that the encode/decode round-trip preserves reasonable quality.
+        #[test]
+        fn test_pipeline_f_holotensor_lrdf_roundtrip() {
+            if !cuda_available() {
+                eprintln!("Skipping: no CUDA device");
+                return;
+            }
+
+            use crate::gpu_lrdf::cuda::GpuLrdfEncoder;
+            use crate::gpu_holo::GpuHoloContext;
+
+            // 1. Create a known matrix
+            let rows = 16;
+            let cols = 16;
+            let data: Vec<f32> = (0..rows * cols)
+                .map(|i| {
+                    let r = (i / cols) as f32;
+                    let c = (i % cols) as f32;
+                    (r * 0.3).sin() * (c * 0.2).cos()
+                })
+                .collect();
+
+            // 2. Encode with GPU LRDF encoder
+            let device = cudarc::driver::CudaDevice::new(0).unwrap();
+            let encoder = GpuLrdfEncoder::new(device, 4, 42)
+                .unwrap()
+                .with_max_rank(8);
+            let gpu_fragments = encoder.encode_2d(&data, rows, cols).unwrap();
+            let holo_fragments: Vec<_> = gpu_fragments.iter().map(|f| f.to_haagenti()).collect();
+
+            // 3. Reconstruct with GpuHoloContext
+            let mut ctx = GpuHoloContext::new(0).unwrap();
+            ctx.load_lrdf_kernel().unwrap();
+
+            let tensor = ctx.reconstruct_lrdf(&holo_fragments, rows, cols).unwrap();
+            let reconstructed = tensor.to_host().unwrap();
+
+            // 4. Verify quality: cosine similarity should be > 0.8 for rank-8 on 16x16
+            assert_eq!(reconstructed.len(), data.len());
+            let dot: f32 = data
+                .iter()
+                .zip(reconstructed.iter())
+                .map(|(a, b)| a * b)
+                .sum();
+            let norm_a: f32 = data.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let norm_b: f32 = reconstructed.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let similarity = if norm_a > 1e-10 && norm_b > 1e-10 {
+                dot / (norm_a * norm_b)
+            } else {
+                0.0
+            };
+
+            assert!(
+                similarity > 0.8,
+                "LRDF round-trip quality too low: cosine_sim={:.4} (expected > 0.8)",
+                similarity
+            );
         }
     }
 }

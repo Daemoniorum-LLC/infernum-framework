@@ -32,6 +32,7 @@ dependencies = [
  "hf-hub",
  "humansize",
  "infernum-core",
+ "lz4_flex",
  "memmap2",
  "num_cpus",
  "parking_lot",

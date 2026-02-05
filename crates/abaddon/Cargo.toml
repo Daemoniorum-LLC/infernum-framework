@@ -100,6 +100,7 @@ clap = { version = "4.5", features = ["derive"] }
 tempfile = "3.10"
 bytemuck = "1.24"
 zstd = "0.13"
+lz4_flex = "0.11"
 
 [[bench]]
 name = "inference"

@@ -2785,6 +2785,149 @@ WARP_DONE:
             // Serial time = 900ms, actual = 1000ms -> 0.9 efficiency
             assert!((stats.overlap_efficiency() - 0.9).abs() < 0.001);
         }
+
+        // ==================== TDD Phase 1: LZ4 GPU vs CPU Cross-Validation ====================
+        // GPU-CODEC-PIPELINE-TDD.md §3.1-3.2
+        //
+        // Trust boundary: GPU LZ4 decompression MUST produce byte-identical output
+        // to CPU LZ4 decompression. Any deviation means model weights are corrupted.
+
+        /// §3.1: GPU LZ4 matches CPU for literals-only data.
+        #[test]
+        fn test_lz4_gpu_matches_cpu_literals_only() {
+            if !cuda_available() {
+                eprintln!("Skipping: no CUDA device");
+                return;
+            }
+
+            let mut ctx = GpuLz4Context::new(0).expect("context");
+            ctx.load_kernel().expect("kernel load");
+
+            let original = vec![1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+            let compressed = lz4_flex::block::compress_prepend_size(&original);
+            // lz4_flex prepends a 4-byte LE size — strip it for raw block input
+            let raw_compressed = &compressed[4..];
+
+            // CPU decompress (reference)
+            let cpu_result = lz4_flex::block::decompress(raw_compressed, original.len())
+                .expect("CPU LZ4 decompress");
+
+            // GPU decompress
+            let gpu_result = ctx
+                .decompress_block(raw_compressed, original.len())
+                .expect("GPU LZ4 decompress");
+            let mut gpu_host = vec![0u8; original.len()];
+            ctx.device
+                .dtoh_sync_copy_into(&gpu_result, &mut gpu_host)
+                .expect("copy to host");
+
+            assert_eq!(
+                gpu_host, cpu_result,
+                "GPU LZ4 must match CPU LZ4 byte-for-byte (literals-only)"
+            );
+            assert_eq!(gpu_host, original, "Both must match original data");
+        }
+
+        /// §3.1: GPU LZ4 matches CPU for data with match sequences.
+        #[test]
+        fn test_lz4_gpu_matches_cpu_with_matches() {
+            if !cuda_available() {
+                eprintln!("Skipping: no CUDA device");
+                return;
+            }
+
+            let mut ctx = GpuLz4Context::new(0).expect("context");
+            ctx.load_kernel().expect("kernel load");
+
+            // Data with repeated patterns (triggers LZ4 match sequences)
+            let original: Vec<u8> = (0..1024).map(|i| (i % 13) as u8).collect();
+            let compressed = lz4_flex::block::compress_prepend_size(&original);
+            let raw_compressed = &compressed[4..];
+
+            // CPU reference
+            let cpu_result = lz4_flex::block::decompress(raw_compressed, original.len())
+                .expect("CPU LZ4 decompress");
+
+            // GPU decompress
+            let gpu_result = ctx
+                .decompress_block(raw_compressed, original.len())
+                .expect("GPU LZ4 decompress");
+            let mut gpu_host = vec![0u8; original.len()];
+            ctx.device
+                .dtoh_sync_copy_into(&gpu_result, &mut gpu_host)
+                .expect("copy to host");
+
+            assert_eq!(
+                gpu_host, cpu_result,
+                "GPU LZ4 must match CPU LZ4 byte-for-byte (with matches)"
+            );
+            assert_eq!(gpu_host, original);
+        }
+
+        /// §3.3: Parallel kernel (K2) matches single-block kernel (K1).
+        #[test]
+        fn test_lz4_parallel_matches_single_block() {
+            if !cuda_available() {
+                eprintln!("Skipping: no CUDA device");
+                return;
+            }
+
+            let mut ctx = GpuLz4Context::new(0).expect("context");
+            ctx.load_kernel().expect("kernel load");
+
+            // Create 8 blocks with distinct patterns
+            let blocks: Vec<Vec<u8>> = (0..8)
+                .map(|i| (0..256).map(|j| ((i * 37 + j * 13) % 256) as u8).collect())
+                .collect();
+
+            // Decompress each block individually with K1
+            let single_results: Vec<Vec<u8>> = blocks
+                .iter()
+                .map(|block| {
+                    let compressed = lz4_flex::block::compress_prepend_size(block);
+                    let raw = &compressed[4..];
+                    let result = ctx.decompress_block(raw, block.len()).expect("K1 decompress");
+                    let mut host = vec![0u8; block.len()];
+                    ctx.device
+                        .dtoh_sync_copy_into(&result, &mut host)
+                        .expect("copy");
+                    host
+                })
+                .collect();
+
+            // Decompress all blocks in parallel with K2
+            let parallel_input: Vec<(Vec<u8>, usize)> = blocks
+                .iter()
+                .map(|b| {
+                    let compressed = lz4_flex::block::compress_prepend_size(b);
+                    let raw = compressed[4..].to_vec();
+                    (raw, b.len())
+                })
+                .collect();
+            let parallel_result = ctx
+                .decompress_blocks_parallel(&parallel_input)
+                .expect("K2 decompress");
+
+            // Copy parallel result (concatenated) to host
+            let total_size: usize = blocks.iter().map(|b| b.len()).sum();
+            let mut parallel_host = vec![0u8; total_size];
+            ctx.device
+                .dtoh_sync_copy_into(&parallel_result, &mut parallel_host)
+                .expect("copy");
+
+            // Compare block by block
+            let mut offset = 0;
+            for (i, (single, block)) in single_results.iter().zip(blocks.iter()).enumerate() {
+                let parallel_block = &parallel_host[offset..offset + block.len()];
+                assert_eq!(
+                    single.as_slice(),
+                    parallel_block,
+                    "Block {} differs between K1 and K2",
+                    i
+                );
+                offset += block.len();
+            }
+        }
     }
 }
 
