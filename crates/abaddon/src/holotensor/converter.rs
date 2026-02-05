@@ -6,14 +6,16 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(feature = "cuda")]
 use std::sync::Arc;
+#[cfg(feature = "cuda")]
 use std::thread;
 
+#[cfg(feature = "cuda")]
 use crossbeam::channel::{self, Receiver, Sender};
 
 use haagenti::holotensor::{
     HolographicEncoding, HoloTensorHeader, HoloFragment, LrdfEncoder,
-    SpectralDecoder,
 };
 use haagenti::compressive::{CompressiveSpectralEncoder, CompressiveSpectralDecoder};
 use haagenti::tensor::DType;
@@ -278,12 +280,17 @@ pub struct ConvertedTensor {
 }
 
 /// HCT to HoloTensor model converter.
+///
+/// # Future optimization (Phase 4)
+/// Fragment buffer allocations currently use standard `Vec` heap allocation.
+/// The `holotensor::arena::FragmentArena` bump allocator is available and could
+/// replace these allocations to reduce heap fragmentation during large model
+/// conversions. This would require changing `convert_tensor` and related methods
+/// to allocate fragment data from a shared arena and reset between batches.
 pub struct HoloModelConverter {
     config: ConversionConfig,
     tensors_processed: AtomicUsize,
     bytes_processed: AtomicUsize,
-    /// Arena allocator for fragment buffer allocations (Phase 4 optimization)
-    fragment_arena: super::arena::FragmentArena,
     #[cfg(feature = "cuda")]
     gpu_encoder: Option<std::sync::Arc<crate::gpu_lrdf::cuda::GpuLrdfEncoder>>,
     #[cfg(feature = "cuda")]
@@ -336,15 +343,10 @@ impl HoloModelConverter {
             (None, None)
         };
 
-        // Initialize arena with 8MB capacity for fragment allocations
-        // This reduces heap fragmentation during large model conversions
-        let fragment_arena = super::arena::FragmentArena::new(8 * 1024 * 1024);
-
         Self {
             config,
             tensors_processed: AtomicUsize::new(0),
             bytes_processed: AtomicUsize::new(0),
-            fragment_arena,
             #[cfg(feature = "cuda")]
             gpu_encoder,
             #[cfg(feature = "cuda")]
@@ -1163,7 +1165,7 @@ impl HoloModelConverter {
             let work_tx = work_tx.clone();
             let files = Arc::clone(&files);
             let file_index = Arc::clone(&file_index);
-            let config = Arc::clone(&config);
+            let _config = Arc::clone(&config);
 
             let handle = thread::spawn(move || {
                 loop {

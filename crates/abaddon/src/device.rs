@@ -334,7 +334,7 @@ fn cuda_device_name(device_id: usize) -> Option<String> {
     // Use high-level cudarc API instead of raw sys calls
     // The CudaDevice::new() call handles device selection and provides name access
     match cudarc::driver::CudaDevice::new(device_id) {
-        Ok(device) => {
+        Ok(_device) => {
             // CudaDevice doesn't expose name directly, but we can infer from ordinal
             // For now, return a generic name - the actual GPU info is in DeviceInfo
             Some(format!("CUDA Device {}", device_id))

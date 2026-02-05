@@ -39,15 +39,16 @@
 //! └─────────────────────────────────────────────────────────────────┘
 //! ```
 
+/// CUDA-accelerated fused LZ4 decompression and dequantization.
 #[cfg(feature = "cuda")]
 pub mod cuda {
     use std::sync::Arc;
 
-    use candle_core::{DType, Device, Tensor};
+    use candle_core::{Device, Tensor};
     use cudarc::driver::{CudaDevice, CudaSlice, LaunchAsync, LaunchConfig};
     use cudarc::nvrtc::Ptx;
 
-    use crate::gpu_dequant::cuda::INT4_BLOCK_SIZE;
+    
 
     /// Fused decompression + dequantization context.
     pub struct GpuFusedContext {
@@ -466,32 +467,70 @@ pub mod cuda {
     /// Errors from fused GPU operations.
     #[derive(Debug, thiserror::Error)]
     pub enum GpuFusedError {
+        /// CUDA device initialization failed.
         #[error("Failed to initialize CUDA device {device_id}: {message}")]
-        DeviceInit { device_id: usize, message: String },
+        DeviceInit {
+            /// CUDA device ID.
+            device_id: usize,
+            /// Error message.
+            message: String,
+        },
 
+        /// Kernel loading failed.
         #[error("Failed to load kernel: {message}")]
-        KernelLoad { message: String },
+        KernelLoad {
+            /// Error message.
+            message: String,
+        },
 
+        /// Required kernel not loaded.
         #[error("Kernel not loaded: {kernel}")]
-        KernelNotLoaded { kernel: String },
+        KernelNotLoaded {
+            /// Kernel name.
+            kernel: String,
+        },
 
+        /// Kernel execution failed.
         #[error("Kernel execution failed: {message}")]
-        KernelExec { message: String },
+        KernelExec {
+            /// Error message.
+            message: String,
+        },
 
+        /// GPU memory allocation failed.
         #[error("Memory allocation failed: {message}")]
-        MemoryAlloc { message: String },
+        MemoryAlloc {
+            /// Error message.
+            message: String,
+        },
 
+        /// GPU memory copy failed.
         #[error("Memory copy failed: {message}")]
-        MemoryCopy { message: String },
+        MemoryCopy {
+            /// Error message.
+            message: String,
+        },
 
+        /// GPU synchronization failed.
         #[error("Synchronization failed: {message}")]
-        Synchronize { message: String },
+        Synchronize {
+            /// Error message.
+            message: String,
+        },
 
+        /// Invalid input data.
         #[error("Invalid input: {message}")]
-        InvalidInput { message: String },
+        InvalidInput {
+            /// Error message.
+            message: String,
+        },
 
+        /// Candle tensor creation failed.
         #[error("Tensor creation failed: {message}")]
-        TensorCreate { message: String },
+        TensorCreate {
+            /// Error message.
+            message: String,
+        },
     }
 
     /// Fused LZ4 decompression + INT4 dequantization kernel.
@@ -1908,10 +1947,9 @@ INT8_DONE:
     }
 }
 
-// Stub when CUDA not enabled
+/// Stub module when CUDA is not enabled.
 #[cfg(not(feature = "cuda"))]
 pub mod cuda {
-    //! Stub module when CUDA is not enabled.
 
     /// Fused context (stub).
     pub struct GpuFusedContext;

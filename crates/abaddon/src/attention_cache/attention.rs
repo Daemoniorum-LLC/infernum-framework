@@ -16,6 +16,7 @@ use super::KvCache;
 use crate::flash_attention::{FlashAttention, FlashAttentionConfig, AttentionVariant};
 
 /// Threshold for automatic Flash Attention selection (tokens).
+#[allow(dead_code)]
 const FLASH_ATTENTION_THRESHOLD: usize = 2048;
 
 /// Compute scaled dot-product attention with a KV cache.

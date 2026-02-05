@@ -10,6 +10,7 @@ description = "Holographic agent swarm - collective intelligence through distrib
 
 [features]
 default = []
+beleth = []
 
 [dependencies]
 infernum-core = { path = "../infernum-core", version = "0.1.0" }

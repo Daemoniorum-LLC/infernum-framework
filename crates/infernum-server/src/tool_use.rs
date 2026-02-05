@@ -257,17 +257,6 @@ struct ToolCallJson {
     arguments: serde_json::Value,
 }
 
-/// Static regex for Llama python_tag detection.
-static LLAMA_TOOL_CALL_REGEX: OnceLock<Regex> = OnceLock::new();
-
-fn get_llama_tool_call_regex() -> &'static Regex {
-    LLAMA_TOOL_CALL_REGEX.get_or_init(|| {
-        // Match JSON object after <|python_tag|>, allowing nested braces
-        Regex::new(r#"<\|python_tag\|>\s*(\{(?:[^{}]|\{[^{}]*\})*\})"#)
-            .expect("invalid llama tool_call regex")
-    })
-}
-
 /// Detect Llama-style tool calls using `<|python_tag|>` markers.
 fn detect_tool_calls_llama(output: &str) -> Vec<DetectedToolCall> {
     let marker = "<|python_tag|>";

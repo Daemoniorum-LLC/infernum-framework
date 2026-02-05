@@ -9,7 +9,7 @@
 //! - Quantized = round(x / scale) + 128 (offset to U8 range)
 //! - Dequantized = (quantized - 128) * scale
 
-use candle_core::{DType, Device, Result as CandleResult, Tensor, D};
+use candle_core::{DType, Result as CandleResult, Tensor, D};
 use super::KvCache;
 
 /// Quantization granularity for KV cache.
@@ -48,9 +48,11 @@ pub struct QuantizedCache {
     k_scales: Option<Tensor>,
     /// Value scales (shape depends on granularity)
     v_scales: Option<Tensor>,
-    /// Number of KV heads
+    /// Number of KV heads (used when GPU attention is wired up)
+    #[allow(dead_code)]
     num_kv_heads: usize,
-    /// Head dimension
+    /// Head dimension (used when GPU attention is wired up)
+    #[allow(dead_code)]
     head_dim: usize,
     /// Quantization granularity
     granularity: QuantizationGranularity,

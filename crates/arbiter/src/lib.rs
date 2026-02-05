@@ -104,11 +104,21 @@ pub use quality::{QualityBudget, QualityAllocation, QualityPolicy};
 pub enum ArbiterError {
     /// Insufficient GPU memory for allocation.
     #[error("Insufficient GPU memory: requested {requested}MB, available {available}MB")]
-    InsufficientMemory { requested: u64, available: u64 },
+    InsufficientMemory {
+        /// Requested memory in MB.
+        requested: u64,
+        /// Available memory in MB.
+        available: u64,
+    },
 
     /// Quality target cannot be achieved.
     #[error("Cannot achieve minimum quality {minimum}: max available {available}")]
-    InsufficientQuality { minimum: f32, available: f32 },
+    InsufficientQuality {
+        /// Minimum quality required.
+        minimum: f32,
+        /// Maximum quality available.
+        available: f32,
+    },
 
     /// Workload was preempted.
     #[error("Workload preempted by higher priority task")]

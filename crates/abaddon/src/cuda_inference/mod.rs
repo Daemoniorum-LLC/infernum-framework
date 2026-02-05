@@ -116,7 +116,12 @@ pub enum InferenceError {
 
     /// Invalid tensor shape.
     #[error("Shape mismatch: expected {expected}, got {got}")]
-    Shape { expected: String, got: String },
+    Shape {
+        /// Expected shape description.
+        expected: String,
+        /// Actual shape description.
+        got: String,
+    },
 
     /// Model loading error.
     #[error("Model loading error: {0}")]

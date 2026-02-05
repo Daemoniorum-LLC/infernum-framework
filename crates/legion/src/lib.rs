@@ -139,7 +139,12 @@ pub enum LegionError {
 
     /// Quality target cannot be achieved.
     #[error("Cannot achieve quality {target}: max available {available}")]
-    InsufficientQuality { target: f32, available: f32 },
+    InsufficientQuality {
+        /// Requested quality target.
+        target: f32,
+        /// Maximum quality available.
+        available: f32,
+    },
 
     /// Consensus failed.
     #[error("Consensus failed: {0}")]

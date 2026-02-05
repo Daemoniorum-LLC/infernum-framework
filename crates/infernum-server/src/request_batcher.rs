@@ -7,9 +7,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use parking_lot::Mutex;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use abaddon::engine::InferenceEngine;
 use infernum_core::request::GenerateRequest;
@@ -43,14 +42,20 @@ impl Default for BatcherConfig {
 /// Statistics for the batcher.
 #[derive(Debug, Default)]
 pub struct BatcherStats {
+    /// Total number of requests submitted to the batcher.
     pub requests_submitted: AtomicU64,
+    /// Total number of requests that completed successfully.
     pub requests_completed: AtomicU64,
+    /// Total number of requests rejected (e.g., queue full).
     pub requests_rejected: AtomicU64,
+    /// Total number of batches processed.
     pub batches_processed: AtomicU64,
+    /// Cumulative batch processing time in milliseconds.
     pub total_batch_time_ms: AtomicU64,
 }
 
 impl BatcherStats {
+    /// Returns the average batch processing time in milliseconds.
     pub fn avg_batch_time_ms(&self) -> f64 {
         let batches = self.batches_processed.load(Ordering::Relaxed);
         if batches == 0 {

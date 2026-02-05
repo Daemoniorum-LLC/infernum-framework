@@ -8,7 +8,7 @@ use std::sync::Arc;
 use cudarc::driver::{CudaDevice, CudaFunction, LaunchAsync, LaunchConfig};
 
 use super::compile_cuda_kernel;
-use crate::cuda_inference::tensor::{GpuDType, GpuTensor};
+use crate::cuda_inference::tensor::GpuTensor;
 use crate::cuda_inference::InferenceError;
 
 /// CUDA C source for embedding lookup kernel.

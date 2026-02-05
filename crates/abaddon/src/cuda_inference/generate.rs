@@ -139,6 +139,7 @@ pub struct Generator {
     sampler: SamplingKernel,
 
     /// CUDA device.
+    #[allow(dead_code)]
     device: Arc<CudaDevice>,
 
     /// Vocabulary size.

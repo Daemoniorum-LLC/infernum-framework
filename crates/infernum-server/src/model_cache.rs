@@ -15,7 +15,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::SystemTime;
 
 use axum::{
@@ -1287,7 +1286,7 @@ pub async fn download_model(
     let model_id = request.model.clone();
     let revision = request.revision.clone();
     let convert_to_holo = request.convert_to_holo;
-    let cache_state = state.clone();
+    let _cache_state = state.clone();
 
     // Spawn download task
     tokio::task::spawn_blocking(move || {

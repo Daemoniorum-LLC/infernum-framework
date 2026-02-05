@@ -33,7 +33,7 @@ use parking_lot::Mutex;
 
 use abaddon::holotensor::tiered_loading::{TieredConfig, TieredHoloLoader};
 use abaddon::lazy_varbuilder::LazyVarBuilder;
-use abaddon::loader::{ModelConfig, ModelFiles, WeightFiles};
+use abaddon::loader::{ModelConfig, WeightFiles};
 use abaddon::models::ArchitectureType;
 use abaddon::models::lazy_llama::LazyLlama;
 use abaddon::models::llama::{Llama, LlamaConfig};

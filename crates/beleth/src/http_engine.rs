@@ -4,11 +4,10 @@
 //! the full InferenceEngine trait complexity.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Simplified HTTP client for Infernum server.
 ///
@@ -115,7 +114,12 @@ pub enum HttpEngineError {
 
     /// Server returned an error.
     #[error("Server error {status}: {message}")]
-    Server { status: u16, message: String },
+    Server {
+        /// HTTP status code.
+        status: u16,
+        /// Error message from the server.
+        message: String,
+    },
 
     /// No model loaded.
     #[error("No model loaded on server")]
