@@ -699,6 +699,33 @@ fn estimate_layer_vram(config: &ModelConfig) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::arch::{Activation, ModelArch};
+
+    /// Creates a minimal mock ModelConfig for testing.
+    fn mock_config(num_layers: usize) -> ModelConfig {
+        ModelConfig {
+            arch: ModelArch::Llama,
+            hidden_size: 4096,
+            intermediate_size: 11008,
+            num_layers,
+            num_attention_heads: 32,
+            num_kv_heads: 8,
+            head_dim: 128,
+            vocab_size: 32000,
+            max_seq_len: 4096,
+            rms_norm_eps: 1e-6,
+            rope_theta: 10000.0,
+            rope_scaling: None,
+            attention_bias: false,
+            mlp_bias: false,
+            hidden_act: Activation::SiLU,
+            tie_word_embeddings: false,
+            sliding_window: None,
+            bos_token_id: 1,
+            eos_token_id: 2,
+            pad_token_id: None,
+        }
+    }
 
     /// Mock layer loader for testing.
     struct MockLayerLoader {
@@ -712,7 +739,7 @@ mod tests {
             Self {
                 num_layers,
                 layer_size: layer_size_mb * 1024 * 1024,
-                config: ModelConfig::default(),
+                config: mock_config(num_layers),
             }
         }
     }

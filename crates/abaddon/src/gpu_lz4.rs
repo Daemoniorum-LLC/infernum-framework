@@ -1677,6 +1677,7 @@ WARP_DONE:
     #[cfg(test)]
     mod tests {
         use super::*;
+        use cudarc::driver::DeviceSlice;
 
         /// Helper to check if CUDA is available for testing.
         fn cuda_available() -> bool {

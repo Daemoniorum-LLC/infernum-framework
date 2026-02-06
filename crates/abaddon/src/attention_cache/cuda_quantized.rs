@@ -131,7 +131,7 @@ impl std::fmt::Debug for CudaQuantizedCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use candle_core::Device;
+    use candle_core::{Device, DType};
 
     #[test]
     fn test_cuda_cache_creation() {

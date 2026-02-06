@@ -1169,6 +1169,7 @@ INT8_DONE:
     #[cfg(test)]
     mod tests {
         use super::*;
+        use candle_core::DType;
 
         /// Helper to check if CUDA is available.
         fn cuda_available() -> bool {
