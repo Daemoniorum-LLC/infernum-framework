@@ -32,7 +32,7 @@ pub use model::{ModelArchitecture, ModelMetadata, ModelSource};
 pub use perf::{MemoryTracker, ObjectPool, PoolStats, StringPool};
 pub use request::{EmbedRequest, GenerateRequest, PromptInput};
 pub use response::{EmbedResponse, GenerateResponse, TokenInfo};
-pub use sampling::SamplingParams;
+pub use sampling::{GrammarConstraint, SamplingParams};
 pub use streaming::TokenStream;
 pub use types::*; // Includes ModelFamily, ModelId, Role, Message, ToolCall, ToolDefinition, etc.
 

@@ -5977,6 +5977,7 @@ mod tests {
 
     // ==================== DD-8 §S1.3: GPU vs CPU Proptest ====================
 
+    #[cfg(feature = "cuda")]
     mod idct_proptest {
         use super::*;
         use proptest::prelude::*;
