@@ -52,3 +52,7 @@ pub use nvme_cache::NvmeCache;
 pub use ram_cache::RamCache;
 #[cfg(test)]
 pub use vram_cache::VramCache;
+
+// Property-based tests for memory invariants
+#[cfg(test)]
+mod property_tests;
