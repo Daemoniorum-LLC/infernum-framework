@@ -79,6 +79,9 @@ pub mod lazy_weight_store;
 #[cfg(feature = "cuda")]
 pub mod lazy_generate;
 
+#[cfg(feature = "cuda")]
+pub mod tiered;
+
 // Re-exports
 #[cfg(feature = "cuda")]
 pub use tensor::GpuTensor;
@@ -112,6 +115,9 @@ pub use lazy_weight_store::{LazyWeightStore, LazyWeightConfig};
 
 #[cfg(feature = "cuda")]
 pub use lazy_generate::LazyGenerator;
+
+#[cfg(feature = "cuda")]
+pub use tiered::{TieredConfig, TieredWeightStore, TieredStats, TieredError, LoadingStrategy};
 
 /// Errors from CUDA inference operations.
 #[derive(Debug, thiserror::Error)]

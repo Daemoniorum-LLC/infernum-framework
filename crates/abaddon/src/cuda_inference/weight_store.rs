@@ -169,6 +169,36 @@ pub struct LayerWeights {
     pub post_attn_norm: RMSNormWeights,
 }
 
+impl LayerWeights {
+    /// Get total size in bytes of all weights in this layer.
+    pub fn size_bytes(&self) -> usize {
+        self.q_proj.data.size_bytes()
+            + self.k_proj.data.size_bytes()
+            + self.v_proj.data.size_bytes()
+            + self.o_proj.data.size_bytes()
+            + self.gate_proj.data.size_bytes()
+            + self.up_proj.data.size_bytes()
+            + self.down_proj.data.size_bytes()
+            + self.input_norm.weight.size_bytes()
+            + self.post_attn_norm.weight.size_bytes()
+            // Include scales/zero_points if present
+            + self.q_proj.scales.as_ref().map(|t| t.size_bytes()).unwrap_or(0)
+            + self.q_proj.zero_points.as_ref().map(|t| t.size_bytes()).unwrap_or(0)
+            + self.k_proj.scales.as_ref().map(|t| t.size_bytes()).unwrap_or(0)
+            + self.k_proj.zero_points.as_ref().map(|t| t.size_bytes()).unwrap_or(0)
+            + self.v_proj.scales.as_ref().map(|t| t.size_bytes()).unwrap_or(0)
+            + self.v_proj.zero_points.as_ref().map(|t| t.size_bytes()).unwrap_or(0)
+            + self.o_proj.scales.as_ref().map(|t| t.size_bytes()).unwrap_or(0)
+            + self.o_proj.zero_points.as_ref().map(|t| t.size_bytes()).unwrap_or(0)
+            + self.gate_proj.scales.as_ref().map(|t| t.size_bytes()).unwrap_or(0)
+            + self.gate_proj.zero_points.as_ref().map(|t| t.size_bytes()).unwrap_or(0)
+            + self.up_proj.scales.as_ref().map(|t| t.size_bytes()).unwrap_or(0)
+            + self.up_proj.zero_points.as_ref().map(|t| t.size_bytes()).unwrap_or(0)
+            + self.down_proj.scales.as_ref().map(|t| t.size_bytes()).unwrap_or(0)
+            + self.down_proj.zero_points.as_ref().map(|t| t.size_bytes()).unwrap_or(0)
+    }
+}
+
 /// GPU-resident model weights.
 #[derive(Debug)]
 pub struct WeightStore {
