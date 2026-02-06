@@ -35,7 +35,7 @@ mod nvme_cache;
 mod prefetch;
 mod ram_cache;
 mod stats;
-mod store;
+pub mod store;
 mod vram_cache;
 
 pub use config::{HardwareConfig, LoadingStrategy, ProgressiveConfig, TieredConfig};

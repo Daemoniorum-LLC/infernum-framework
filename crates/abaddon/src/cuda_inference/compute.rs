@@ -860,6 +860,124 @@ impl ComputeEngine {
     pub fn synchronize_compute(&self) -> Result<(), InferenceError> {
         self.streams.synchronize_compute()
     }
+
+    // ========================================================================
+    // Tiered Storage Methods
+    //
+    // These methods work with TieredWeightStore, providing efficient
+    // inference for models spanning VRAM, RAM, and NVMe tiers.
+    // ========================================================================
+
+    /// Forward pass with tiered weight storage.
+    ///
+    /// Uses the 3-tier memory hierarchy (VRAM ← RAM ← NVMe) for efficient
+    /// inference of models larger than VRAM. Includes prefetching for
+    /// sequential layer access patterns.
+    ///
+    /// # Arguments
+    /// * `input_ids` - Input token IDs
+    /// * `weights` - TieredWeightStore managing multi-tier weights
+    /// * `start_pos` - Starting position in sequence (for KV cache)
+    /// * `prefetch_depth` - How many layers ahead to prefetch (0 to disable)
+    pub fn forward_tiered(
+        &mut self,
+        input_ids: &[u32],
+        weights: &mut super::tiered::TieredWeightStore,
+        start_pos: usize,
+        prefetch_depth: usize,
+    ) -> Result<GpuTensor, InferenceError> {
+        let seq_len = input_ids.len();
+        let num_layers = weights.num_layers();
+
+        // 1. Token embedding lookup (shared weights are always in VRAM)
+        let shared = weights.shared().ok_or_else(|| {
+            InferenceError::ModelLoad("Shared weights not loaded".to_string())
+        })?;
+        let mut hidden = self.embed_tokens(&shared.embed_tokens, input_ids)?;
+
+        // 2. Forward through all layers with prefetching
+        for layer_idx in 0..num_layers {
+            // Request prefetch of upcoming layers
+            if prefetch_depth > 0 {
+                weights.prefetch(layer_idx, prefetch_depth);
+            }
+
+            // Get layer (may promote from RAM/NVMe if not in VRAM)
+            let layer = weights.get_layer(layer_idx).map_err(|e| {
+                InferenceError::ModelLoad(format!("Failed to get layer {}: {}", layer_idx, e))
+            })?;
+
+            self.layer_forward(&mut hidden, layer, seq_len, start_pos)?;
+        }
+
+        // Advance KV cache position after all layers updated
+        self.kv_cache.advance(seq_len);
+
+        // 3. Final norm + 4. LM head projection (fused)
+        let mut logits = self.logits_buffer.slice_dim0(0, seq_len)?;
+
+        let shared = weights.shared().ok_or_else(|| {
+            InferenceError::ModelLoad("Shared weights not loaded".to_string())
+        })?;
+
+        if let Some(ref lm_head) = shared.lm_head {
+            // Separate LM head with B transposed
+            self.fused_rmsnorm_proj.forward_f16_bt(
+                &hidden,
+                &shared.final_norm.weight,
+                lm_head,
+                &mut logits,
+                self.config.rms_norm_eps,
+            )?;
+        } else if self.config.tie_word_embeddings {
+            // Tied embeddings
+            self.fused_rmsnorm_proj.forward_f16_bt(
+                &hidden,
+                &shared.final_norm.weight,
+                &shared.embed_tokens,
+                &mut logits,
+                self.config.rms_norm_eps,
+            )?;
+        } else {
+            return Err(InferenceError::ModelLoad(
+                "No LM head and embeddings not tied".to_string()
+            ));
+        }
+
+        self.current_pos = start_pos + seq_len;
+
+        // Store logits for get_logits()
+        let logits_for_storage = logits.reshape(logits.shape().to_vec())?;
+        self.last_logits = Some(logits_for_storage);
+
+        Ok(logits)
+    }
+
+    /// Prefill phase with tiered storage.
+    ///
+    /// Processes the entire prompt, resetting the KV cache.
+    pub fn prefill_tiered(
+        &mut self,
+        input_ids: &[u32],
+        weights: &mut super::tiered::TieredWeightStore,
+        prefetch_depth: usize,
+    ) -> Result<GpuTensor, InferenceError> {
+        self.kv_cache.reset();
+        self.current_pos = 0;
+        self.forward_tiered(input_ids, weights, 0, prefetch_depth)
+    }
+
+    /// Decode phase with tiered storage.
+    ///
+    /// Processes a single new token for autoregressive generation.
+    pub fn decode_tiered(
+        &mut self,
+        token_id: u32,
+        weights: &mut super::tiered::TieredWeightStore,
+        prefetch_depth: usize,
+    ) -> Result<GpuTensor, InferenceError> {
+        self.forward_tiered(&[token_id], weights, self.current_pos, prefetch_depth)
+    }
 }
 
 #[cfg(test)]
