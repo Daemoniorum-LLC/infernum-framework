@@ -32,6 +32,7 @@ mod error;
 mod loader;
 mod lru;
 mod nvme_cache;
+mod prefetch;
 mod ram_cache;
 mod stats;
 mod store;
@@ -40,6 +41,7 @@ mod vram_cache;
 pub use config::{HardwareConfig, LoadingStrategy, ProgressiveConfig, TieredConfig};
 pub use error::TieredError;
 pub use loader::{create_loader, EagerLoader, ProgressiveLoader, WeightLoader};
+pub use prefetch::{PrefetchController, PrefetchScheduler};
 pub use stats::TieredStats;
 pub use store::TieredWeightStore;
 
