@@ -644,25 +644,13 @@ impl LoopExecutor {
                 } else {
                     ResultStatus::Failed { recoverable: true }
                 };
-                // Always include the tool's output in data so the model can see it
-                let data = match result.data {
-                    Some(mut d) => {
-                        // If data exists but doesn't have output, add it
-                        if d.get("output").is_none() && d.get("content").is_none() {
-                            if let Some(obj) = d.as_object_mut() {
-                                obj.insert("output".to_string(), serde_json::json!(result.output));
-                            }
-                        }
-                        d
+                let data = result.data.unwrap_or_else(|| {
+                    if result.success {
+                        serde_json::json!({"output": result.output})
+                    } else {
+                        serde_json::json!({"error": result.error.as_deref().unwrap_or("unknown error")})
                     }
-                    None => {
-                        if result.success {
-                            serde_json::json!({"output": result.output})
-                        } else {
-                            serde_json::json!({"error": result.error.as_deref().unwrap_or("unknown error")})
-                        }
-                    }
-                };
+                });
                 AgenticToolResult {
                     call_id: call.id.clone(),
                     tool_name: call.name.clone(),
