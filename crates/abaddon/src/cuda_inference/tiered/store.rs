@@ -397,6 +397,21 @@ impl TieredWeightStore {
         self.nvme.as_ref()
     }
 
+    /// Get mutable VRAM cache access.
+    pub fn vram_cache_mut(&mut self) -> &mut VramCache {
+        &mut self.vram
+    }
+
+    /// Get mutable RAM cache access.
+    pub fn ram_cache_mut(&mut self) -> &mut RamCache {
+        &mut self.ram
+    }
+
+    /// Get mutable NVMe cache access.
+    pub fn nvme_cache_mut(&mut self) -> Option<&mut NvmeCache> {
+        self.nvme.as_mut()
+    }
+
     /// Get the loading strategy.
     pub fn strategy(&self) -> &LoadingStrategy {
         &self.strategy

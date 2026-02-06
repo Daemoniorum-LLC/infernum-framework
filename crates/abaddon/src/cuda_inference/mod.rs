@@ -117,7 +117,10 @@ pub use lazy_weight_store::{LazyWeightStore, LazyWeightConfig};
 pub use lazy_generate::LazyGenerator;
 
 #[cfg(feature = "cuda")]
-pub use tiered::{TieredConfig, TieredWeightStore, TieredStats, TieredError, LoadingStrategy};
+pub use tiered::{
+    create_loader, EagerLoader, LoadingStrategy, ProgressiveLoader, TieredConfig,
+    TieredError, TieredStats, TieredWeightStore, WeightLoader,
+};
 
 /// Errors from CUDA inference operations.
 #[derive(Debug, thiserror::Error)]
