@@ -334,6 +334,7 @@ impl Engine {
                 *target_quality,
                 *vram_budget,
                 *ram_budget,
+                arch_type,
             );
         }
 
@@ -428,8 +429,9 @@ impl Engine {
 
     /// Loads a model using lazy layer-by-layer loading for 405B+ models.
     ///
-    /// This uses `LazyLlama` which loads decoder layers on-demand during inference,
-    /// enabling 405B inference on systems with limited memory (24GB VRAM + 80GB RAM).
+    /// This uses `LazyLlama` or `LazyQwen2` (based on architecture) which loads
+    /// decoder layers on-demand during inference, enabling 405B inference on
+    /// systems with limited memory (24GB VRAM + 80GB RAM).
     #[allow(clippy::too_many_arguments)]
     fn load_model_lazy(
         files: &ModelFiles,
@@ -441,10 +443,22 @@ impl Engine {
         target_quality: f32,
         vram_budget: u64,
         ram_budget: u64,
+        arch_type: ArchitectureType,
     ) -> Result<LoadedModel> {
         use crate::holotensor::tiered_loading::{TieredConfig, TieredHoloLoader};
         use crate::lazy_varbuilder::LazyVarBuilder;
-        use crate::models::{LazyLlama, LlamaConfig};
+        use crate::models::{LazyLlama, LazyQwen2, LlamaConfig, Qwen2Config};
+
+        // Check if adaptive tiering is enabled (experimental)
+        let use_adaptive = std::env::var("INFERNUM_ADAPTIVE_TIERING")
+            .map(|v| v == "1" || v.to_lowercase() == "true")
+            .unwrap_or(false);
+
+        if use_adaptive {
+            return Self::load_lazy_model_adaptive(
+                files, model_config, device, dtype, directory, vram_budget, ram_budget, arch_type,
+            );
+        }
 
         tracing::info!(
             directory = %directory.display(),
@@ -581,31 +595,75 @@ impl Engine {
             "Calculated layer budget from VRAM"
         );
 
-        // Build Llama config
-        let llama_config = LlamaConfig {
-            hidden_size: model_config.hidden_size.unwrap_or(16384),        // 405B default
-            intermediate_size: model_config.intermediate_size.unwrap_or(53248), // 405B default
-            vocab_size: model_config.vocab_size.unwrap_or(128256),
-            num_hidden_layers: model_config.num_hidden_layers.unwrap_or(126),   // 405B has 126 layers
-            num_attention_heads: model_config.num_attention_heads.unwrap_or(128),
-            num_key_value_heads: model_config.num_key_value_heads,
-            rms_norm_eps: model_config.rms_norm_eps.unwrap_or(1e-5),
-            rope_theta: model_config.rope_theta.unwrap_or(500000.0),
-            max_position_embeddings: model_config.max_position_embeddings.unwrap_or(131072),
-            tie_word_embeddings: model_config.tie_word_embeddings.unwrap_or(false),
-            bos_token_id: model_config.bos_token_id,
-            eos_token_id: model_config.eos_token_ids().first().copied(),
-            rope_scaling: model_config.rope_scaling.clone(),
-        };
+        // Get EOS token ID for config
+        let eos_token_id_config = model_config.eos_token_ids().first().copied();
 
-        // Load LazyLlama (only embedding, norm, lm_head loaded initially)
-        let lazy_llama = LazyLlama::load(llama_config, lazy_vb, max_loaded_layers).map_err(|e| {
-            infernum_core::Error::ModelLoad {
-                message: format!("Failed to load LazyLlama: {}", e),
+        // Load the appropriate lazy model based on architecture
+        let model = match arch_type {
+            ArchitectureType::Qwen2 => {
+                tracing::info!("Loading LazyQwen2 model (Qwen2 architecture detected)");
+
+                // Build Qwen2 config
+                let qwen2_config = Qwen2Config {
+                    hidden_size: model_config.hidden_size.unwrap_or(5120),        // 14B default
+                    intermediate_size: model_config.intermediate_size.unwrap_or(13824), // 14B default
+                    vocab_size: model_config.vocab_size.unwrap_or(152064),
+                    num_hidden_layers: model_config.num_hidden_layers.unwrap_or(48),   // 14B has 48 layers
+                    num_attention_heads: model_config.num_attention_heads.unwrap_or(40),
+                    num_key_value_heads: model_config.num_key_value_heads,
+                    rms_norm_eps: model_config.rms_norm_eps.unwrap_or(1e-6),  // Qwen2 uses 1e-6
+                    rope_theta: model_config.rope_theta.unwrap_or(1000000.0), // Qwen2 uses 1M
+                    max_position_embeddings: model_config.max_position_embeddings.unwrap_or(32768),
+                    tie_word_embeddings: model_config.tie_word_embeddings.unwrap_or(false),
+                    bos_token_id: model_config.bos_token_id,
+                    eos_token_id: eos_token_id_config,
+                    use_sliding_window: false,
+                    sliding_window: None,
+                };
+
+                let lazy_qwen2 = LazyQwen2::load(qwen2_config, lazy_vb, max_loaded_layers).map_err(|e| {
+                    infernum_core::Error::ModelLoad {
+                        message: format!("Failed to load LazyQwen2: {}", e),
+                    }
+                })?;
+
+                ModelKind::LazyQwen2(lazy_qwen2)
             }
-        })?;
+            ArchitectureType::Llama | ArchitectureType::Unknown => {
+                if arch_type == ArchitectureType::Unknown {
+                    tracing::warn!(
+                        "Unknown architecture, defaulting to LazyLlama. Model may not work correctly."
+                    );
+                } else {
+                    tracing::info!("Loading LazyLlama model (Llama architecture detected)");
+                }
 
-        let model = ModelKind::LazyLlama(lazy_llama);
+                // Build Llama config
+                let llama_config = LlamaConfig {
+                    hidden_size: model_config.hidden_size.unwrap_or(16384),        // 405B default
+                    intermediate_size: model_config.intermediate_size.unwrap_or(53248), // 405B default
+                    vocab_size: model_config.vocab_size.unwrap_or(128256),
+                    num_hidden_layers: model_config.num_hidden_layers.unwrap_or(126),   // 405B has 126 layers
+                    num_attention_heads: model_config.num_attention_heads.unwrap_or(128),
+                    num_key_value_heads: model_config.num_key_value_heads,
+                    rms_norm_eps: model_config.rms_norm_eps.unwrap_or(1e-5),
+                    rope_theta: model_config.rope_theta.unwrap_or(500000.0),
+                    max_position_embeddings: model_config.max_position_embeddings.unwrap_or(131072),
+                    tie_word_embeddings: model_config.tie_word_embeddings.unwrap_or(false),
+                    bos_token_id: model_config.bos_token_id,
+                    eos_token_id: eos_token_id_config,
+                    rope_scaling: model_config.rope_scaling.clone(),
+                };
+
+                let lazy_llama = LazyLlama::load(llama_config, lazy_vb, max_loaded_layers).map_err(|e| {
+                    infernum_core::Error::ModelLoad {
+                        message: format!("Failed to load LazyLlama: {}", e),
+                    }
+                })?;
+
+                ModelKind::LazyLlama(lazy_llama)
+            }
+        };
 
         // Load tokenizer
         let tokenizer = if let Some(tokenizer_path) = &files.tokenizer {
@@ -616,12 +674,480 @@ impl Engine {
             });
         };
 
-        let eos_token_id = model_config.eos_token_ids().first().copied().unwrap_or(128001); // Llama 3 EOS
+        // Get EOS token with architecture-appropriate default
+        let eos_token_id = model_config.eos_token_ids().first().copied().unwrap_or(
+            match arch_type {
+                ArchitectureType::Qwen2 => 151643,   // Qwen2 EOS token
+                _ => 128001,                         // Llama 3 EOS token
+            }
+        );
 
         let elapsed = start.elapsed();
         tracing::info!(
             elapsed_ms = elapsed.as_millis(),
-            "LazyLlama base loaded (layers will load on-demand during inference)"
+            architecture = arch_type.name(),
+            "Lazy model base loaded (layers will load on-demand during inference)"
+        );
+
+        Ok(LoadedModel {
+            model: Mutex::new(model),
+            tokenizer,
+            eos_token_id,
+        })
+    }
+
+    /// Loads a model using adaptive memory tiering (experimental).
+    ///
+    /// Uses intelligent tensor placement based on importance scoring and
+    /// mixed precision to minimize or eliminate layer swapping.
+    #[allow(clippy::too_many_arguments)]
+    fn load_lazy_model_adaptive(
+        files: &ModelFiles,
+        model_config: &ModelConfig,
+        device: &Device,
+        dtype: DType,
+        directory: &std::path::Path,
+        vram_budget: u64,
+        ram_budget: u64,
+        arch_type: ArchitectureType,
+    ) -> Result<LoadedModel> {
+        use crate::adaptive_tiering::{
+            AdaptiveLoader, AdaptiveTieringConfig, AllocationPlanner, LoadingBackend, ModelProfile,
+        };
+        use crate::holotensor::tiered_loading::{TieredConfig, TieredHoloLoader};
+        use crate::lazy_varbuilder::LazyVarBuilder;
+        use crate::models::{LazyLlama, LazyQwen2, LlamaConfig, Qwen2Config};
+
+        let start = Instant::now();
+
+        tracing::info!(
+            directory = %directory.display(),
+            vram_gb = vram_budget / (1024 * 1024 * 1024),
+            ram_gb = ram_budget / (1024 * 1024 * 1024),
+            "Loading model with adaptive memory tiering"
+        );
+
+        // Build model profile from HCT directory
+        let profile = ModelProfile::from_hct_directory(directory).map_err(|e| {
+            infernum_core::Error::ModelLoad {
+                message: format!("Failed to build model profile: {}", e),
+            }
+        })?;
+
+        // Log reconstruction path distribution
+        let reconstruction_summary = profile.reconstruction_summary();
+        tracing::info!(
+            model_size_gb = format!("{:.2}", profile.size_gb()),
+            num_layers = profile.num_layers,
+            tensor_count = profile.tensors.len(),
+            gpu_path_count = reconstruction_summary.gpu_fast_count,
+            cpu_path_count = reconstruction_summary.cpu_direct_count,
+            "Model profile built"
+        );
+
+        // Configure and run allocation planner
+        let adaptive_config = AdaptiveTieringConfig {
+            vram_budget,
+            ram_budget,
+            quality_target: 0.95,
+            enable_mixed_precision: true,
+            ..AdaptiveTieringConfig::default()
+        };
+
+        let planner = AllocationPlanner::new(adaptive_config);
+        let plan = planner.plan(&profile).map_err(|e| infernum_core::Error::ModelLoad {
+            message: format!("Failed to plan allocation: {}", e),
+        })?;
+
+        // Select loading backend based on allocation plan
+        let backend = LoadingBackend::select(&plan);
+        tracing::info!(
+            vram_usage_gb = format!("{:.2}", plan.vram_usage as f64 / 1e9),
+            ram_usage_gb = format!("{:.2}", plan.ram_usage as f64 / 1e9),
+            nvme_usage_gb = format!("{:.2}", plan.nvme_usage as f64 / 1e9),
+            swap_count = plan.swap_count,
+            quality_score = format!("{:.3}", plan.quality_score),
+            backend = ?backend,
+            "Adaptive allocation plan computed"
+        );
+
+        // Route to appropriate loading backend
+        match backend {
+            LoadingBackend::Eager | LoadingBackend::EagerWithRamCache => {
+                return Self::load_model_eager_with_placement(
+                    files,
+                    model_config,
+                    device,
+                    dtype,
+                    directory,
+                    &profile,
+                    &plan,
+                    arch_type,
+                    start,
+                );
+            }
+            LoadingBackend::Progressive => {
+                // Continue with TieredHoloLoader for 405B+ models
+                tracing::info!("Using progressive loading (405B mode) - model requires layer swapping");
+            }
+        }
+
+        // Create underlying tiered loader (only for Progressive backend)
+        let tiered_config = TieredConfig {
+            vram_budget,
+            ram_budget,
+            min_quality: 0.7,
+            target_quality: 0.95,
+            enable_background_streaming: true,
+            background_streams: 4,
+        };
+
+        let mut tiered_loader =
+            TieredHoloLoader::new(directory, tiered_config, device.clone(), dtype).map_err(
+                |e| infernum_core::Error::ModelLoad {
+                    message: format!("Failed to create tiered loader: {}", e),
+                },
+            )?;
+
+        // Enable NVMe cache if configured
+        if let Ok(cache_dir) = std::env::var("INFERNUM_CACHE_DIR") {
+            let cache_path = std::path::Path::new(&cache_dir);
+            if cache_path.exists() || std::fs::create_dir_all(cache_path).is_ok() {
+                tracing::info!(cache_dir = %cache_dir, "NVMe cache enabled");
+                tiered_loader = tiered_loader.with_safetensors_dir(cache_path);
+            }
+        }
+
+        tiered_loader.start_background_streaming();
+
+        // Wrap with adaptive loader for intelligent caching
+        let adaptive_loader = AdaptiveLoader::new(plan.clone(), tiered_loader, device.clone());
+
+        // Preload VRAM tensors for faster first inference
+        tracing::info!("Preloading VRAM tensors...");
+        if let Err(e) = adaptive_loader.preload_vram_tensors() {
+            tracing::warn!(error = %e, "Failed to preload VRAM tensors, continuing with lazy loading");
+        }
+
+        let provider: std::sync::Arc<dyn crate::lazy_varbuilder::TensorProvider> =
+            std::sync::Arc::new(adaptive_loader);
+
+        // Disable LazyVarBuilder cache - AdaptiveLoader handles caching
+        let cache_config = crate::lazy_varbuilder::CacheConfig {
+            max_memory_bytes: 0,
+            max_entries: 0,
+        };
+
+        let lazy_vb = LazyVarBuilder::with_cache_config(
+            std::sync::Arc::clone(&provider),
+            device.clone(),
+            dtype,
+            cache_config,
+        );
+
+        // With adaptive tiering, we can fit more layers in VRAM
+        let max_loaded_layers = if plan.swap_count == 0 {
+            profile.num_layers // All layers fit in VRAM
+        } else {
+            // Use existing calculation but take advantage of better packing
+            let layer_count = profile.num_layers.max(1);
+            let per_layer_vram = plan.vram_usage / layer_count as u64;
+            (vram_budget / per_layer_vram.max(1)).min(layer_count as u64) as usize
+        };
+
+        tracing::info!(
+            max_loaded_layers = max_loaded_layers,
+            "Adaptive loading: max layers in VRAM"
+        );
+
+        // Get EOS token ID for config
+        let eos_token_id_config = model_config.eos_token_ids().first().copied();
+
+        // Load the appropriate lazy model based on architecture
+        let model = match arch_type {
+            ArchitectureType::Qwen2 => {
+                tracing::info!("Loading LazyQwen2 model (Qwen2 architecture detected)");
+
+                let qwen2_config = Qwen2Config {
+                    hidden_size: model_config.hidden_size.unwrap_or(5120),
+                    intermediate_size: model_config.intermediate_size.unwrap_or(13824),
+                    vocab_size: model_config.vocab_size.unwrap_or(152064),
+                    num_hidden_layers: model_config.num_hidden_layers.unwrap_or(48),
+                    num_attention_heads: model_config.num_attention_heads.unwrap_or(40),
+                    num_key_value_heads: model_config.num_key_value_heads,
+                    rms_norm_eps: model_config.rms_norm_eps.unwrap_or(1e-6),
+                    rope_theta: model_config.rope_theta.unwrap_or(1000000.0),
+                    max_position_embeddings: model_config.max_position_embeddings.unwrap_or(32768),
+                    tie_word_embeddings: model_config.tie_word_embeddings.unwrap_or(false),
+                    bos_token_id: model_config.bos_token_id,
+                    eos_token_id: eos_token_id_config,
+                    use_sliding_window: false,
+                    sliding_window: None,
+                };
+
+                let lazy_qwen2 = LazyQwen2::load(qwen2_config, lazy_vb, max_loaded_layers).map_err(|e| {
+                    infernum_core::Error::ModelLoad {
+                        message: format!("Failed to load LazyQwen2: {}", e),
+                    }
+                })?;
+
+                ModelKind::LazyQwen2(lazy_qwen2)
+            }
+            ArchitectureType::Llama | ArchitectureType::Unknown => {
+                if arch_type == ArchitectureType::Unknown {
+                    tracing::warn!(
+                        "Unknown architecture, defaulting to LazyLlama. Model may not work correctly."
+                    );
+                } else {
+                    tracing::info!("Loading LazyLlama model (Llama architecture detected)");
+                }
+
+                let llama_config = LlamaConfig {
+                    hidden_size: model_config.hidden_size.unwrap_or(16384),
+                    intermediate_size: model_config.intermediate_size.unwrap_or(53248),
+                    vocab_size: model_config.vocab_size.unwrap_or(128256),
+                    num_hidden_layers: model_config.num_hidden_layers.unwrap_or(126),
+                    num_attention_heads: model_config.num_attention_heads.unwrap_or(128),
+                    num_key_value_heads: model_config.num_key_value_heads,
+                    rms_norm_eps: model_config.rms_norm_eps.unwrap_or(1e-5),
+                    rope_theta: model_config.rope_theta.unwrap_or(500000.0),
+                    max_position_embeddings: model_config.max_position_embeddings.unwrap_or(131072),
+                    tie_word_embeddings: model_config.tie_word_embeddings.unwrap_or(false),
+                    bos_token_id: model_config.bos_token_id,
+                    eos_token_id: eos_token_id_config,
+                    rope_scaling: model_config.rope_scaling.clone(),
+                };
+
+                let lazy_llama = LazyLlama::load(llama_config, lazy_vb, max_loaded_layers).map_err(|e| {
+                    infernum_core::Error::ModelLoad {
+                        message: format!("Failed to load LazyLlama: {}", e),
+                    }
+                })?;
+
+                ModelKind::LazyLlama(lazy_llama)
+            }
+        };
+
+        // Load tokenizer
+        let tokenizer = if let Some(tokenizer_path) = &files.tokenizer {
+            Tokenizer::from_file(tokenizer_path)?
+        } else {
+            return Err(infernum_core::Error::ModelLoad {
+                message: "No tokenizer found for model".to_string(),
+            });
+        };
+
+        // Get EOS token with architecture-appropriate default
+        let eos_token_id = model_config.eos_token_ids().first().copied().unwrap_or(
+            match arch_type {
+                ArchitectureType::Qwen2 => 151643,
+                _ => 128001,
+            }
+        );
+
+        let elapsed = start.elapsed();
+        tracing::info!(
+            elapsed_ms = elapsed.as_millis(),
+            architecture = arch_type.name(),
+            swap_count = plan.swap_count,
+            quality_score = format!("{:.3}", plan.quality_score),
+            "Adaptive model loaded successfully"
+        );
+
+        Ok(LoadedModel {
+            model: Mutex::new(model),
+            tokenizer,
+            eos_token_id,
+        })
+    }
+
+    /// Loads a model using eager decompression with intelligent tensor placement.
+    ///
+    /// This is the fast path for models that fit in VRAM+RAM. Uses `hct_sequential`
+    /// for parallel tensor decompression instead of progressive streaming.
+    ///
+    /// Achieves ~2+ tk/s for 14B models vs ~0.3 tk/s with progressive loading.
+    #[allow(clippy::too_many_arguments)]
+    fn load_model_eager_with_placement(
+        files: &ModelFiles,
+        model_config: &ModelConfig,
+        device: &Device,
+        dtype: DType,
+        directory: &std::path::Path,
+        profile: &crate::adaptive_tiering::ModelProfile,
+        plan: &crate::adaptive_tiering::AllocationPlan,
+        arch_type: ArchitectureType,
+        start: Instant,
+    ) -> Result<LoadedModel> {
+        use crate::adaptive_tiering::{AdaptiveLoader, EagerTensorProvider};
+        use crate::lazy_varbuilder::{CacheConfig, LazyVarBuilder};
+        use crate::models::{LazyLlama, LazyQwen2, LlamaConfig, Qwen2Config};
+
+        tracing::info!(
+            directory = %directory.display(),
+            tensor_count = profile.tensors.len(),
+            vram_budget_gb = format!("{:.2}", plan.vram_usage as f64 / 1e9),
+            ram_budget_gb = format!("{:.2}", plan.ram_usage as f64 / 1e9),
+            "Using eager loading with tiered placement (fast path)"
+        );
+
+        // PHASE 1: Eager decompression to CPU (RAM)
+        // Load all tensors to CPU first - this is fast parallel decompression
+        // without the streaming overhead of TieredHoloLoader
+        tracing::info!("Phase 1: Eager decompression to RAM...");
+        let cpu_device = Device::Cpu;
+        let tensors = crate::hct_sequential::load_hct_directory_parallel(
+            directory,
+            &cpu_device,  // Load to CPU (RAM), not GPU
+            dtype,
+        ).map_err(|e| infernum_core::Error::ModelLoad {
+            message: format!("Failed to load HCT tensors: {}", e),
+        })?;
+
+        let total_bytes: u64 = tensors.values()
+            .map(|t| (t.elem_count() * t.dtype().size_in_bytes()) as u64)
+            .sum();
+
+        tracing::info!(
+            tensor_count = tensors.len(),
+            total_gb = format!("{:.2}", total_bytes as f64 / 1e9),
+            "Phase 1 complete: All tensors loaded to RAM"
+        );
+
+        // PHASE 2: Create tiered provider
+        // EagerTensorProvider wraps the pre-loaded tensors
+        // AdaptiveLoader adds VRAM/RAM tiering based on the allocation plan
+        tracing::info!("Phase 2: Creating tiered provider...");
+        let eager_provider = EagerTensorProvider::new(tensors);
+        let adaptive_loader = AdaptiveLoader::new(plan.clone(), eager_provider, device.clone());
+
+        // PHASE 3: Preload hot tensors to VRAM
+        // This moves the most important tensors to GPU memory upfront
+        tracing::info!("Phase 3: Preloading hot tensors to VRAM...");
+        if let Err(e) = adaptive_loader.preload_vram_tensors() {
+            tracing::warn!(error = %e, "Failed to preload VRAM tensors, continuing with on-demand loading");
+        }
+
+        let vram_usage = adaptive_loader.vram_cache_usage();
+        let ram_usage = adaptive_loader.ram_cache_usage();
+        tracing::info!(
+            vram_gb = format!("{:.2}", vram_usage as f64 / 1e9),
+            ram_gb = format!("{:.2}", ram_usage as f64 / 1e9),
+            "Phase 3 complete: Hot tensors in VRAM, warm tensors in RAM"
+        );
+
+        // Create LazyVarBuilder with the adaptive loader
+        // Disable LazyVarBuilder's own cache - AdaptiveLoader handles caching
+        let provider: std::sync::Arc<dyn crate::lazy_varbuilder::TensorProvider> =
+            std::sync::Arc::new(adaptive_loader);
+        let cache_config = CacheConfig {
+            max_memory_bytes: 0,
+            max_entries: 0,
+        };
+        let lazy_vb = LazyVarBuilder::with_cache_config(
+            std::sync::Arc::clone(&provider),
+            device.clone(),
+            dtype,
+            cache_config,
+        );
+
+        // All layers can be "loaded" since tensors are already in RAM
+        let max_loaded_layers = profile.num_layers;
+
+        // Get EOS token ID for config
+        let eos_token_id_config = model_config.eos_token_ids().first().copied();
+
+        // PHASE 4: Build the model using lazy loading
+        tracing::info!("Phase 4: Building model with lazy tensor access...");
+        let model = match arch_type {
+            ArchitectureType::Qwen2 => {
+                tracing::info!("Loading LazyQwen2 model with eager-tiered weights");
+
+                let qwen2_config = Qwen2Config {
+                    hidden_size: model_config.hidden_size.unwrap_or(5120),
+                    intermediate_size: model_config.intermediate_size.unwrap_or(13824),
+                    vocab_size: model_config.vocab_size.unwrap_or(152064),
+                    num_hidden_layers: model_config.num_hidden_layers.unwrap_or(48),
+                    num_attention_heads: model_config.num_attention_heads.unwrap_or(40),
+                    num_key_value_heads: model_config.num_key_value_heads,
+                    rms_norm_eps: model_config.rms_norm_eps.unwrap_or(1e-6),
+                    rope_theta: model_config.rope_theta.unwrap_or(1000000.0),
+                    max_position_embeddings: model_config.max_position_embeddings.unwrap_or(32768),
+                    tie_word_embeddings: model_config.tie_word_embeddings.unwrap_or(false),
+                    bos_token_id: model_config.bos_token_id,
+                    eos_token_id: eos_token_id_config,
+                    use_sliding_window: false,
+                    sliding_window: None,
+                };
+
+                let lazy_qwen2 = LazyQwen2::load(qwen2_config, lazy_vb, max_loaded_layers).map_err(|e| {
+                    infernum_core::Error::ModelLoad {
+                        message: format!("Failed to load LazyQwen2: {}", e),
+                    }
+                })?;
+
+                ModelKind::LazyQwen2(lazy_qwen2)
+            }
+            ArchitectureType::Llama | ArchitectureType::Unknown => {
+                if arch_type == ArchitectureType::Unknown {
+                    tracing::warn!(
+                        "Unknown architecture, defaulting to LazyLlama. Model may not work correctly."
+                    );
+                } else {
+                    tracing::info!("Loading LazyLlama model with eager-tiered weights");
+                }
+
+                let llama_config = LlamaConfig {
+                    hidden_size: model_config.hidden_size.unwrap_or(16384),
+                    intermediate_size: model_config.intermediate_size.unwrap_or(53248),
+                    vocab_size: model_config.vocab_size.unwrap_or(128256),
+                    num_hidden_layers: model_config.num_hidden_layers.unwrap_or(126),
+                    num_attention_heads: model_config.num_attention_heads.unwrap_or(128),
+                    num_key_value_heads: model_config.num_key_value_heads,
+                    rms_norm_eps: model_config.rms_norm_eps.unwrap_or(1e-5),
+                    rope_theta: model_config.rope_theta.unwrap_or(500000.0),
+                    max_position_embeddings: model_config.max_position_embeddings.unwrap_or(131072),
+                    tie_word_embeddings: model_config.tie_word_embeddings.unwrap_or(false),
+                    bos_token_id: model_config.bos_token_id,
+                    eos_token_id: eos_token_id_config,
+                    rope_scaling: model_config.rope_scaling.clone(),
+                };
+
+                let lazy_llama = LazyLlama::load(llama_config, lazy_vb, max_loaded_layers).map_err(|e| {
+                    infernum_core::Error::ModelLoad {
+                        message: format!("Failed to load LazyLlama: {}", e),
+                    }
+                })?;
+
+                ModelKind::LazyLlama(lazy_llama)
+            }
+        };
+
+        // Load tokenizer
+        let tokenizer = if let Some(tokenizer_path) = &files.tokenizer {
+            Tokenizer::from_file(tokenizer_path)?
+        } else {
+            return Err(infernum_core::Error::ModelLoad {
+                message: "No tokenizer found for model".to_string(),
+            });
+        };
+
+        // Get EOS token with architecture-appropriate default
+        let eos_token_id = model_config.eos_token_ids().first().copied().unwrap_or(
+            match arch_type {
+                ArchitectureType::Qwen2 => 151643,
+                _ => 128001,
+            }
+        );
+
+        let elapsed = start.elapsed();
+        tracing::info!(
+            elapsed_ms = elapsed.as_millis(),
+            architecture = arch_type.name(),
+            vram_gb = format!("{:.2}", vram_usage as f64 / 1e9),
+            ram_gb = format!("{:.2}", ram_usage as f64 / 1e9),
+            quality_score = format!("{:.3}", plan.quality_score),
+            "Model loaded successfully with eager-tiered placement"
         );
 
         Ok(LoadedModel {

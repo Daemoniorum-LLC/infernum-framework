@@ -73,6 +73,22 @@ enum Commands {
         #[arg(short, long)]
         config: Option<String>,
 
+        /// Inference backend: auto, llama-cpp, or candle
+        /// - auto: Select based on model format (default)
+        /// - llama-cpp: High-performance GGUF inference (30-60 tk/s)
+        /// - candle: Native Rust, supports HCT/HoloTensor
+        #[arg(short, long, default_value = "auto")]
+        backend: String,
+
+        /// Number of layers to offload to GPU (-1 = all, 0 = CPU only)
+        /// Only applies to llama-cpp backend
+        #[arg(long, default_value = "-1")]
+        n_gpu_layers: i32,
+
+        /// Context size in tokens (default: 4096)
+        #[arg(long, default_value = "4096")]
+        context_size: usize,
+
         /// Enable HoloTensor progressive quality inference.
         /// This enables 70B+ models on 24GB VRAM via holographic compression.
         /// The model must be a HoloTensor HCT directory.
@@ -110,6 +126,18 @@ enum Commands {
         /// Stream output
         #[arg(short, long)]
         stream: bool,
+
+        /// Inference backend: auto, llama-cpp, or candle
+        #[arg(short, long, default_value = "auto")]
+        backend: String,
+
+        /// Number of layers to offload to GPU (-1 = all)
+        #[arg(long, default_value = "-1")]
+        n_gpu_layers: i32,
+
+        /// Context size in tokens
+        #[arg(long, default_value = "4096")]
+        context_size: usize,
     },
 
     /// Generate embeddings
@@ -137,6 +165,18 @@ enum Commands {
         /// System prompt
         #[arg(short, long)]
         system: Option<String>,
+
+        /// Inference backend: auto, llama-cpp, or candle
+        #[arg(short, long, default_value = "auto")]
+        backend: String,
+
+        /// Number of layers to offload to GPU (-1 = all)
+        #[arg(long, default_value = "-1")]
+        n_gpu_layers: i32,
+
+        /// Context size in tokens
+        #[arg(long, default_value = "4096")]
+        context_size: usize,
     },
 
     /// Display version and build info
@@ -192,6 +232,18 @@ enum Commands {
         /// Enable code tools (file I/O, shell, search) in addition to builtins
         #[arg(long)]
         code_tools: bool,
+
+        /// Inference backend: auto, llama-cpp, or candle
+        #[arg(short, long, default_value = "auto")]
+        backend: String,
+
+        /// Number of layers to offload to GPU (-1 = all)
+        #[arg(long, default_value = "-1")]
+        n_gpu_layers: i32,
+
+        /// Context size in tokens
+        #[arg(long, default_value = "4096")]
+        context_size: usize,
     },
 
     /// Manage configuration
@@ -533,7 +585,8 @@ async fn main() -> Result<()> {
             // Use CLI args or config default model
             let model = cli.model.or(cfg.default_model.clone());
             let system = cli.system;
-            commands::chat(model, system).await?;
+            // Use defaults for backend options in default mode
+            commands::chat(model, system, "auto".to_string(), -1, 4096).await?;
         },
 
         #[cfg(feature = "server")]
@@ -542,6 +595,9 @@ async fn main() -> Result<()> {
             port,
             model,
             config: config_file,
+            backend,
+            n_gpu_layers,
+            context_size,
             holo,
             holo_min_quality,
             holo_target_quality,
@@ -553,6 +609,9 @@ async fn main() -> Result<()> {
                 port,
                 model,
                 config_file,
+                backend,
+                n_gpu_layers,
+                context_size,
                 holo,
                 holo_min_quality,
                 holo_target_quality,
@@ -566,10 +625,13 @@ async fn main() -> Result<()> {
             max_tokens,
             temperature,
             stream,
+            backend,
+            n_gpu_layers,
+            context_size,
         }) => {
             // Use config default model if not specified on command line
             let model = model.or(cli.model).or(cfg.default_model.clone());
-            commands::generate(prompt, model, max_tokens, temperature, stream).await?;
+            commands::generate(prompt, model, max_tokens, temperature, stream, backend, n_gpu_layers, context_size).await?;
         },
 
         Some(Commands::Embed { text, model }) => {
@@ -606,11 +668,11 @@ async fn main() -> Result<()> {
             }
         },
 
-        Some(Commands::Chat { model, system }) => {
+        Some(Commands::Chat { model, system, backend, n_gpu_layers, context_size }) => {
             // Use config default model if not specified on command line
             let model = model.or(cli.model).or(cfg.default_model.clone());
             let system = system.or(cli.system);
-            commands::chat(model, system).await?;
+            commands::chat(model, system, backend, n_gpu_layers, context_size).await?;
         },
 
         Some(Commands::Version) => {
@@ -638,10 +700,13 @@ async fn main() -> Result<()> {
             verbose,
             working_dir,
             code_tools,
+            backend,
+            n_gpu_layers,
+            context_size,
         }) => {
             let model = model.or(cli.model).or(cfg.default_model.clone());
             let system = system.or(cli.system);
-            commands::agent(objective, model, system, max_iterations, verbose, working_dir, code_tools).await?;
+            commands::agent(objective, model, system, max_iterations, verbose, working_dir, code_tools, backend, n_gpu_layers, context_size).await?;
         },
 
         Some(Commands::Config { action }) => match action {
