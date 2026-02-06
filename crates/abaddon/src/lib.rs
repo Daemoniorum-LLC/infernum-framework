@@ -47,6 +47,7 @@
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::must_use_candidate)]
 
+pub mod adaptive_tiering;
 pub mod arbiter_integration;
 pub mod attention_cache;
 pub mod backend;
@@ -82,6 +83,10 @@ pub mod cuda_svd;
 pub mod gpu_dtype;
 #[cfg(feature = "cuda")]
 pub mod gpu_lrdf;
+
+// llama.cpp backend for production inference (50-100x faster than Candle)
+// Module is always available for BackendType; engine requires llama-cpp feature
+pub mod llama_cpp_engine;
 
 pub use arbiter_integration::{ArbiterCoordinator, ArbiterCoordinatorError, QualityLevel};
 pub use config::{EngineConfig, EngineConfigBuilder, HoloTensorConfig, MemoryConfig, SpeculativeConfig};
@@ -192,8 +197,24 @@ pub use holotensor::{
     TieredConfig, TieredHoloLoader, TieredStats, PlacementDecision, LayerWeightInfo,
 };
 
+// Adaptive memory tiering (intelligent VRAM/RAM/NVMe allocation)
+pub use adaptive_tiering::{
+    AdaptiveTieringConfig, AllocationPlanner, AllocationPlan, EagerTensorProvider, ImportanceScorer,
+    LoadingBackend, ModelProfile, ProfileError, ReconstructionPath, ReconstructionSummary,
+    TensorAllocation, TensorInfo, TensorPrecision, TensorType,
+    AdaptiveLoader, AdaptiveLoaderError, AdaptiveLoaderStats,
+    MemoryTier as AdaptiveMemoryTier, // Renamed to avoid conflict with holotensor::MemoryTier
+};
+
 // Re-exports from infernum-core
 pub use infernum_core::{
     EmbedRequest, EmbedResponse, GenerateRequest, GenerateResponse, ModelArchitecture,
     ModelMetadata, ModelSource, SamplingParams, TokenStream,
 };
+
+// llama.cpp engine (production inference, 50-100x faster than Candle)
+#[cfg(feature = "llama-cpp")]
+pub use llama_cpp_engine::{LlamaCppEngine, LlamaCppConfig, LlamaCppConfigBuilder, ChatTemplate};
+
+// Backend selection and GPU split mode (always available for CLI use)
+pub use llama_cpp_engine::{BackendType, GpuSplitMode};

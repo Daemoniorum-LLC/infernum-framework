@@ -14,12 +14,17 @@ name = "infernum"
 path = "src/main.rs"
 
 [features]
-default = ["server", "cuda"]
+default = ["server", "cuda", "llama-cpp"]
 server = ["infernum-server"]
 # GPU features - propagate to abaddon
 cuda = ["abaddon/cuda"]
 metal = ["abaddon/metal"]
 haagenti-gpu = ["cuda", "abaddon/haagenti-gpu"]
+# llama.cpp backend (high-performance GGUF inference)
+llama-cpp = ["abaddon/llama-cpp"]
+llama-cpp-cuda = ["llama-cpp", "abaddon/llama-cpp-cuda"]
+llama-cpp-metal = ["llama-cpp", "abaddon/llama-cpp-metal"]
+llama-cpp-vulkan = ["llama-cpp", "abaddon/llama-cpp-vulkan"]
 
 [dependencies]
 infernum-core = { path = "../infernum-core", version = "0.1.0" }
