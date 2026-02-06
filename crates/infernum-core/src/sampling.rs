@@ -2,6 +2,140 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Grammar constraint for structured generation.
+///
+/// Grammars constrain the model's output to follow specific syntactic rules,
+/// enabling reliable structured output like JSON, XML, or custom formats.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum GrammarConstraint {
+    /// GBNF (GGML BNF) grammar string for llama.cpp.
+    ///
+    /// Example:
+    /// ```text
+    /// root ::= object
+    /// object ::= "{" pair ("," pair)* "}"
+    /// pair ::= string ":" value
+    /// ```
+    Gbnf(String),
+
+    /// JSON mode - constrains output to valid JSON.
+    /// Equivalent to the standard JSON GBNF grammar.
+    Json,
+
+    /// JSON Schema constraint - output must match the provided schema.
+    /// The schema is converted to GBNF at runtime.
+    JsonSchema(String),
+}
+
+impl GrammarConstraint {
+    /// Create a GBNF grammar constraint.
+    pub fn gbnf(grammar: impl Into<String>) -> Self {
+        Self::Gbnf(grammar.into())
+    }
+
+    /// Create a JSON mode constraint.
+    pub fn json() -> Self {
+        Self::Json
+    }
+
+    /// Create a JSON Schema constraint.
+    pub fn json_schema(schema: impl Into<String>) -> Self {
+        Self::JsonSchema(schema.into())
+    }
+
+    /// Get the GBNF grammar string for this constraint.
+    ///
+    /// For `Json` mode, returns a standard JSON grammar.
+    /// For `JsonSchema`, converts the schema to GBNF (simplified).
+    pub fn to_gbnf(&self) -> String {
+        match self {
+            Self::Gbnf(grammar) => grammar.clone(),
+            Self::Json => Self::json_gbnf().to_string(),
+            Self::JsonSchema(schema) => Self::schema_to_gbnf(schema),
+        }
+    }
+
+    /// Standard JSON GBNF grammar.
+    fn json_gbnf() -> &'static str {
+        r#"root ::= value
+value ::= object | array | string | number | boolean | null
+object ::= "{" ws (pair ("," ws pair)*)? "}" ws
+pair ::= string ":" ws value
+array ::= "[" ws (value ("," ws value)*)? "]" ws
+string ::= "\"" char* "\"" ws
+char ::= [^"\\] | "\\" escape
+escape ::= ["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]
+number ::= "-"? integer fraction? exponent? ws
+integer ::= "0" | [1-9] [0-9]*
+fraction ::= "." [0-9]+
+exponent ::= [eE] [+-]? [0-9]+
+boolean ::= ("true" | "false") ws
+null ::= "null" ws
+ws ::= [ \t\n\r]*"#
+    }
+
+    /// Convert JSON schema to GBNF (simplified implementation).
+    ///
+    /// This handles basic object schemas with required string/number/boolean properties.
+    /// For complex schemas, users should provide GBNF directly.
+    fn schema_to_gbnf(schema: &str) -> String {
+        // Parse the JSON schema
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(schema) else {
+            // Fall back to generic JSON if schema is invalid
+            return Self::json_gbnf().to_string();
+        };
+
+        // Check if it's an object type with properties
+        if value.get("type").and_then(|t| t.as_str()) != Some("object") {
+            return Self::json_gbnf().to_string();
+        }
+
+        let Some(properties) = value.get("properties").and_then(|p| p.as_object()) else {
+            return Self::json_gbnf().to_string();
+        };
+
+        // Build a grammar for this specific object schema
+        let mut rules = Vec::new();
+        let mut pair_rules = Vec::new();
+
+        for (key, prop) in properties {
+            let prop_type = prop.get("type").and_then(|t| t.as_str()).unwrap_or("string");
+            let value_rule = match prop_type {
+                "string" => "string",
+                "number" | "integer" => "number",
+                "boolean" => "boolean",
+                "null" => "null",
+                "array" => "array",
+                "object" => "object",
+                _ => "value",
+            };
+            pair_rules.push(format!("\"\\\"{}\\\":\" ws {}", key, value_rule));
+        }
+
+        // Build the root rule for this object
+        let pairs = pair_rules.join(" \",\" ws ");
+        rules.push(format!("root ::= \"{{\" ws {} \"}}\" ws", pairs));
+
+        // Add standard JSON rules
+        rules.push(r#"value ::= object | array | string | number | boolean | null"#.to_string());
+        rules.push(r#"object ::= "{" ws (pair ("," ws pair)*)? "}" ws"#.to_string());
+        rules.push(r#"pair ::= string ":" ws value"#.to_string());
+        rules.push(r#"array ::= "[" ws (value ("," ws value)*)? "]" ws"#.to_string());
+        rules.push(r#"string ::= "\"" char* "\"" ws"#.to_string());
+        rules.push(r#"char ::= [^"\\] | "\\" escape"#.to_string());
+        rules.push(r#"escape ::= ["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]"#.to_string());
+        rules.push(r#"number ::= "-"? integer fraction? exponent? ws"#.to_string());
+        rules.push(r#"integer ::= "0" | [1-9] [0-9]*"#.to_string());
+        rules.push(r#"fraction ::= "." [0-9]+"#.to_string());
+        rules.push(r#"exponent ::= [eE] [+-]? [0-9]+"#.to_string());
+        rules.push(r#"boolean ::= ("true" | "false") ws"#.to_string());
+        rules.push(r#"null ::= "null" ws"#.to_string());
+        rules.push(r#"ws ::= [ \t\n\r]*"#.to_string());
+
+        rules.join("\n")
+    }
+}
+
 /// Parameters controlling text generation sampling.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SamplingParams {
@@ -52,6 +186,13 @@ pub struct SamplingParams {
     /// Random seed for reproducibility.
     #[serde(default)]
     pub seed: Option<u64>,
+
+    /// Grammar constraint for structured output (JSON mode, GBNF, etc.).
+    ///
+    /// When set, the model's output will be constrained to follow the grammar,
+    /// guaranteeing syntactically valid structured output.
+    #[serde(default)]
+    pub grammar: Option<GrammarConstraint>,
 }
 
 fn default_temperature() -> f32 {
@@ -83,6 +224,7 @@ impl Default for SamplingParams {
             stop_sequences: Vec::new(),
             max_tokens: 256,
             seed: None,
+            grammar: None,
         }
     }
 }
@@ -188,6 +330,34 @@ impl SamplingParams {
         self
     }
 
+    /// Sets a grammar constraint for structured output.
+    #[must_use]
+    pub fn with_grammar(mut self, grammar: GrammarConstraint) -> Self {
+        self.grammar = Some(grammar);
+        self
+    }
+
+    /// Enables JSON mode - constrains output to valid JSON.
+    #[must_use]
+    pub fn with_json_mode(mut self) -> Self {
+        self.grammar = Some(GrammarConstraint::Json);
+        self
+    }
+
+    /// Sets a GBNF grammar constraint.
+    #[must_use]
+    pub fn with_gbnf(mut self, grammar: impl Into<String>) -> Self {
+        self.grammar = Some(GrammarConstraint::Gbnf(grammar.into()));
+        self
+    }
+
+    /// Sets a JSON Schema constraint.
+    #[must_use]
+    pub fn with_json_schema(mut self, schema: impl Into<String>) -> Self {
+        self.grammar = Some(GrammarConstraint::JsonSchema(schema.into()));
+        self
+    }
+
     /// Validates the sampling parameters.
     ///
     /// # Errors
@@ -236,6 +406,7 @@ mod tests {
         assert!(params.stop_sequences.is_empty());
         assert_eq!(params.max_tokens, 256);
         assert!(params.seed.is_none());
+        assert!(params.grammar.is_none());
     }
 
     #[test]
@@ -400,5 +571,99 @@ mod tests {
         assert!(params.stop_sequences.contains(&"END".to_string()));
         assert!(params.stop_sequences.contains(&"STOP".to_string()));
         assert!(params.stop_sequences.contains(&"\n\n".to_string()));
+    }
+
+    // === Grammar Constraint Tests ===
+
+    #[test]
+    fn test_grammar_constraint_json_mode() {
+        let params = SamplingParams::default().with_json_mode();
+        assert!(params.grammar.is_some());
+        assert_eq!(params.grammar, Some(GrammarConstraint::Json));
+    }
+
+    #[test]
+    fn test_grammar_constraint_gbnf() {
+        let grammar = r#"root ::= "hello" | "world""#;
+        let params = SamplingParams::default().with_gbnf(grammar);
+        assert!(params.grammar.is_some());
+        assert_eq!(params.grammar, Some(GrammarConstraint::Gbnf(grammar.to_string())));
+    }
+
+    #[test]
+    fn test_grammar_constraint_json_schema() {
+        let schema = r#"{"type": "object", "properties": {"name": {"type": "string"}}}"#;
+        let params = SamplingParams::default().with_json_schema(schema);
+        assert!(params.grammar.is_some());
+        assert_eq!(params.grammar, Some(GrammarConstraint::JsonSchema(schema.to_string())));
+    }
+
+    #[test]
+    fn test_grammar_constraint_with_grammar() {
+        let constraint = GrammarConstraint::json();
+        let params = SamplingParams::default().with_grammar(constraint);
+        assert_eq!(params.grammar, Some(GrammarConstraint::Json));
+    }
+
+    #[test]
+    fn test_grammar_json_to_gbnf() {
+        let gbnf = GrammarConstraint::Json.to_gbnf();
+        // Should contain key JSON grammar rules
+        assert!(gbnf.contains("root ::= value"));
+        assert!(gbnf.contains("object"));
+        assert!(gbnf.contains("array"));
+        assert!(gbnf.contains("string"));
+        assert!(gbnf.contains("number"));
+        assert!(gbnf.contains("boolean"));
+        assert!(gbnf.contains("null"));
+    }
+
+    #[test]
+    fn test_grammar_gbnf_passthrough() {
+        let custom = r#"root ::= "yes" | "no""#;
+        let constraint = GrammarConstraint::gbnf(custom);
+        assert_eq!(constraint.to_gbnf(), custom);
+    }
+
+    #[test]
+    fn test_grammar_json_schema_to_gbnf() {
+        let schema = r#"{"type": "object", "properties": {"name": {"type": "string"}, "age": {"type": "number"}}}"#;
+        let constraint = GrammarConstraint::json_schema(schema);
+        let gbnf = constraint.to_gbnf();
+
+        // Should generate a root rule for this specific object
+        assert!(gbnf.contains("root ::="));
+        // Should contain property names
+        assert!(gbnf.contains("name"));
+        assert!(gbnf.contains("age"));
+    }
+
+    #[test]
+    fn test_grammar_invalid_json_schema_fallback() {
+        // Invalid JSON should fall back to generic JSON grammar
+        let constraint = GrammarConstraint::json_schema("not valid json");
+        let gbnf = constraint.to_gbnf();
+        assert!(gbnf.contains("root ::= value"));
+    }
+
+    #[test]
+    fn test_grammar_serialization() {
+        let params = SamplingParams::default().with_json_mode();
+        let json = serde_json::to_string(&params).unwrap();
+        let deserialized: SamplingParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.grammar, Some(GrammarConstraint::Json));
+    }
+
+    #[test]
+    fn test_grammar_deserialization_gbnf() {
+        let json = r#"{"grammar": {"Gbnf": "root ::= value"}}"#;
+        let params: SamplingParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.grammar, Some(GrammarConstraint::Gbnf("root ::= value".to_string())));
+    }
+
+    #[test]
+    fn test_default_no_grammar() {
+        let params = SamplingParams::default();
+        assert!(params.grammar.is_none());
     }
 }

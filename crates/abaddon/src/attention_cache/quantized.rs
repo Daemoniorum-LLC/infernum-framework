@@ -221,6 +221,7 @@ impl KvCache for QuantizedCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use candle_core::Device;
 
     #[test]
     fn test_quantized_cache_empty() {

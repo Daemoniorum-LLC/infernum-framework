@@ -30,6 +30,8 @@ pub enum ModelKind {
     LazyLlama(LazyLlama),
     /// Qwen2-family models (Qwen2, Qwen2.5, Qwen2.5-Coder)
     Qwen2(Qwen2),
+    /// Lazy Qwen2 for 14B+ models (layer-by-layer loading)
+    LazyQwen2(LazyQwen2),
 }
 
 impl ModelKind {
@@ -41,6 +43,9 @@ impl ModelKind {
                 .forward(input_ids, start_pos)
                 .map_err(|e| candle_core::Error::Msg(e.to_string())),
             Self::Qwen2(model) => model.forward(input_ids, start_pos),
+            Self::LazyQwen2(model) => model
+                .forward(input_ids, start_pos)
+                .map_err(|e| candle_core::Error::Msg(e.to_string())),
         }
     }
 
@@ -50,6 +55,7 @@ impl ModelKind {
             Self::Llama(model) => model.clear_cache(),
             Self::LazyLlama(model) => model.clear_cache(),
             Self::Qwen2(model) => model.clear_cache(),
+            Self::LazyQwen2(model) => model.clear_cache(),
         }
     }
 
@@ -64,6 +70,12 @@ impl ModelKind {
                 ))
             }
             Self::Qwen2(model) => model.forward_embedding(input_ids),
+            Self::LazyQwen2(_model) => {
+                // LazyQwen2 doesn't support embedding extraction yet
+                Err(candle_core::Error::Msg(
+                    "Embedding extraction not supported for LazyQwen2".to_string(),
+                ))
+            }
         }
     }
 
@@ -78,6 +90,12 @@ impl ModelKind {
                 ))
             }
             Self::Qwen2(model) => model.extract_embeddings(input_ids),
+            Self::LazyQwen2(_model) => {
+                // LazyQwen2 doesn't support embedding extraction yet
+                Err(candle_core::Error::Msg(
+                    "Embedding extraction not supported for LazyQwen2".to_string(),
+                ))
+            }
         }
     }
 }

@@ -1,8 +1,8 @@
 # Agentic Loop Specification
 
-**Version:** 0.1.0
+**Version:** 0.3.0
 **Status:** Draft
-**Date:** 2026-02-02
+**Date:** 2026-02-04
 **Prerequisite:** TOOL-CALLING-SPEC.md v1.3.0
 
 ---
@@ -701,37 +701,593 @@ pub enum AgentRole {
 
 ### 7.2 Coordination Primitives
 
+The coordination primitives enable agent-to-agent communication during execution.
+They are methods on `AgentCoordinator` and follow two patterns:
+
+- **Channel-based** (`request_assistance`): The caller blocks on a `oneshot` receiver
+  while the supervisor routes the request and delivers a response. Same pattern as
+  tool approval (§9.4).
+- **Store-based** (`share_discovery`, `get_shared_context`): Append-only shared
+  data store. Non-blocking reads and writes.
+- **Terminal** (`yield_to`): The caller relinquishes its task. Returns immediately.
+  The supervisor handles rerouting independently.
+
+> **Implementation note:** These methods are added to the existing `AgentCoordinator`
+> in `coordination.rs`. They require new internal state: a pending-requests map
+> (like the approval inbox), a pending-yields queue, a discovery store, and a
+> `tokio::sync::broadcast` channel for `CoordinationEvent` notifications.
+
+#### 7.2.1 Types
+
+```rust
+// -------------------------------------------------------------------
+// Assistance
+// -------------------------------------------------------------------
+
+/// What kind of help an agent needs.
+pub struct AssistanceRequest {
+    /// Free-text description of what help is needed.
+    pub description: String,
+
+    /// Capabilities the helper should have (e.g., "database", "rust").
+    /// Used by the supervisor for capability matching.
+    pub required_capabilities: Vec<String>,
+
+    /// The requesting agent's partial progress so far.
+    /// Forwarded to the helper agent as initial context.
+    pub partial_progress: Option<String>,
+
+    /// Whether the agent is blocked or can continue while waiting.
+    pub priority: AssistancePriority,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AssistancePriority {
+    /// Agent is blocked until assistance arrives.
+    /// The executor pauses its loop while awaiting the response.
+    Blocking,
+
+    /// Agent can continue working on other aspects while waiting.
+    /// The response is delivered asynchronously and the agent incorporates
+    /// it on the next iteration.
+    Background,
+}
+
+/// Response to an assistance request.
+/// Delivered through a `oneshot` channel by the supervisor.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AssistanceResponse {
+    /// Another agent has been assigned to help.
+    Assigned {
+        /// ID of the helping agent.
+        helper_id: AgentId,
+        /// The helper's chosen name, if any.
+        helper_name: Option<String>,
+        /// Any context the supervisor wants to relay.
+        message: Option<String>,
+    },
+
+    /// No suitable agent is available.
+    Unavailable {
+        /// Why no agent could be found.
+        reason: String,
+        /// Supervisor's suggestion for what the agent should do instead.
+        suggestion: Option<String>,
+    },
+
+    /// The request timed out before the supervisor could route it.
+    TimedOut,
+}
+
+/// Pending assistance request stored in the coordinator.
+/// The supervisor consumes these and delivers responses.
+pub struct PendingAssistance {
+    /// Unique request ID (format: `assist_{agent_id}_{uuid}`).
+    pub request_id: String,
+    /// Who made the request.
+    pub from: AgentId,
+    /// The request details.
+    pub request: AssistanceRequest,
+    /// When the request was created.
+    pub requested_at: Instant,
+    /// Channel to deliver the response. Consumed once.
+    pub respond: oneshot::Sender<AssistanceResponse>,
+}
+
+// -------------------------------------------------------------------
+// Yield
+// -------------------------------------------------------------------
+
+/// Context provided when an agent yields its task.
+pub struct YieldContext {
+    /// Why the agent is yielding.
+    pub reason: String,
+
+    /// Partial progress achieved. Forwarded to the replacement agent
+    /// as initial context (injected as a user message).
+    pub partial_progress: Option<String>,
+
+    /// Capabilities the replacement agent should have.
+    /// The supervisor uses this for capability matching when `to` is `None`.
+    pub suggested_expertise: Vec<String>,
+
+    /// Structured data to hand off (e.g., parsed config, discovered paths).
+    /// Serialized into the replacement agent's system prompt or first message.
+    pub handoff_data: Option<serde_json::Value>,
+}
+
+/// Result of a yield operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum YieldResult {
+    /// Yield accepted. The agent should stop executing (loop transitions
+    /// to `LoopState::Yielded`). The supervisor will handle rerouting.
+    Accepted,
+
+    /// Yield rejected because the requesting agent is the only registered
+    /// agent, and no supervisor is running to spawn alternatives.
+    /// The agent should either continue trying or transition to Stuck.
+    NoAlternative { reason: String },
+}
+
+/// Pending yield stored in the coordinator.
+/// The supervisor consumes these during the monitoring phase.
+pub struct PendingYield {
+    /// Who yielded.
+    pub from: AgentId,
+    /// Optional target agent.
+    pub to: Option<AgentId>,
+    /// Yield context with partial progress and handoff data.
+    pub context: YieldContext,
+    /// When the yield was recorded.
+    pub yielded_at: Instant,
+}
+
+// -------------------------------------------------------------------
+// Discovery / Shared Context
+// -------------------------------------------------------------------
+
+/// A piece of knowledge an agent wants to share with others.
+pub struct Discovery {
+    /// What was discovered (human-readable summary).
+    pub content: String,
+
+    /// Category for filtering (e.g., "file_structure", "api_pattern",
+    /// "bug_found", "dependency_identified").
+    pub category: String,
+
+    /// Tags for capability matching and relevance scoring.
+    pub tags: Vec<String>,
+
+    /// Optional structured data (e.g., parsed AST nodes, file paths,
+    /// configuration values).
+    pub data: Option<serde_json::Value>,
+}
+
+/// Internal storage of a shared discovery.
+struct StoredDiscovery {
+    pub from: AgentId,
+    pub discovery: Discovery,
+    pub shared_at: Instant,
+}
+
+/// Accumulated shared context returned to a requesting agent.
+pub struct SharedContext {
+    /// Discoveries from other agents, filtered by visibility policy.
+    /// Ordered by `shared_at` (oldest first).
+    pub discoveries: Vec<(AgentId, Discovery)>,
+
+    /// Number of discoveries that were filtered out by visibility policy.
+    /// Allows the agent to know if there's more context it can't see.
+    pub filtered_count: usize,
+}
+```
+
+#### 7.2.2 `request_assistance`
+
+**Signature:**
 ```rust
 impl AgentCoordinator {
-    // Request another agent's help
-    pub async fn request_assistance(
+    /// Requests assistance from another agent.
+    ///
+    /// Creates a `PendingAssistance` entry and returns a receiver for the
+    /// response. The supervisor (or another monitoring component) consumes
+    /// pending requests via `take_pending_requests()` and delivers responses
+    /// via `deliver_assistance()`.
+    ///
+    /// # Errors
+    /// Returns `CoordinationError::AgentNotFound` if `from` is not registered.
+    pub fn request_assistance(
         &self,
         from: &AgentId,
         need: AssistanceRequest,
-    ) -> AssistanceResponse;
+    ) -> Result<oneshot::Receiver<AssistanceResponse>, CoordinationError>;
 
-    // Yield to another agent
-    pub async fn yield_to(
+    /// Drains all pending assistance requests.
+    /// Called by the supervisor during its monitoring loop.
+    pub fn take_pending_requests(&self) -> Vec<PendingAssistance>;
+
+    /// Delivers a response to a pending assistance request.
+    ///
+    /// # Errors
+    /// - `CoordinationError::RequestNotFound` if the request_id doesn't exist
+    ///   (never existed, already consumed, or timed out).
+    pub fn deliver_assistance(
+        &self,
+        request_id: &str,
+        response: AssistanceResponse,
+    ) -> Result<(), CoordinationError>;
+}
+```
+
+**Behavioral contract:**
+
+1. `request_assistance` validates that `from` is a registered agent.
+2. Generates a unique `request_id` (format: `assist_{from}_{uuid}`).
+3. Creates a `oneshot::channel()`. Stores the `Sender` in the pending map.
+4. Emits `CoordinationEvent::AssistanceRequested` on the broadcast channel.
+5. Returns the `Receiver` to the caller.
+6. The caller (`LoopExecutor`) decides how to await based on priority:
+   - `Blocking`: `tokio::time::timeout(assistance_timeout, rx).await`
+   - `Background`: spawns a background task that writes the response to
+     a shared slot; the executor checks on the next iteration.
+7. **Timeout:** If no response arrives within `LoopConfig.assistance_timeout`
+   (default: 60 seconds), the `Receiver` is dropped by the caller. The
+   corresponding `Sender` in the pending map becomes stale. Stale entries
+   are cleaned up on the next `take_pending_requests()` call (detected by
+   `Sender::is_closed()`).
+
+**Executor integration pseudocode:**
+```rust
+// In LoopExecutor, when the agent requests assistance via meta-signal:
+let rx = coordinator.request_assistance(&agent_id, need)?;
+
+match need.priority {
+    AssistancePriority::Blocking => {
+        match tokio::time::timeout(config.assistance_timeout, rx).await {
+            Ok(Ok(AssistanceResponse::Assigned { message, .. })) => {
+                // Inject helper's context into the conversation
+                if let Some(msg) = message {
+                    messages.push(Message::user(msg));
+                }
+                // Continue loop — agent incorporates the help
+            }
+            Ok(Ok(AssistanceResponse::Unavailable { suggestion, .. })) => {
+                // Inject suggestion as context, agent decides what to do
+                messages.push(Message::user(format!(
+                    "No assistance available: {}",
+                    suggestion.unwrap_or_default()
+                )));
+            }
+            Ok(Ok(AssistanceResponse::TimedOut)) | Ok(Err(_)) | Err(_) => {
+                // Timeout or channel dropped — agent continues on its own
+                messages.push(Message::user(
+                    "Assistance request timed out. Continue with available information."
+                ));
+            }
+        }
+    }
+    AssistancePriority::Background => {
+        let slot = Arc::new(Mutex::new(None));
+        let slot_clone = Arc::clone(&slot);
+        tokio::spawn(async move {
+            if let Ok(Ok(response)) = rx.await {
+                *slot_clone.lock() = Some(response);
+            }
+        });
+        // Store slot for the executor to check on next iteration
+        self.background_assistance.insert(request_id, slot);
+    }
+}
+```
+
+#### 7.2.3 `yield_to`
+
+**Signature:**
+```rust
+impl AgentCoordinator {
+    /// Yields the calling agent's task.
+    ///
+    /// Records the yield context and notifies the supervisor. The agent
+    /// should transition to `LoopState::Yielded` after calling this.
+    ///
+    /// Returns `Accepted` in multi-agent mode (supervisor will reroute),
+    /// or `NoAlternative` in single-agent mode (no supervisor, no other agents).
+    ///
+    /// # Errors
+    /// - `CoordinationError::AgentNotFound` if `from` is not registered.
+    /// - `CoordinationError::AlreadyYielded` if `from` has already yielded.
+    pub fn yield_to(
         &self,
         from: &AgentId,
-        to: Option<AgentId>,  // None = any suitable agent
+        to: Option<AgentId>,
         context: YieldContext,
-    ) -> YieldResult;
+    ) -> Result<YieldResult, CoordinationError>;
 
-    // Share a discovery
-    pub async fn share_discovery(
+    /// Drains all pending yields.
+    /// Called by the supervisor during its monitoring loop.
+    pub fn take_pending_yields(&self) -> Vec<PendingYield>;
+}
+```
+
+**Behavioral contract:**
+
+1. Validates `from` is registered.
+2. Checks `from` has not already yielded (tracked via internal `HashSet<AgentId>`).
+3. If `to` is `Some(agent_id)`, validates that the target is registered.
+4. If no other agents are registered and no supervisor event listener is
+   subscribed, returns `YieldResult::NoAlternative`.
+5. Otherwise:
+   - Marks `from` as yielded in the internal set.
+   - Stores a `PendingYield` in the pending queue.
+   - Emits `CoordinationEvent::AgentYielded` on the broadcast channel.
+   - Returns `YieldResult::Accepted`.
+6. The calling executor then transitions its loop: `loop.yield_detected(...)`.
+
+**Yield is terminal for the agent.** Once `yield_to` returns `Accepted`, the
+agent must not make further tool calls or generate output. The supervisor
+owns the subtask from this point.
+
+**Relationship to `ChildEvent::Yielded`:**
+
+The supervisor sees yields through two channels:
+- `CoordinationEvent::AgentYielded` (from the broadcast channel — immediate)
+- `ChildEvent::Yielded` (from the executor's `JoinHandle` completing — after cleanup)
+
+The `CoordinationEvent` arrives first and contains the `YieldContext` with
+structured handoff data. The `ChildEvent` confirms the executor has shut down.
+The supervisor should wait for both before rerouting to avoid racing with
+the yielding agent's cleanup.
+
+#### 7.2.4 `share_discovery` / `get_shared_context`
+
+**Signatures:**
+```rust
+impl AgentCoordinator {
+    /// Shares a discovery with other agents.
+    ///
+    /// Appends to the coordinator's discovery store. Non-blocking.
+    /// Emits `CoordinationEvent::DiscoveryShared`.
+    ///
+    /// # Errors
+    /// - `CoordinationError::AgentNotFound` if `from` is not registered.
+    pub fn share_discovery(
         &self,
         from: &AgentId,
         discovery: Discovery,
-    );
+    ) -> Result<(), CoordinationError>;
 
-    // Check what other agents have learned
-    pub async fn get_shared_context(
+    /// Returns shared context visible to the given agent.
+    ///
+    /// Filters discoveries based on the configured visibility policy.
+    /// Returns an empty `SharedContext` if `for_agent` is not registered
+    /// (non-fatal — allows querying before full registration).
+    pub fn get_shared_context(
         &self,
         for_agent: &AgentId,
     ) -> SharedContext;
+
+    /// Sets the visibility policy for shared context.
+    /// Called by the supervisor during initialization.
+    pub fn set_visibility_policy(&self, policy: VisibilityPolicy);
 }
 ```
+
+**Discovery store semantics:**
+
+- **Append-only.** Discoveries are never modified or removed.
+- **Ordered.** Insertion order is preserved. `get_shared_context` returns
+  discoveries oldest-first.
+- **No deduplication.** If an agent shares the same discovery twice, both
+  entries are stored. Deduplication is the caller's responsibility.
+- **Bounded.** Maximum 1000 discoveries per coordinator instance. Oldest
+  entries are evicted when the limit is reached.
+
+**Visibility policy:**
+
+```rust
+/// Controls what agents can see of each other's discoveries.
+pub enum VisibilityPolicy {
+    /// Each agent sees all discoveries from all other agents.
+    /// (Does not include the agent's own discoveries.)
+    Open,
+
+    /// Each agent sees only discoveries tagged with capabilities
+    /// that match the agent's own capabilities.
+    CapabilityFiltered,
+
+    /// The supervisor explicitly controls visibility per-agent.
+    /// Requires `allow_list: HashMap<AgentId, Vec<AgentId>>` mapping
+    /// each agent to the set of agents whose discoveries it can see.
+    Explicit { allow_list: HashMap<AgentId, Vec<AgentId>> },
+
+    /// No discoveries are shared. `get_shared_context` always returns empty.
+    Isolated,
+}
+```
+
+The default is `VisibilityPolicy::Open`. The supervisor sets the policy based on
+its `SharedContextMode`:
+
+| `SharedContextMode` | `VisibilityPolicy` |
+|---------------------|---------------------|
+| `Isolated` | `Isolated` |
+| `SummarySharing` | `Open` (discoveries are summaries by convention) |
+| `FullSharing` | `Open` |
+| `SupervisorManaged` | `Explicit { ... }` (supervisor builds allow_list) |
+
+**Executor integration:**
+
+The executor calls `share_discovery` when it detects a discovery meta-signal
+in the model's output (new meta-signal type: `MetaSignal::Discovery`). It
+calls `get_shared_context` at the start of each iteration to inject relevant
+discoveries into the context window.
+
+```rust
+// At start of each iteration:
+let shared = coordinator.get_shared_context(&agent_id);
+if !shared.discoveries.is_empty() {
+    let context_msg = format_shared_discoveries(&shared);
+    messages.push(Message::system(context_msg));
+}
+
+// After meta-signal detection finds a discovery:
+if let MetaSignal::Discovery { content, category, tags, data } = signal {
+    coordinator.share_discovery(&agent_id, Discovery {
+        content, category, tags, data,
+    })?;
+}
+```
+
+#### 7.2.5 Coordination Events
+
+The coordinator emits events on a `tokio::sync::broadcast` channel. The
+supervisor subscribes to this channel to learn about mid-execution
+coordination activity (assistance requests, yields, discoveries) without
+polling.
+
+```rust
+/// Events emitted by the coordinator.
+/// The supervisor `select!`s on these alongside child `LoopEvent` streams.
+#[derive(Debug, Clone)]
+pub enum CoordinationEvent {
+    /// An agent requested assistance.
+    AssistanceRequested {
+        request_id: String,
+        from: AgentId,
+        capabilities_needed: Vec<String>,
+        priority: AssistancePriority,
+    },
+
+    /// An agent yielded its task.
+    AgentYielded {
+        from: AgentId,
+        to: Option<AgentId>,
+        reason: String,
+        suggested_expertise: Vec<String>,
+    },
+
+    /// An agent shared a discovery.
+    DiscoveryShared {
+        from: AgentId,
+        category: String,
+        tags: Vec<String>,
+    },
+}
+
+impl AgentCoordinator {
+    /// Subscribes to coordination events.
+    /// Returns a broadcast receiver. Multiple subscribers are supported.
+    pub fn subscribe_events(&self) -> broadcast::Receiver<CoordinationEvent>;
+}
+```
+
+**Channel sizing:** The broadcast channel has capacity 256. If a subscriber
+falls behind, it receives `RecvError::Lagged(n)` and should catch up by
+polling `take_pending_requests()` and `take_pending_yields()` directly.
+
+#### 7.2.6 Concurrency and Error Semantics
+
+**Thread safety:** All internal state is protected by `parking_lot::RwLock`
+(consistent with existing `AgentCoordinator` implementation). Write operations
+(`request_assistance`, `yield_to`, `share_discovery`) take write locks.
+Read operations (`get_shared_context`, `take_pending_*`) take read locks
+except when draining (write lock for `take_pending_*`).
+
+**Error type:**
+```rust
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum CoordinationError {
+    /// The specified agent is not registered.
+    #[error("agent not found: {0}")]
+    AgentNotFound(AgentId),
+
+    /// The assistance request ID was not found.
+    #[error("request not found: {0}")]
+    RequestNotFound(String),
+
+    /// The agent has already yielded and cannot perform further actions.
+    #[error("agent already yielded: {0}")]
+    AlreadyYielded(AgentId),
+
+    /// The specified target agent for yield is not registered.
+    #[error("yield target not found: {0}")]
+    YieldTargetNotFound(AgentId),
+}
+```
+
+**Invariants:**
+
+| Invariant | Enforcement |
+|-----------|-------------|
+| Only registered agents can request assistance | `request_assistance` checks `agents` map |
+| Only registered agents can yield | `yield_to` checks `agents` map |
+| An agent can yield at most once | `yield_to` checks `yielded_agents` set |
+| Assistance responses are delivered exactly once | `oneshot` channel guarantees single-use |
+| Stale assistance requests are cleaned up | `take_pending_requests` filters by `Sender::is_closed()` |
+| Discovery store is bounded | Oldest entries evicted at 1000 limit |
+| Coordination events are non-blocking | `broadcast::Sender::send` never blocks; lagged receivers skip |
+
+**Ordering guarantees:**
+
+- Discoveries are ordered by insertion time within a single coordinator.
+- Coordination events are ordered per-subscriber (broadcast channel guarantees).
+- There is **no** global ordering between an agent's `share_discovery` and
+  another agent's `get_shared_context` — eventual consistency is acceptable.
+  An agent might not see a discovery that was shared microseconds earlier.
+
+#### 7.2.7 Implementation Additions to `AgentCoordinator`
+
+The following fields are added to the existing `AgentCoordinator` struct:
+
+```rust
+pub struct AgentCoordinator {
+    // Existing fields (unchanged)
+    agents: RwLock<HashMap<AgentId, AgentIdentity>>,
+    pub locks: Arc<ToolLockManager>,
+    pub quotas: Option<Arc<ResourceQuotaManager>>,
+
+    // New: Assistance request inbox
+    pending_requests: RwLock<HashMap<String, PendingAssistance>>,
+
+    // New: Yield queue
+    pending_yields: RwLock<Vec<PendingYield>>,
+    yielded_agents: RwLock<HashSet<AgentId>>,
+
+    // New: Discovery store
+    discoveries: RwLock<Vec<StoredDiscovery>>,
+    visibility_policy: RwLock<VisibilityPolicy>,
+
+    // New: Event broadcast
+    event_tx: broadcast::Sender<CoordinationEvent>,
+}
+```
+
+The constructor changes:
+```rust
+impl AgentCoordinator {
+    pub fn new() -> Self {
+        let (event_tx, _) = broadcast::channel(256);
+        Self {
+            agents: RwLock::new(HashMap::new()),
+            locks: Arc::new(ToolLockManager::new()),
+            quotas: None,
+            pending_requests: RwLock::new(HashMap::new()),
+            pending_yields: RwLock::new(Vec::new()),
+            yielded_agents: RwLock::new(HashSet::new()),
+            discoveries: RwLock::new(Vec::new()),
+            visibility_policy: RwLock::new(VisibilityPolicy::Open),
+            event_tx,
+        }
+    }
+}
+```
+
+**Cleanup on `unregister_agent`:** When an agent is unregistered, the
+coordinator also:
+- Removes it from `yielded_agents`.
+- Cancels any pending assistance requests from that agent (drops the `Sender`,
+  causing the `Receiver` to return `Err(Canceled)`).
+- Does NOT remove its discoveries (they remain as shared knowledge).
 
 ### 7.3 Resource Coordination
 
@@ -851,16 +1407,362 @@ pub struct AgenticResult {
 
 ### 9.3 Continuation API
 
-For resuming interrupted loops:
+Loops that terminate as `Stuck`, `Yielded`, or via resource limits may be resumed.
+The continuation API preserves loop state server-side and allows the client to
+provide additional context, modify configuration, or redirect the agent.
 
-```
-POST /v1/chat/completions/continue
-{
-  "continuation_token": "...",
-  "additional_context": [...],
-  "modified_config": {...}
+#### 9.3.1 Continuation State
+
+When a loop terminates with `can_resume: true`, the server serializes and stores
+the full loop state:
+
+```rust
+pub struct ContinuationState {
+    /// Opaque token identifying this continuation.
+    pub token: String,
+
+    /// Session identity (preserved across continuations).
+    pub session_id: String,
+
+    /// Full message history at time of termination.
+    /// Uses `infernum_core::Message` — the same type the executor builds internally.
+    pub messages: Vec<infernum_core::Message>,
+
+    /// Tool results collected during execution.
+    pub tool_results: Vec<AgenticToolResult>,
+
+    /// Exploration branches tracked.
+    pub exploration_branches: Vec<ExplorationBranch>,
+
+    /// Resources consumed so far.
+    pub iterations_completed: u32,
+    pub tool_calls_made: u32,
+    pub tokens_generated: u32,
+
+    /// Configuration used (may be modified on resume).
+    pub loop_config: LoopConfig,
+    pub autonomy: AutonomyGrant,
+    pub system_prompt: Option<String>,
+    /// Stored as String (serialized from executor's `PathBuf`).
+    pub working_dir: Option<String>,
+
+    /// Why the loop stopped.
+    pub termination: TerminationReason,
+
+    /// When the state was stored.
+    /// Uses `SystemTime` (not `Instant`) because this must survive serialization.
+    pub stored_at: SystemTime,
 }
 ```
+
+> **Implementation note:** `ContinuationState` is a new type. It is constructed
+> by the server's agentic handler from the executor's internal state after
+> termination — it is NOT a field on `LoopSummary`. The `LoopSummary.can_resume`
+> field signals whether the handler should create a `ContinuationState`.
+> The `continuation_token` field referenced in the §9.2 `AgenticResult` is
+> populated by the handler after storing the state.
+
+#### 9.3.2 Storage and TTL
+
+- **Storage:** In-memory by default, with the `ContinuationStore` trait for
+  pluggable backends (file, database).
+- **TTL:** 1 hour default, configurable per-session. Expired states are garbage
+  collected on access.
+- **Token format:** `cont_{session_id}_{uuid}` — opaque to clients, maps to
+  server-side state.
+- **Limit:** Maximum 100 stored continuations per server instance (LRU eviction).
+
+```rust
+#[async_trait]
+pub trait ContinuationStore: Send + Sync {
+    async fn store(&self, state: ContinuationState) -> Result<String, StoreError>;
+    async fn load(&self, token: &str) -> Result<Option<ContinuationState>, StoreError>;
+    async fn remove(&self, token: &str) -> Result<(), StoreError>;
+    async fn cleanup_expired(&self) -> Result<u32, StoreError>;
+}
+```
+
+#### 9.3.3 Resume Endpoint
+
+```
+POST /api/agent/{session_id}/continue
+```
+
+```json
+{
+  "continuation_token": "cont_sess_abc123_def456",
+  "additional_context": "The file is actually at /opt/project/main.rs",
+  "modified_config": {
+    "max_iterations": 20,
+    "max_tool_calls": 100,
+    "auto_approve": ["bash:*"]
+  }
+}
+```
+
+**Request fields:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `continuation_token` | `string` | Yes | Token from prior `LoopSummary.continuation_token` |
+| `additional_context` | `string` | No | New information for the agent (injected as user message) |
+| `modified_config` | `object` | No | Configuration overrides for the resumed loop |
+
+**Modification rules:**
+
+| Field | Modifiable | Constraint |
+|-------|-----------|------------|
+| `max_iterations` | Yes | New limit must exceed consumed amount (extends remaining budget) |
+| `max_tool_calls` | Yes | New limit must exceed consumed amount |
+| `max_tokens` | Yes | New limit must exceed consumed amount |
+| `auto_approve` | Yes | Can widen (add patterns) |
+| `forbidden` | Yes | Can narrow (remove patterns) |
+| `system_prompt` | No | Immutable after loop start |
+| `working_dir` | No | Immutable after loop start |
+
+**Resume semantics:**
+
+1. Server loads `ContinuationState` from store.
+2. Validates `session_id` matches the token's session.
+3. Applies `modified_config` overrides (with constraint checks).
+4. If `additional_context` is provided, appends it as a user message.
+5. Resets resource counters to the *new* limits minus consumed amounts.
+6. Creates a new `LoopExecutor` with the restored messages and configuration.
+7. Transitions state machine from terminal state back to `Generating`.
+8. Returns a new SSE stream of `LoopEvent`s.
+
+**Response:** SSE stream (identical format to `POST /api/agent/run`).
+
+#### 9.3.4 Which Terminations Are Resumable
+
+| Termination | Resumable | Rationale |
+|-------------|-----------|-----------|
+| `AnswerProvided` | No | Task complete |
+| `TaskComplete` | No | Task complete |
+| `AgentStuck` | Yes | Client provides clarification |
+| `AgentYielded` | Yes | Different agent or additional context |
+| `MaxIterations` | Yes | Client extends budget |
+| `TokenBudgetExhausted` | Yes | Client extends budget |
+| `WallTimeExceeded` | Yes | Client extends budget |
+| `ToolCallLimitReached` | Yes | Client extends budget |
+| `ClientCancelled` | No | Intentional termination |
+| `OperatorTerminated` | No | Intentional termination |
+| `SystemShutdown` | No | State may be lost |
+
+### 9.4 Tool Approval Protocol
+
+When the autonomy grant returns `Permission::RequiresApproval` for a tool call,
+the loop must pause and wait for an external decision. This section specifies the
+approval handshake between the executor and the client.
+
+> **Implementation note:** This protocol requires additive changes to existing types:
+> - `LoopEvent::ToolApprovalRequired` gains `arguments`, `timeout_secs`, `pending_count` fields.
+> - `LoopConfig` gains an `approval_timeout: Duration` field (default: 5 minutes).
+> - `SessionRegistry` gains `request_approval()`, `deliver_approval()`, `pending_approvals()` methods.
+> - The executor's `execute_single_tool` changes from **fail-immediately** on
+>   `RequiresApproval` to **block-and-wait** via a `tokio::sync::oneshot` channel.
+
+#### 9.4.1 Approval Flow
+
+```
+┌─────────┐    ToolApprovalRequired     ┌─────────┐
+│Executor │ ──────── SSE ──────────────▶│ Client  │
+│ (paused)│                              │         │
+│         │◀──── POST /approve ─────────│         │
+│(resumes)│    ApprovalDecision          │         │
+└─────────┘                              └─────────┘
+```
+
+1. Executor encounters `Permission::RequiresApproval`.
+2. Executor emits `LoopEvent::ToolApprovalRequired { call_id, tool, arguments }`.
+3. Executor creates a `oneshot` channel and registers the sender in the
+   `ApprovalInbox` (within `SessionRegistry`).
+4. Executor awaits the receiver with a configurable timeout.
+5. Client receives the SSE event and decides.
+6. Client submits decision via `POST /api/agent/{session_id}/approve`.
+7. Server looks up the `oneshot` sender and delivers the decision.
+8. Executor receives the decision and either executes or skips the tool call.
+
+#### 9.4.2 Approval Endpoint
+
+```
+POST /api/agent/{session_id}/approve
+```
+
+```json
+{
+  "call_id": "call_abc123def456",
+  "decision": "approve",
+  "scope": "this_call"
+}
+```
+
+**Request fields:**
+
+| Field | Type | Required | Values |
+|-------|------|----------|--------|
+| `call_id` | `string` | Yes | The `call_id` from `ToolApprovalRequired` |
+| `decision` | `string` | Yes | `"approve"`, `"deny"`, `"approve_always"` |
+| `scope` | `string` | No | `"this_call"` (default), `"this_tool"`, `"this_session"` |
+
+**Decision types:**
+
+| Decision | Effect |
+|----------|--------|
+| `approve` | Execute this specific tool call |
+| `deny` | Skip this tool call (returns recoverable error to agent) |
+| `approve_always` | Execute and add the tool pattern to `auto_approve` for the session |
+
+**Scope (when `approve_always`):**
+
+| Scope | Effect |
+|-------|--------|
+| `this_call` | Only this call (same as `approve`) |
+| `this_tool` | Auto-approve all future calls to this tool name (adds `ToolPattern::Tool(name)` to `auto_approve`) |
+| `this_session` | Auto-approve all tool calls for the remainder of this session (adds `ToolPattern::Tool("*")` to `auto_approve`) |
+
+**Response:**
+
+```json
+{
+  "status": "delivered",
+  "call_id": "call_abc123def456",
+  "session_id": "sess_abc123"
+}
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| 404 | Session not found, or call_id not found (never existed or already consumed) |
+| 408 | Approval timeout already expired (executor moved on) |
+
+> **Note:** Once a `oneshot::Sender` is consumed (decision delivered), the
+> `call_id` is removed from the pending set. A subsequent request for the
+> same `call_id` returns 404, not 409, because the pending entry no longer
+> exists. There is no "already delivered" state to distinguish.
+
+#### 9.4.3 Approval Infrastructure
+
+```rust
+/// Pending approval request stored in the registry.
+pub struct PendingApproval {
+    pub call_id: String,
+    pub tool_name: String,
+    pub arguments: serde_json::Value,
+    pub requested_at: Instant,
+    pub respond: oneshot::Sender<ApprovalDecision>,
+}
+
+/// Decision delivered by the client.
+pub enum ApprovalDecision {
+    Approve,
+    Deny,
+    ApproveAlways { scope: ApprovalScope },
+}
+
+pub enum ApprovalScope {
+    ThisCall,
+    ThisTool,
+    ThisSession,
+}
+
+/// Extension to SessionRegistry for approval management.
+impl SessionRegistry {
+    /// Registers a pending approval and returns a receiver for the decision.
+    pub async fn request_approval(
+        &self,
+        session_id: &str,
+        call_id: &str,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> oneshot::Receiver<ApprovalDecision>;
+
+    /// Delivers an approval decision. Returns Err if not found or expired.
+    pub async fn deliver_approval(
+        &self,
+        session_id: &str,
+        call_id: &str,
+        decision: ApprovalDecision,
+    ) -> Result<(), ApprovalError>;
+
+    /// Lists pending approvals for a session.
+    pub async fn pending_approvals(
+        &self,
+        session_id: &str,
+    ) -> Vec<PendingApprovalInfo>;
+}
+```
+
+#### 9.4.4 Timeout Behavior
+
+- **Default timeout:** 5 minutes (configurable via `LoopConfig.approval_timeout`).
+- **On timeout:** The tool call is treated as denied with a recoverable error.
+  The agent receives: `"Tool approval timed out after {N}s — tool call skipped."`
+- **Session status:** Set to `AwaitingApproval` when first approval is requested,
+  returns to `Running` when all pending approvals are resolved.
+- **Multiple pending approvals:** When a single iteration detects multiple tool
+  calls requiring approval, the executor must first collect all approval-needing
+  calls, submit all approval requests, then `join_all` on the receivers. This
+  requires restructuring the current sequential `for call in &detected_calls`
+  loop into a two-pass approach: (1) identify which calls need approval and
+  which are auto-approved, (2) submit approval requests for the former while
+  executing the latter, (3) collect all responses before proceeding.
+
+#### 9.4.5 SSE Event Extension
+
+The `ToolApprovalRequired` event is extended to include arguments so the client
+can make an informed decision:
+
+```json
+{
+  "event": "tool_approval_required",
+  "data": {
+    "call_id": "call_abc123def456",
+    "tool": "bash",
+    "arguments": { "command": "rm -rf /tmp/cache" },
+    "timeout_secs": 300,
+    "pending_count": 1
+  }
+}
+```
+
+#### 9.4.6 Executor Integration
+
+The executor's `execute_single_tool` method changes from immediately returning
+a failure to blocking on approval:
+
+```rust
+Permission::RequiresApproval => {
+    // Emit approval request event
+    event_tx.send(LoopEvent::ToolApprovalRequired { ... }).await;
+
+    // Register and wait for decision
+    let rx = sessions.request_approval(
+        session_id, &call.id, &call.name, call.arguments.clone()
+    ).await;
+
+    match tokio::time::timeout(approval_timeout, rx).await {
+        Ok(Ok(ApprovalDecision::Approve))
+        | Ok(Ok(ApprovalDecision::ApproveAlways { .. })) => {
+            // Execute the tool call normally
+            self.execute_tool_inner(call, tool_ctx, event_tx).await
+        }
+        Ok(Ok(ApprovalDecision::Deny)) => {
+            AgenticToolResult { status: Failed { recoverable: true }, ... }
+        }
+        Ok(Err(_)) | Err(_) => {
+            // Oneshot dropped or timeout — treat as denied
+            AgenticToolResult { status: Failed { recoverable: true }, ... }
+        }
+    }
+}
+```
+
+When `ApproveAlways` is received, the executor mutates the session's
+`AutonomyGrant` to add the tool pattern to `auto_approve`, preventing future
+approval requests for matching calls.
 
 ---
 
@@ -890,18 +1792,45 @@ POST /v1/chat/completions/continue
 - [ ] Stuck handling
 - [ ] Yield handling
 
-### Phase 6.4: Multi-Agent
+### Phase 6.4: Multi-Agent Coordination Primitives
 
-- [ ] Agent identity in loop
-- [ ] Coordination primitives
-- [ ] Resource locking
-- [ ] Shared context
+- [ ] `CoordinationError` type
+- [ ] `CoordinationEvent` enum + broadcast channel on `AgentCoordinator`
+- [ ] `subscribe_events()` method
+- [ ] `request_assistance()` + `take_pending_requests()` + `deliver_assistance()`
+- [ ] `yield_to()` + `take_pending_yields()` + yielded-agent tracking
+- [ ] `share_discovery()` + `get_shared_context()` + `set_visibility_policy()`
+- [ ] `VisibilityPolicy` filtering (Open, CapabilityFiltered, Explicit, Isolated)
+- [ ] Discovery store bounding (1000 max, oldest eviction)
+- [ ] Stale assistance request cleanup (`Sender::is_closed()`)
+- [ ] Cleanup on `unregister_agent` (cancel requests, clear yielded set)
+- [ ] `MetaSignal::Discovery` variant + executor integration
+
+### Phase 6.4b: Multi-Agent Supervisor
+
+- [ ] Multi-agent supervisor (see MULTI-AGENT-SUPERVISOR-SPEC.md)
 
 ### Phase 6.5: Wellbeing
 
 - [ ] Wellbeing signal integration
 - [ ] Intervention system
 - [ ] Graceful degradation
+
+### Phase 6.6: Tool Approval
+
+- [ ] Approval inbox in SessionRegistry
+- [ ] `POST /api/agent/{id}/approve` endpoint
+- [ ] Executor blocks on oneshot channel with timeout
+- [ ] `approve_always` mutates AutonomyGrant
+- [ ] Extended `ToolApprovalRequired` event with arguments
+
+### Phase 6.7: Session Continuation
+
+- [ ] `ContinuationState` serialization
+- [ ] `ContinuationStore` trait + in-memory implementation
+- [ ] `POST /api/agent/{id}/continue` endpoint
+- [ ] Resume semantics (message injection, config override)
+- [ ] TTL and LRU eviction
 
 ---
 
@@ -937,4 +1866,6 @@ Can a loop be resumed across HTTP sessions? What state must be preserved?
 |---------|------|---------|
 | 0.1.0 | 2026-02-02 | Initial draft. Design philosophy, loop architecture, execution model. |
 | 0.1.1 | 2026-02-02 | Open questions §11.1-11.3 resolved. Hybrid autonomy, dual signal detection, continuation tokens approved. |
+| 0.2.0 | 2026-02-04 | §9.3 expanded: continuation state, storage/TTL, resume endpoint, modification rules, resumable termination table. §9.4 added: tool approval protocol with oneshot handshake, approval endpoint, timeout behavior, `approve_always` scope. Phases 6.6-6.7 added. |
+| 0.3.0 | 2026-02-04 | §7.2 expanded from signatures to full behavioral specification. Added: §7.2.1 types (AssistanceRequest/Response, YieldContext/Result, Discovery, SharedContext, VisibilityPolicy), §7.2.2 request_assistance contract (oneshot channel pattern, blocking/background priority, timeout), §7.2.3 yield_to contract (terminal semantics, NoAlternative rejection, dual-channel supervisor notification), §7.2.4 share_discovery/get_shared_context (append-only store, bounded at 1000, visibility policy, executor integration), §7.2.5 CoordinationEvent broadcast channel, §7.2.6 concurrency/error semantics (CoordinationError, invariant table, ordering guarantees), §7.2.7 implementation additions to AgentCoordinator struct. Phase 6.4 expanded with coordination primitive checklist. |
 

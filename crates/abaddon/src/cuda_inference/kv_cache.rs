@@ -49,6 +49,10 @@ pub struct KvCache {
 
     /// Maximum sequence length.
     max_seq_len: usize,
+
+    /// Tokens written via update() but not yet committed via advance().
+    /// This allows get_kv() to return the full cache including newly written tokens.
+    pending_tokens: usize,
 }
 
 impl KvCache {
@@ -88,6 +92,7 @@ impl KvCache {
             values,
             seq_len: 0,
             max_seq_len,
+            pending_tokens: 0,
         })
     }
 
@@ -109,6 +114,7 @@ impl KvCache {
     /// Reset the cache for a new sequence.
     pub fn reset(&mut self) {
         self.seq_len = 0;
+        self.pending_tokens = 0;
         // Note: We don't zero the cache - old data is harmless since
         // attention only looks at seq_len positions.
     }
@@ -147,6 +153,9 @@ impl KvCache {
         self.keys.write_layer_at(layer_idx, write_offset, keys)?;
         self.values.write_layer_at(layer_idx, write_offset, values)?;
 
+        // Track pending tokens for get_kv() to include them
+        self.pending_tokens = new_tokens;
+
         Ok(write_offset)
     }
 
@@ -155,6 +164,7 @@ impl KvCache {
     /// Call this after updating all layers with new tokens.
     pub fn advance(&mut self, num_new_tokens: usize) {
         self.seq_len += num_new_tokens;
+        self.pending_tokens = 0;
     }
 
     /// Async update cache with new K, V for a specific layer (non-blocking).
@@ -199,12 +209,16 @@ impl KvCache {
         self.keys.write_layer_at_async(layer_idx, write_offset, keys, stream)?;
         self.values.write_layer_at_async(layer_idx, write_offset, values, stream)?;
 
+        // Track pending tokens for get_kv() to include them
+        self.pending_tokens = new_tokens;
+
         Ok(write_offset)
     }
 
     /// Get K, V tensors for attention at a specific layer.
     ///
-    /// Returns views into the cached data for the first seq_len positions.
+    /// Returns views into the cached data for all cached positions,
+    /// including tokens written via update() but not yet advanced.
     ///
     /// # Arguments
     ///
@@ -221,7 +235,9 @@ impl KvCache {
             });
         }
 
-        let effective_seq = if self.seq_len > 0 { self.seq_len } else { 1 };
+        // Include both committed tokens (seq_len) and pending tokens from current forward pass
+        let total_tokens = self.seq_len + self.pending_tokens;
+        let effective_seq = if total_tokens > 0 { total_tokens } else { 1 };
 
         // Get slices from the cache - returns [seq, kv_heads, head_dim]
         let k_slice = self.keys.get_layer_kv_slice(layer_idx, effective_seq)?;

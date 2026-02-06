@@ -18,10 +18,26 @@ pub async fn serve(
     port: u16,
     model: Option<String>,
     _config: Option<String>,
+    backend: String,
+    n_gpu_layers: i32,
+    context_size: usize,
     holo: bool,
     holo_min_quality: f32,
     holo_target_quality: f32,
 ) -> Result<()> {
+    // Parse backend type
+    let _backend_type = abaddon::BackendType::from_str(&backend)
+        .ok_or_else(|| color_eyre::eyre::eyre!("Invalid backend: {}. Use auto, llama-cpp, or candle", backend))?;
+
+    // Log backend configuration
+    tracing::info!(
+        backend = %backend,
+        n_gpu_layers = n_gpu_layers,
+        context_size = context_size,
+        "Backend configuration"
+    );
+
+    // TODO(#TBD): Pass backend config to server when engine selection is implemented
     use infernum_server::{Server, ServerConfig};
     
 
@@ -43,7 +59,15 @@ pub async fn serve(
     };
 
     // Auto-detect HCT models and enable HoloTensor mode
-    let holo = holo || is_hct_model(&model);
+    // INFERNUM_HCT_EAGER=1 disables lazy loading for HCT models that fit in VRAM
+    let use_eager_hct = std::env::var("INFERNUM_HCT_EAGER")
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false);
+    let holo = if use_eager_hct {
+        holo // Don't auto-enable for HCT if eager mode requested
+    } else {
+        holo || is_hct_model(&model)
+    };
 
     // Allow env vars to override quality settings
     let holo_min_quality = std::env::var("INFERNUM_HOLO_MIN_QUALITY")
@@ -221,13 +245,28 @@ fn prompt_for_model() -> Result<String> {
 }
 
 /// Generate text from a prompt.
+#[allow(clippy::too_many_arguments)]
 pub async fn generate(
     prompt: String,
     model: Option<String>,
     max_tokens: u32,
     temperature: f32,
     stream: bool,
+    backend: String,
+    n_gpu_layers: i32,
+    context_size: usize,
 ) -> Result<()> {
+    // Parse backend type
+    let backend_type = abaddon::BackendType::from_str(&backend)
+        .ok_or_else(|| eyre!("Invalid backend: {}. Use auto, llama-cpp, or candle", backend))?;
+
+    tracing::debug!(
+        backend = %backend,
+        n_gpu_layers = n_gpu_layers,
+        context_size = context_size,
+        "Backend configuration"
+    );
+
     let model_id = model.ok_or_else(|| {
         eyre!(
             "Model is required.\n\n\
@@ -251,15 +290,44 @@ pub async fn generate(
     spinner.set_message(format!("Loading model {}...", model_id));
     spinner.enable_steady_tick(std::time::Duration::from_millis(100));
 
-    // Create engine config
-    let config = EngineConfig::builder()
-        .model(&model_id)
-        .build()
-        .map_err(|e| eyre!("Failed to configure engine: {}", e))?;
+    // Determine effective backend based on model path
+    let model_path = std::path::Path::new(&model_id);
+    let effective_backend = match backend_type {
+        abaddon::BackendType::Auto => abaddon::BackendType::detect_from_path(model_path),
+        other => other,
+    };
 
-    // Load the model
-    let engine = Engine::new(config).await?;
-    let engine = Arc::new(engine);
+    // Load the model with appropriate backend
+    let engine: Arc<dyn InferenceEngine> = match effective_backend {
+        #[cfg(feature = "llama-cpp")]
+        abaddon::BackendType::LlamaCpp => {
+            tracing::info!("Using llama.cpp backend for inference");
+            let config = abaddon::LlamaCppConfig::builder()
+                .model_path(&model_id)
+                .n_gpu_layers(n_gpu_layers)
+                .context_size(context_size)
+                .build()
+                .map_err(|e| eyre!("Failed to configure llama.cpp engine: {}", e))?;
+
+            let engine = abaddon::LlamaCppEngine::load(config).await
+                .map_err(|e| eyre!("Failed to load llama.cpp model: {}", e))?;
+            Arc::new(engine)
+        }
+        #[cfg(not(feature = "llama-cpp"))]
+        abaddon::BackendType::LlamaCpp => {
+            return Err(eyre!("llama-cpp backend not enabled. Rebuild with --features llama-cpp"));
+        }
+        abaddon::BackendType::Candle | abaddon::BackendType::Auto => {
+            tracing::info!("Using Candle backend for inference");
+            let config = EngineConfig::builder()
+                .model(&model_id)
+                .build()
+                .map_err(|e| eyre!("Failed to configure engine: {}", e))?;
+
+            let engine = Engine::new(config).await?;
+            Arc::new(engine)
+        }
+    };
 
     spinner.finish_and_clear();
     println!("Model loaded: {}\n", engine.model_info().id);
@@ -309,6 +377,15 @@ pub async fn generate(
             "\n[Tokens: {} prompt, {} completion]",
             response.usage.prompt_tokens, response.usage.completion_tokens
         );
+    }
+
+    // WORKAROUND: Use std::process::exit to avoid double-free crash in llama_cpp bindings
+    // The llama_cpp crate has a bug where global state cleanup during normal process
+    // exit causes a double-free. Using exit(0) skips destructors entirely.
+    // TODO(llama_cpp#TBD): Remove this when the upstream bug is fixed
+    #[cfg(feature = "llama-cpp")]
+    if effective_backend == abaddon::BackendType::LlamaCpp {
+        std::process::exit(0);
     }
 
     Ok(())
@@ -1227,7 +1304,26 @@ pub async fn model_quantize(
 }
 
 /// Start an interactive chat session.
-pub async fn chat(model: Option<String>, system: Option<String>) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+pub async fn chat(
+    model: Option<String>,
+    system: Option<String>,
+    backend: String,
+    n_gpu_layers: i32,
+    context_size: usize,
+) -> Result<()> {
+    // Parse backend type
+    let _backend_type = abaddon::BackendType::from_str(&backend)
+        .ok_or_else(|| eyre!("Invalid backend: {}. Use auto, llama-cpp, or candle", backend))?;
+
+    tracing::debug!(
+        backend = %backend,
+        n_gpu_layers = n_gpu_layers,
+        context_size = context_size,
+        "Backend configuration"
+    );
+
+    // TODO(#TBD): Use backend config when creating engine
     let model_id = model.ok_or_else(|| {
         eyre!(
             "Model is required.\n\n\
@@ -1476,6 +1572,7 @@ pub async fn chat(model: Option<String>, system: Option<String>) -> Result<()> {
 }
 
 /// Run an autonomous agent with tools.
+#[allow(clippy::too_many_arguments)]
 pub async fn agent(
     objective: String,
     model: Option<String>,
@@ -1484,7 +1581,22 @@ pub async fn agent(
     _verbose: bool,
     working_dir: Option<std::path::PathBuf>,
     code_tools: bool,
+    backend: String,
+    n_gpu_layers: i32,
+    context_size: usize,
 ) -> Result<()> {
+    // Parse backend type
+    let _backend_type = abaddon::BackendType::from_str(&backend)
+        .ok_or_else(|| eyre!("Invalid backend: {}. Use auto, llama-cpp, or candle", backend))?;
+
+    tracing::debug!(
+        backend = %backend,
+        n_gpu_layers = n_gpu_layers,
+        context_size = context_size,
+        "Backend configuration"
+    );
+
+    // TODO(#TBD): Use backend config when creating engine
     use beleth::{Agent, ToolRegistry};
 
     // Get model

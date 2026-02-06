@@ -93,6 +93,8 @@ pub struct LoopConfig {
     pub preserve_exploration: bool,
     /// Detect implicit meta-signals from natural language. Default: true.
     pub detect_implicit_signals: bool,
+    /// Timeout for tool approval requests. Default: 5 minutes.
+    pub approval_timeout: Duration,
 }
 
 impl Default for LoopConfig {
@@ -107,6 +109,7 @@ impl Default for LoopConfig {
             allow_yield: true,
             preserve_exploration: true,
             detect_implicit_signals: true,
+            approval_timeout: Duration::from_secs(300),
         }
     }
 }
@@ -514,6 +517,11 @@ pub struct LoopSummary {
     pub tool_results_summary: Vec<AgenticToolResult>,
     /// Whether the loop can be resumed.
     pub can_resume: bool,
+    /// Continuation token for resuming (present when `can_resume` is `true`).
+    ///
+    /// Pass this token to the continuation API to resume the loop with
+    /// additional context or extended resource budgets.
+    pub continuation_token: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -667,11 +675,20 @@ pub enum LoopEvent {
         result: AgenticToolResult,
     },
     /// Tool requires approval before execution.
+    ///
+    /// Extended per AGENTIC-LOOP-SPEC §9.4.5 to include arguments and timeout
+    /// so the client can make an informed decision.
     ToolApprovalRequired {
         /// Tool call ID.
         call_id: String,
         /// Tool name.
         tool: String,
+        /// Tool call arguments (so the client can inspect what will run).
+        arguments: serde_json::Value,
+        /// Approval timeout in seconds.
+        timeout_secs: u64,
+        /// Number of currently pending approval requests (including this one).
+        pending_count: usize,
     },
 
     // -- Meta-signals --

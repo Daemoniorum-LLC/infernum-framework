@@ -20,6 +20,12 @@ mkl = ["candle-core/mkl"]
 accelerate = ["candle-core/accelerate"]
 neural-compression = []  # TODO(#TBD): add dep:haagenti-neural when available
 
+# llama.cpp backend for production inference (50-100x faster than Candle)
+llama-cpp = ["dep:llama_cpp"]
+llama-cpp-cuda = ["llama-cpp", "llama_cpp/cuda"]
+llama-cpp-metal = ["llama-cpp", "llama_cpp/metal"]
+llama-cpp-vulkan = ["llama-cpp", "llama_cpp/vulkan"]
+
 [dependencies]
 infernum-core = { path = "../infernum-core", version = "0.1.0" }
 dantalion = { path = "../dantalion", version = "0.1.0" }
@@ -48,6 +54,10 @@ crossbeam = { version = "0.8", features = ["crossbeam-channel"] }
 
 # Flash Attention (optional, enabled with flash-attn feature)
 candle-flash-attn = { version = "0.9", optional = true }
+
+# llama.cpp bindings for production inference (optional, enabled with llama-cpp feature)
+# Provides 50-100x speedup over Candle for GGUF models
+llama_cpp = { version = "0.3.2", optional = true, default-features = false, features = ["compat", "native"] }
 
 # Serialization
 serde = { workspace = true }

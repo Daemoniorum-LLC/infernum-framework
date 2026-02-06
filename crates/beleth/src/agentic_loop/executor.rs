@@ -19,6 +19,7 @@ use tracing::{debug, info, warn};
 
 use crate::tool::{ToolCall as BelethToolCall, ToolContext, ToolRegistry};
 
+use super::approval::{ApprovalDecision, ApprovalGate};
 use super::meta_signal::detect_meta_signal;
 use super::types::*;
 use super::AgenticLoop;
@@ -155,11 +156,16 @@ pub enum LoopError {
 /// detecting tool calls and meta-signals, executing tools through the
 /// registry with autonomy enforcement, and integrating results back
 /// into the conversation context.
+///
+/// When an [`ApprovalGate`] is attached, tools that require approval
+/// will block until a decision is delivered (or the timeout expires),
+/// rather than failing immediately. See AGENTIC-LOOP-SPEC §9.4.
 pub struct LoopExecutor {
     engine: Arc<dyn abaddon::InferenceEngine>,
     tools: Arc<ToolRegistry>,
     detector: Arc<dyn ToolCallDetector>,
     config: ExecutorConfig,
+    approval_gate: Option<Arc<ApprovalGate>>,
 }
 
 impl LoopExecutor {
@@ -174,6 +180,7 @@ impl LoopExecutor {
             tools,
             detector: Arc::new(QwenToolCallDetector::new()),
             config,
+            approval_gate: None,
         }
     }
 
@@ -181,6 +188,21 @@ impl LoopExecutor {
     pub fn with_detector(mut self, detector: Arc<dyn ToolCallDetector>) -> Self {
         self.detector = detector;
         self
+    }
+
+    /// Attaches an approval gate for interactive tool approval.
+    ///
+    /// When set, tools requiring approval will block on the gate instead of
+    /// failing immediately. Decisions are delivered through the gate by
+    /// external systems (HTTP endpoints, CLI prompts).
+    pub fn with_approval_gate(mut self, gate: Arc<ApprovalGate>) -> Self {
+        self.approval_gate = Some(gate);
+        self
+    }
+
+    /// Returns a reference to the approval gate, if attached.
+    pub fn approval_gate(&self) -> Option<&Arc<ApprovalGate>> {
+        self.approval_gate.as_ref()
     }
 
     /// Runs the agentic loop to completion.
@@ -449,19 +471,45 @@ impl LoopExecutor {
         Ok(summary)
     }
 
-    /// Execute a single tool call with autonomy checking.
+    /// Computes the effective permission for a tool call.
+    ///
+    /// Checks runtime overrides from `ApproveAlways` decisions before falling
+    /// back to the static `AutonomyGrant`. Forbidden always takes priority.
+    fn effective_permission(&self, tool_name: &str, argument: Option<&str>) -> Permission {
+        let static_perm = self.config.autonomy.check(tool_name, argument);
+
+        // Forbidden cannot be overridden by runtime approvals
+        if static_perm == Permission::Forbidden {
+            return Permission::Forbidden;
+        }
+
+        // Runtime overrides from ApproveAlways only apply to RequiresApproval
+        if static_perm == Permission::RequiresApproval {
+            if let Some(gate) = &self.approval_gate {
+                if gate.is_runtime_approved(tool_name) {
+                    return Permission::Allowed;
+                }
+            }
+        }
+
+        static_perm
+    }
+
+    /// Execute a single tool call with autonomy checking and approval blocking.
+    ///
+    /// When an [`ApprovalGate`] is attached and the tool requires approval,
+    /// the executor registers a pending request, emits a `ToolApprovalRequired`
+    /// event, and blocks until a decision arrives or the configured timeout
+    /// expires. Without a gate, the tool call fails immediately with a
+    /// recoverable error (backward-compatible behavior).
     async fn execute_single_tool(
         &self,
         call: &DetectedCall,
         tool_ctx: &ToolContext,
         event_tx: &mpsc::Sender<LoopEvent>,
     ) -> AgenticToolResult {
-        // Check autonomy grant
         let argument_str = serde_json::to_string(&call.arguments).ok();
-        let permission =
-            self.config
-                .autonomy
-                .check(&call.name, argument_str.as_deref());
+        let permission = self.effective_permission(&call.name, argument_str.as_deref());
 
         match permission {
             Permission::Forbidden => {
@@ -478,87 +526,175 @@ impl LoopExecutor {
             }
             Permission::RequiresApproval => {
                 debug!(tool = %call.name, "Tool requires approval");
-                let _ = event_tx
-                    .send(LoopEvent::ToolApprovalRequired {
+                let timeout = self.config.loop_config.approval_timeout;
+
+                if let Some(gate) = &self.approval_gate {
+                    // Register the pending request BEFORE emitting the event,
+                    // so the entry exists by the time a client tries to deliver.
+                    let rx = gate.request(
+                        &call.id,
+                        &call.name,
+                        call.arguments.clone(),
+                    );
+
+                    let _ = event_tx
+                        .send(LoopEvent::ToolApprovalRequired {
+                            call_id: call.id.clone(),
+                            tool: call.name.clone(),
+                            arguments: call.arguments.clone(),
+                            timeout_secs: timeout.as_secs(),
+                            pending_count: gate.pending_count(),
+                        })
+                        .await;
+
+                    // Block until decision or timeout
+                    match tokio::time::timeout(timeout, rx).await {
+                        Ok(Ok(
+                            ApprovalDecision::Approve
+                            | ApprovalDecision::ApproveAlways { .. },
+                        )) => {
+                            // Approved — execute the tool
+                            self.execute_approved_tool(call, tool_ctx, event_tx).await
+                        }
+                        Ok(Ok(ApprovalDecision::Deny)) => {
+                            debug!(tool = %call.name, "Tool call denied by operator");
+                            AgenticToolResult {
+                                call_id: call.id.clone(),
+                                tool_name: call.name.clone(),
+                                status: ResultStatus::Failed { recoverable: true },
+                                data: serde_json::json!({"error": "Tool call denied by operator"}),
+                                confidence: Confidence::Measured,
+                                latency_ms: 0,
+                                truncated: false,
+                            }
+                        }
+                        Ok(Err(_)) | Err(_) => {
+                            // Oneshot dropped or timeout expired
+                            let secs = timeout.as_secs_f64();
+                            let msg = format!(
+                                "Tool approval timed out after {secs:.1}s — tool call skipped."
+                            );
+                            warn!(tool = %call.name, "{msg}");
+                            AgenticToolResult {
+                                call_id: call.id.clone(),
+                                tool_name: call.name.clone(),
+                                status: ResultStatus::Failed { recoverable: true },
+                                data: serde_json::json!({"error": msg}),
+                                confidence: Confidence::Measured,
+                                latency_ms: 0,
+                                truncated: false,
+                            }
+                        }
+                    }
+                } else {
+                    // No approval gate — emit event and fail immediately
+                    let _ = event_tx
+                        .send(LoopEvent::ToolApprovalRequired {
+                            call_id: call.id.clone(),
+                            tool: call.name.clone(),
+                            arguments: call.arguments.clone(),
+                            timeout_secs: timeout.as_secs(),
+                            pending_count: 0,
+                        })
+                        .await;
+                    AgenticToolResult {
                         call_id: call.id.clone(),
-                        tool: call.name.clone(),
-                    })
-                    .await;
+                        tool_name: call.name.clone(),
+                        status: ResultStatus::Failed { recoverable: true },
+                        data: serde_json::json!({"error": "Tool requires approval (not granted)"}),
+                        confidence: Confidence::Measured,
+                        latency_ms: 0,
+                        truncated: false,
+                    }
+                }
+            }
+            Permission::Allowed => {
+                self.execute_approved_tool(call, tool_ctx, event_tx).await
+            }
+        }
+    }
+
+    /// Execute a tool that has already been approved (statically or via approval protocol).
+    async fn execute_approved_tool(
+        &self,
+        call: &DetectedCall,
+        tool_ctx: &ToolContext,
+        event_tx: &mpsc::Sender<LoopEvent>,
+    ) -> AgenticToolResult {
+        let _ = event_tx
+            .send(LoopEvent::ToolExecutionStarted {
+                call_id: call.id.clone(),
+                tool: call.name.clone(),
+            })
+            .await;
+
+        let start = Instant::now();
+        let beleth_call = BelethToolCall {
+            name: call.name.clone(),
+            params: call.arguments.clone(),
+        };
+
+        let tool_result = self.tools.execute(&beleth_call, tool_ctx).await;
+        let latency_ms = start.elapsed().as_millis() as u64;
+
+        let agentic_result = match tool_result {
+            Ok(result) => {
+                let status = if result.success {
+                    ResultStatus::Success
+                } else {
+                    ResultStatus::Failed { recoverable: true }
+                };
+                // Always include the tool's output in data so the model can see it
+                let data = match result.data {
+                    Some(mut d) => {
+                        // If data exists but doesn't have output, add it
+                        if d.get("output").is_none() && d.get("content").is_none() {
+                            if let Some(obj) = d.as_object_mut() {
+                                obj.insert("output".to_string(), serde_json::json!(result.output));
+                            }
+                        }
+                        d
+                    }
+                    None => {
+                        if result.success {
+                            serde_json::json!({"output": result.output})
+                        } else {
+                            serde_json::json!({"error": result.error.as_deref().unwrap_or("unknown error")})
+                        }
+                    }
+                };
+                AgenticToolResult {
+                    call_id: call.id.clone(),
+                    tool_name: call.name.clone(),
+                    status,
+                    data,
+                    confidence: Confidence::Measured,
+                    latency_ms,
+                    truncated: false,
+                }
+            }
+            Err(e) => {
+                warn!(tool = %call.name, error = %e, "Tool execution failed");
                 AgenticToolResult {
                     call_id: call.id.clone(),
                     tool_name: call.name.clone(),
                     status: ResultStatus::Failed { recoverable: true },
-                    data: serde_json::json!({"error": "Tool requires approval (not granted)"}),
-                    confidence: Confidence::Measured,
-                    latency_ms: 0,
+                    data: serde_json::json!({"error": e.to_string()}),
+                    confidence: Confidence::Unknown,
+                    latency_ms,
                     truncated: false,
                 }
             }
-            Permission::Allowed => {
-                let _ = event_tx
-                    .send(LoopEvent::ToolExecutionStarted {
-                        call_id: call.id.clone(),
-                        tool: call.name.clone(),
-                    })
-                    .await;
+        };
 
-                let start = Instant::now();
-                let beleth_call = BelethToolCall {
-                    name: call.name.clone(),
-                    params: call.arguments.clone(),
-                };
+        let _ = event_tx
+            .send(LoopEvent::ToolExecutionCompleted {
+                call_id: call.id.clone(),
+                result: agentic_result.clone(),
+            })
+            .await;
 
-                let tool_result = self.tools.execute(&beleth_call, tool_ctx).await;
-                let latency_ms = start.elapsed().as_millis() as u64;
-
-                let agentic_result = match tool_result {
-                    Ok(result) => {
-                        let status = if result.success {
-                            ResultStatus::Success
-                        } else {
-                            ResultStatus::Failed { recoverable: true }
-                        };
-                        let data = result.data.unwrap_or_else(|| {
-                            if result.success {
-                                serde_json::json!({"output": result.output})
-                            } else {
-                                serde_json::json!({"error": result.error.as_deref().unwrap_or("unknown error")})
-                            }
-                        });
-                        AgenticToolResult {
-                            call_id: call.id.clone(),
-                            tool_name: call.name.clone(),
-                            status,
-                            data,
-                            confidence: Confidence::Measured,
-                            latency_ms,
-                            truncated: false,
-                        }
-                    }
-                    Err(e) => {
-                        warn!(tool = %call.name, error = %e, "Tool execution failed");
-                        AgenticToolResult {
-                            call_id: call.id.clone(),
-                            tool_name: call.name.clone(),
-                            status: ResultStatus::Failed { recoverable: true },
-                            data: serde_json::json!({"error": e.to_string()}),
-                            confidence: Confidence::Unknown,
-                            latency_ms,
-                            truncated: false,
-                        }
-                    }
-                };
-
-                let _ = event_tx
-                    .send(LoopEvent::ToolExecutionCompleted {
-                        call_id: call.id.clone(),
-                        result: agentic_result.clone(),
-                    })
-                    .await;
-
-                agentic_result
-            }
-        }
+        agentic_result
     }
 
     fn build_initial_messages(&self, objective: &str) -> Vec<Message> {

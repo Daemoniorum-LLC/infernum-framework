@@ -99,8 +99,27 @@ pub use agentic_loop::{
     // Multi-agent coordination
     AgentCoordinator, AgentId, AgentIdentity, AgentRole, ResourceQuota,
     ResourceQuotaManager, ToolLock, ToolLockManager,
+    // Coordination primitives (§7.2)
+    AssistancePriority, AssistanceRequest, AssistanceResponse, CoordinationError,
+    CoordinationEvent, Discovery, PendingAssistance, PendingYield, SharedContext,
+    VisibilityPolicy, YieldContext, YieldResult,
+    // Tool approval protocol (§9.4)
+    ApprovalDecision, ApprovalError, ApprovalGate, ApprovalScope, PendingApprovalInfo,
+    // Session continuation (§9.3)
+    ConfigOverride, ContinuationState, ContinuationStore, InMemoryContinuationStore,
+    ResumeError, StoreError, apply_config_override, build_resumed_messages,
+    create_continuation_state,
     // Wellbeing bridge
     WellbeingAction, WellbeingBridge,
+    // Multi-agent supervisor (§12)
+    AgentWellbeingAction, AgentWellbeingState, BudgetAllocator, CircuitBreaker, Complexity,
+    ConcurrencyLimiter, DecompositionStrategy, DependencyResolver, FailureType,
+    LifecycleTracker, RerouteReason, RerouteResolver, ResourceBudget, ResourceConsumption,
+    ResultAggregator, RoutingStrategy, SharedContextMode, SubtaskResult, SubtaskStatus,
+    Subtask, SupervisorConfig, SupervisorError, SupervisorEvent, SupervisorSummary,
+    SupervisorTermination, SupervisorWellbeingAction, WellbeingAggregate, WellbeingResponse,
+    compute_aggregate_wellbeing, rebalance_budget, supervisor_level_response,
+    supervisor_wellbeing_response,
 };
 pub use http_engine::{HttpEngine, HttpEngineError, SimpleMessage};
 pub use tools::{

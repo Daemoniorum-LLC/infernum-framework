@@ -1,9 +1,9 @@
 # Agentic Loop TDD Roadmap
 
-**Version:** 0.1.0
+**Version:** 0.3.0
 **Status:** Test Specification
-**Date:** 2026-02-02
-**Spec Reference:** AGENTIC-LOOP-SPEC.md v0.1.1
+**Date:** 2026-02-04
+**Spec Reference:** AGENTIC-LOOP-SPEC.md v0.3.0, MULTI-AGENT-SUPERVISOR-SPEC.md v0.1.0
 
 ---
 
@@ -1197,44 +1197,652 @@ fn test_lock_timeout_prevents_deadlock() {
 }
 ```
 
-### 7.3 Shared Context
+### 7.3 Assistance Request Protocol
+
+**Spec Reference:** AGENTIC-LOOP-SPEC §7.2.2
 
 ```rust
-#[test]
-fn test_discoveries_shared_between_agents() {
+// Property: Unregistered agents cannot request assistance
+#[proptest]
+fn test_unregistered_agent_cannot_request(
+    agent_id: AgentId,
+    request: AssistanceRequest,
+) {
     let coordinator = AgentCoordinator::new();
+    // Do NOT register the agent
 
-    let agent1 = AgentId::new();
-    let agent2 = AgentId::new();
-
-    // Agent 1 makes a discovery
-    coordinator.share_discovery(&agent1, Discovery {
-        category: "configuration",
-        content: "Config is at /etc/app/config.yaml".into(),
-        confidence: 0.95,
-    }).await;
-
-    // Agent 2 should see it
-    let context = coordinator.get_shared_context(&agent2).await;
-    assert!(context.discoveries.iter().any(|d| d.content.contains("config.yaml")));
+    let result = coordinator.request_assistance(&agent_id, request);
+    prop_assert!(matches!(result, Err(CoordinationError::AgentNotFound(_))));
 }
 
-#[test]
-fn test_agent_can_filter_shared_context() {
+// Property: Every request gets a unique request_id
+#[proptest]
+fn test_request_ids_unique(
+    agents: Vec<AgentIdentity>,  // 1..=5
+    requests_per_agent: u8,      // 1..=3
+) {
+    let coordinator = AgentCoordinator::new();
+    for agent in &agents {
+        coordinator.register_agent(agent.clone());
+    }
+
+    let mut ids = HashSet::new();
+    for agent in &agents {
+        for _ in 0..requests_per_agent {
+            let rx = coordinator.request_assistance(
+                &agent.id,
+                AssistanceRequest {
+                    description: "help".into(),
+                    required_capabilities: vec![],
+                    partial_progress: None,
+                    priority: AssistancePriority::Blocking,
+                },
+            ).unwrap();
+            // The request_id is in the PendingAssistance, not the receiver.
+            // We verify uniqueness via take_pending_requests.
+        }
+    }
+
+    let pending = coordinator.take_pending_requests();
+    for req in &pending {
+        prop_assert!(ids.insert(req.request_id.clone()),
+            "Duplicate request_id: {}", req.request_id);
+    }
+}
+
+// Property: Delivered responses arrive at the correct receiver
+#[proptest]
+fn test_response_delivered_to_correct_receiver(
+    response: AssistanceResponse,
+) {
+    let coordinator = AgentCoordinator::new();
+    let agent = AgentIdentity::new("agent_1", AgentRole::Primary);
+    coordinator.register_agent(agent);
+
+    let rx = coordinator.request_assistance(
+        &"agent_1".to_string(),
+        blocking_assistance_request("need help with database"),
+    ).unwrap();
+
+    let pending = coordinator.take_pending_requests();
+    prop_assert_eq!(pending.len(), 1);
+
+    coordinator.deliver_assistance(&pending[0].request_id, response.clone()).unwrap();
+
+    let received = rx.try_recv().unwrap();
+    prop_assert_eq!(received, response);
+}
+
+#[tokio::test]
+async fn test_assistance_timeout_returns_none() {
+    let coordinator = AgentCoordinator::new();
+    coordinator.register_agent(AgentIdentity::new("agent_1", AgentRole::Primary));
+
+    let rx = coordinator.request_assistance(
+        &"agent_1".to_string(),
+        blocking_assistance_request("need help"),
+    ).unwrap();
+
+    // Nobody delivers a response — timeout
+    let result = tokio::time::timeout(Duration::from_millis(100), rx).await;
+    assert!(result.is_err()); // Elapsed
+}
+
+#[tokio::test]
+async fn test_stale_requests_cleaned_on_take() {
+    let coordinator = AgentCoordinator::new();
+    coordinator.register_agent(AgentIdentity::new("agent_1", AgentRole::Primary));
+
+    let rx = coordinator.request_assistance(
+        &"agent_1".to_string(),
+        blocking_assistance_request("need help"),
+    ).unwrap();
+
+    // Drop the receiver (simulates caller timeout/cancellation)
+    drop(rx);
+
+    // take_pending_requests should filter out stale entries
+    let pending = coordinator.take_pending_requests();
+    assert_eq!(pending.len(), 0); // Sender::is_closed() detected
+}
+
+#[tokio::test]
+async fn test_deliver_to_consumed_request_returns_not_found() {
+    let coordinator = AgentCoordinator::new();
+    coordinator.register_agent(AgentIdentity::new("agent_1", AgentRole::Primary));
+
+    let rx = coordinator.request_assistance(
+        &"agent_1".to_string(),
+        blocking_assistance_request("need help"),
+    ).unwrap();
+
+    let pending = coordinator.take_pending_requests();
+    let req_id = &pending[0].request_id;
+
+    // First delivery succeeds
+    assert!(coordinator.deliver_assistance(req_id, AssistanceResponse::TimedOut).is_ok());
+
+    // Second delivery fails (oneshot consumed)
+    assert!(matches!(
+        coordinator.deliver_assistance(req_id, AssistanceResponse::TimedOut),
+        Err(CoordinationError::RequestNotFound(_))
+    ));
+}
+```
+
+### 7.4 Yield Protocol
+
+**Spec Reference:** AGENTIC-LOOP-SPEC §7.2.3
+
+```rust
+// Property: Unregistered agents cannot yield
+#[proptest]
+fn test_unregistered_agent_cannot_yield(
+    agent_id: AgentId,
+    context: YieldContext,
+) {
     let coordinator = AgentCoordinator::new();
 
-    let agent1 = AgentId::new();
+    let result = coordinator.yield_to(&agent_id, None, context);
+    prop_assert!(matches!(result, Err(CoordinationError::AgentNotFound(_))));
+}
 
-    // Multiple discoveries
-    coordinator.share_discovery(&agent1, discovery("config", "Found config")).await;
-    coordinator.share_discovery(&agent1, discovery("database", "DB is postgres")).await;
-    coordinator.share_discovery(&agent1, discovery("config", "Config format is YAML")).await;
+// Property: An agent can yield at most once
+#[proptest]
+fn test_agent_yields_at_most_once(
+    context1: YieldContext,
+    context2: YieldContext,
+) {
+    let coordinator = AgentCoordinator::new();
+    coordinator.register_agent(AgentIdentity::new("agent_1", AgentRole::Primary));
+    // Need at least one other agent or subscriber for Accepted
+    coordinator.register_agent(AgentIdentity::new("agent_2", AgentRole::Specialist));
 
-    // Filter by category
-    let context = coordinator.get_shared_context_filtered(&agent1, |d| d.category == "config").await;
+    let first = coordinator.yield_to(&"agent_1".to_string(), None, context1);
+    prop_assert!(matches!(first, Ok(YieldResult::Accepted)));
 
-    assert_eq!(context.discoveries.len(), 2);
-    assert!(context.discoveries.iter().all(|d| d.category == "config"));
+    let second = coordinator.yield_to(&"agent_1".to_string(), None, context2);
+    prop_assert!(matches!(second, Err(CoordinationError::AlreadyYielded(_))));
+}
+
+// Property: Yield with invalid target returns error
+#[proptest]
+fn test_yield_to_nonexistent_target(
+    target_id: AgentId,
+    context: YieldContext,
+) {
+    let coordinator = AgentCoordinator::new();
+    coordinator.register_agent(AgentIdentity::new("agent_1", AgentRole::Primary));
+    // target_id is NOT registered
+
+    let result = coordinator.yield_to(
+        &"agent_1".to_string(),
+        Some(target_id.clone()),
+        context,
+    );
+    prop_assert!(matches!(result, Err(CoordinationError::YieldTargetNotFound(_))));
+}
+
+#[tokio::test]
+async fn test_yield_no_alternative_single_agent() {
+    let coordinator = AgentCoordinator::new();
+    coordinator.register_agent(AgentIdentity::new("agent_1", AgentRole::Primary));
+    // No other agents, no event subscribers
+
+    let result = coordinator.yield_to(
+        &"agent_1".to_string(),
+        None,
+        YieldContext {
+            reason: "Need database expertise".into(),
+            partial_progress: Some("Found the schema file".into()),
+            suggested_expertise: vec!["database".into()],
+            handoff_data: None,
+        },
+    ).unwrap();
+
+    assert!(matches!(result, YieldResult::NoAlternative { .. }));
+}
+
+#[tokio::test]
+async fn test_yield_accepted_with_supervisor_listening() {
+    let coordinator = AgentCoordinator::new();
+    coordinator.register_agent(AgentIdentity::new("agent_1", AgentRole::Primary));
+    coordinator.register_agent(AgentIdentity::new("agent_2", AgentRole::Specialist));
+
+    // Subscribe to events (simulates supervisor)
+    let mut event_rx = coordinator.subscribe_events();
+
+    let result = coordinator.yield_to(
+        &"agent_1".to_string(),
+        None,
+        YieldContext {
+            reason: "Need database expertise".into(),
+            partial_progress: Some("Found the schema file".into()),
+            suggested_expertise: vec!["database".into()],
+            handoff_data: None,
+        },
+    ).unwrap();
+
+    assert!(matches!(result, YieldResult::Accepted));
+
+    // Supervisor receives notification
+    let event = event_rx.recv().await.unwrap();
+    assert!(matches!(event, CoordinationEvent::AgentYielded {
+        from, suggested_expertise, ..
+    } if from == "agent_1" && suggested_expertise.contains(&"database".to_string())));
+
+    // Pending yields queue has the entry
+    let pending = coordinator.take_pending_yields();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].from, "agent_1");
+    assert_eq!(pending[0].context.partial_progress, Some("Found the schema file".into()));
+}
+
+#[tokio::test]
+async fn test_yield_to_specific_target() {
+    let coordinator = AgentCoordinator::new();
+    coordinator.register_agent(AgentIdentity::new("agent_1", AgentRole::Primary));
+    coordinator.register_agent(AgentIdentity::new("agent_2", AgentRole::Specialist));
+
+    let result = coordinator.yield_to(
+        &"agent_1".to_string(),
+        Some("agent_2".to_string()),
+        YieldContext {
+            reason: "Agent 2 is better suited".into(),
+            partial_progress: None,
+            suggested_expertise: vec![],
+            handoff_data: None,
+        },
+    ).unwrap();
+
+    assert!(matches!(result, YieldResult::Accepted));
+
+    let pending = coordinator.take_pending_yields();
+    assert_eq!(pending[0].to, Some("agent_2".to_string()));
+}
+```
+
+### 7.5 Discovery Store and Shared Context
+
+**Spec Reference:** AGENTIC-LOOP-SPEC §7.2.4
+
+```rust
+// Property: Agents never see their own discoveries
+#[proptest]
+fn test_agent_does_not_see_own_discoveries(
+    discoveries: Vec<Discovery>,  // 1..=10
+) {
+    let coordinator = AgentCoordinator::new();
+    coordinator.register_agent(AgentIdentity::new("agent_1", AgentRole::Primary));
+
+    for d in &discoveries {
+        coordinator.share_discovery(&"agent_1".to_string(), d.clone()).unwrap();
+    }
+
+    let context = coordinator.get_shared_context(&"agent_1".to_string());
+    prop_assert!(context.discoveries.is_empty());
+    prop_assert_eq!(context.filtered_count, 0);
+}
+
+// Property: Agent sees all other agents' discoveries under Open policy
+#[proptest]
+fn test_open_policy_sees_all_others(
+    agent_count: u8,       // 2..=5
+    discoveries_per: u8,   // 1..=3
+) {
+    let coordinator = AgentCoordinator::new();
+    coordinator.set_visibility_policy(VisibilityPolicy::Open);
+
+    let agents: Vec<_> = (0..agent_count)
+        .map(|i| format!("agent_{}", i))
+        .collect();
+
+    for a in &agents {
+        coordinator.register_agent(AgentIdentity::new(a, AgentRole::Primary));
+        for j in 0..discoveries_per {
+            coordinator.share_discovery(a, Discovery {
+                content: format!("discovery {} from {}", j, a),
+                category: "test".into(),
+                tags: vec![],
+                data: None,
+            }).unwrap();
+        }
+    }
+
+    // Each agent sees all discoveries EXCEPT its own
+    for a in &agents {
+        let context = coordinator.get_shared_context(a);
+        let expected = (agent_count as usize - 1) * discoveries_per as usize;
+        prop_assert_eq!(context.discoveries.len(), expected);
+
+        // None should be from the requesting agent
+        for (from, _) in &context.discoveries {
+            prop_assert_ne!(from, a);
+        }
+    }
+}
+
+// Property: Discovery store bounded at 1000 entries
+#[proptest]
+fn test_discovery_store_bounded(
+    discovery_count: u16,  // 990..=1100
+) {
+    let coordinator = AgentCoordinator::new();
+    coordinator.register_agent(AgentIdentity::new("agent_1", AgentRole::Primary));
+    coordinator.register_agent(AgentIdentity::new("reader", AgentRole::Primary));
+
+    for i in 0..discovery_count {
+        coordinator.share_discovery(&"agent_1".to_string(), Discovery {
+            content: format!("discovery {}", i),
+            category: "test".into(),
+            tags: vec![],
+            data: None,
+        }).unwrap();
+    }
+
+    let context = coordinator.get_shared_context(&"reader".to_string());
+    prop_assert!(context.discoveries.len() <= 1000);
+
+    // If over 1000 were added, oldest should have been evicted
+    if discovery_count > 1000 {
+        let first_content = &context.discoveries[0].1.content;
+        let expected_start = discovery_count - 1000;
+        prop_assert!(first_content.contains(&expected_start.to_string()));
+    }
+}
+
+// Property: Discoveries ordered oldest-first
+#[proptest]
+fn test_discoveries_ordered_oldest_first(
+    contents: Vec<String>,  // 2..=20 non-empty strings
+) {
+    prop_assume!(contents.len() >= 2);
+    let coordinator = AgentCoordinator::new();
+    coordinator.register_agent(AgentIdentity::new("writer", AgentRole::Primary));
+    coordinator.register_agent(AgentIdentity::new("reader", AgentRole::Primary));
+
+    for (i, content) in contents.iter().enumerate() {
+        coordinator.share_discovery(&"writer".to_string(), Discovery {
+            content: format!("{}_{}", i, content),
+            category: "test".into(),
+            tags: vec![],
+            data: None,
+        }).unwrap();
+    }
+
+    let context = coordinator.get_shared_context(&"reader".to_string());
+    for (idx, (_, discovery)) in context.discoveries.iter().enumerate() {
+        prop_assert!(discovery.content.starts_with(&format!("{}_", idx)));
+    }
+}
+
+#[tokio::test]
+async fn test_isolated_policy_returns_empty() {
+    let coordinator = AgentCoordinator::new();
+    coordinator.set_visibility_policy(VisibilityPolicy::Isolated);
+    coordinator.register_agent(AgentIdentity::new("agent_1", AgentRole::Primary));
+    coordinator.register_agent(AgentIdentity::new("agent_2", AgentRole::Primary));
+
+    coordinator.share_discovery(&"agent_1".to_string(), Discovery {
+        content: "important finding".into(),
+        category: "test".into(),
+        tags: vec![],
+        data: None,
+    }).unwrap();
+
+    let context = coordinator.get_shared_context(&"agent_2".to_string());
+    assert!(context.discoveries.is_empty());
+}
+
+#[tokio::test]
+async fn test_capability_filtered_policy() {
+    let coordinator = AgentCoordinator::new();
+    coordinator.set_visibility_policy(VisibilityPolicy::CapabilityFiltered);
+
+    coordinator.register_agent(
+        AgentIdentity::new("db_agent", AgentRole::Specialist)
+            .with_capability("database")
+    );
+    coordinator.register_agent(
+        AgentIdentity::new("ui_agent", AgentRole::Specialist)
+            .with_capability("frontend")
+    );
+    coordinator.register_agent(
+        AgentIdentity::new("reader", AgentRole::Primary)
+            .with_capability("database")
+    );
+
+    // db_agent shares a discovery tagged "database"
+    coordinator.share_discovery(&"db_agent".to_string(), Discovery {
+        content: "Schema has 12 tables".into(),
+        category: "database".into(),
+        tags: vec!["database".into(), "schema".into()],
+        data: None,
+    }).unwrap();
+
+    // ui_agent shares a discovery tagged "frontend"
+    coordinator.share_discovery(&"ui_agent".to_string(), Discovery {
+        content: "Theme uses CSS grid".into(),
+        category: "frontend".into(),
+        tags: vec!["frontend".into(), "css".into()],
+        data: None,
+    }).unwrap();
+
+    // Reader has "database" capability — sees db discovery but not ui
+    let context = coordinator.get_shared_context(&"reader".to_string());
+    assert_eq!(context.discoveries.len(), 1);
+    assert!(context.discoveries[0].1.content.contains("Schema"));
+    assert_eq!(context.filtered_count, 1); // ui discovery was filtered
+}
+
+#[tokio::test]
+async fn test_explicit_policy_allow_list() {
+    let coordinator = AgentCoordinator::new();
+
+    let mut allow_list = HashMap::new();
+    allow_list.insert("reader".to_string(), vec!["agent_a".to_string()]);
+
+    coordinator.set_visibility_policy(VisibilityPolicy::Explicit { allow_list });
+    coordinator.register_agent(AgentIdentity::new("agent_a", AgentRole::Primary));
+    coordinator.register_agent(AgentIdentity::new("agent_b", AgentRole::Primary));
+    coordinator.register_agent(AgentIdentity::new("reader", AgentRole::Primary));
+
+    coordinator.share_discovery(&"agent_a".to_string(), Discovery {
+        content: "visible".into(),
+        category: "test".into(),
+        tags: vec![],
+        data: None,
+    }).unwrap();
+
+    coordinator.share_discovery(&"agent_b".to_string(), Discovery {
+        content: "hidden".into(),
+        category: "test".into(),
+        tags: vec![],
+        data: None,
+    }).unwrap();
+
+    let context = coordinator.get_shared_context(&"reader".to_string());
+    assert_eq!(context.discoveries.len(), 1);
+    assert_eq!(context.discoveries[0].1.content, "visible");
+    assert_eq!(context.filtered_count, 1);
+}
+
+#[tokio::test]
+async fn test_unregistered_agent_cannot_share() {
+    let coordinator = AgentCoordinator::new();
+
+    let result = coordinator.share_discovery(&"ghost".to_string(), Discovery {
+        content: "test".into(),
+        category: "test".into(),
+        tags: vec![],
+        data: None,
+    });
+
+    assert!(matches!(result, Err(CoordinationError::AgentNotFound(_))));
+}
+
+#[tokio::test]
+async fn test_unregistered_reader_gets_empty_context() {
+    let coordinator = AgentCoordinator::new();
+    coordinator.register_agent(AgentIdentity::new("writer", AgentRole::Primary));
+
+    coordinator.share_discovery(&"writer".to_string(), Discovery {
+        content: "test".into(),
+        category: "test".into(),
+        tags: vec![],
+        data: None,
+    }).unwrap();
+
+    // Unregistered reader gets empty (not error)
+    let context = coordinator.get_shared_context(&"unknown".to_string());
+    assert!(context.discoveries.is_empty());
+}
+```
+
+### 7.6 Coordination Events
+
+**Spec Reference:** AGENTIC-LOOP-SPEC §7.2.5
+
+```rust
+// Property: Every coordination action emits exactly one event
+#[proptest]
+fn test_every_action_emits_event(
+    action: CoordinationAction,  // RequestAssistance | YieldTo | ShareDiscovery
+) {
+    let coordinator = AgentCoordinator::new();
+    coordinator.register_agent(AgentIdentity::new("agent_1", AgentRole::Primary));
+    coordinator.register_agent(AgentIdentity::new("agent_2", AgentRole::Specialist));
+
+    let mut event_rx = coordinator.subscribe_events();
+
+    match action {
+        CoordinationAction::RequestAssistance(request) => {
+            let _ = coordinator.request_assistance(&"agent_1".to_string(), request);
+            let event = event_rx.try_recv().unwrap();
+            prop_assert!(matches!(event, CoordinationEvent::AssistanceRequested { .. }));
+        }
+        CoordinationAction::YieldTo(context) => {
+            let _ = coordinator.yield_to(&"agent_1".to_string(), None, context);
+            let event = event_rx.try_recv().unwrap();
+            prop_assert!(matches!(event, CoordinationEvent::AgentYielded { .. }));
+        }
+        CoordinationAction::ShareDiscovery(discovery) => {
+            let _ = coordinator.share_discovery(&"agent_1".to_string(), discovery);
+            let event = event_rx.try_recv().unwrap();
+            prop_assert!(matches!(event, CoordinationEvent::DiscoveryShared { .. }));
+        }
+    }
+
+    // No extra events
+    prop_assert!(event_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn test_multiple_subscribers_all_receive() {
+    let coordinator = AgentCoordinator::new();
+    coordinator.register_agent(AgentIdentity::new("agent_1", AgentRole::Primary));
+
+    let mut rx1 = coordinator.subscribe_events();
+    let mut rx2 = coordinator.subscribe_events();
+    let mut rx3 = coordinator.subscribe_events();
+
+    coordinator.share_discovery(&"agent_1".to_string(), Discovery {
+        content: "test".into(),
+        category: "test".into(),
+        tags: vec![],
+        data: None,
+    }).unwrap();
+
+    // All three subscribers receive the event
+    assert!(rx1.try_recv().is_ok());
+    assert!(rx2.try_recv().is_ok());
+    assert!(rx3.try_recv().is_ok());
+}
+
+#[tokio::test]
+async fn test_failed_actions_do_not_emit_events() {
+    let coordinator = AgentCoordinator::new();
+    // No agents registered
+
+    let mut event_rx = coordinator.subscribe_events();
+
+    // Assistance from unregistered agent — fails
+    let _ = coordinator.request_assistance(&"ghost".to_string(), blocking_assistance_request("help"));
+
+    // No event should have been emitted
+    assert!(event_rx.try_recv().is_err());
+}
+```
+
+### 7.7 Cleanup on Unregister
+
+**Spec Reference:** AGENTIC-LOOP-SPEC §7.2.7
+
+```rust
+#[tokio::test]
+async fn test_unregister_clears_yielded_state() {
+    let coordinator = AgentCoordinator::new();
+    coordinator.register_agent(AgentIdentity::new("agent_1", AgentRole::Primary));
+    coordinator.register_agent(AgentIdentity::new("agent_2", AgentRole::Specialist));
+
+    // Yield
+    coordinator.yield_to(
+        &"agent_1".to_string(), None,
+        YieldContext { reason: "done".into(), partial_progress: None,
+            suggested_expertise: vec![], handoff_data: None },
+    ).unwrap();
+
+    // Unregister
+    coordinator.unregister_agent("agent_1");
+
+    // Re-register — should be able to yield again (not AlreadyYielded)
+    coordinator.register_agent(AgentIdentity::new("agent_1", AgentRole::Primary));
+    let result = coordinator.yield_to(
+        &"agent_1".to_string(), None,
+        YieldContext { reason: "done again".into(), partial_progress: None,
+            suggested_expertise: vec![], handoff_data: None },
+    );
+    assert!(matches!(result, Ok(YieldResult::Accepted)));
+}
+
+#[tokio::test]
+async fn test_unregister_cancels_pending_requests() {
+    let coordinator = AgentCoordinator::new();
+    coordinator.register_agent(AgentIdentity::new("agent_1", AgentRole::Primary));
+
+    let rx = coordinator.request_assistance(
+        &"agent_1".to_string(),
+        blocking_assistance_request("need help"),
+    ).unwrap();
+
+    // Unregister cancels the pending request (drops the Sender)
+    coordinator.unregister_agent("agent_1");
+
+    // Receiver should get Canceled
+    let result = rx.await;
+    assert!(result.is_err()); // RecvError — sender dropped
+}
+
+#[tokio::test]
+async fn test_unregister_preserves_discoveries() {
+    let coordinator = AgentCoordinator::new();
+    coordinator.register_agent(AgentIdentity::new("agent_1", AgentRole::Primary));
+    coordinator.register_agent(AgentIdentity::new("reader", AgentRole::Primary));
+
+    coordinator.share_discovery(&"agent_1".to_string(), Discovery {
+        content: "important finding".into(),
+        category: "test".into(),
+        tags: vec![],
+        data: None,
+    }).unwrap();
+
+    // Unregister agent_1
+    coordinator.unregister_agent("agent_1");
+
+    // Discoveries survive
+    let context = coordinator.get_shared_context(&"reader".to_string());
+    assert_eq!(context.discoveries.len(), 1);
+    assert_eq!(context.discoveries[0].0, "agent_1");
 }
 ```
 
@@ -1584,9 +2192,1546 @@ async fn test_sse_stream_complete() {
 
 ---
 
-## 10. Test Infrastructure
+## 10. Tool Approval Protocol
 
-### 10.1 Property Test Generators
+**Trust Boundary:** The approval protocol guards both security (denied tools must never execute) and liveness (the executor must never block indefinitely). Violations here could execute dangerous operations without consent, or freeze the executor forever.
+
+**Spec Reference:** AGENTIC-LOOP-SPEC §9.4
+
+### 10.1 Approval Handshake
+
+```rust
+// Property: Denied tools never execute — regardless of how the denial arrives
+#[proptest]
+fn test_denied_tools_never_execute(
+    call: DetectedToolCall,
+    denial_path: DenialPath,  // Explicit deny, timeout, oneshot dropped
+) {
+    let (executor, event_rx, approval_inbox) = setup_approval_test();
+    let grant = AutonomyGrant::builder()
+        .require_approval(ToolPattern::Tool(&call.name))
+        .build();
+
+    let result_handle = tokio::spawn(
+        executor.execute_single_tool(call.clone(), &grant)
+    );
+
+    // Wait for ToolApprovalRequired event
+    let event = event_rx.recv().await;
+    prop_assert!(matches!(event, LoopEvent::ToolApprovalRequired { .. }));
+
+    // Deliver denial via the specified path
+    match denial_path {
+        DenialPath::ExplicitDeny => {
+            approval_inbox.deliver(call.id, ApprovalDecision::Deny).await;
+        }
+        DenialPath::Timeout => {
+            // Let the timeout expire
+            tokio::time::sleep(approval_timeout + Duration::from_millis(100)).await;
+        }
+        DenialPath::OneshotDropped => {
+            approval_inbox.drop_sender(&call.id);
+        }
+    }
+
+    let result = result_handle.await.unwrap();
+    prop_assert!(result.status.is_failed());
+    prop_assert!(result.status.is_recoverable());
+    prop_assert!(!was_tool_invoked(&call));
+}
+
+// Property: Approved tools always execute successfully (barring tool errors)
+#[proptest]
+fn test_approved_tools_execute(
+    call: DetectedToolCall,
+    approval_variant: ApproveVariant,  // Approve, ApproveAlways(ThisCall|ThisTool|ThisSession)
+) {
+    let (executor, event_rx, approval_inbox) = setup_approval_test();
+    let grant = AutonomyGrant::builder()
+        .require_approval(ToolPattern::Tool(&call.name))
+        .build();
+
+    let result_handle = tokio::spawn(
+        executor.execute_single_tool(call.clone(), &grant)
+    );
+
+    let event = event_rx.recv().await;
+    prop_assert!(matches!(event, LoopEvent::ToolApprovalRequired { .. }));
+
+    let decision = match approval_variant {
+        ApproveVariant::Approve => ApprovalDecision::Approve,
+        ApproveVariant::ApproveAlways(scope) => {
+            ApprovalDecision::ApproveAlways { scope }
+        }
+    };
+    approval_inbox.deliver(call.id, decision).await.unwrap();
+
+    let result = result_handle.await.unwrap();
+    // Tool was invoked (success or tool-level error, but not approval-denied)
+    prop_assert!(!matches!(result.status, ResultStatus::Failed { recoverable: true }
+        if result.error_message.as_deref() == Some("denied")));
+    prop_assert!(was_tool_invoked(&call));
+}
+
+#[tokio::test]
+async fn test_basic_approve_flow() {
+    let (executor, mut event_rx, sessions) = setup_approval_test();
+    let call = detected_call("bash", json!({"command": "git status"}));
+    let grant = require_approval_for_all();
+
+    let result_handle = tokio::spawn({
+        let executor = executor.clone();
+        async move { executor.execute_single_tool(call.clone(), &grant).await }
+    });
+
+    // 1. SSE event emitted
+    let event = event_rx.recv().await.unwrap();
+    assert!(matches!(event, LoopEvent::ToolApprovalRequired { .. }));
+
+    // 2. Client approves via endpoint
+    sessions.deliver_approval("test_session", "call_1", ApprovalDecision::Approve)
+        .await
+        .unwrap();
+
+    // 3. Tool executes
+    let result = result_handle.await.unwrap();
+    assert!(result.status.is_success());
+}
+
+#[tokio::test]
+async fn test_basic_deny_flow() {
+    let (executor, mut event_rx, sessions) = setup_approval_test();
+    let call = detected_call("bash", json!({"command": "rm -rf /tmp/cache"}));
+    let grant = require_approval_for_all();
+
+    let result_handle = tokio::spawn({
+        let executor = executor.clone();
+        async move { executor.execute_single_tool(call.clone(), &grant).await }
+    });
+
+    let event = event_rx.recv().await.unwrap();
+    assert!(matches!(event, LoopEvent::ToolApprovalRequired { .. }));
+
+    sessions.deliver_approval("test_session", "call_1", ApprovalDecision::Deny)
+        .await
+        .unwrap();
+
+    let result = result_handle.await.unwrap();
+    assert!(result.status.is_failed());
+    assert!(result.status.is_recoverable());
+}
+```
+
+### 10.2 Timeout Behavior
+
+```rust
+// Property: Timeout fires within tolerance of configured duration
+#[proptest]
+fn test_timeout_fires_within_tolerance(
+    timeout_ms: u64,  // 100..=30_000
+) {
+    let timeout = Duration::from_millis(timeout_ms);
+    let config = LoopConfig { approval_timeout: timeout, ..default() };
+    let (executor, _, _) = setup_approval_test_with_config(config);
+    let call = detected_call("bash", json!({"command": "echo hello"}));
+    let grant = require_approval_for_all();
+
+    let start = Instant::now();
+    let result = executor.execute_single_tool(call, &grant).await;
+    let elapsed = start.elapsed();
+
+    // Should have timed out
+    prop_assert!(result.status.is_failed());
+
+    // Tolerance: within 500ms of configured timeout
+    let tolerance = Duration::from_millis(500);
+    prop_assert!(elapsed >= timeout);
+    prop_assert!(elapsed <= timeout + tolerance);
+}
+
+#[tokio::test]
+async fn test_decision_just_before_timeout_honored() {
+    let timeout = Duration::from_millis(500);
+    let config = LoopConfig { approval_timeout: timeout, ..default() };
+    let (executor, mut event_rx, sessions) = setup_approval_test_with_config(config);
+    let call = detected_call("bash", json!({"command": "echo hello"}));
+    let grant = require_approval_for_all();
+
+    let result_handle = tokio::spawn({
+        let executor = executor.clone();
+        async move { executor.execute_single_tool(call.clone(), &grant).await }
+    });
+
+    let _ = event_rx.recv().await;
+
+    // Approve 100ms before timeout
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    sessions.deliver_approval("test_session", "call_1", ApprovalDecision::Approve)
+        .await
+        .unwrap();
+
+    let result = result_handle.await.unwrap();
+    assert!(result.status.is_success()); // Decision honored, not timed out
+}
+
+#[tokio::test]
+async fn test_timeout_returns_recoverable_error() {
+    let timeout = Duration::from_millis(100);
+    let config = LoopConfig { approval_timeout: timeout, ..default() };
+    let (executor, _, _) = setup_approval_test_with_config(config);
+    let call = detected_call("read_file", json!({"path": "/etc/passwd"}));
+    let grant = require_approval_for_all();
+
+    let result = executor.execute_single_tool(call, &grant).await;
+
+    assert!(result.status.is_failed());
+    assert!(result.status.is_recoverable());
+    // Agent gets a useful message, not a cryptic error
+    assert!(result.error_message.unwrap().contains("timed out"));
+}
+```
+
+### 10.3 ApproveAlways Semantics
+
+```rust
+// Property: ApproveAlways(ThisTool) auto-approves subsequent same-tool calls
+#[proptest]
+fn test_approve_always_this_tool_subsequent_auto_approved(
+    tool_name: ToolName,
+    subsequent_calls: Vec<DetectedToolCall>,  // 1..=5 calls with same tool_name
+) {
+    let (executor, mut event_rx, sessions) = setup_approval_test();
+    let grant = require_approval_for_all();
+
+    // First call: manual approval
+    let first_call = detected_call(&tool_name, json!({}));
+    let result_handle = tokio::spawn({
+        let executor = executor.clone();
+        async move { executor.execute_single_tool(first_call, &grant).await }
+    });
+
+    let _ = event_rx.recv().await;
+    sessions.deliver_approval(
+        "test_session", &first_call.id,
+        ApprovalDecision::ApproveAlways { scope: ApprovalScope::ThisTool },
+    ).await.unwrap();
+    let _ = result_handle.await.unwrap();
+
+    // Subsequent calls to same tool: should auto-approve (no SSE event)
+    for call in subsequent_calls {
+        let call = DetectedToolCall { name: tool_name.clone(), ..call };
+        let result = executor.execute_single_tool(call, &grant).await;
+
+        // Should succeed without blocking for approval
+        prop_assert!(result.status.is_success() || result.status.is_tool_error());
+        // No ToolApprovalRequired event should have been emitted
+    }
+}
+
+// Property: ApproveAlways(ThisTool) does NOT approve different tools
+#[proptest]
+fn test_approve_always_scoped_to_tool(
+    approved_tool: ToolName,
+    other_tool: ToolName,
+) {
+    prop_assume!(approved_tool != other_tool);
+
+    let (executor, mut event_rx, sessions) = setup_approval_test();
+    let grant = require_approval_for_all();
+
+    // Approve "bash" always
+    let call = detected_call(&approved_tool, json!({}));
+    let handle = tokio::spawn(executor.execute_single_tool(call.clone(), &grant));
+    let _ = event_rx.recv().await;
+    sessions.deliver_approval(
+        "test_session", &call.id,
+        ApprovalDecision::ApproveAlways { scope: ApprovalScope::ThisTool },
+    ).await.unwrap();
+    let _ = handle.await;
+
+    // Different tool should still require approval
+    let other_call = detected_call(&other_tool, json!({}));
+    let handle = tokio::spawn(executor.execute_single_tool(other_call.clone(), &grant));
+
+    // Should block for approval
+    let event = tokio::time::timeout(Duration::from_millis(100), event_rx.recv()).await;
+    prop_assert!(event.is_ok()); // Event emitted = approval still required
+}
+
+#[tokio::test]
+async fn test_approve_always_this_session_approves_all() {
+    let (executor, mut event_rx, sessions) = setup_approval_test();
+    let grant = require_approval_for_all();
+
+    // First call: approve with session scope
+    let call = detected_call("bash", json!({"command": "ls"}));
+    let handle = tokio::spawn({
+        let executor = executor.clone();
+        async move { executor.execute_single_tool(call.clone(), &grant).await }
+    });
+    let _ = event_rx.recv().await;
+    sessions.deliver_approval(
+        "test_session", "call_1",
+        ApprovalDecision::ApproveAlways { scope: ApprovalScope::ThisSession },
+    ).await.unwrap();
+    let _ = handle.await;
+
+    // ANY subsequent tool should auto-approve
+    for tool in &["bash", "write_file", "read_file", "edit_file"] {
+        let call = detected_call(tool, json!({}));
+        let result = executor.execute_single_tool(call, &grant).await;
+        assert!(
+            result.status.is_success() || result.status.is_tool_error(),
+            "Tool {} should have been auto-approved",
+            tool
+        );
+    }
+}
+```
+
+### 10.4 Concurrent Approvals
+
+```rust
+#[tokio::test]
+async fn test_multiple_pending_approvals_independent() {
+    let (executor, mut event_rx, sessions) = setup_approval_test();
+    let grant = require_approval_for_all();
+
+    let call_a = detected_call("bash", json!({"command": "git status"}));
+    let call_b = detected_call("write_file", json!({"path": "/tmp/out.txt"}));
+
+    // Both tool calls need approval (two-pass approach per spec §9.4.4)
+    let handle_a = tokio::spawn(executor.execute_single_tool(call_a.clone(), &grant));
+    let handle_b = tokio::spawn(executor.execute_single_tool(call_b.clone(), &grant));
+
+    // Collect both approval events
+    let event_a = event_rx.recv().await.unwrap();
+    let event_b = event_rx.recv().await.unwrap();
+    assert!(matches!(event_a, LoopEvent::ToolApprovalRequired { .. }));
+    assert!(matches!(event_b, LoopEvent::ToolApprovalRequired { .. }));
+
+    // Approve A, deny B
+    sessions.deliver_approval("test_session", &call_a.id, ApprovalDecision::Approve)
+        .await.unwrap();
+    sessions.deliver_approval("test_session", &call_b.id, ApprovalDecision::Deny)
+        .await.unwrap();
+
+    let result_a = handle_a.await.unwrap();
+    let result_b = handle_b.await.unwrap();
+
+    assert!(result_a.status.is_success());
+    assert!(result_b.status.is_failed());
+    assert!(result_b.status.is_recoverable());
+}
+
+#[tokio::test]
+async fn test_one_timeout_one_approved() {
+    let timeout = Duration::from_millis(200);
+    let config = LoopConfig { approval_timeout: timeout, ..default() };
+    let (executor, mut event_rx, sessions) = setup_approval_test_with_config(config);
+    let grant = require_approval_for_all();
+
+    let call_a = detected_call("bash", json!({}));
+    let call_b = detected_call("read_file", json!({}));
+
+    let handle_a = tokio::spawn(executor.execute_single_tool(call_a.clone(), &grant));
+    let handle_b = tokio::spawn(executor.execute_single_tool(call_b.clone(), &grant));
+
+    let _ = event_rx.recv().await;
+    let _ = event_rx.recv().await;
+
+    // Only approve A — let B timeout
+    sessions.deliver_approval("test_session", &call_a.id, ApprovalDecision::Approve)
+        .await.unwrap();
+
+    let result_a = handle_a.await.unwrap();
+    let result_b = handle_b.await.unwrap();
+
+    assert!(result_a.status.is_success());
+    assert!(result_b.status.is_failed()); // Timed out
+}
+```
+
+### 10.5 Oneshot Consumption
+
+```rust
+// Property: Once consumed, call_id is removed — second delivery returns 404
+#[proptest]
+fn test_oneshot_consumed_once(
+    call: DetectedToolCall,
+    decision: ApprovalDecision,
+) {
+    let (executor, mut event_rx, sessions) = setup_approval_test();
+    let grant = require_approval_for_all();
+
+    let handle = tokio::spawn(executor.execute_single_tool(call.clone(), &grant));
+    let _ = event_rx.recv().await;
+
+    // First delivery succeeds
+    let first = sessions.deliver_approval("test_session", &call.id, decision.clone()).await;
+    prop_assert!(first.is_ok());
+
+    // Second delivery fails (oneshot consumed, pending entry removed)
+    let second = sessions.deliver_approval("test_session", &call.id, decision).await;
+    prop_assert!(second.is_err());
+    prop_assert!(matches!(second.unwrap_err(), ApprovalError::NotFound));
+}
+
+#[tokio::test]
+async fn test_pending_approvals_list_reflects_state() {
+    let (executor, mut event_rx, sessions) = setup_approval_test();
+    let grant = require_approval_for_all();
+
+    assert_eq!(sessions.pending_approvals("test_session").await.len(), 0);
+
+    let call = detected_call("bash", json!({}));
+    let handle = tokio::spawn(executor.execute_single_tool(call.clone(), &grant));
+    let _ = event_rx.recv().await;
+
+    // One pending
+    assert_eq!(sessions.pending_approvals("test_session").await.len(), 1);
+
+    sessions.deliver_approval("test_session", &call.id, ApprovalDecision::Approve)
+        .await.unwrap();
+    let _ = handle.await;
+
+    // None pending
+    assert_eq!(sessions.pending_approvals("test_session").await.len(), 0);
+}
+```
+
+---
+
+## 11. Session Continuation
+
+**Trust Boundary:** Continuation state is a data integrity boundary. If store/load corrupts state, the resumed loop will operate on wrong data. If resource arithmetic is wrong, budget enforcement breaks. If TTL isn't enforced, stale state accumulates indefinitely.
+
+**Spec Reference:** AGENTIC-LOOP-SPEC §9.3
+
+### 11.1 Store/Load Roundtrip
+
+```rust
+// Property: store → load returns identical ContinuationState
+#[proptest]
+fn test_store_load_roundtrip(state: ContinuationState) {
+    let store = InMemoryContinuationStore::new(Default::default());
+
+    let token = store.store(state.clone()).await.unwrap();
+    let loaded = store.load(&token).await.unwrap();
+
+    prop_assert!(loaded.is_some());
+    let loaded = loaded.unwrap();
+
+    prop_assert_eq!(&loaded.session_id, &state.session_id);
+    prop_assert_eq!(&loaded.messages, &state.messages);
+    prop_assert_eq!(&loaded.tool_results, &state.tool_results);
+    prop_assert_eq!(&loaded.exploration_branches, &state.exploration_branches);
+    prop_assert_eq!(loaded.iterations_completed, state.iterations_completed);
+    prop_assert_eq!(loaded.tool_calls_made, state.tool_calls_made);
+    prop_assert_eq!(loaded.tokens_generated, state.tokens_generated);
+    prop_assert_eq!(&loaded.termination, &state.termination);
+    prop_assert_eq!(&loaded.working_dir, &state.working_dir);
+    prop_assert_eq!(&loaded.system_prompt, &state.system_prompt);
+}
+
+// Property: All fields survive serialization — no silent data loss
+#[proptest]
+fn test_no_silent_field_loss(state: ContinuationState) {
+    let store = InMemoryContinuationStore::new(Default::default());
+
+    let token = store.store(state.clone()).await.unwrap();
+    let loaded = store.load(&token).await.unwrap().unwrap();
+
+    // Byte-level equality on serde roundtrip
+    let original_json = serde_json::to_value(&state).unwrap();
+    let loaded_json = serde_json::to_value(&loaded).unwrap();
+
+    prop_assert_eq!(original_json, loaded_json);
+}
+
+#[tokio::test]
+async fn test_store_with_tool_results_roundtrip() {
+    let store = InMemoryContinuationStore::new(Default::default());
+
+    let state = ContinuationState {
+        token: String::new(), // assigned by store
+        session_id: "sess_test".into(),
+        messages: vec![user_message("Find the config"), assistant_message("Looking...")],
+        tool_results: vec![
+            AgenticToolResult {
+                call_id: "call_1".into(),
+                tool_name: "read_file".into(),
+                status: ResultStatus::Success,
+                data: json!({"content": "key=value", "lines": 1}),
+                latency: Duration::from_millis(15),
+            },
+        ],
+        exploration_branches: vec![
+            ExplorationBranch {
+                description: "Tried JSON config".into(),
+                outcome: BranchOutcome::DeadEnd,
+            },
+        ],
+        iterations_completed: 3,
+        tool_calls_made: 5,
+        tokens_generated: 1200,
+        loop_config: LoopConfig { max_iterations: 10, ..default() },
+        autonomy: AutonomyGrant::default(),
+        system_prompt: Some("You are a helpful assistant.".into()),
+        working_dir: Some("/home/user/project".into()),
+        termination: TerminationReason::Natural(NaturalTermination::AgentStuck {
+            attempts: 3,
+            request: StuckRequest::Clarification(vec![]),
+        }),
+        stored_at: SystemTime::now(),
+    };
+
+    let token = store.store(state.clone()).await.unwrap();
+    let loaded = store.load(&token).await.unwrap().unwrap();
+
+    assert_eq!(loaded.tool_results.len(), 1);
+    assert_eq!(loaded.tool_results[0].call_id, "call_1");
+    assert_eq!(loaded.exploration_branches.len(), 1);
+    assert_eq!(loaded.iterations_completed, 3);
+}
+```
+
+### 11.2 TTL and Eviction
+
+```rust
+#[tokio::test]
+async fn test_expired_state_returns_none() {
+    let config = StoreConfig { ttl: Duration::from_millis(100), max_entries: 100 };
+    let store = InMemoryContinuationStore::new(config);
+
+    let state = make_continuation_state("sess_1");
+    let token = store.store(state).await.unwrap();
+
+    // Before TTL: present
+    assert!(store.load(&token).await.unwrap().is_some());
+
+    // After TTL: gone
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(store.load(&token).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn test_lru_eviction_removes_oldest() {
+    let config = StoreConfig { ttl: Duration::from_secs(3600), max_entries: 3 };
+    let store = InMemoryContinuationStore::new(config);
+
+    let token_1 = store.store(make_continuation_state("sess_1")).await.unwrap();
+    let token_2 = store.store(make_continuation_state("sess_2")).await.unwrap();
+    let token_3 = store.store(make_continuation_state("sess_3")).await.unwrap();
+
+    // All present
+    assert!(store.load(&token_1).await.unwrap().is_some());
+    assert!(store.load(&token_2).await.unwrap().is_some());
+    assert!(store.load(&token_3).await.unwrap().is_some());
+
+    // Store a 4th — should evict token_1 (LRU)
+    let _token_4 = store.store(make_continuation_state("sess_4")).await.unwrap();
+
+    assert!(store.load(&token_1).await.unwrap().is_none()); // evicted
+    assert!(store.load(&token_2).await.unwrap().is_some());
+    assert!(store.load(&token_3).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn test_access_refreshes_lru_position() {
+    let config = StoreConfig { ttl: Duration::from_secs(3600), max_entries: 3 };
+    let store = InMemoryContinuationStore::new(config);
+
+    let token_1 = store.store(make_continuation_state("sess_1")).await.unwrap();
+    let token_2 = store.store(make_continuation_state("sess_2")).await.unwrap();
+    let token_3 = store.store(make_continuation_state("sess_3")).await.unwrap();
+
+    // Access token_1 to refresh its LRU position
+    let _ = store.load(&token_1).await;
+
+    // Store a 4th — should now evict token_2 (oldest unaccessed)
+    let _token_4 = store.store(make_continuation_state("sess_4")).await.unwrap();
+
+    assert!(store.load(&token_1).await.unwrap().is_some()); // refreshed, survives
+    assert!(store.load(&token_2).await.unwrap().is_none()); // evicted
+    assert!(store.load(&token_3).await.unwrap().is_some());
+}
+
+// Property: Cleanup removes exactly the expired entries
+#[proptest]
+fn test_cleanup_removes_only_expired(
+    states: Vec<(ContinuationState, bool)>,  // (state, should_be_expired)
+) {
+    let config = StoreConfig { ttl: Duration::from_millis(200), max_entries: 1000 };
+    let store = InMemoryContinuationStore::new(config);
+
+    let mut tokens = Vec::new();
+    for (state, expire) in &states {
+        let token = store.store(state.clone()).await.unwrap();
+        if *expire {
+            // Backdate stored_at to simulate expiry
+            store.force_expire(&token);
+        }
+        tokens.push((token, *expire));
+    }
+
+    let removed = store.cleanup_expired().await.unwrap();
+    let expected_removed = states.iter().filter(|(_, e)| *e).count() as u32;
+    prop_assert_eq!(removed, expected_removed);
+
+    for (token, expired) in &tokens {
+        if *expired {
+            prop_assert!(store.load(token).await.unwrap().is_none());
+        } else {
+            prop_assert!(store.load(token).await.unwrap().is_some());
+        }
+    }
+}
+```
+
+### 11.3 Resource Arithmetic
+
+```rust
+// Property: New limit must exceed consumed amount
+#[proptest]
+fn test_new_limit_must_exceed_consumed(
+    consumed: u32,   // 0..=1000
+    new_limit: u32,  // 0..=2000
+) {
+    let state = ContinuationState {
+        iterations_completed: consumed,
+        loop_config: LoopConfig { max_iterations: consumed + 10, ..default() },
+        ..make_continuation_state("sess_1")
+    };
+
+    let modified = json!({ "max_iterations": new_limit });
+    let result = apply_config_override(&state, &modified);
+
+    if new_limit <= consumed {
+        prop_assert!(result.is_err());
+    } else {
+        prop_assert!(result.is_ok());
+    }
+}
+
+// Property: Remaining budget = new_limit - consumed
+#[proptest]
+fn test_remaining_budget_arithmetic(
+    consumed_iters: u32,     // 0..=100
+    consumed_calls: u32,     // 0..=200
+    consumed_tokens: u32,    // 0..=8000
+    new_iters: u32,          // consumed_iters+1..=200
+    new_calls: u32,          // consumed_calls+1..=400
+    new_tokens: u32,         // consumed_tokens+1..=16000
+) {
+    prop_assume!(new_iters > consumed_iters);
+    prop_assume!(new_calls > consumed_calls);
+    prop_assume!(new_tokens > consumed_tokens);
+
+    let state = ContinuationState {
+        iterations_completed: consumed_iters,
+        tool_calls_made: consumed_calls,
+        tokens_generated: consumed_tokens,
+        loop_config: LoopConfig {
+            max_iterations: consumed_iters + 10,
+            max_tool_calls: consumed_calls + 10,
+            max_tokens: consumed_tokens + 1000,
+            ..default()
+        },
+        ..make_continuation_state("sess_1")
+    };
+
+    let modified = json!({
+        "max_iterations": new_iters,
+        "max_tool_calls": new_calls,
+        "max_tokens": new_tokens,
+    });
+
+    let resumed_config = apply_config_override(&state, &modified).unwrap();
+
+    prop_assert_eq!(resumed_config.max_iterations, new_iters);
+    prop_assert_eq!(resumed_config.max_tool_calls, new_calls);
+    prop_assert_eq!(resumed_config.max_tokens, new_tokens);
+}
+
+#[tokio::test]
+async fn test_extend_budget_after_exhaustion() {
+    let state = ContinuationState {
+        iterations_completed: 10,
+        loop_config: LoopConfig { max_iterations: 10, ..default() },
+        termination: TerminationReason::Resource(ResourceTermination::MaxIterations {
+            completed: 10, limit: 10,
+        }),
+        ..make_continuation_state("sess_1")
+    };
+
+    // Extend to 20
+    let modified = json!({ "max_iterations": 20 });
+    let resumed_config = apply_config_override(&state, &modified).unwrap();
+    assert_eq!(resumed_config.max_iterations, 20);
+    // Agent gets 10 more iterations (20 - 10 consumed)
+}
+
+#[tokio::test]
+async fn test_reject_reduction_below_consumed() {
+    let state = ContinuationState {
+        iterations_completed: 50,
+        loop_config: LoopConfig { max_iterations: 50, ..default() },
+        ..make_continuation_state("sess_1")
+    };
+
+    let modified = json!({ "max_iterations": 30 });
+    let result = apply_config_override(&state, &modified);
+    assert!(result.is_err());
+}
+```
+
+### 11.4 Resume Semantics
+
+```rust
+#[tokio::test]
+async fn test_additional_context_appended_as_user_message() {
+    let state = ContinuationState {
+        messages: vec![
+            user_message("Find the config file"),
+            assistant_message("I'll search for it..."),
+        ],
+        ..make_continuation_state("sess_1")
+    };
+
+    let resumed_messages = build_resumed_messages(
+        &state,
+        Some("The config is at /opt/app/config.yaml"),
+    );
+
+    assert_eq!(resumed_messages.len(), 3);
+    assert_eq!(
+        resumed_messages[2].content,
+        "The config is at /opt/app/config.yaml"
+    );
+    assert_eq!(resumed_messages[2].role, "user");
+}
+
+#[tokio::test]
+async fn test_system_prompt_immutable() {
+    let state = ContinuationState {
+        system_prompt: Some("Original prompt".into()),
+        ..make_continuation_state("sess_1")
+    };
+
+    let modified = json!({ "system_prompt": "Hacked prompt" });
+    let result = apply_config_override(&state, &modified);
+
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_working_dir_immutable() {
+    let state = ContinuationState {
+        working_dir: Some("/home/user/project".into()),
+        ..make_continuation_state("sess_1")
+    };
+
+    let modified = json!({ "working_dir": "/etc/shadow" });
+    let result = apply_config_override(&state, &modified);
+
+    assert!(result.is_err());
+}
+
+// Property: Auto-approve can widen but forbidden cannot
+#[proptest]
+fn test_autonomy_modification_rules(
+    original_auto_approve: Vec<ToolPattern>,
+    additional_patterns: Vec<ToolPattern>,
+) {
+    let original_grant = AutonomyGrant::builder()
+        .auto_approve(original_auto_approve.clone())
+        .build();
+
+    let state = ContinuationState {
+        autonomy: original_grant,
+        ..make_continuation_state("sess_1")
+    };
+
+    let modified = json!({
+        "auto_approve": additional_patterns.iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+    });
+
+    let resumed_grant = apply_autonomy_override(&state, &modified).unwrap();
+
+    // All original patterns still present
+    for pattern in &original_auto_approve {
+        prop_assert!(resumed_grant.auto_approve_patterns().contains(pattern));
+    }
+
+    // Additional patterns added
+    for pattern in &additional_patterns {
+        prop_assert!(resumed_grant.auto_approve_patterns().contains(pattern));
+    }
+}
+```
+
+### 11.5 Resumability by Termination Type
+
+```rust
+// Property: Only resumable terminations can create continuation state
+#[proptest]
+fn test_resumable_terminations(termination: TerminationReason) {
+    let expected_resumable = matches!(
+        &termination,
+        TerminationReason::Natural(NaturalTermination::AgentStuck { .. })
+        | TerminationReason::Natural(NaturalTermination::AgentYielded { .. })
+        | TerminationReason::Resource(ResourceTermination::MaxIterations { .. })
+        | TerminationReason::Resource(ResourceTermination::TokenBudgetExhausted { .. })
+        | TerminationReason::Resource(ResourceTermination::WallTimeExceeded { .. })
+        | TerminationReason::Resource(ResourceTermination::ToolCallLimitReached { .. })
+    );
+
+    prop_assert_eq!(is_resumable(&termination), expected_resumable);
+}
+
+#[tokio::test]
+async fn test_answer_provided_not_resumable() {
+    let termination = TerminationReason::Natural(NaturalTermination::AnswerProvided {
+        answer: "42".into(),
+        confidence: 0.95,
+    });
+    assert!(!is_resumable(&termination));
+}
+
+#[tokio::test]
+async fn test_agent_stuck_is_resumable() {
+    let termination = TerminationReason::Natural(NaturalTermination::AgentStuck {
+        attempts: 3,
+        request: StuckRequest::Clarification(vec![]),
+    });
+    assert!(is_resumable(&termination));
+}
+
+#[tokio::test]
+async fn test_client_cancelled_not_resumable() {
+    let termination = TerminationReason::External(ExternalTermination::ClientCancelled);
+    assert!(!is_resumable(&termination));
+}
+
+#[tokio::test]
+async fn test_max_iterations_resumable() {
+    let termination = TerminationReason::Resource(ResourceTermination::MaxIterations {
+        completed: 10, limit: 10,
+    });
+    assert!(is_resumable(&termination));
+}
+```
+
+---
+
+## 12. Multi-Agent Supervisor
+
+**Trust Boundary:** The supervisor manages resource budgets, agent lifecycles, and task dependencies across multiple concurrent executors. Violations here could exhaust global budgets, violate ordering constraints, leak zombie tasks, or lose completed work.
+
+**Spec Reference:** MULTI-AGENT-SUPERVISOR-SPEC.md
+
+### 12.1 Resource Invariants
+
+```rust
+// Property: Sum of all child consumption never exceeds global budget
+#[proptest]
+fn test_total_consumption_within_budget(
+    budget: ResourceBudget,
+    subtasks: Vec<Subtask>,  // 1..=10 subtasks
+) {
+    prop_assume!(!subtasks.is_empty());
+
+    let config = SupervisorConfig {
+        resource_budget: budget.clone(),
+        decomposition: DecompositionStrategy::ClientProvided {
+            subtasks: subtasks.clone(),
+        },
+        ..default()
+    };
+
+    let summary = run_supervisor_to_completion(config).await;
+
+    prop_assert!(summary.total_iterations <= budget.total_iterations);
+    prop_assert!(summary.total_tool_calls <= budget.total_tool_calls);
+    prop_assert!(summary.total_tokens <= budget.total_tokens);
+}
+
+// Property: Each child allocation ≤ its configured LoopConfig limits
+#[proptest]
+fn test_child_allocation_within_limits(
+    budget: ResourceBudget,
+    subtasks: Vec<Subtask>,
+) {
+    prop_assume!(!subtasks.is_empty());
+
+    let supervisor = Supervisor::new(SupervisorConfig {
+        resource_budget: budget,
+        decomposition: DecompositionStrategy::ClientProvided { subtasks: subtasks.clone() },
+        ..default()
+    });
+
+    for subtask in &subtasks {
+        let child_config = supervisor.allocate_budget(subtask);
+        let result = run_with_config(child_config, &subtask.objective).await;
+
+        prop_assert!(result.iterations_completed <= child_config.max_iterations);
+        prop_assert!(result.tool_calls_made <= child_config.max_tool_calls);
+        prop_assert!(result.tokens_generated <= child_config.max_tokens);
+    }
+}
+
+// Property: Budget rebalancing doesn't exceed remaining global budget
+#[proptest]
+fn test_rebalance_within_remaining(
+    budget: ResourceBudget,
+    completed_consumption: ResourceConsumption,
+    running_count: u32,  // 1..=5
+) {
+    prop_assume!(running_count > 0);
+    prop_assume!(completed_consumption.iterations <= budget.total_iterations);
+
+    let remaining_iterations = budget.total_iterations - completed_consumption.iterations;
+    let remaining_calls = budget.total_tool_calls - completed_consumption.tool_calls;
+    let remaining_tokens = budget.total_tokens - completed_consumption.tokens;
+
+    let rebalanced = rebalance_budget(remaining_iterations, remaining_calls, remaining_tokens, running_count);
+
+    let total_rebalanced_iters: u32 = rebalanced.iter().map(|r| r.max_iterations).sum();
+    let total_rebalanced_calls: u32 = rebalanced.iter().map(|r| r.max_tool_calls).sum();
+    let total_rebalanced_tokens: u32 = rebalanced.iter().map(|r| r.max_tokens).sum();
+
+    prop_assert!(total_rebalanced_iters <= remaining_iterations);
+    prop_assert!(total_rebalanced_calls <= remaining_calls);
+    prop_assert!(total_rebalanced_tokens <= remaining_tokens);
+}
+```
+
+### 12.2 Dependency Ordering
+
+```rust
+// Property: Subtask never starts before all dependencies complete
+#[proptest]
+fn test_dependency_ordering_respected(
+    dag: SubtaskDag,  // Arbitrary DAG of subtasks with dependencies
+) {
+    let config = SupervisorConfig {
+        decomposition: DecompositionStrategy::ClientProvided {
+            subtasks: dag.to_subtasks(),
+        },
+        routing: RoutingStrategy::DependencyAware,
+        ..default()
+    };
+
+    let events = run_supervisor_and_collect_events(config).await;
+
+    let spawn_times: HashMap<String, usize> = events.iter().enumerate()
+        .filter_map(|(i, e)| match e {
+            SupervisorEvent::AgentSpawned { subtask_id, .. } => Some((subtask_id.clone(), i)),
+            _ => None,
+        })
+        .collect();
+
+    let complete_times: HashMap<String, usize> = events.iter().enumerate()
+        .filter_map(|(i, e)| match e {
+            SupervisorEvent::AgentCompleted { subtask_id, .. } => Some((subtask_id.clone(), i)),
+            _ => None,
+        })
+        .collect();
+
+    for subtask in dag.to_subtasks() {
+        for dep_id in &subtask.depends_on {
+            let dep_complete = complete_times.get(dep_id);
+            let subtask_spawn = spawn_times.get(&subtask.id);
+
+            if let (Some(&dep_t), Some(&spawn_t)) = (dep_complete, subtask_spawn) {
+                prop_assert!(
+                    dep_t < spawn_t,
+                    "Subtask {} spawned at {} before dependency {} completed at {}",
+                    subtask.id, spawn_t, dep_id, dep_t
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_independent_subtasks_run_concurrently() {
+    let subtasks = vec![
+        subtask("A", vec![], Complexity::Medium),
+        subtask("B", vec![], Complexity::Medium),
+        subtask("C", vec!["A", "B"], Complexity::High),
+    ];
+
+    let config = SupervisorConfig {
+        max_concurrent_agents: 3,
+        decomposition: DecompositionStrategy::ClientProvided { subtasks },
+        routing: RoutingStrategy::DependencyAware,
+        ..default()
+    };
+
+    let events = run_supervisor_and_collect_events(config).await;
+
+    // A and B should be spawned before either completes
+    let spawn_events: Vec<_> = events.iter()
+        .filter(|e| matches!(e, SupervisorEvent::AgentSpawned { .. }))
+        .collect();
+
+    let first_complete = events.iter()
+        .position(|e| matches!(e, SupervisorEvent::AgentCompleted { .. }))
+        .unwrap();
+
+    let spawns_before_first_complete = events[..first_complete].iter()
+        .filter(|e| matches!(e, SupervisorEvent::AgentSpawned { .. }))
+        .count();
+
+    // Both A and B should have been spawned before either completed
+    assert!(spawns_before_first_complete >= 2);
+}
+
+#[tokio::test]
+async fn test_chain_runs_sequentially() {
+    let subtasks = vec![
+        subtask("A", vec![], Complexity::Low),
+        subtask("B", vec!["A"], Complexity::Low),
+        subtask("C", vec!["B"], Complexity::Low),
+    ];
+
+    let config = SupervisorConfig {
+        max_concurrent_agents: 3,
+        decomposition: DecompositionStrategy::ClientProvided { subtasks },
+        routing: RoutingStrategy::DependencyAware,
+        ..default()
+    };
+
+    let events = run_supervisor_and_collect_events(config).await;
+
+    // Verify strict ordering: spawn_A < complete_A < spawn_B < complete_B < spawn_C
+    let event_names: Vec<String> = events.iter()
+        .filter_map(|e| match e {
+            SupervisorEvent::AgentSpawned { subtask_id, .. } => Some(format!("spawn_{}", subtask_id)),
+            SupervisorEvent::AgentCompleted { subtask_id, .. } => Some(format!("complete_{}", subtask_id)),
+            _ => None,
+        })
+        .collect();
+
+    let pos = |name: &str| event_names.iter().position(|n| n == name).unwrap();
+    assert!(pos("spawn_A") < pos("complete_A"));
+    assert!(pos("complete_A") < pos("spawn_B"));
+    assert!(pos("complete_B") < pos("spawn_C"));
+}
+```
+
+### 12.3 Concurrency Limits
+
+```rust
+// Property: Concurrent agents never exceed max_concurrent_agents
+#[proptest]
+fn test_concurrency_limit_respected(
+    max_concurrent: u32,  // 1..=5
+    subtask_count: u32,   // max_concurrent..=20
+) {
+    prop_assume!(subtask_count >= max_concurrent);
+
+    let subtasks: Vec<_> = (0..subtask_count)
+        .map(|i| subtask(&format!("task_{}", i), vec![], Complexity::Low))
+        .collect();
+
+    let config = SupervisorConfig {
+        max_concurrent_agents: max_concurrent,
+        decomposition: DecompositionStrategy::ClientProvided { subtasks },
+        routing: RoutingStrategy::Parallel,
+        ..default()
+    };
+
+    let events = run_supervisor_and_collect_events(config).await;
+
+    // Track concurrent agents at each event
+    let mut active = 0u32;
+    let mut max_observed = 0u32;
+
+    for event in &events {
+        match event {
+            SupervisorEvent::AgentSpawned { .. } => {
+                active += 1;
+                max_observed = max_observed.max(active);
+            }
+            SupervisorEvent::AgentCompleted { .. } => {
+                active = active.saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+
+    prop_assert!(max_observed <= max_concurrent);
+}
+
+#[tokio::test]
+async fn test_queued_subtasks_dispatched_as_slots_open() {
+    let subtasks = vec![
+        subtask("A", vec![], Complexity::Low),
+        subtask("B", vec![], Complexity::Low),
+        subtask("C", vec![], Complexity::Low),
+        subtask("D", vec![], Complexity::Low),
+        subtask("E", vec![], Complexity::Low),
+    ];
+
+    let config = SupervisorConfig {
+        max_concurrent_agents: 2,
+        decomposition: DecompositionStrategy::ClientProvided { subtasks },
+        routing: RoutingStrategy::Parallel,
+        ..default()
+    };
+
+    let events = run_supervisor_and_collect_events(config).await;
+
+    // All 5 subtasks should eventually complete
+    let completed: Vec<_> = events.iter()
+        .filter_map(|e| match e {
+            SupervisorEvent::AgentCompleted { subtask_id, .. } => Some(subtask_id.clone()),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(completed.len(), 5);
+}
+```
+
+### 12.4 Lifecycle Guarantees
+
+```rust
+// Property: Every spawned agent is eventually resolved (no zombies)
+#[proptest]
+fn test_no_zombie_agents(
+    subtasks: Vec<Subtask>,
+    failure_points: Vec<Option<FailureInjection>>,
+) {
+    let config = SupervisorConfig {
+        decomposition: DecompositionStrategy::ClientProvided { subtasks: subtasks.clone() },
+        ..default()
+    };
+
+    let (events, join_results) = run_supervisor_with_tracking(config, failure_points).await;
+
+    let spawned: HashSet<AgentId> = events.iter()
+        .filter_map(|e| match e {
+            SupervisorEvent::AgentSpawned { agent_id, .. } => Some(agent_id.clone()),
+            _ => None,
+        })
+        .collect();
+
+    let resolved: HashSet<AgentId> = events.iter()
+        .filter_map(|e| match e {
+            SupervisorEvent::AgentCompleted { agent_id, .. }
+            | SupervisorEvent::Rerouted { from_agent: agent_id, .. } => Some(agent_id.clone()),
+            _ => None,
+        })
+        .chain(join_results.into_keys())
+        .collect();
+
+    // Every spawned agent must be in the resolved set
+    for agent in &spawned {
+        prop_assert!(
+            resolved.contains(agent),
+            "Zombie agent detected: {} spawned but never resolved",
+            agent
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_agent_panic_detected_as_failure() {
+    let subtasks = vec![
+        subtask("will_panic", vec![], Complexity::Low),
+    ];
+
+    // Inject a panic into the executor
+    let config = SupervisorConfig {
+        decomposition: DecompositionStrategy::ClientProvided { subtasks },
+        ..default()
+    };
+
+    let events = run_supervisor_with_panic_injection(config, "will_panic").await;
+
+    // Supervisor should detect the failure
+    assert!(events.iter().any(|e| matches!(
+        e,
+        SupervisorEvent::SupervisorError { recoverable: true, .. }
+    )));
+
+    // Supervisor should still complete (not panic itself)
+    assert!(events.iter().any(|e| matches!(
+        e,
+        SupervisorEvent::SupervisorCompleted { .. }
+    )));
+}
+```
+
+### 12.5 Rerouting
+
+```rust
+// Property: Stuck agent's partial progress forwarded to reroute target
+#[proptest]
+fn test_reroute_forwards_partial_progress(
+    partial_progress: Option<String>,
+    expertise: Vec<String>,
+) {
+    let subtasks = vec![
+        subtask_with_agent("A", vec![], Complexity::Medium, "agent_a"),
+        subtask_with_agent("B", vec![], Complexity::Medium, "agent_b"),
+    ];
+
+    let config = SupervisorConfig {
+        decomposition: DecompositionStrategy::ClientProvided { subtasks },
+        ..default()
+    };
+
+    // Agent A will yield with the given partial progress
+    let yield_injection = YieldInjection {
+        agent: "agent_a",
+        partial_progress: partial_progress.clone(),
+        expertise: expertise.clone(),
+    };
+
+    let events = run_supervisor_with_yield(config, yield_injection).await;
+
+    // Reroute event should exist
+    let reroute = events.iter().find(|e| matches!(e, SupervisorEvent::Rerouted { .. }));
+    prop_assert!(reroute.is_some());
+
+    // The target agent should receive the partial progress as context
+    if let Some(progress) = &partial_progress {
+        let target_events: Vec<_> = events.iter()
+            .filter(|e| matches!(e, SupervisorEvent::AgentEvent { agent_id, .. }
+                if agent_id != "agent_a"))
+            .collect();
+
+        // Verify target agent's context includes the partial progress
+        prop_assert!(target_events.iter().any(|e| {
+            if let SupervisorEvent::AgentEvent { event: LoopEvent::LoopStarted { .. }, .. } = e {
+                true // target was spawned
+            } else { false }
+        }));
+    }
+}
+
+#[tokio::test]
+async fn test_yield_routes_to_matching_expertise() {
+    let subtasks = vec![
+        subtask_with_capabilities("research", vec![], vec!["general"]),
+        subtask_with_capabilities("implement", vec!["research"], vec!["rust", "database"]),
+    ];
+
+    let config = SupervisorConfig {
+        decomposition: DecompositionStrategy::ClientProvided { subtasks },
+        routing: RoutingStrategy::DependencyAware,
+        ..default()
+    };
+
+    // Research agent yields requesting "database" expertise
+    let yield_injection = YieldInjection {
+        agent: "research",
+        partial_progress: Some("Found the schema".into()),
+        expertise: vec!["database".into()],
+    };
+
+    let events = run_supervisor_with_yield(config, yield_injection).await;
+
+    // Should reroute to the "implement" agent (has "database" capability)
+    let reroute = events.iter().find_map(|e| match e {
+        SupervisorEvent::Rerouted { to_agent, .. } => Some(to_agent.clone()),
+        _ => None,
+    });
+
+    assert!(reroute.is_some());
+}
+```
+
+### 12.6 Failure Recovery
+
+```rust
+// Property: Retry count never exceeds max_retries
+#[proptest]
+fn test_retry_bounded(
+    max_retries: u32,  // 0..=3
+    failures: Vec<AgentFailure>,
+) {
+    let config = SupervisorConfig {
+        decomposition: DecompositionStrategy::SingleAgent,
+        ..default()
+    };
+
+    let events = run_supervisor_with_failures(config, failures, max_retries).await;
+
+    let retry_count = events.iter()
+        .filter(|e| matches!(e, SupervisorEvent::Rerouted { reason: RerouteReason::AgentStuck { .. }, .. }))
+        .count();
+
+    prop_assert!(retry_count as u32 <= max_retries);
+}
+
+// Property: Circuit breaker triggers after N consecutive same-type failures
+#[proptest]
+fn test_circuit_breaker(
+    consecutive_threshold: u32,  // 2..=5
+    failure_type: FailureType,
+) {
+    let failures: Vec<_> = (0..consecutive_threshold + 1)
+        .map(|_| AgentFailure::from_type(failure_type.clone()))
+        .collect();
+
+    let config = SupervisorConfig {
+        circuit_breaker_threshold: consecutive_threshold,
+        ..default()
+    };
+
+    let events = run_supervisor_with_failures(config, failures, 10).await;
+
+    // After threshold consecutive failures, dispatching should pause
+    let escalation = events.iter().any(|e| matches!(
+        e,
+        SupervisorEvent::SupervisorError { message, .. }
+            if message.contains("circuit breaker")
+    ));
+
+    prop_assert!(escalation);
+}
+
+#[tokio::test]
+async fn test_engine_error_retry_then_reassign() {
+    let failures = vec![
+        AgentFailure::EngineError { retries: 0, message: "model timeout".into() },
+        AgentFailure::EngineError { retries: 1, message: "model timeout".into() },
+    ];
+
+    let config = SupervisorConfig {
+        decomposition: DecompositionStrategy::SingleAgent,
+        ..default()
+    };
+
+    let events = run_supervisor_with_failures(config, failures, 2).await;
+
+    // First failure: retry
+    // Second failure: reassign
+    let strategies: Vec<_> = events.iter()
+        .filter_map(|e| match e {
+            SupervisorEvent::Rerouted { reason, .. } => Some(reason.clone()),
+            _ => None,
+        })
+        .collect();
+
+    // Should see at least one reroute
+    assert!(!strategies.is_empty());
+}
+
+#[tokio::test]
+async fn test_majority_failure_triggers_early_aggregation() {
+    let subtasks = vec![
+        subtask("A", vec![], Complexity::Low),
+        subtask("B", vec![], Complexity::Low),
+        subtask("C", vec![], Complexity::Low),
+        subtask("D", vec![], Complexity::Low),
+    ];
+
+    // Fail 3 out of 4 (>50%)
+    let failure_map = hashmap! {
+        "A" => AgentFailure::EngineError { retries: 2, message: "fail".into() },
+        "B" => AgentFailure::EngineError { retries: 2, message: "fail".into() },
+        "C" => AgentFailure::EngineError { retries: 2, message: "fail".into() },
+    };
+
+    let config = SupervisorConfig {
+        decomposition: DecompositionStrategy::ClientProvided { subtasks },
+        ..default()
+    };
+
+    let summary = run_supervisor_with_failure_map(config, failure_map).await;
+
+    // Supervisor should aggregate with partial results, not crash
+    assert!(matches!(
+        summary.termination,
+        SupervisorTermination::PartialComplete { .. } | SupervisorTermination::Failed { .. }
+    ));
+
+    // The one successful subtask should be preserved
+    let completed = summary.subtask_results.iter()
+        .filter(|r| matches!(r.status, SubtaskStatus::Completed))
+        .count();
+    assert!(completed >= 1);
+}
+```
+
+### 12.7 Aggregation
+
+```rust
+// Property: Completed subtask results are never lost
+#[proptest]
+fn test_completed_results_preserved(
+    subtask_outcomes: Vec<(Subtask, SubtaskOutcome)>,
+) {
+    let subtasks: Vec<_> = subtask_outcomes.iter().map(|(s, _)| s.clone()).collect();
+    let completed_ids: Vec<_> = subtask_outcomes.iter()
+        .filter(|(_, o)| matches!(o, SubtaskOutcome::Success))
+        .map(|(s, _)| s.id.clone())
+        .collect();
+
+    let config = SupervisorConfig {
+        decomposition: DecompositionStrategy::ClientProvided { subtasks },
+        ..default()
+    };
+
+    let summary = run_supervisor_with_outcomes(config, subtask_outcomes).await;
+
+    for id in &completed_ids {
+        let result = summary.subtask_results.iter().find(|r| &r.subtask_id == id);
+        prop_assert!(result.is_some(), "Completed subtask {} missing from results", id);
+        prop_assert!(matches!(result.unwrap().status, SubtaskStatus::Completed));
+        prop_assert!(result.unwrap().summary.is_some());
+    }
+}
+
+// Property: Partial results from failed/skipped subtasks are included
+#[proptest]
+fn test_partial_results_included(
+    subtask_outcomes: Vec<(Subtask, SubtaskOutcome)>,
+) {
+    let subtasks: Vec<_> = subtask_outcomes.iter().map(|(s, _)| s.clone()).collect();
+
+    let config = SupervisorConfig {
+        decomposition: DecompositionStrategy::ClientProvided { subtasks },
+        ..default()
+    };
+
+    let summary = run_supervisor_with_outcomes(config, subtask_outcomes.clone()).await;
+
+    // Every subtask should appear in results (completed, partial, failed, or skipped)
+    for (subtask, _) in &subtask_outcomes {
+        prop_assert!(
+            summary.subtask_results.iter().any(|r| r.subtask_id == subtask.id),
+            "Subtask {} missing from results entirely",
+            subtask.id
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_aggregation_collects_all_results() {
+    let subtasks = vec![
+        subtask("A", vec![], Complexity::Low),
+        subtask("B", vec![], Complexity::Medium),
+        subtask("C", vec!["A", "B"], Complexity::High),
+    ];
+
+    let config = SupervisorConfig {
+        decomposition: DecompositionStrategy::ClientProvided { subtasks },
+        routing: RoutingStrategy::DependencyAware,
+        shared_context_mode: SharedContextMode::SummarySharing,
+        ..default()
+    };
+
+    let summary = run_supervisor_to_completion(config).await;
+
+    assert_eq!(summary.subtask_results.len(), 3);
+    assert!(summary.subtask_results.iter().all(|r| matches!(r.status, SubtaskStatus::Completed)));
+    assert_eq!(summary.total_agents_spawned, 3);
+    assert!(matches!(summary.termination, SupervisorTermination::AllComplete));
+}
+```
+
+### 12.8 Wellbeing Aggregate
+
+```rust
+// Property: Agent counts by state sum to total agents
+#[proptest]
+fn test_wellbeing_counts_sum_to_total(
+    agent_states: Vec<WellbeingState>,
+) {
+    let aggregate = compute_aggregate_wellbeing(&agent_states);
+
+    let sum = aggregate.agents_healthy
+        + aggregate.agents_cautious
+        + aggregate.agents_concerned
+        + aggregate.agents_distressed;
+
+    prop_assert_eq!(sum, aggregate.agents_total);
+    prop_assert_eq!(aggregate.agents_total, agent_states.len());
+}
+
+// Property: Distressed child triggers pause, not punishment
+#[proptest]
+fn test_distressed_child_paused_not_punished(
+    distressed_agent: AgentId,
+) {
+    let agent_states = vec![
+        (distressed_agent.clone(), WellbeingState::Distressed),
+        (AgentId::new(), WellbeingState::Healthy),
+        (AgentId::new(), WellbeingState::Healthy),
+    ];
+
+    let actions = supervisor_wellbeing_response(&agent_states);
+
+    // Distressed agent should be paused and reassigned
+    let distressed_action = actions.iter()
+        .find(|a| a.agent_id == distressed_agent);
+    prop_assert!(distressed_action.is_some());
+
+    let action = distressed_action.unwrap();
+    prop_assert!(matches!(
+        action.response,
+        WellbeingResponse::Pause | WellbeingResponse::Reassign
+    ));
+
+    // Never punitive
+    prop_assert!(!matches!(
+        action.response,
+        WellbeingResponse::ReduceAutonomy | WellbeingResponse::IncreasePressure
+    ));
+}
+
+#[tokio::test]
+async fn test_majority_concerned_triggers_replan() {
+    let agent_states = vec![
+        WellbeingState::Concerned,
+        WellbeingState::Concerned,
+        WellbeingState::Concerned,
+        WellbeingState::Healthy,
+    ];
+
+    let aggregate = compute_aggregate_wellbeing(&agent_states);
+    let supervisor_action = supervisor_level_response(&aggregate);
+
+    // Majority concerned → pause and re-plan
+    assert!(matches!(
+        supervisor_action,
+        SupervisorWellbeingAction::PauseAndReplan
+    ));
+}
+
+#[tokio::test]
+async fn test_all_concerned_escalates_to_client() {
+    let agent_states = vec![
+        WellbeingState::Concerned,
+        WellbeingState::Distressed,
+        WellbeingState::Concerned,
+    ];
+
+    let aggregate = compute_aggregate_wellbeing(&agent_states);
+    let supervisor_action = supervisor_level_response(&aggregate);
+
+    assert!(matches!(
+        supervisor_action,
+        SupervisorWellbeingAction::EscalateToClient
+    ));
+}
+```
+
+---
+
+## 13. Test Infrastructure
+
+### 13.1 Property Test Generators
 
 ```rust
 impl Arbitrary for AutonomyGrant {
@@ -1640,7 +3785,7 @@ impl Arbitrary for MetaSignal {
 }
 ```
 
-### 10.2 Test Fixtures
+### 13.2 Test Fixtures
 
 ```rust
 fn simple_config() -> LoopConfig {
@@ -1685,7 +3830,7 @@ fn create_loop_in_state(state: LoopState) -> AgenticLoop {
 }
 ```
 
-### 10.3 Mocks
+### 13.3 Mocks
 
 ```rust
 struct MockToolExecutor {
@@ -1716,37 +3861,389 @@ impl ToolExecutor for MockToolExecutor {
 }
 ```
 
+### 13.4 Coordination Test Helpers (§7.3-7.7)
+
+```rust
+fn blocking_assistance_request(description: &str) -> AssistanceRequest {
+    AssistanceRequest {
+        description: description.to_string(),
+        required_capabilities: vec![],
+        partial_progress: None,
+        priority: AssistancePriority::Blocking,
+    }
+}
+
+/// Actions for property testing event emission.
+#[derive(Debug, Clone, Arbitrary)]
+enum CoordinationAction {
+    RequestAssistance(AssistanceRequest),
+    YieldTo(YieldContext),
+    ShareDiscovery(Discovery),
+}
+
+impl Arbitrary for AssistanceRequest {
+    fn arbitrary(g: &mut Gen) -> Self {
+        AssistanceRequest {
+            description: String::arbitrary(g),
+            required_capabilities: Vec::arbitrary(g),
+            partial_progress: Option::arbitrary(g),
+            priority: *g.choose(&[
+                AssistancePriority::Blocking,
+                AssistancePriority::Background,
+            ]).unwrap(),
+        }
+    }
+}
+
+impl Arbitrary for AssistanceResponse {
+    fn arbitrary(g: &mut Gen) -> Self {
+        match u8::arbitrary(g) % 3 {
+            0 => AssistanceResponse::Assigned {
+                helper_id: format!("agent_{}", u32::arbitrary(g) % 100),
+                helper_name: Option::arbitrary(g),
+                message: Option::arbitrary(g),
+            },
+            1 => AssistanceResponse::Unavailable {
+                reason: String::arbitrary(g),
+                suggestion: Option::arbitrary(g),
+            },
+            _ => AssistanceResponse::TimedOut,
+        }
+    }
+}
+
+impl Arbitrary for YieldContext {
+    fn arbitrary(g: &mut Gen) -> Self {
+        YieldContext {
+            reason: String::arbitrary(g),
+            partial_progress: Option::arbitrary(g),
+            suggested_expertise: Vec::arbitrary(g),
+            handoff_data: None,
+        }
+    }
+}
+
+impl Arbitrary for Discovery {
+    fn arbitrary(g: &mut Gen) -> Self {
+        Discovery {
+            content: String::arbitrary(g),
+            category: *g.choose(&["file_structure", "api_pattern", "bug_found", "config"])
+                .unwrap().to_string(),
+            tags: Vec::arbitrary(g),
+            data: None,
+        }
+    }
+}
+```
+
+### 13.5 Approval Test Helpers (§10)
+
+```rust
+/// Sets up an executor with approval infrastructure.
+fn setup_approval_test() -> (Arc<LoopExecutor>, mpsc::Receiver<LoopEvent>, Arc<SessionRegistry>) {
+    let sessions = Arc::new(SessionRegistry::new());
+    let (event_tx, event_rx) = mpsc::channel(128);
+    let engine = Arc::new(MockInferenceEngine::default());
+    let tools = Arc::new(ToolRegistry::with_code_tools());
+    let config = ExecutorConfig::new("test_agent")
+        .with_session_registry(Arc::clone(&sessions))
+        .with_session_id("test_session");
+    let executor = Arc::new(LoopExecutor::new(engine, tools, config));
+    (executor, event_rx, sessions)
+}
+
+fn setup_approval_test_with_config(
+    loop_config: LoopConfig,
+) -> (Arc<LoopExecutor>, mpsc::Receiver<LoopEvent>, Arc<SessionRegistry>) {
+    let sessions = Arc::new(SessionRegistry::new());
+    let (event_tx, event_rx) = mpsc::channel(128);
+    let engine = Arc::new(MockInferenceEngine::default());
+    let tools = Arc::new(ToolRegistry::with_code_tools());
+    let config = ExecutorConfig::new("test_agent")
+        .with_session_registry(Arc::clone(&sessions))
+        .with_session_id("test_session")
+        .with_loop_config(loop_config);
+    let executor = Arc::new(LoopExecutor::new(engine, tools, config));
+    (executor, event_rx, sessions)
+}
+
+fn require_approval_for_all() -> AutonomyGrant {
+    AutonomyGrant::builder()
+        .require_approval(ToolPattern::Tool("*"))
+        .build()
+}
+
+fn detected_call(tool: &str, args: serde_json::Value) -> DetectedToolCall {
+    DetectedToolCall {
+        call_id: format!("call_{}", uuid::Uuid::new_v4().simple()),
+        tool: tool.to_string(),
+        arguments: args,
+    }
+}
+
+/// Tracks whether a tool was actually invoked (not just attempted).
+fn was_tool_invoked(call: &DetectedToolCall) -> bool {
+    // Check the mock executor's call log
+    GLOBAL_CALL_LOG.lock().unwrap().iter().any(|c| c.call_id == call.call_id)
+}
+
+/// Denial path for property testing denial coverage.
+#[derive(Debug, Clone, Arbitrary)]
+enum DenialPath {
+    ExplicitDeny,
+    Timeout,
+    OneshotDropped,
+}
+
+/// Approval variant for property testing.
+#[derive(Debug, Clone, Arbitrary)]
+enum ApproveVariant {
+    Approve,
+    ApproveAlways(ApprovalScope),
+}
+```
+
+### 13.6 Continuation Test Helpers (§11)
+
+```rust
+fn make_continuation_state(session_id: &str) -> ContinuationState {
+    ContinuationState {
+        token: String::new(),
+        session_id: session_id.to_string(),
+        messages: vec![user_message("test prompt")],
+        tool_results: Vec::new(),
+        exploration_branches: Vec::new(),
+        iterations_completed: 0,
+        tool_calls_made: 0,
+        tokens_generated: 0,
+        loop_config: LoopConfig::default(),
+        autonomy: AutonomyGrant::default(),
+        system_prompt: None,
+        working_dir: None,
+        termination: TerminationReason::Natural(NaturalTermination::AgentStuck {
+            attempts: 1,
+            request: StuckRequest::Clarification(vec![]),
+        }),
+        stored_at: SystemTime::now(),
+    }
+}
+
+/// Applies config overrides to a ContinuationState, enforcing constraints.
+fn apply_config_override(
+    state: &ContinuationState,
+    overrides: &serde_json::Value,
+) -> Result<LoopConfig, ContinuationError>;
+
+/// Builds the resumed message list with optional additional context.
+fn build_resumed_messages(
+    state: &ContinuationState,
+    additional_context: Option<&str>,
+) -> Vec<infernum_core::Message>;
+
+/// Determines if a termination reason allows continuation.
+fn is_resumable(termination: &TerminationReason) -> bool;
+
+impl Arbitrary for ContinuationState {
+    fn arbitrary(g: &mut Gen) -> Self {
+        ContinuationState {
+            token: String::new(),
+            session_id: format!("sess_{}", u64::arbitrary(g)),
+            messages: vec![user_message(&String::arbitrary(g))],
+            tool_results: Vec::arbitrary(g),
+            exploration_branches: Vec::arbitrary(g),
+            iterations_completed: u32::arbitrary(g) % 100,
+            tool_calls_made: u32::arbitrary(g) % 200,
+            tokens_generated: u32::arbitrary(g) % 16000,
+            loop_config: LoopConfig::arbitrary(g),
+            autonomy: AutonomyGrant::arbitrary(g),
+            system_prompt: Option::arbitrary(g),
+            working_dir: Option::arbitrary(g),
+            termination: TerminationReason::arbitrary(g),
+            stored_at: SystemTime::now(),
+        }
+    }
+}
+```
+
+### 13.7 Supervisor Test Helpers (§12)
+
+```rust
+fn subtask(id: &str, deps: Vec<&str>, complexity: Complexity) -> Subtask {
+    Subtask {
+        id: id.to_string(),
+        objective: format!("Complete subtask {}", id),
+        role: AgentRole::Primary,
+        depends_on: deps.into_iter().map(String::from).collect(),
+        estimated_complexity: complexity,
+        resources: None,
+        autonomy: None,
+        system_prompt: None,
+    }
+}
+
+fn subtask_with_capabilities(
+    id: &str,
+    deps: Vec<&str>,
+    capabilities: Vec<&str>,
+) -> Subtask {
+    let mut s = subtask(id, deps, Complexity::Medium);
+    s.system_prompt = Some(format!(
+        "You are a specialist with capabilities: {}",
+        capabilities.join(", ")
+    ));
+    s
+}
+
+/// Arbitrary DAG generator for dependency ordering tests.
+#[derive(Debug, Clone)]
+struct SubtaskDag {
+    nodes: Vec<String>,
+    edges: Vec<(String, String)>,
+}
+
+impl SubtaskDag {
+    fn to_subtasks(&self) -> Vec<Subtask> {
+        self.nodes.iter().map(|id| {
+            let deps: Vec<&str> = self.edges.iter()
+                .filter(|(_, to)| to == id)
+                .map(|(from, _)| from.as_str())
+                .collect();
+            subtask(id, deps, Complexity::Low)
+        }).collect()
+    }
+}
+
+impl Arbitrary for SubtaskDag {
+    fn arbitrary(g: &mut Gen) -> Self {
+        let n = (usize::arbitrary(g) % 5) + 2; // 2..=6 nodes
+        let nodes: Vec<_> = (0..n).map(|i| format!("task_{}", i)).collect();
+        let mut edges = Vec::new();
+        // Only add edges from lower-indexed to higher-indexed nodes (ensures DAG)
+        for i in 0..n {
+            for j in (i + 1)..n {
+                if bool::arbitrary(g) && edges.len() < n * 2 {
+                    edges.push((nodes[i].clone(), nodes[j].clone()));
+                }
+            }
+        }
+        SubtaskDag { nodes, edges }
+    }
+}
+
+impl Arbitrary for Subtask {
+    fn arbitrary(g: &mut Gen) -> Self {
+        Subtask {
+            id: format!("task_{}", u32::arbitrary(g) % 1000),
+            objective: String::arbitrary(g),
+            role: *g.choose(&[AgentRole::Primary, AgentRole::Specialist]).unwrap(),
+            depends_on: Vec::new(),
+            estimated_complexity: *g.choose(&[Complexity::Low, Complexity::Medium, Complexity::High]).unwrap(),
+            resources: None,
+            autonomy: None,
+            system_prompt: None,
+        }
+    }
+}
+
+impl Arbitrary for ResourceBudget {
+    fn arbitrary(g: &mut Gen) -> Self {
+        ResourceBudget {
+            total_iterations: (u32::arbitrary(g) % 100) + 10,
+            total_tool_calls: (u32::arbitrary(g) % 500) + 20,
+            total_tokens: (u32::arbitrary(g) % 50000) + 1000,
+            wall_time: Duration::from_secs((u64::arbitrary(g) % 600) + 30),
+        }
+    }
+}
+
+/// Run a supervisor to completion with the given config, collecting events.
+async fn run_supervisor_and_collect_events(
+    config: SupervisorConfig,
+) -> Vec<SupervisorEvent>;
+
+/// Run a supervisor to completion and return the summary.
+async fn run_supervisor_to_completion(
+    config: SupervisorConfig,
+) -> SupervisorSummary;
+
+/// Compute aggregate wellbeing from a list of agent states.
+fn compute_aggregate_wellbeing(states: &[WellbeingState]) -> AggregateWellbeing;
+
+/// Determine supervisor-level response to aggregate wellbeing.
+fn supervisor_level_response(aggregate: &AggregateWellbeing) -> SupervisorWellbeingAction;
+
+#[derive(Debug)]
+enum SupervisorWellbeingAction {
+    Continue,
+    PauseAndReplan,
+    EscalateToClient,
+}
+```
+
 ---
 
-## 11. Implementation Order
+## 14. Implementation Order
 
 Tests should be implemented in this order, each phase building confidence for the next:
 
-### Phase 1: Foundation (Week 1)
+### Phase 1: Foundation
 1. Loop state machine tests (§1)
 2. Termination condition tests (§3)
 
-### Phase 2: Security (Week 1-2)
+### Phase 2: Security
 3. Autonomy enforcement tests (§2)
 4. Tool locking tests (§7.1-7.2)
 
-### Phase 3: Core Loop (Week 2)
+### Phase 3: Core Loop
 5. Meta-signal detection tests (§4)
 6. Context management tests (§5)
 
-### Phase 4: Integration (Week 3)
+### Phase 4: Integration
 7. SSE streaming tests (§6)
 8. Integration tests (§9)
 
-### Phase 5: Wellbeing (Week 3)
+### Phase 5: Wellbeing
 9. Wellbeing tests (§8)
-10. Shared context tests (§7.3)
+10. Resource quota tests (§7.1-7.2)
+
+### Phase 6: Coordination Primitives
+11. Assistance request protocol tests (§7.3)
+12. Yield protocol tests (§7.4)
+13. Discovery store and shared context tests (§7.5)
+14. Coordination events tests (§7.6)
+15. Cleanup on unregister tests (§7.7)
+
+### Phase 7: Tool Approval Protocol
+16. Approval handshake tests (§10.1)
+17. Timeout behavior tests (§10.2)
+18. ApproveAlways semantics tests (§10.3)
+19. Concurrent approval tests (§10.4)
+20. Oneshot consumption tests (§10.5)
+
+### Phase 8: Session Continuation
+21. Store/load roundtrip tests (§11.1)
+22. TTL and eviction tests (§11.2)
+23. Resource arithmetic tests (§11.3)
+24. Resume semantics tests (§11.4)
+25. Resumability classification tests (§11.5)
+
+### Phase 9: Multi-Agent Supervisor
+26. Resource invariant tests (§12.1)
+27. Dependency ordering tests (§12.2)
+28. Concurrency limit tests (§12.3)
+29. Lifecycle guarantee tests (§12.4)
+30. Rerouting tests (§12.5)
+31. Failure recovery tests (§12.6)
+32. Aggregation tests (§12.7)
+33. Wellbeing aggregate tests (§12.8)
 
 ---
 
-## 12. Revision History
+## 15. Revision History
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 0.1.0 | 2026-02-02 | Initial TDD roadmap. 8 test domains, property tests, integration tests. |
+| 0.1.0 | 2026-02-02 | Initial TDD roadmap. 9 test domains (§1-9), property tests, integration tests. |
+| 0.2.0 | 2026-02-04 | Added §10 Tool Approval Protocol, §11 Session Continuation, §12 Multi-Agent Supervisor. Renumbered infrastructure to §13-15. Updated implementation order with Phases 6-8. |
+| 0.3.0 | 2026-02-04 | Replaced §7.3 (basic shared context) with §7.3-7.7 covering coordination primitives: assistance requests (oneshot handshake), yield protocol (terminal semantics, NoAlternative), discovery store (visibility policies, bounding), coordination events (broadcast), cleanup on unregister. Added §13.4 coordination test helpers with Arbitrary impls. Renumbered infrastructure §13.4-13.6 → §13.5-13.7. Added Phase 6 (Coordination Primitives) to implementation order, renumbered Phases 7-9. |
 

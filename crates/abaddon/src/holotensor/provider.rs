@@ -31,6 +31,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use haagenti::holotensor::{HoloFragment, HoloTensorHeader, HolographicEncoding, LrdfDecoder, QualityCurve};
+use haagenti::compressive::CompressiveSpectralDecoder;
 
 use super::memory::{FragmentId, HoloMemoryManager};
 use super::streaming::{StreamManager, StreamPriority, StreamRequest};
@@ -464,21 +465,46 @@ impl ProgressiveWeightProvider {
         let rows = shape.get(0).copied().unwrap_or(1) as usize;
         let cols = shape.get(1).copied().unwrap_or(1) as usize;
 
-        // Create decoder and add fragments
-        let mut decoder = LrdfDecoder::new(rows, cols, self.config.num_fragments);
+        // Reconstruct using the appropriate decoder based on encoding type
+        let data = match header.encoding {
+            HolographicEncoding::Spectral => {
+                // Use CompressiveSpectralDecoder for HCT3 format
+                let mut decoder = CompressiveSpectralDecoder::new();
 
-        for fragment in &fragments {
-            decoder.add_fragment(fragment).map_err(|e| {
-                HoloInferenceError::Haagenti(format!("Decoder error: {}", e))
-            })?;
-        }
+                for fragment in &fragments {
+                    if fragment.index == 0 {
+                        decoder.add_essentials(fragment).map_err(|e| {
+                            HoloInferenceError::Haagenti(format!("Add essentials error: {}", e))
+                        })?;
+                    } else {
+                        decoder.add_detail(fragment).map_err(|e| {
+                            HoloInferenceError::Haagenti(format!("Add detail error: {}", e))
+                        })?;
+                    }
+                }
+                decoder.reconstruct().map_err(|e| {
+                    HoloInferenceError::Haagenti(format!("Spectral reconstruct error: {}", e))
+                })?
+            }
+            HolographicEncoding::LowRankDistributed | _ => {
+                // Use LrdfDecoder for LRDF format
+                // CRITICAL: Use header.total_fragments, NOT config.num_fragments!
+                // Passthrough tensors have total_fragments=1, not the config default.
+                let mut decoder = LrdfDecoder::new(rows, cols, header.total_fragments);
+                for fragment in &fragments {
+                    decoder.add_fragment(fragment).map_err(|e| {
+                        HoloInferenceError::Haagenti(format!("Decoder error: {}", e))
+                    })?;
+                }
+                decoder.reconstruct()
+            }
+        };
 
-        // Reconstruct
-        let data = decoder.reconstruct();
-        let quality = QualityMetrics::quality_from_fragments_default(
-            fragments.len(),
-            self.config.num_fragments as usize,
-        );
+        // Calculate quality using the correct curve for the encoding
+        // Use header.total_fragments, NOT config.num_fragments!
+        let quality = header.encoding
+            .default_quality_curve()
+            .predict(fragments.len() as u16, header.total_fragments);
 
         // Update touch for LRU
         for (id, _) in cache.iter() {
@@ -488,8 +514,9 @@ impl ProgressiveWeightProvider {
         }
 
         // Request streaming for remaining fragments
-        if self.config.enable_streaming && fragments.len() < self.config.num_fragments as usize {
-            self.request_remaining_fragments(layer, weight_type, fragments.len())?;
+        // Use header.total_fragments to check actual fragment count
+        if self.config.enable_streaming && fragments.len() < header.total_fragments as usize {
+            self.request_remaining_fragments(layer, weight_type, fragments.len(), header.total_fragments)?;
         }
 
         Ok(LayerWeights::new(layer, data, (rows, cols), weight_type, quality))
@@ -501,8 +528,9 @@ impl ProgressiveWeightProvider {
         layer: usize,
         weight_type: WeightType,
         already_loaded: usize,
+        total_fragments: u16,
     ) -> Result<()> {
-        let total = self.config.num_fragments as usize;
+        let total = total_fragments as usize;
 
         for i in already_loaded..total {
             let id = FragmentId::new(layer, weight_type as u8, i as u16);

@@ -336,34 +336,58 @@ impl ModelLoader {
             });
         }
 
-        // Use progressive HoloTensor loading for tiered memory management
-        // VRAM budget: 22GB (2GB headroom on 24GB RTX cards)
-        // RAM budget: 64GB
-        let vram_budget = 22 * 1024 * 1024 * 1024;
-        let ram_budget = 64 * 1024 * 1024 * 1024;
+        // Check if eager HCT loading is requested (for models that fit in VRAM)
+        // INFERNUM_HCT_EAGER=1 uses fast sequential loading instead of lazy layer swapping
+        let use_eager_hct = std::env::var("INFERNUM_HCT_EAGER")
+            .map(|v| v == "1" || v.to_lowercase() == "true")
+            .unwrap_or(false);
 
-        info!(
-            directory = %path.display(),
-            file_count = hct_files.len(),
-            min_quality = %min_quality,
-            target_quality = %target_quality,
-            vram_budget_gb = vram_budget / (1024 * 1024 * 1024),
-            ram_budget_gb = ram_budget / (1024 * 1024 * 1024),
-            "Configured HoloTensor progressive loading"
-        );
+        if use_eager_hct {
+            info!(
+                directory = %path.display(),
+                file_count = hct_files.len(),
+                "Using eager HCT loading (INFERNUM_HCT_EAGER=1) - fast sequential decompression"
+            );
 
-        Ok(ModelFiles {
-            config,
-            weights: WeightFiles::HoloTensor {
-                directory: path.to_path_buf(),
-                min_quality,
-                target_quality,
-                vram_budget,
-                ram_budget,
-            },
-            tokenizer: Some(path.join("tokenizer.json")).filter(|p| p.exists()),
-            tokenizer_config: Some(path.join("tokenizer_config.json")).filter(|p| p.exists()),
-        })
+            Ok(ModelFiles {
+                config,
+                weights: WeightFiles::Hct {
+                    directory: path.to_path_buf(),
+                    files: hct_files,
+                },
+                tokenizer: Some(path.join("tokenizer.json")).filter(|p| p.exists()),
+                tokenizer_config: Some(path.join("tokenizer_config.json")).filter(|p| p.exists()),
+            })
+        } else {
+            // Use progressive HoloTensor loading for tiered memory management
+            // VRAM budget: 22GB (2GB headroom on 24GB RTX cards)
+            // RAM budget: 64GB
+            let vram_budget = 22 * 1024 * 1024 * 1024;
+            let ram_budget = 64 * 1024 * 1024 * 1024;
+
+            info!(
+                directory = %path.display(),
+                file_count = hct_files.len(),
+                min_quality = %min_quality,
+                target_quality = %target_quality,
+                vram_budget_gb = vram_budget / (1024 * 1024 * 1024),
+                ram_budget_gb = ram_budget / (1024 * 1024 * 1024),
+                "Configured HoloTensor progressive loading"
+            );
+
+            Ok(ModelFiles {
+                config,
+                weights: WeightFiles::HoloTensor {
+                    directory: path.to_path_buf(),
+                    min_quality,
+                    target_quality,
+                    vram_budget,
+                    ram_budget,
+                },
+                tokenizer: Some(path.join("tokenizer.json")).filter(|p| p.exists()),
+                tokenizer_config: Some(path.join("tokenizer_config.json")).filter(|p| p.exists()),
+            })
+        }
     }
 
     /// Resolves an S3 model by downloading to local cache.
