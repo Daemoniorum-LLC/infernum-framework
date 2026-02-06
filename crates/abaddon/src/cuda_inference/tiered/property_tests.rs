@@ -408,27 +408,29 @@ proptest! {
         let vram_before = budget.vram_used;
         let ram_before = budget.ram_used;
 
+        // Deduplicate evict indices - can only evict each layer once
+        let unique_evict: HashSet<usize> = evict_indices.iter()
+            .filter(|&&idx| idx < num_layers)
+            .copied()
+            .collect();
+
         // Count how many we'll actually evict from each tier
         let mut vram_evict_count = 0u64;
         let mut ram_evict_count = 0u64;
 
-        for &idx in &evict_indices {
-            if idx < num_layers {
-                if let Some(&tier) = budget.allocations.get(&idx) {
-                    match tier {
-                        MemoryTier::Vram => vram_evict_count += 1,
-                        MemoryTier::Ram => ram_evict_count += 1,
-                        MemoryTier::Nvme => {}
-                    }
+        for &idx in &unique_evict {
+            if let Some(&tier) = budget.allocations.get(&idx) {
+                match tier {
+                    MemoryTier::Vram => vram_evict_count += 1,
+                    MemoryTier::Ram => ram_evict_count += 1,
+                    MemoryTier::Nvme => {}
                 }
             }
         }
 
         // Evict
-        for &idx in &evict_indices {
-            if idx < num_layers {
-                budget.evict(idx, layer_size);
-            }
+        for &idx in &unique_evict {
+            budget.evict(idx, layer_size);
         }
 
         let expected_vram = vram_before.saturating_sub(vram_evict_count * layer_size);
