@@ -70,6 +70,15 @@ pub mod batch;
 #[cfg(feature = "cuda")]
 pub mod speculative;
 
+#[cfg(feature = "cuda")]
+pub mod lazy_layers;
+
+#[cfg(feature = "cuda")]
+pub mod lazy_weight_store;
+
+#[cfg(feature = "cuda")]
+pub mod lazy_generate;
+
 // Re-exports
 #[cfg(feature = "cuda")]
 pub use tensor::GpuTensor;
@@ -94,6 +103,15 @@ pub use batch::{BatchScheduler, BatchStats, Request, RequestState};
 
 #[cfg(feature = "cuda")]
 pub use speculative::{SpeculativeConfig, SpeculativeDecoder, VerificationResult};
+
+#[cfg(feature = "cuda")]
+pub use lazy_layers::{LazyLayerStore, LazyLayerStats, LayerLoader, HoloLayerLoader};
+
+#[cfg(feature = "cuda")]
+pub use lazy_weight_store::{LazyWeightStore, LazyWeightConfig};
+
+#[cfg(feature = "cuda")]
+pub use lazy_generate::LazyGenerator;
 
 /// Errors from CUDA inference operations.
 #[derive(Debug, thiserror::Error)]

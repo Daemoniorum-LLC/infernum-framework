@@ -7,11 +7,12 @@
 //! ## Memory Layout
 //!
 //! ```text
-//! Keys:   [num_layers, max_seq_len, num_kv_heads, head_dim]
-//! Values: [num_layers, max_seq_len, num_kv_heads, head_dim]
+//! Keys:   [num_layers, num_kv_heads, max_seq_len, head_dim]
+//! Values: [num_layers, num_kv_heads, max_seq_len, head_dim]
 //! ```
 //!
-//! Each layer's cache is a contiguous [max_seq, kv_heads, head_dim] region.
+//! Each layer's cache is a contiguous [kv_heads, max_seq, head_dim] region.
+//! This layout matches Flash Attention's expected [batch, heads, seq, head_dim] format.
 //!
 //! ## Async Operations
 //!
@@ -38,10 +39,10 @@ pub struct KvCache {
     /// CUDA device.
     device: Arc<CudaDevice>,
 
-    /// Key cache [num_layers, max_seq_len, num_kv_heads, head_dim].
+    /// Key cache [num_layers, num_kv_heads, max_seq_len, head_dim].
     keys: GpuTensor,
 
-    /// Value cache [num_layers, max_seq_len, num_kv_heads, head_dim].
+    /// Value cache [num_layers, num_kv_heads, max_seq_len, head_dim].
     values: GpuTensor,
 
     /// Current sequence length (position of next token to be written).
@@ -69,8 +70,9 @@ impl KvCache {
         let head_dim = config.head_dim;
 
         // Allocate cache tensors
-        // Shape: [num_layers, max_seq_len, num_kv_heads, head_dim]
-        let cache_shape = vec![num_layers, max_seq_len, num_kv_heads, head_dim];
+        // Shape: [num_layers, num_kv_heads, max_seq_len, head_dim]
+        // This layout matches Flash Attention's expected [batch, heads, seq, head_dim] format
+        let cache_shape = vec![num_layers, num_kv_heads, max_seq_len, head_dim];
 
         let keys = GpuTensor::zeros(cache_shape.clone(), GpuDType::F16, Arc::clone(&device))?;
         let values = GpuTensor::zeros(cache_shape, GpuDType::F16, Arc::clone(&device))?;
@@ -239,11 +241,11 @@ impl KvCache {
         let total_tokens = self.seq_len + self.pending_tokens;
         let effective_seq = if total_tokens > 0 { total_tokens } else { 1 };
 
-        // Get slices from the cache - returns [seq, kv_heads, head_dim]
+        // Get slices from the cache - returns [kv_heads, seq, head_dim]
         let k_slice = self.keys.get_layer_kv_slice(layer_idx, effective_seq)?;
         let v_slice = self.values.get_layer_kv_slice(layer_idx, effective_seq)?;
 
-        // Reshape to [1, seq, kv_heads, head_dim] for Flash Attention
+        // Reshape to [1, kv_heads, seq, head_dim] for Flash Attention
         // This is ZERO-COPY since reshape just changes metadata
         let k_shape = k_slice.shape();
         let k_4d = k_slice.reshape(vec![1, k_shape[0], k_shape[1], k_shape[2]])?;

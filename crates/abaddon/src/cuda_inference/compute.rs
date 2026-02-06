@@ -148,6 +148,14 @@ impl ComputeEngine {
 
         let kv_cache = KvCache::new(&config, max_seq_len, Arc::clone(&device))?;
 
+        tracing::info!(
+            "ComputeEngine config: num_heads={}, kv_heads={}, head_dim={}, hidden={}",
+            config.num_attention_heads,
+            config.num_kv_heads,
+            config.head_dim,
+            config.hidden_size
+        );
+
         // Allocate activation buffers
         let hidden_buffer = GpuTensor::zeros(
             vec![max_seq_len, config.hidden_size],
@@ -325,7 +333,13 @@ impl ComputeEngine {
             }
             QuantFormat::F16 | QuantFormat::BF16 => {
                 // Direct F16 GEMM
-                self.fused_gemm.forward_f16(input, &weight.data, output)
+                if weight.transposed {
+                    // Weight is in PyTorch format [out, in], use A @ B^T
+                    self.fused_gemm.forward_f16_bt(input, &weight.data, output)
+                } else {
+                    // Weight is in standard format [in, out], use A @ B
+                    self.fused_gemm.forward_f16(input, &weight.data, output)
+                }
             }
             QuantFormat::Int8 => {
                 // INT8 not yet implemented
@@ -356,14 +370,32 @@ impl ComputeEngine {
 
         // Q projection: [seq_len, hidden_size] @ [hidden_size, num_heads * head_dim]
         let mut q_view = self.q_buffer.slice_dim0(0, seq_len)?;
+        tracing::debug!(
+            "Q projection: hidden_view={:?}, q_proj={:?}, q_view={:?}",
+            hidden_view.shape(),
+            layer.q_proj.data.shape(),
+            q_view.shape()
+        );
         self.linear(&hidden_view, &layer.q_proj, &mut q_view)?;
 
         // K projection: [seq_len, hidden_size] @ [hidden_size, num_kv_heads * head_dim]
         let mut k_view = self.k_buffer.slice_dim0(0, seq_len)?;
+        tracing::debug!(
+            "K projection: hidden_view={:?}, k_proj={:?}, k_view={:?}",
+            hidden_view.shape(),
+            layer.k_proj.data.shape(),
+            k_view.shape()
+        );
         self.linear(&hidden_view, &layer.k_proj, &mut k_view)?;
 
         // V projection: [seq_len, hidden_size] @ [hidden_size, num_kv_heads * head_dim]
         let mut v_view = self.v_buffer.slice_dim0(0, seq_len)?;
+        tracing::debug!(
+            "V projection: hidden_view={:?}, v_proj={:?}, v_view={:?}",
+            hidden_view.shape(),
+            layer.v_proj.data.shape(),
+            v_view.shape()
+        );
         self.linear(&hidden_view, &layer.v_proj, &mut v_view)?;
 
         // Reshape Q, K, V to [seq_len, heads, head_dim]
@@ -439,6 +471,13 @@ impl ComputeEngine {
             self.config.head_dim,
         ])?;
 
+        tracing::debug!(
+            "Flash Attention: q_4d={:?}, k_cached={:?}, v_cached={:?}, out={:?}",
+            q_4d.shape(),
+            k_cached.shape(),
+            v_cached.shape(),
+            attn_out_4d.shape()
+        );
         self.attention.forward(
             &q_4d,
             &k_cached,
@@ -544,8 +583,10 @@ impl ComputeEngine {
         let mut logits = self.logits_buffer.slice_dim0(0, seq_len)?;
 
         if let Some(ref lm_head) = weights.lm_head {
-            // Separate LM head: fused RMSNorm + GEMM
-            self.fused_rmsnorm_proj.forward_f16(
+            // Separate LM head: fused RMSNorm + GEMM with B transposed
+            // lm_head is stored in PyTorch format [vocab_size, hidden_dim], same as embed_tokens
+            // We compute: hidden @ lm_head^T to get [seq, vocab_size]
+            self.fused_rmsnorm_proj.forward_f16_bt(
                 &hidden,
                 &weights.final_norm.weight,
                 lm_head,
@@ -597,6 +638,92 @@ impl ComputeEngine {
         weights: &WeightStore,
     ) -> Result<GpuTensor, InferenceError> {
         self.forward(&[token_id], weights, self.current_pos)
+    }
+
+    // ========================================================================
+    // Lazy Loading Methods
+    //
+    // These methods work with LazyWeightStore, loading layers on-demand
+    // for memory-efficient inference of large models.
+    // ========================================================================
+
+    /// Forward pass with lazy layer loading.
+    ///
+    /// Loads each layer on-demand, enabling models larger than VRAM.
+    pub fn forward_lazy(
+        &mut self,
+        input_ids: &[u32],
+        weights: &mut super::lazy_weight_store::LazyWeightStore,
+        start_pos: usize,
+    ) -> Result<GpuTensor, InferenceError> {
+        let seq_len = input_ids.len();
+
+        // 1. Token embedding lookup
+        let mut hidden = self.embed_tokens(&weights.embed_tokens, input_ids)?;
+
+        // 2. Forward through all layers (lazy loading)
+        for layer_idx in 0..weights.num_layers() {
+            let layer = weights.get_layer(layer_idx)?;
+            self.layer_forward(&mut hidden, layer, seq_len, start_pos)?;
+        }
+
+        // Advance KV cache position after all layers updated
+        self.kv_cache.advance(seq_len);
+
+        // 3. Final norm + 4. LM head projection (fused)
+        let mut logits = self.logits_buffer.slice_dim0(0, seq_len)?;
+
+        if let Some(ref lm_head) = weights.lm_head {
+            // Separate LM head with B transposed (PyTorch format [vocab_size, hidden_dim])
+            self.fused_rmsnorm_proj.forward_f16_bt(
+                &hidden,
+                &weights.final_norm.weight,
+                lm_head,
+                &mut logits,
+                self.config.rms_norm_eps,
+            )?;
+        } else if weights.config.tie_word_embeddings {
+            // Tied embeddings (same transposed format)
+            self.fused_rmsnorm_proj.forward_f16_bt(
+                &hidden,
+                &weights.final_norm.weight,
+                &weights.embed_tokens,
+                &mut logits,
+                self.config.rms_norm_eps,
+            )?;
+        } else {
+            return Err(InferenceError::ModelLoad(
+                "No LM head and embeddings not tied".to_string()
+            ));
+        }
+
+        self.current_pos = start_pos + seq_len;
+
+        // Store logits for get_logits()
+        let logits_for_storage = logits.reshape(logits.shape().to_vec())?;
+        self.last_logits = Some(logits_for_storage);
+
+        Ok(logits)
+    }
+
+    /// Prefill phase with lazy layer loading.
+    pub fn prefill_lazy(
+        &mut self,
+        input_ids: &[u32],
+        weights: &mut super::lazy_weight_store::LazyWeightStore,
+    ) -> Result<GpuTensor, InferenceError> {
+        self.kv_cache.reset();
+        self.current_pos = 0;
+        self.forward_lazy(input_ids, weights, 0)
+    }
+
+    /// Decode phase with lazy layer loading.
+    pub fn decode_lazy(
+        &mut self,
+        token_id: u32,
+        weights: &mut super::lazy_weight_store::LazyWeightStore,
+    ) -> Result<GpuTensor, InferenceError> {
+        self.forward_lazy(&[token_id], weights, self.current_pos)
     }
 
     /// Embed tokens by looking up in embedding table using GPU kernel.

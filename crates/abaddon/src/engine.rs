@@ -15,6 +15,8 @@ use tokio::sync::mpsc;
 
 #[cfg(feature = "cuda")]
 use crate::backend::to_candle_dtype;
+#[cfg(feature = "cuda")]
+use crate::cuda_inference::{Generator as CudaGenerator, WeightStore as CudaWeightStore};
 use crate::config::EngineConfig;
 use crate::loader::{ModelConfig, ModelFiles, ModelLoader, WeightFiles};
 use crate::models::llama::{Llama, LlamaConfig};
@@ -71,6 +73,10 @@ pub struct Engine {
     dtype: DType,
     /// Optional speculative decoder for accelerated inference.
     speculative_decoder: Option<Arc<SpeculativeDecoder>>,
+    /// Optional CUDA-optimized generator for HoloTensor models.
+    /// When available, bypasses Candle for 5-6x faster inference.
+    #[cfg(feature = "cuda")]
+    cuda_generator: Option<Mutex<CudaGenerator>>,
 }
 
 impl Engine {
@@ -136,10 +142,39 @@ impl Engine {
             None
         };
 
+        // Try to initialize CUDA optimized path for HoloTensor models
+        #[cfg(feature = "cuda")]
+        let cuda_generator = if let WeightFiles::HoloTensor { directory, .. } = &files.weights {
+            if matches!(device, Device::Cuda(_)) {
+                tracing::info!("Detected HoloTensor model on CUDA, attempting optimized inference path");
+                let max_seq_len = model_config.max_position_embeddings.unwrap_or(4096);
+                match Self::init_cuda_generator(directory, max_seq_len) {
+                    Some(gen) => {
+                        eprintln!("\x1b[32m✓ CUDA optimized inference enabled (5-6x faster)\x1b[0m");
+                        Some(Mutex::new(gen))
+                    }
+                    None => {
+                        tracing::info!("Falling back to Candle inference path");
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        #[cfg(feature = "cuda")]
+        let cuda_optimized = cuda_generator.is_some();
+        #[cfg(not(feature = "cuda"))]
+        let cuda_optimized = false;
+
         tracing::info!(
             model = %metadata.id,
             layers = model_config.num_hidden_layers,
             speculative = speculative_decoder.is_some(),
+            cuda_optimized = cuda_optimized,
             "Engine initialized successfully"
         );
 
@@ -150,7 +185,57 @@ impl Engine {
             device,
             dtype,
             speculative_decoder,
+            #[cfg(feature = "cuda")]
+            cuda_generator,
         })
+    }
+
+    /// Tries to initialize the optimized CUDA inference path for HCT models.
+    ///
+    /// This bypasses Candle's tensor operations for 5-6x faster inference using
+    /// fused CUDA kernels, pre-allocated buffers, and Flash Attention.
+    ///
+    /// Returns the CUDA generator if initialization succeeded.
+    #[cfg(feature = "cuda")]
+    fn init_cuda_generator(hct_directory: &std::path::Path, max_seq_len: usize) -> Option<CudaGenerator> {
+        tracing::info!(
+            directory = %hct_directory.display(),
+            "Attempting to initialize optimized CUDA inference path"
+        );
+
+        // Try to load weights using cuda_inference
+        let weights = match CudaWeightStore::load_hct(hct_directory, None, 0) {
+            Ok(w) => {
+                tracing::info!(
+                    memory_mb = w.memory_used as f64 / 1024.0 / 1024.0,
+                    num_layers = w.layers.len(),
+                    "CUDA weights loaded successfully"
+                );
+                w
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to load CUDA weights, falling back to Candle path"
+                );
+                return None;
+            }
+        };
+
+        // Create the optimized generator
+        match CudaGenerator::new(weights, max_seq_len) {
+            Ok(generator) => {
+                tracing::info!("CUDA generator initialized successfully");
+                Some(generator)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to create CUDA generator, falling back to Candle path"
+                );
+                None
+            }
+        }
     }
 
     /// Loads the speculative decoder with the draft model.
@@ -1795,7 +1880,68 @@ impl InferenceEngine for Engine {
 
         let time_to_first_token = start.elapsed();
 
-        // Generate
+        // Try CUDA optimized path first (5-6x faster)
+        #[cfg(feature = "cuda")]
+        if let Some(ref cuda_gen) = self.cuda_generator {
+            tracing::debug!("Using CUDA optimized inference path");
+
+            // Convert sampling params
+            let cuda_params = crate::cuda_inference::SamplingParams {
+                temperature: request.sampling.temperature,
+                top_p: request.sampling.top_p,
+                top_k: request.sampling.top_k as usize,
+                repetition_penalty: request.sampling.repetition_penalty,
+                repetition_context: 64,
+                max_tokens: request.sampling.max_tokens as usize,
+                stop_tokens: vec![loaded.eos_token_id],
+                seed: request.sampling.seed.unwrap_or(42),
+            };
+
+            // Generate using CUDA path
+            let mut generator = cuda_gen.lock();
+            let generated_tokens = generator.generate(&prompt_tokens, Some(&cuda_params))
+                .map_err(|e| infernum_core::Error::Internal {
+                    message: format!("CUDA generation failed: {}", e),
+                })?;
+
+            // Decode tokens
+            let generated_text: Vec<String> = generated_tokens
+                .iter()
+                .filter_map(|&t| loaded.tokenizer.decode_token(t).ok())
+                .collect();
+
+            let completion_token_count = generated_tokens.len() as u32;
+            let total_time = start.elapsed();
+            let text = generated_text.join("");
+
+            let tokens_per_sec = completion_token_count as f64 / total_time.as_secs_f64();
+            tracing::info!(
+                tokens_per_sec = format!("{:.1}", tokens_per_sec),
+                path = "cuda_optimized",
+                "Generation complete"
+            );
+
+            return Ok(GenerateResponse {
+                request_id: request.request_id,
+                created: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64,
+                model: self.metadata.id.clone(),
+                choices: vec![infernum_core::response::Choice {
+                    index: 0,
+                    text,
+                    message: None,
+                    finish_reason: Some(infernum_core::FinishReason::Stop),
+                    logprobs: None,
+                }],
+                usage: infernum_core::Usage::new(prompt_token_count, completion_token_count),
+                time_to_first_token_ms: Some(time_to_first_token.as_secs_f64() * 1000.0),
+                total_time_ms: Some(total_time.as_secs_f64() * 1000.0),
+            });
+        }
+
+        // Fall back to Candle path
         let mut sampler = Sampler::new(request.sampling.clone());
         let (generated_tokens, generated_text) =
             self.generate_tokens(&prompt_tokens, request.sampling.max_tokens, &mut sampler)?;

@@ -48,6 +48,13 @@ const FUSED_GEMM_CUDA: &str = r#"
 #include <cuda_fp16.h>
 
 // ============================================================================
+// Tile sizes for GEMM computation (must match Rust constants for grid calc)
+// ============================================================================
+#define TILE_M 64
+#define TILE_N 64
+#define TILE_K 32
+
+// ============================================================================
 // Optimized INT4 GEMV (M=1) - Vector-Matrix Multiplication for Decode
 // Each thread computes one output element by accumulating K dot products
 // Grid: (ceil(N/GEMV_BLOCK), 1), Block: (GEMV_BLOCK, 1)
@@ -1707,6 +1714,45 @@ impl FusedGemmKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Specification: TILE constants must be defined in CUDA source.
+    ///
+    /// The fused_gptq_gemm_f16 kernel uses TILE_M, TILE_N, TILE_K for shared memory
+    /// allocation and loop bounds. These must be #define'd in the CUDA source since
+    /// Rust constants are not visible to NVRTC.
+    ///
+    /// Gap discovered: 2026-02-05 during HoloTensor integration.
+    /// See: docs/specs/CUDA-KERNEL-TILING-FIX.md
+    #[test]
+    fn spec_tile_constants_defined_in_cuda_source() {
+        // TILE_M, TILE_N, TILE_K must be #define'd for NVRTC compilation
+        assert!(
+            FUSED_GEMM_CUDA.contains("#define TILE_M"),
+            "TILE_M must be #define'd in CUDA source for fused_gptq_gemm_f16"
+        );
+        assert!(
+            FUSED_GEMM_CUDA.contains("#define TILE_N"),
+            "TILE_N must be #define'd in CUDA source for fused_gptq_gemm_f16"
+        );
+        assert!(
+            FUSED_GEMM_CUDA.contains("#define TILE_K"),
+            "TILE_K must be #define'd in CUDA source for fused_gptq_gemm_f16"
+        );
+
+        // Verify values match Rust constants (for grid calculation consistency)
+        assert!(
+            FUSED_GEMM_CUDA.contains("#define TILE_M 64"),
+            "TILE_M must be 64 to match Rust constant"
+        );
+        assert!(
+            FUSED_GEMM_CUDA.contains("#define TILE_N 64"),
+            "TILE_N must be 64 to match Rust constant"
+        );
+        assert!(
+            FUSED_GEMM_CUDA.contains("#define TILE_K 32"),
+            "TILE_K must be 32 to match Rust constant"
+        );
+    }
 
     #[test]
     fn test_fused_gemm_kernel_compilation() {
