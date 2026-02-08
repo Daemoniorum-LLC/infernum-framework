@@ -296,16 +296,41 @@ impl Agent {
             ctx.set_state("working_dir", serde_json::json!(wd.to_string_lossy().as_ref()));
         }
 
+        // Context size management: prevent OOM by limiting context growth
+        // For 24GB GPU with 7B model: ~14GB model in BF16, need ~10GB for activations + KV-cache
+        // KV cache size = 2 * layers * context * hidden_dim * dtype_size
+        // For 7B Qwen: 2 * 28 * 8192 * 3584 * 2 bytes = ~3.3GB at 8K tokens
+        // Safe limit: ~8K tokens = ~32K chars to leave headroom for activations
+        // Override with INFERNUM_AGENT_MAX_CONTEXT_CHARS and INFERNUM_AGENT_MAX_TOOL_OUTPUT
+        let max_context_chars: usize = std::env::var("INFERNUM_AGENT_MAX_CONTEXT_CHARS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(32_000); // ~8K tokens - conservative for 7B on 24GB
+        let max_tool_output_chars: usize = std::env::var("INFERNUM_AGENT_MAX_TOOL_OUTPUT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8_000); // Reduced to prevent large tool results from filling context
+
+        tracing::debug!(
+            max_context_chars,
+            max_tool_output_chars,
+            "Context budget limits"
+        );
+
         // ReAct loop
         let mut final_answer = String::new();
         for iteration in 0..self.persona.max_iterations {
             tracing::debug!(iteration, "ReAct iteration");
 
+            // Proactive context budget check - prevent OOM by trimming BEFORE generation
+            Self::ensure_context_budget(&mut messages, max_context_chars);
+
             // Generate response
             let request = GenerateRequest::chat(messages.clone()).with_sampling(
                 SamplingParams::default()
-                    .with_max_tokens(1024)
-                    .with_temperature(0.7),
+                    .with_max_tokens(2048)
+                    .with_temperature(0.7)
+                    .with_repetition_penalty(1.15),
             );
 
             let response = engine.generate(request).await?;
@@ -791,6 +816,144 @@ impl Agent {
                     .unwrap_or_default()
             })
         }))
+    }
+
+    /// Ensures context is within budget by compressing and trimming proactively.
+    /// Call this BEFORE each LLM generation to prevent OOM.
+    fn ensure_context_budget(messages: &mut Vec<Message>, max_chars: usize) {
+        let total: usize = messages.iter().map(|m| m.content.len()).sum();
+        let threshold = max_chars * 4 / 5; // 80% threshold for proactive trimming
+
+        if total > threshold {
+            tracing::info!(
+                total_chars = total,
+                threshold = threshold,
+                messages_count = messages.len(),
+                "Proactive context trimming triggered"
+            );
+
+            // First, compress older observations to save space
+            Self::compress_old_observations(messages);
+
+            // Check again after compression
+            let total_after_compress: usize = messages.iter().map(|m| m.content.len()).sum();
+
+            // Then remove oldest messages if still over threshold
+            if total_after_compress > threshold {
+                while messages.len() > 3
+                    && messages.iter().map(|m| m.content.len()).sum::<usize>() > threshold
+                {
+                    messages.remove(1); // Remove oldest non-system message
+                    tracing::debug!(
+                        remaining = messages.len(),
+                        "Removed oldest message during proactive trim"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Compresses older observations to save context space.
+    /// Keeps the last 2 observations intact, compresses older ones.
+    fn compress_old_observations(messages: &mut Vec<Message>) {
+        // Find all observation message indices
+        let observation_indices: Vec<usize> = messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.content.starts_with("Observation:"))
+            .map(|(i, _)| i)
+            .collect();
+
+        // Keep last 2 observations intact, compress older ones
+        let to_compress: Vec<usize> = observation_indices
+            .iter()
+            .rev()
+            .skip(2) // Skip the 2 most recent
+            .copied()
+            .collect();
+
+        for idx in to_compress {
+            if messages[idx].content.len() > 500 {
+                let compressed = Self::compress_observation(&messages[idx].content);
+                let saved = messages[idx].content.len() - compressed.len();
+                if saved > 100 {
+                    tracing::debug!(
+                        idx = idx,
+                        original_len = messages[idx].content.len(),
+                        compressed_len = compressed.len(),
+                        saved_chars = saved,
+                        "Compressed old observation"
+                    );
+                    messages[idx].content = compressed;
+                }
+            }
+        }
+    }
+
+    /// Compresses an observation to its key findings.
+    fn compress_observation(obs: &str) -> String {
+        let lines: Vec<&str> = obs.lines().collect();
+        if lines.len() <= 5 {
+            return obs.to_string();
+        }
+
+        // Keep first line (usually the summary header)
+        let first_line = lines.first().copied().unwrap_or("");
+
+        // Extract file paths mentioned (important context)
+        let paths: Vec<&str> = lines
+            .iter()
+            .filter(|l| {
+                l.contains('/')
+                    || l.ends_with(".rs")
+                    || l.ends_with(".ts")
+                    || l.ends_with(".py")
+                    || l.ends_with(".json")
+            })
+            .take(5)
+            .copied()
+            .collect();
+
+        // Extract key metadata lines (lines with counts, success/error)
+        let metadata: Vec<&str> = lines
+            .iter()
+            .filter(|l| {
+                l.contains("lines")
+                    || l.contains("files")
+                    || l.contains("matches")
+                    || l.contains("bytes")
+                    || l.contains("Success")
+                    || l.contains("Error")
+                    || l.contains("truncated")
+            })
+            .take(3)
+            .copied()
+            .collect();
+
+        let mut result = format!(
+            "{}\n[Compressed from {} lines]",
+            first_line,
+            lines.len()
+        );
+
+        if !paths.is_empty() {
+            result.push_str("\nKey files:\n");
+            for path in paths.iter().take(3) {
+                result.push_str("  ");
+                result.push_str(path.trim());
+                result.push('\n');
+            }
+            if paths.len() > 3 {
+                result.push_str(&format!("  ... and {} more\n", paths.len() - 3));
+            }
+        }
+
+        if !metadata.is_empty() {
+            result.push_str("Summary: ");
+            result.push_str(&metadata.join(" | "));
+        }
+
+        result
     }
 }
 

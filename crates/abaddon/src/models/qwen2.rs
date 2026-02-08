@@ -842,6 +842,9 @@ impl Qwen2 {
 
     /// Forward pass that returns hidden states for embedding extraction.
     pub fn forward_embedding(&mut self, input_ids: &Tensor) -> CandleResult<Tensor> {
+        // Clear KV cache to avoid shape mismatches from previous generations
+        self.clear_cache();
+
         let (_batch_size, seq_len) = input_ids.dims2()?;
 
         let mut hidden_states = self.embed_tokens.forward(input_ids)?;

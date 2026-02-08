@@ -639,6 +639,9 @@ impl Llama {
     /// # Returns
     /// Hidden states tensor of shape (batch_size, seq_len, hidden_size)
     pub fn forward_embedding(&mut self, input_ids: &Tensor) -> CandleResult<Tensor> {
+        // Clear KV cache to avoid shape mismatches from previous generations
+        self.clear_cache();
+
         let (_batch_size, seq_len) = input_ids.dims2()?;
 
         // Embed tokens

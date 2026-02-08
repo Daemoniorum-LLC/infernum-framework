@@ -509,6 +509,71 @@ impl ToolContext {
     pub fn set_state(&mut self, key: impl Into<String>, value: Value) {
         self.state.insert(key.into(), value);
     }
+
+    /// Gets the file read cache.
+    #[must_use]
+    pub fn get_file_cache(&self) -> HashMap<String, FileReadCacheEntry> {
+        self.state
+            .get(FILE_READ_CACHE_KEY)
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default()
+    }
+
+    /// Updates the file read cache.
+    pub fn update_file_cache(&mut self, path: &str, entry: FileReadCacheEntry) {
+        let mut cache = self.get_file_cache();
+        cache.insert(path.to_string(), entry);
+        if let Ok(value) = serde_json::to_value(&cache) {
+            self.state.insert(FILE_READ_CACHE_KEY.to_string(), value);
+        }
+    }
+}
+
+/// Key for file read cache in ToolContext state.
+const FILE_READ_CACHE_KEY: &str = "__file_read_cache";
+
+/// Cache entry for file read deduplication.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileReadCacheEntry {
+    /// Hash of file content.
+    pub content_hash: u64,
+    /// Total line count.
+    pub line_count: usize,
+    /// Last read offset.
+    pub last_offset: usize,
+    /// Last read limit.
+    pub last_limit: usize,
+    /// Timestamp of last read (for cache invalidation).
+    pub read_at_ms: u64,
+}
+
+impl FileReadCacheEntry {
+    /// Creates a new cache entry.
+    #[must_use]
+    pub fn new(content_hash: u64, line_count: usize, offset: usize, limit: usize) -> Self {
+        let read_at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        Self {
+            content_hash,
+            line_count,
+            last_offset: offset,
+            last_limit: limit,
+            read_at_ms,
+        }
+    }
+}
+
+/// Computes a hash for file content.
+/// Used by file caching to detect unchanged files.
+#[allow(dead_code)] // Will be used when Tool::execute takes &mut ToolContext
+pub fn hash_content(content: &str) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Trait for tools that agents can use.
