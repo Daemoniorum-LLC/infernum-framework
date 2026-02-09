@@ -55,7 +55,7 @@ url = "2"
 
 # OpenAPI documentation
 utoipa = { version = "5", features = ["axum_extras", "chrono"] }
-utoipa-swagger-ui = { version = "8", features = ["axum"] }
+utoipa-swagger-ui = { version = "9", features = ["axum"] }
 
 # Cryptography (Phase 3 security)
 sha2 = "0.10"
@@ -77,7 +77,7 @@ notify = { version = "8", default-features = false, features = ["fsevent-sys", "
 
 # HuggingFace model download
 hf-hub = { workspace = true }
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.13", features = ["json", "stream"] }
 
 # HoloTensor compression
 haagenti = { workspace = true, optional = true }
@@ -88,7 +88,7 @@ half = "2.4"
 opentelemetry = { workspace = true }
 opentelemetry-otlp = { workspace = true }
 opentelemetry_sdk = { workspace = true }
-tracing-opentelemetry = "0.31"
+tracing-opentelemetry = "0.32"
 
 # gRPC
 tonic = { workspace = true }
@@ -100,8 +100,8 @@ tonic-build = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
-axum-test = "18.4"
-reqwest = { version = "0.12", features = ["json"] }
+axum-test = "18.7"
+reqwest = { version = "0.13", features = ["json"] }
 tempfile = "3.19"
 criterion = { version = "0.6", features = ["async_tokio"] }
 

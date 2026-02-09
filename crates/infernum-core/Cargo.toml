@@ -26,7 +26,7 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 bytes = { workspace = true }
 parking_lot = { workspace = true }
-md5 = "0.7"
+md5 = "0.8"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

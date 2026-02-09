@@ -36,7 +36,7 @@ uuid = { workspace = true }
 dashmap = { workspace = true }
 parking_lot = { workspace = true }
 chrono = { workspace = true }
-rand = "0.8"
+rand = "0.9"
 
 # ML (for LegionSpeculativeDecoder)
 candle-core = { workspace = true }

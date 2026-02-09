@@ -35,7 +35,7 @@ notify = { workspace = true }
 # Utilities
 dashmap = { workspace = true }
 regex = { workspace = true }
-dirs = "5.0"
+dirs = "6.0"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
