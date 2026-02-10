@@ -47,7 +47,11 @@ struct Qwen2Draft {
 
 impl Qwen2Draft {
     fn new(model: Qwen2, device: Device, dtype: DType) -> Self {
-        Self { model, device, dtype }
+        Self {
+            model,
+            device,
+            dtype,
+        }
     }
 }
 
@@ -73,7 +77,9 @@ fn main() -> Result<()> {
     println!("=== Speculative Decoding for 405B ===\n");
 
     // Paths
-    let draft_model_dir = Path::new("/home/crook/dev2/workspace/nyx/infernum/infernum-complete/test_models/qwen2.5-7b-int4-v3");
+    let draft_model_dir = Path::new(
+        "/home/crook/dev2/workspace/nyx/infernum/infernum-complete/test_models/qwen2.5-7b-int4-v3",
+    );
     let hct_dir = Path::new("/tmp/llama405b-holo");
     let safetensors_dir = Path::new("/tmp/llama405b-safetensors");
 
@@ -118,10 +124,9 @@ fn main() -> Result<()> {
     let config_str = std::fs::read_to_string(&config_path)?;
     let draft_config: Qwen2Config = serde_json::from_str(&config_str)?;
 
-    println!("Draft config: {} layers, {} hidden, {} heads",
-        draft_config.num_hidden_layers,
-        draft_config.hidden_size,
-        draft_config.num_attention_heads
+    println!(
+        "Draft config: {} layers, {} hidden, {} heads",
+        draft_config.num_hidden_layers, draft_config.hidden_size, draft_config.num_attention_heads
     );
 
     // Load weights
@@ -165,7 +170,14 @@ fn main() -> Result<()> {
 
     let loader = Arc::new(loader);
     println!("TieredHoloLoader created");
-    println!("GPU acceleration: {}\n", if loader.is_gpu_enabled() { "enabled" } else { "disabled" });
+    println!(
+        "GPU acceleration: {}\n",
+        if loader.is_gpu_enabled() {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
 
     // Create LazyVarBuilder
     let provider: Arc<dyn TensorProvider> = Arc::clone(&loader) as Arc<dyn TensorProvider>;
@@ -194,7 +206,10 @@ fn main() -> Result<()> {
 
     println!("405B model created in {:?}", target_start.elapsed());
     let stats = target.stats();
-    println!("Layers loaded: {}/{}\n", stats.loaded_layers, stats.total_layers);
+    println!(
+        "Layers loaded: {}/{}\n",
+        stats.loaded_layers, stats.total_layers
+    );
 
     // ============================================================
     // Setup Speculative Decoding
@@ -202,11 +217,11 @@ fn main() -> Result<()> {
     println!("--- Setting Up Speculative Decoder ---");
 
     let spec_config = Speculative405BConfig {
-        num_draft_tokens: 5,        // Generate 5 draft tokens per round
-        acceptance_threshold: 0.1,  // Low threshold (405B is high quality)
+        num_draft_tokens: 5,       // Generate 5 draft tokens per round
+        acceptance_threshold: 0.1, // Low threshold (405B is high quality)
         draft_temperature: 0.7,
         target_temperature: 0.7,
-        greedy_draft: true,         // Use greedy for speed
+        greedy_draft: true, // Use greedy for speed
     };
 
     println!("Draft tokens per round: {}", spec_config.num_draft_tokens);
@@ -229,7 +244,8 @@ fn main() -> Result<()> {
     let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path)
         .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?;
 
-    let encoding = tokenizer.encode(prompt, false)
+    let encoding = tokenizer
+        .encode(prompt, false)
         .map_err(|e| anyhow::anyhow!("Tokenization failed: {}", e))?;
     let prompt_tokens: Vec<u32> = encoding.get_ids().to_vec();
 
@@ -244,7 +260,8 @@ fn main() -> Result<()> {
     let gen_elapsed = gen_start.elapsed();
 
     // Decode
-    let generated_text = tokenizer.decode(&generated_tokens, false)
+    let generated_text = tokenizer
+        .decode(&generated_tokens, false)
         .map_err(|e| anyhow::anyhow!("Decode failed: {}", e))?;
 
     // Print results
@@ -255,7 +272,8 @@ fn main() -> Result<()> {
     let stats = speculative.stats();
     let tokens_per_sec = generated_tokens.len() as f64 / gen_elapsed.as_secs_f64();
 
-    println!("Generated: {} tokens in {:.2}s ({:.1} tok/s)",
+    println!(
+        "Generated: {} tokens in {:.2}s ({:.1} tok/s)",
         generated_tokens.len(),
         gen_elapsed.as_secs_f64(),
         tokens_per_sec
@@ -264,17 +282,23 @@ fn main() -> Result<()> {
     println!("\nSpeculation stats:");
     println!("  Rounds: {}", stats.rounds);
     println!("  Draft tokens: {}", stats.draft_tokens);
-    println!("  Accepted: {} ({:.1}%)", stats.accepted_tokens, stats.acceptance_rate() * 100.0);
+    println!(
+        "  Accepted: {} ({:.1}%)",
+        stats.accepted_tokens,
+        stats.acceptance_rate() * 100.0
+    );
     println!("  Rejected: {}", stats.rejected_tokens);
     println!("  Tokens per round: {:.2}", stats.tokens_per_round());
     println!("  Effective speedup: {:.1}x", stats.speedup());
 
     println!("\nTiming:");
-    println!("  Draft time: {} ms ({:.1} ms/token)",
+    println!(
+        "  Draft time: {} ms ({:.1} ms/token)",
         stats.draft_time_ms,
         stats.draft_time_ms as f64 / stats.draft_forward_passes.max(1) as f64
     );
-    println!("  Verify time: {} ms ({:.1} ms/pass)",
+    println!(
+        "  Verify time: {} ms ({:.1} ms/pass)",
         stats.verify_time_ms,
         stats.verify_time_ms as f64 / stats.target_forward_passes.max(1) as f64
     );
@@ -290,12 +314,16 @@ fn main() -> Result<()> {
     println!("  Tensors loaded: {}", loader_stats.tensors_loaded);
 
     if loader_stats.safetensor_loads > 0 {
-        println!("  Safetensor loads: {} ({} ms)",
-            loader_stats.safetensor_loads, loader_stats.safetensor_time_ms);
+        println!(
+            "  Safetensor loads: {} ({} ms)",
+            loader_stats.safetensor_loads, loader_stats.safetensor_time_ms
+        );
     }
     if loader_stats.gpu_reconstructions > 0 {
-        println!("  GPU reconstructions: {} ({} ms)",
-            loader_stats.gpu_reconstructions, loader_stats.gpu_time_ms);
+        println!(
+            "  GPU reconstructions: {} ({} ms)",
+            loader_stats.gpu_reconstructions, loader_stats.gpu_time_ms
+        );
     }
 
     println!("\n=== Test Complete ===");

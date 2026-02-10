@@ -91,20 +91,19 @@ impl NvmeCache {
     ///
     /// Returns the raw bytes. Caller is responsible for decompression if needed.
     pub fn read_layer(&self, layer_idx: usize) -> Result<Vec<u8>, TieredError> {
-        let entry = self.entries.get(&layer_idx).ok_or_else(|| {
-            TieredError::nvme(format!("layer {} not in NVMe cache", layer_idx))
-        })?;
+        let entry = self
+            .entries
+            .get(&layer_idx)
+            .ok_or_else(|| TieredError::nvme(format!("layer {} not in NVMe cache", layer_idx)))?;
 
         let start = std::time::Instant::now();
 
-        let mut file = File::open(&entry.path).map_err(|e| {
-            TieredError::nvme_path(format!("failed to open: {}", e), &entry.path)
-        })?;
+        let mut file = File::open(&entry.path)
+            .map_err(|e| TieredError::nvme_path(format!("failed to open: {}", e), &entry.path))?;
 
         let mut data = Vec::with_capacity(entry.size_bytes as usize);
-        file.read_to_end(&mut data).map_err(|e| {
-            TieredError::nvme_path(format!("failed to read: {}", e), &entry.path)
-        })?;
+        file.read_to_end(&mut data)
+            .map_err(|e| TieredError::nvme_path(format!("failed to read: {}", e), &entry.path))?;
 
         let elapsed_ns = start.elapsed().as_nanos() as u64;
         self.stats.record_nvme_load(elapsed_ns);
@@ -295,7 +294,11 @@ impl NvmeCache {
                     self.usage += size;
                     found += 1;
 
-                    tracing::debug!(layer_idx, size_mb = size / (1024 * 1024), "Found cached layer");
+                    tracing::debug!(
+                        layer_idx,
+                        size_mb = size / (1024 * 1024),
+                        "Found cached layer"
+                    );
                 }
             }
         }
@@ -341,8 +344,9 @@ impl MmapReader {
             .map_err(|e| TieredError::nvme_path(format!("failed to open: {}", e), &entry.path))?;
 
         let mmap = unsafe {
-            memmap2::Mmap::map(&file)
-                .map_err(|e| TieredError::nvme_path(format!("failed to mmap: {}", e), &entry.path))?
+            memmap2::Mmap::map(&file).map_err(|e| {
+                TieredError::nvme_path(format!("failed to mmap: {}", e), &entry.path)
+            })?
         };
 
         Ok(Self {
@@ -431,12 +435,8 @@ mod tests {
         fs::write(&path1, vec![0u8; 1024]).unwrap();
         fs::write(&path2, vec![0u8; 2048]).unwrap();
 
-        let mut cache = NvmeCache::new(
-            tmp.path(),
-            1024 * 1024 * 1024,
-            Arc::new(TieredStats::new()),
-        )
-        .unwrap();
+        let mut cache =
+            NvmeCache::new(tmp.path(), 1024 * 1024 * 1024, Arc::new(TieredStats::new())).unwrap();
 
         let found = cache.scan_existing().unwrap();
         assert_eq!(found, 2);

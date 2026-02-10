@@ -97,7 +97,8 @@ impl TieredStats {
     /// Record bytes uploaded to VRAM.
     pub fn record_vram_upload(&self, bytes: u64, duration_ns: u64) {
         self.bytes_uploaded.fetch_add(bytes, Ordering::Relaxed);
-        self.vram_upload_time_ns.fetch_add(duration_ns, Ordering::Relaxed);
+        self.vram_upload_time_ns
+            .fetch_add(duration_ns, Ordering::Relaxed);
     }
 
     /// Record bytes downloaded from VRAM.
@@ -107,7 +108,8 @@ impl TieredStats {
 
     /// Record NVMe load time.
     pub fn record_nvme_load(&self, duration_ns: u64) {
-        self.nvme_load_time_ns.fetch_add(duration_ns, Ordering::Relaxed);
+        self.nvme_load_time_ns
+            .fetch_add(duration_ns, Ordering::Relaxed);
     }
 
     /// Record VRAM eviction.
@@ -150,8 +152,8 @@ impl TieredStats {
 
     /// Get RAM hit rate (VRAM misses that hit RAM).
     pub fn ram_hit_rate(&self) -> f64 {
-        let non_vram = self.ram_hits.load(Ordering::Relaxed)
-            + self.nvme_hits.load(Ordering::Relaxed);
+        let non_vram =
+            self.ram_hits.load(Ordering::Relaxed) + self.nvme_hits.load(Ordering::Relaxed);
         if non_vram == 0 {
             return 0.0;
         }

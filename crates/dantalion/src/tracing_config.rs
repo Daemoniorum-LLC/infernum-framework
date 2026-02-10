@@ -658,7 +658,9 @@ mod tests {
         assert!(attrs.iter().any(|kv| kv.key.as_str() == "llm.model_id"));
         assert!(attrs.iter().any(|kv| kv.key.as_str() == "llm.request_id"));
         assert!(attrs.iter().any(|kv| kv.key.as_str() == "llm.streaming"));
-        assert!(attrs.iter().any(|kv| kv.key.as_str() == "llm.tokens_per_second"));
+        assert!(attrs
+            .iter()
+            .any(|kv| kv.key.as_str() == "llm.tokens_per_second"));
     }
 
     #[test]
@@ -672,7 +674,9 @@ mod tests {
 
         let attrs = span.to_attributes();
         assert!(attrs.iter().any(|kv| kv.key.as_str() == "rag.query_id"));
-        assert!(attrs.iter().any(|kv| kv.key.as_str() == "rag.num_retrieved"));
+        assert!(attrs
+            .iter()
+            .any(|kv| kv.key.as_str() == "rag.num_retrieved"));
         assert!(attrs.iter().any(|kv| kv.key.as_str() == "rag.top_score"));
         assert!(attrs.iter().any(|kv| kv.key.as_str() == "rag.collection"));
     }
@@ -714,7 +718,9 @@ mod tests {
         assert!(attrs.iter().any(|kv| kv.key.as_str() == "agent.id"));
         assert!(attrs.iter().any(|kv| kv.key.as_str() == "agent.name"));
         assert!(attrs.iter().any(|kv| kv.key.as_str() == "agent.objective"));
-        assert!(attrs.iter().any(|kv| kv.key.as_str() == "agent.planning_strategy"));
+        assert!(attrs
+            .iter()
+            .any(|kv| kv.key.as_str() == "agent.planning_strategy"));
         assert!(attrs.iter().any(|kv| kv.key.as_str() == "agent.success"));
     }
 }

@@ -1,19 +1,19 @@
 //! MLP-only coding evaluation - test selective compression
 //! Usage: cargo run --release --example coding_eval_mlp -- --mlp-retention 45
 
-use std::path::Path;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
+use std::path::Path;
 
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use safetensors::SafeTensors;
 
-use haagenti::compressive::CompressiveSpectralDecoder;
-use haagenti::holotensor::HoloFragment;
 use abaddon::models::{Llama, LlamaConfig};
 use anyhow::Result;
+use haagenti::compressive::CompressiveSpectralDecoder;
+use haagenti::holotensor::HoloFragment;
 
 fn get_config() -> LlamaConfig {
     LlamaConfig {
@@ -43,25 +43,28 @@ fn load_safetensors(path: &Path, device: &Device) -> Result<HashMap<String, Tens
         let data = st_tensor.data();
         let tensor = match st_tensor.dtype() {
             safetensors::Dtype::BF16 => {
-                let halfs: Vec<half::bf16> = data.chunks_exact(2)
+                let halfs: Vec<half::bf16> = data
+                    .chunks_exact(2)
                     .map(|chunk| half::bf16::from_le_bytes([chunk[0], chunk[1]]))
                     .collect();
                 let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
                 Tensor::from_vec(floats, shape.as_slice(), device)?
-            }
+            },
             safetensors::Dtype::F32 => {
-                let floats: Vec<f32> = data.chunks_exact(4)
+                let floats: Vec<f32> = data
+                    .chunks_exact(4)
                     .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                     .collect();
                 Tensor::from_vec(floats, shape.as_slice(), device)?
-            }
+            },
             safetensors::Dtype::F16 => {
-                let halfs: Vec<half::f16> = data.chunks_exact(2)
+                let halfs: Vec<half::f16> = data
+                    .chunks_exact(2)
                     .map(|chunk| half::f16::from_le_bytes([chunk[0], chunk[1]]))
                     .collect();
                 let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
                 Tensor::from_vec(floats, shape.as_slice(), device)?
-            }
+            },
             _ => continue,
         };
         tensors.insert(name.to_string(), tensor);
@@ -96,14 +99,20 @@ fn decompress_mlp_hct(data: &[u8], _width: usize, _height: usize) -> Result<Vec<
         let index = u16::from_le_bytes([decompressed[offset], decompressed[offset + 1]]);
         let flags = u16::from_le_bytes([decompressed[offset + 2], decompressed[offset + 3]]);
         let checksum = u64::from_le_bytes([
-            decompressed[offset + 4], decompressed[offset + 5],
-            decompressed[offset + 6], decompressed[offset + 7],
-            decompressed[offset + 8], decompressed[offset + 9],
-            decompressed[offset + 10], decompressed[offset + 11],
+            decompressed[offset + 4],
+            decompressed[offset + 5],
+            decompressed[offset + 6],
+            decompressed[offset + 7],
+            decompressed[offset + 8],
+            decompressed[offset + 9],
+            decompressed[offset + 10],
+            decompressed[offset + 11],
         ]);
         let data_len = u32::from_le_bytes([
-            decompressed[offset + 12], decompressed[offset + 13],
-            decompressed[offset + 14], decompressed[offset + 15],
+            decompressed[offset + 12],
+            decompressed[offset + 13],
+            decompressed[offset + 14],
+            decompressed[offset + 15],
         ]) as usize;
         offset += 16;
 
@@ -129,22 +138,27 @@ fn decompress_mlp_hct(data: &[u8], _width: usize, _height: usize) -> Result<Vec<
     fragments.sort_by_key(|f| f.index);
 
     if print_debug {
-        eprintln!("Fragments: count={}, indices={:?}",
+        eprintln!(
+            "Fragments: count={}, indices={:?}",
             fragments.len(),
-            fragments.iter().map(|f| f.index).collect::<Vec<_>>());
+            fragments.iter().map(|f| f.index).collect::<Vec<_>>()
+        );
     }
 
     for fragment in &fragments {
         if fragment.index == 0 {
-            decoder.add_essentials(fragment)
+            decoder
+                .add_essentials(fragment)
                 .map_err(|e| anyhow::anyhow!("Add essentials error: {}", e))?;
         } else {
-            decoder.add_detail(fragment)
+            decoder
+                .add_detail(fragment)
                 .map_err(|e| anyhow::anyhow!("Add detail error: {}", e))?;
         }
     }
 
-    let result = decoder.reconstruct()
+    let result = decoder
+        .reconstruct()
         .map_err(|e| anyhow::anyhow!("Reconstruct error: {}", e))?;
 
     Ok(result)
@@ -153,7 +167,12 @@ fn decompress_mlp_hct(data: &[u8], _width: usize, _height: usize) -> Result<Vec<
 /// Load MLP-only compressed model:
 /// - MLP tensors from HCT files (using underscore naming convention)
 /// - Everything else from safetensors
-fn load_mlp_hybrid(mlp_dir: &Path, safetensors_path: &Path, device: &Device, dtype: DType) -> Result<HashMap<String, Tensor>> {
+fn load_mlp_hybrid(
+    mlp_dir: &Path,
+    safetensors_path: &Path,
+    device: &Device,
+    dtype: DType,
+) -> Result<HashMap<String, Tensor>> {
     // First load everything from safetensors
     let mut tensors = load_safetensors(safetensors_path, device)?;
 
@@ -205,7 +224,12 @@ fn load_mlp_hybrid(mlp_dir: &Path, safetensors_path: &Path, device: &Device, dty
                 // Debug: check size and values
                 let expected_size: usize = shape.iter().product();
                 if decompressed.len() != expected_size {
-                    eprintln!("Size mismatch for {}: got {} expected {}", tensor_name, decompressed.len(), expected_size);
+                    eprintln!(
+                        "Size mismatch for {}: got {} expected {}",
+                        tensor_name,
+                        decompressed.len(),
+                        expected_size
+                    );
                     continue;
                 }
 
@@ -213,20 +237,28 @@ fn load_mlp_hybrid(mlp_dir: &Path, safetensors_path: &Path, device: &Device, dty
                 let nan_count = decompressed.iter().filter(|x| x.is_nan()).count();
                 let inf_count = decompressed.iter().filter(|x| x.is_infinite()).count();
                 if nan_count > 0 || inf_count > 0 {
-                    eprintln!("Bad values in {}: nan={} inf={}", tensor_name, nan_count, inf_count);
+                    eprintln!(
+                        "Bad values in {}: nan={} inf={}",
+                        tensor_name, nan_count, inf_count
+                    );
                 }
 
                 // Compare with original values
                 let orig_vals: Vec<f32> = orig_tensor.flatten_all()?.to_vec1()?;
-                let diff: f32 = decompressed.iter().zip(orig_vals.iter())
+                let diff: f32 = decompressed
+                    .iter()
+                    .zip(orig_vals.iter())
                     .map(|(a, b)| (a - b).abs())
-                    .sum::<f32>() / expected_size as f32;
+                    .sum::<f32>()
+                    / expected_size as f32;
                 let orig_mean = orig_vals.iter().sum::<f32>() / expected_size as f32;
                 let decomp_mean = decompressed.iter().sum::<f32>() / expected_size as f32;
                 // Check first 10 values
                 if loaded == 0 {
-                    eprintln!("First tensor {}: orig_mean={:.6}, decomp_mean={:.6}, mean_abs_diff={:.6}",
-                              tensor_name, orig_mean, decomp_mean, diff);
+                    eprintln!(
+                        "First tensor {}: orig_mean={:.6}, decomp_mean={:.6}, mean_abs_diff={:.6}",
+                        tensor_name, orig_mean, decomp_mean, diff
+                    );
                     eprintln!("  First 5 orig:  {:?}", &orig_vals[..5]);
                     eprintln!("  First 5 decomp: {:?}", &decompressed[..5]);
                     // Check if maybe they're transposed - compare shapes
@@ -256,12 +288,18 @@ struct ModelPair {
 impl ModelPair {
     fn new(mlp_retention_pct: u32, device: &Device, dtype: DType) -> Result<Self> {
         let safetensors_path = Path::new("/home/crook/models/llama-3.2-1b/model.safetensors");
-        let mlp_dir_str = format!("/home/crook/models/llama-3.2-1b-mlp-{}pct", mlp_retention_pct);
+        let mlp_dir_str = format!(
+            "/home/crook/models/llama-3.2-1b-mlp-{}pct",
+            mlp_retention_pct
+        );
         let mlp_dir = Path::new(&mlp_dir_str);
         let tokenizer_path = Path::new("/home/crook/models/llama-3.2-1b/tokenizer.json");
 
         if !mlp_dir.exists() {
-            anyhow::bail!("MLP directory not found: {}. Run compress_selective first.", mlp_dir_str);
+            anyhow::bail!(
+                "MLP directory not found: {}. Run compress_selective first.",
+                mlp_dir_str
+            );
         }
 
         println!("Loading tokenizer...");
@@ -273,30 +311,50 @@ impl ModelPair {
         let orig_vb = VarBuilder::from_tensors(orig_tensors, dtype, device);
         let original = Llama::load(get_config(), orig_vb)?;
 
-        println!("Loading MLP-{}% compressed model from {}...", mlp_retention_pct, mlp_dir_str);
+        println!(
+            "Loading MLP-{}% compressed model from {}...",
+            mlp_retention_pct, mlp_dir_str
+        );
         let comp_tensors = load_mlp_hybrid(mlp_dir, safetensors_path, device, dtype)?;
         let comp_vb = VarBuilder::from_tensors(comp_tensors, dtype, device);
         let compressed = Llama::load(get_config(), comp_vb)?;
 
-        Ok(Self { original, compressed, tokenizer })
+        Ok(Self {
+            original,
+            compressed,
+            tokenizer,
+        })
     }
 
     fn encode(&self, text: &str) -> Result<Vec<u32>> {
-        let encoding = self.tokenizer.encode(text, false)
+        let encoding = self
+            .tokenizer
+            .encode(text, false)
             .map_err(|e| anyhow::anyhow!("Encode error: {}", e))?;
         Ok(encoding.get_ids().to_vec())
     }
 
     fn decode(&self, tokens: &[u32]) -> Result<String> {
-        self.tokenizer.decode(tokens, true)
+        self.tokenizer
+            .decode(tokens, true)
             .map_err(|e| anyhow::anyhow!("Decode error: {}", e))
     }
 
-    fn generate(&mut self, prompt: &str, max_tokens: usize, device: &Device, use_compressed: bool) -> Result<(String, Vec<u32>)> {
+    fn generate(
+        &mut self,
+        prompt: &str,
+        max_tokens: usize,
+        device: &Device,
+        use_compressed: bool,
+    ) -> Result<(String, Vec<u32>)> {
         let tokens = self.encode(prompt)?;
         let prompt_len = tokens.len();
 
-        let model = if use_compressed { &mut self.compressed } else { &mut self.original };
+        let model = if use_compressed {
+            &mut self.compressed
+        } else {
+            &mut self.original
+        };
         model.clear_cache();
 
         let mut all_tokens = tokens.clone();
@@ -333,7 +391,9 @@ impl ModelPair {
 
 fn token_match_rate(orig: &[u32], comp: &[u32]) -> f32 {
     let min_len = orig.len().min(comp.len());
-    if min_len == 0 { return 0.0; }
+    if min_len == 0 {
+        return 0.0;
+    }
     let matches = orig.iter().zip(comp.iter()).filter(|(a, b)| a == b).count();
     matches as f32 / min_len as f32
 }
@@ -349,13 +409,17 @@ struct TestResult {
 fn main() -> Result<()> {
     // Parse --mlp-retention argument
     let args: Vec<String> = env::args().collect();
-    let mlp_retention_pct: u32 = args.iter()
+    let mlp_retention_pct: u32 = args
+        .iter()
         .position(|a| a == "--mlp-retention")
         .and_then(|i| args.get(i + 1))
         .and_then(|s| s.parse().ok())
         .unwrap_or(45);
 
-    println!("=== MLP-Only Coding Evaluation: {}% MLP Retention ===", mlp_retention_pct);
+    println!(
+        "=== MLP-Only Coding Evaluation: {}% MLP Retention ===",
+        mlp_retention_pct
+    );
     println!("(Attention at 100%, only MLP compressed)\n");
 
     let device = Device::Cpu;
@@ -407,8 +471,14 @@ fn main() -> Result<()> {
 
         // Debug: show first test's actual tokens
         if *level == 1 && *name == "Print hello" {
-            println!("  Original tokens: {:?}", &orig_tokens[..orig_tokens.len().min(10)]);
-            println!("  Compressed tokens: {:?}", &comp_tokens[..comp_tokens.len().min(10)]);
+            println!(
+                "  Original tokens: {:?}",
+                &orig_tokens[..orig_tokens.len().min(10)]
+            );
+            println!(
+                "  Compressed tokens: {:?}",
+                &comp_tokens[..comp_tokens.len().min(10)]
+            );
         }
 
         results.push(TestResult {
@@ -419,7 +489,10 @@ fn main() -> Result<()> {
             passed,
         });
 
-        level_results.entry(*level).or_default().push((passed, match_rate));
+        level_results
+            .entry(*level)
+            .or_default()
+            .push((passed, match_rate));
     }
 
     // Summary
@@ -437,22 +510,40 @@ fn main() -> Result<()> {
     for level in 1..=5 {
         if let Some(level_data) = level_results.get(&level) {
             let level_passed = level_data.iter().filter(|(p, _)| *p).count();
-            let level_avg: f32 = level_data.iter().map(|(_, m)| m).sum::<f32>() / level_data.len() as f32;
-            println!("  Level {}: {}/{} passed, {:.1}% avg match",
-                     level, level_passed, level_data.len(), level_avg * 100.0);
+            let level_avg: f32 =
+                level_data.iter().map(|(_, m)| m).sum::<f32>() / level_data.len() as f32;
+            println!(
+                "  Level {}: {}/{} passed, {:.1}% avg match",
+                level,
+                level_passed,
+                level_data.len(),
+                level_avg * 100.0
+            );
         }
     }
 
     let pass_rate = passed as f32 / total as f32;
     println!("\n");
     if pass_rate >= 0.95 {
-        println!("*** EXCELLENT - MLP-{}% is VIABLE for coding! ***", mlp_retention_pct);
+        println!(
+            "*** EXCELLENT - MLP-{}% is VIABLE for coding! ***",
+            mlp_retention_pct
+        );
     } else if pass_rate >= 0.80 {
-        println!("*** GOOD - MLP-{}% is USABLE with occasional divergence ***", mlp_retention_pct);
+        println!(
+            "*** GOOD - MLP-{}% is USABLE with occasional divergence ***",
+            mlp_retention_pct
+        );
     } else if pass_rate >= 0.50 {
-        println!("*** MARGINAL - MLP-{}% has significant divergence ***", mlp_retention_pct);
+        println!(
+            "*** MARGINAL - MLP-{}% has significant divergence ***",
+            mlp_retention_pct
+        );
     } else {
-        println!("*** INSUFFICIENT - MLP-{}% NOT recommended for coding ***", mlp_retention_pct);
+        println!(
+            "*** INSUFFICIENT - MLP-{}% NOT recommended for coding ***",
+            mlp_retention_pct
+        );
     }
 
     Ok(())

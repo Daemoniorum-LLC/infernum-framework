@@ -146,7 +146,7 @@ fn parse_explicit_stuck(output: &str) -> Option<MetaSignal> {
     let request = match request_text.as_deref() {
         Some(text) if text.contains("clarif") => {
             StuckRequest::Clarification(vec![text.to_string()])
-        }
+        },
         Some(text) if text.contains("context") => StuckRequest::MoreContext {
             about: text.to_string(),
         },
@@ -194,11 +194,10 @@ fn parse_explicit_thinking(output: &str) -> Option<MetaSignal> {
 
     let tag_content = &output[start_idx..end_idx + end_tag.len()];
 
-    let direction = extract_attribute(tag_content, "direction")
-        .unwrap_or_default();
+    let direction = extract_attribute(tag_content, "direction").unwrap_or_default();
 
-    let estimated_steps = extract_attribute(tag_content, "steps")
-        .and_then(|s| s.parse::<u32>().ok());
+    let estimated_steps =
+        extract_attribute(tag_content, "steps").and_then(|s| s.parse::<u32>().ok());
 
     // If no direction attribute, use inner text
     let direction = if direction.is_empty() {

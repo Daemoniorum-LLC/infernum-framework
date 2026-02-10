@@ -44,15 +44,19 @@ impl EmbeddingMetrics {
     /// Records a successful embedding operation.
     pub fn record_success(&self, text_count: u64, dimension: u64, latency_us: u64) {
         self.requests_total.fetch_add(1, Ordering::Relaxed);
-        self.texts_embedded_total.fetch_add(text_count, Ordering::Relaxed);
-        self.latency_total_us.fetch_add(latency_us, Ordering::Relaxed);
-        self.dimensions_total.fetch_add(text_count * dimension, Ordering::Relaxed);
+        self.texts_embedded_total
+            .fetch_add(text_count, Ordering::Relaxed);
+        self.latency_total_us
+            .fetch_add(latency_us, Ordering::Relaxed);
+        self.dimensions_total
+            .fetch_add(text_count * dimension, Ordering::Relaxed);
     }
 
     /// Records a batch operation.
     pub fn record_batch(&self, batch_size: u64) {
         self.batch_operations.fetch_add(1, Ordering::Relaxed);
-        self.batch_size_total.fetch_add(batch_size, Ordering::Relaxed);
+        self.batch_size_total
+            .fetch_add(batch_size, Ordering::Relaxed);
     }
 
     /// Records a failed embedding operation.
@@ -472,16 +476,17 @@ impl Embedder for MeteredEmbedder {
             Ok(embeddings) => {
                 let latency_us = start.elapsed().as_micros() as u64;
                 let dimension = self.inner.dimension() as u64;
-                self.metrics.record_success(text_count, dimension, latency_us);
+                self.metrics
+                    .record_success(text_count, dimension, latency_us);
                 if text_count > 1 {
                     self.metrics.record_batch(text_count);
                 }
                 Ok(embeddings)
-            }
+            },
             Err(e) => {
                 self.metrics.record_failure();
                 Err(e)
-            }
+            },
         }
     }
 
@@ -622,13 +627,28 @@ mod tests {
         // Single embed
         metered.embed(&["hello"]).await.unwrap();
         assert_eq!(metered.metrics().requests_total.load(Ordering::Relaxed), 1);
-        assert_eq!(metered.metrics().texts_embedded_total.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            metered
+                .metrics()
+                .texts_embedded_total
+                .load(Ordering::Relaxed),
+            1
+        );
 
         // Batch embed
         metered.embed(&["a", "b", "c"]).await.unwrap();
         assert_eq!(metered.metrics().requests_total.load(Ordering::Relaxed), 2);
-        assert_eq!(metered.metrics().texts_embedded_total.load(Ordering::Relaxed), 4);
-        assert_eq!(metered.metrics().batch_operations.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            metered
+                .metrics()
+                .texts_embedded_total
+                .load(Ordering::Relaxed),
+            4
+        );
+        assert_eq!(
+            metered.metrics().batch_operations.load(Ordering::Relaxed),
+            1
+        );
     }
 
     #[tokio::test]

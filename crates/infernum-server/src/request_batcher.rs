@@ -99,7 +99,9 @@ impl BatcherHandle {
             .await
             .map_err(|_| Error::internal("Batcher channel closed"))?;
 
-        self.stats.requests_submitted.fetch_add(1, Ordering::Relaxed);
+        self.stats
+            .requests_submitted
+            .fetch_add(1, Ordering::Relaxed);
         Ok(response_rx)
     }
 
@@ -139,7 +141,8 @@ impl RequestBatcher {
         self,
         engine: Arc<E>,
     ) -> BatcherHandle {
-        let (request_tx, mut request_rx) = mpsc::channel::<PendingRequest>(self.config.max_queue_size);
+        let (request_tx, mut request_rx) =
+            mpsc::channel::<PendingRequest>(self.config.max_queue_size);
 
         let config = self.config.clone();
         let stats = self.stats.clone();
@@ -162,7 +165,9 @@ impl RequestBatcher {
                     info!("Request batcher shutting down");
                     // Drain remaining requests with errors
                     for pending in pending_batch.drain(..) {
-                        let _ = pending.response_tx.send(Err(Error::internal("Server shutting down")));
+                        let _ = pending
+                            .response_tx
+                            .send(Err(Error::internal("Server shutting down")));
                     }
                     break;
                 }
@@ -179,15 +184,15 @@ impl RequestBatcher {
                 match tokio::time::timeout(timeout, request_rx.recv()).await {
                     Ok(Some(request)) => {
                         pending_batch.push(request);
-                    }
+                    },
                     Ok(None) => {
                         // Channel closed, shutdown
                         info!("Request channel closed, shutting down batcher");
                         break;
-                    }
+                    },
                     Err(_) => {
                         // Timeout - process batch if we have requests
-                    }
+                    },
                 }
 
                 // Check if we should process the batch
@@ -236,7 +241,9 @@ impl RequestBatcher {
                 // Update stats
                 let batch_time = batch_start.elapsed().as_millis() as u64;
                 stats.batches_processed.fetch_add(1, Ordering::Relaxed);
-                stats.total_batch_time_ms.fetch_add(batch_time, Ordering::Relaxed);
+                stats
+                    .total_batch_time_ms
+                    .fetch_add(batch_time, Ordering::Relaxed);
 
                 debug!(
                     batch_size = batch_size,

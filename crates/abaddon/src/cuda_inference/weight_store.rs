@@ -13,8 +13,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use cudarc::driver::{CudaDevice, CudaSlice};
-use haagenti::tensor::HctReader;
 use haagenti::holotensor::{HoloTensorDecoder, HoloTensorReader, HOLO_MAGIC};
+use haagenti::tensor::HctReader;
 use haagenti::Lz4Decompressor;
 
 use crate::gpu_holo::cuda::GpuHoloContext;
@@ -241,8 +241,8 @@ impl WeightStore {
         let model_dir = model_dir.as_ref();
 
         // Initialize CUDA
-        let device = CudaDevice::new(device_id)
-            .map_err(|e| InferenceError::Device(e.to_string()))?;
+        let device =
+            CudaDevice::new(device_id).map_err(|e| InferenceError::Device(e.to_string()))?;
 
         // Detect architecture
         let arch = match arch {
@@ -264,10 +264,7 @@ impl WeightStore {
         // Find all .hct files
         let hct_files = Self::find_hct_files(model_dir)?;
 
-        tracing::info!(
-            num_files = hct_files.len(),
-            "Found HCT weight files"
-        );
+        tracing::info!(num_files = hct_files.len(), "Found HCT weight files");
 
         // Load all weights into a map
         let raw_weights = Self::load_raw_weights(&hct_files, &device)?;
@@ -321,11 +318,7 @@ impl WeightStore {
 
         let mut files: Vec<_> = entries
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .is_some_and(|ext| ext == "hct")
-            })
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "hct"))
             .map(|e| e.path())
             .collect();
 
@@ -335,8 +328,9 @@ impl WeightStore {
 
     /// Detect file format by reading magic bytes.
     fn detect_format(path: &Path) -> Result<FileFormat, InferenceError> {
-        let mut file = File::open(path)
-            .map_err(|e| InferenceError::ModelLoad(format!("Cannot open {}: {}", path.display(), e)))?;
+        let mut file = File::open(path).map_err(|e| {
+            InferenceError::ModelLoad(format!("Cannot open {}: {}", path.display(), e))
+        })?;
 
         let mut magic = [0u8; 4];
         file.read_exact(&mut magic)
@@ -368,11 +362,11 @@ impl WeightStore {
             FileFormat::HoloTensor => {
                 tracing::info!("Detected HoloTensor format, using GPU holographic reconstruction");
                 Self::load_holotensor_weights(hct_files, device, &mut weights, &mut total_bytes)?;
-            }
+            },
             FileFormat::StandardHct => {
                 tracing::info!("Detected standard HCT format, using LZ4 decompression");
                 Self::load_standard_hct_weights(hct_files, device, &mut weights, &mut total_bytes)?;
-            }
+            },
         }
 
         tracing::info!(
@@ -394,20 +388,25 @@ impl WeightStore {
         let decompressor = Lz4Decompressor::new();
 
         for path in hct_files {
-            let loader = HctLoader::from_file(path)
-                .map_err(|e| InferenceError::ModelLoad(format!("Failed to load {}: {}", path.display(), e)))?;
+            let loader = HctLoader::from_file(path).map_err(|e| {
+                InferenceError::ModelLoad(format!("Failed to load {}: {}", path.display(), e))
+            })?;
 
             // Convert underscore-separated filename to dot-separated HuggingFace name
             let name = filename_to_hf_name(&loader.metadata().name);
-            let shape: Vec<usize> = loader.metadata().shape.iter().map(|&d| d as usize).collect();
+            let shape: Vec<usize> = loader
+                .metadata()
+                .shape
+                .iter()
+                .map(|&d| d as usize)
+                .collect();
             let dtype = loader.metadata().dtype;
 
             // Open file and create reader
-            let file = File::open(path)
-                .map_err(|e| InferenceError::ModelLoad(e.to_string()))?;
+            let file = File::open(path).map_err(|e| InferenceError::ModelLoad(e.to_string()))?;
             let reader = BufReader::new(file);
-            let mut hct_reader = HctReader::new(reader)
-                .map_err(|e| InferenceError::ModelLoad(e.to_string()))?;
+            let mut hct_reader =
+                HctReader::new(reader).map_err(|e| InferenceError::ModelLoad(e.to_string()))?;
 
             // Decompress
             let data = hct_reader
@@ -415,9 +414,8 @@ impl WeightStore {
                 .map_err(|e| InferenceError::ModelLoad(format!("Decompress failed: {}", e)))?;
 
             // Determine format and upload to GPU
-            let (gpu_data, format, scales, zero_points) = Self::process_weight_data(
-                &data, &shape, dtype, device,
-            )?;
+            let (gpu_data, format, scales, zero_points) =
+                Self::process_weight_data(&data, &shape, dtype, device)?;
 
             *total_bytes += gpu_data.size_bytes();
             if let Some(ref s) = scales {
@@ -427,13 +425,16 @@ impl WeightStore {
                 *total_bytes += z.size_bytes();
             }
 
-            weights.insert(name, LoadedWeight {
-                data: gpu_data,
-                format,
-                scales,
-                zero_points,
-                shape,
-            });
+            weights.insert(
+                name,
+                LoadedWeight {
+                    data: gpu_data,
+                    format,
+                    scales,
+                    zero_points,
+                    shape,
+                },
+            );
         }
 
         Ok(())
@@ -451,12 +452,14 @@ impl WeightStore {
         let mut gpu_ctx = GpuHoloContext::with_device(Arc::clone(device), 0);
 
         // Load all reconstruction kernels (LRDF, RPH, Spectral, fused)
-        gpu_ctx.load_all_kernels()
+        gpu_ctx
+            .load_all_kernels()
             .map_err(|e| InferenceError::ModelLoad(format!("Failed to load GPU kernels: {}", e)))?;
 
         // Also load fused kernel for F32->F16 conversion
-        gpu_ctx.load_fused_kernel()
-            .map_err(|e| InferenceError::ModelLoad(format!("Failed to load fused kernel: {}", e)))?;
+        gpu_ctx.load_fused_kernel().map_err(|e| {
+            InferenceError::ModelLoad(format!("Failed to load fused kernel: {}", e))
+        })?;
 
         tracing::info!("GPU holographic kernels loaded successfully");
 
@@ -469,15 +472,26 @@ impl WeightStore {
                 .ok_or_else(|| InferenceError::ModelLoad("Invalid filename".to_string()))?;
 
             // Open file and create HoloTensor reader
-            let file = File::open(path)
-                .map_err(|e| InferenceError::ModelLoad(format!("Cannot open {}: {}", path.display(), e)))?;
+            let file = File::open(path).map_err(|e| {
+                InferenceError::ModelLoad(format!("Cannot open {}: {}", path.display(), e))
+            })?;
             let reader = BufReader::new(file);
-            let mut holo_reader = HoloTensorReader::new(reader)
-                .map_err(|e| InferenceError::ModelLoad(format!("Failed to parse HoloTensor {}: {}", path.display(), e)))?;
+            let mut holo_reader = HoloTensorReader::new(reader).map_err(|e| {
+                InferenceError::ModelLoad(format!(
+                    "Failed to parse HoloTensor {}: {}",
+                    path.display(),
+                    e
+                ))
+            })?;
 
             // Read header and all fragments
-            let (header, fragments) = holo_reader.read_all()
-                .map_err(|e| InferenceError::ModelLoad(format!("Failed to read fragments from {}: {}", path.display(), e)))?;
+            let (header, fragments) = holo_reader.read_all().map_err(|e| {
+                InferenceError::ModelLoad(format!(
+                    "Failed to read fragments from {}: {}",
+                    path.display(),
+                    e
+                ))
+            })?;
 
             // Extract shape from header
             let shape: Vec<usize> = header.shape.iter().map(|&d| d as usize).collect();
@@ -488,55 +502,68 @@ impl WeightStore {
                 // CPU reconstruction for 1D tensors
                 let mut decoder = haagenti::holotensor::HoloTensorDecoder::new(header.clone());
                 for fragment in &fragments {
-                    decoder.add_fragment(fragment.clone())
-                        .map_err(|e| InferenceError::ModelLoad(format!("Failed to add fragment: {}", e)))?;
+                    decoder.add_fragment(fragment.clone()).map_err(|e| {
+                        InferenceError::ModelLoad(format!("Failed to add fragment: {}", e))
+                    })?;
                 }
-                let cpu_data = decoder.reconstruct()
-                    .map_err(|e| InferenceError::ModelLoad(format!("CPU reconstruction failed for {}: {}", path.display(), e)))?;
+                let cpu_data = decoder.reconstruct().map_err(|e| {
+                    InferenceError::ModelLoad(format!(
+                        "CPU reconstruction failed for {}: {}",
+                        path.display(),
+                        e
+                    ))
+                })?;
 
                 // Convert f32 to f16 and upload
-                let f16_data: Vec<half::f16> = cpu_data.iter()
-                    .map(|&f| half::f16::from_f32(f))
-                    .collect();
+                let f16_data: Vec<half::f16> =
+                    cpu_data.iter().map(|&f| half::f16::from_f32(f)).collect();
 
                 // Reinterpret as bytes and upload
                 let bytes: &[u8] = unsafe {
-                    std::slice::from_raw_parts(
-                        f16_data.as_ptr() as *const u8,
-                        f16_data.len() * 2,
-                    )
+                    std::slice::from_raw_parts(f16_data.as_ptr() as *const u8, f16_data.len() * 2)
                 };
 
-                let gpu_data: CudaSlice<u8> = device
-                    .htod_sync_copy(bytes)
-                    .map_err(|e| InferenceError::Memory(format!("Failed to upload 1D tensor: {}", e)))?;
+                let gpu_data: CudaSlice<u8> = device.htod_sync_copy(bytes).map_err(|e| {
+                    InferenceError::Memory(format!("Failed to upload 1D tensor: {}", e))
+                })?;
 
-                GpuTensor::from_cuda_slice(gpu_data, shape.clone(), GpuDType::F16, Arc::clone(device))?
-            } else {
-                // GPU reconstruction for 2D+ tensors
-                let gpu_data_f32: CudaSlice<f32> = gpu_ctx.reconstruct(&header, &fragments)
-                    .map_err(|e| InferenceError::ModelLoad(format!("GPU reconstruction failed for {}: {}", path.display(), e)))?;
-
-                // Convert f32 to f16 for inference (better memory efficiency)
-                let gpu_data_f16 = gpu_ctx.convert_f32_to_f16(&gpu_data_f32)
-                    .map_err(|e| InferenceError::ModelLoad(format!("F32->F16 conversion failed: {}", e)))?;
-
-                GpuTensor::from_cuda_slice_f16(
-                    gpu_data_f16,
+                GpuTensor::from_cuda_slice(
+                    gpu_data,
                     shape.clone(),
+                    GpuDType::F16,
                     Arc::clone(device),
                 )?
+            } else {
+                // GPU reconstruction for 2D+ tensors
+                let gpu_data_f32: CudaSlice<f32> =
+                    gpu_ctx.reconstruct(&header, &fragments).map_err(|e| {
+                        InferenceError::ModelLoad(format!(
+                            "GPU reconstruction failed for {}: {}",
+                            path.display(),
+                            e
+                        ))
+                    })?;
+
+                // Convert f32 to f16 for inference (better memory efficiency)
+                let gpu_data_f16 = gpu_ctx.convert_f32_to_f16(&gpu_data_f32).map_err(|e| {
+                    InferenceError::ModelLoad(format!("F32->F16 conversion failed: {}", e))
+                })?;
+
+                GpuTensor::from_cuda_slice_f16(gpu_data_f16, shape.clone(), Arc::clone(device))?
             };
 
             *total_bytes += gpu_tensor.size_bytes();
 
-            weights.insert(name, LoadedWeight {
-                data: gpu_tensor,
-                format: QuantFormat::F16,
-                scales: None,
-                zero_points: None,
-                shape,
-            });
+            weights.insert(
+                name,
+                LoadedWeight {
+                    data: gpu_tensor,
+                    format: QuantFormat::F16,
+                    scales: None,
+                    zero_points: None,
+                    shape,
+                },
+            );
         }
 
         Ok(())
@@ -548,7 +575,8 @@ impl WeightStore {
         shape: &[usize],
         dtype: haagenti::tensor::DType,
         device: &Arc<CudaDevice>,
-    ) -> Result<(GpuTensor, QuantFormat, Option<GpuTensor>, Option<GpuTensor>), InferenceError> {
+    ) -> Result<(GpuTensor, QuantFormat, Option<GpuTensor>, Option<GpuTensor>), InferenceError>
+    {
         use haagenti::tensor::DType;
 
         match dtype {
@@ -556,12 +584,12 @@ impl WeightStore {
                 // Direct F16, upload as-is
                 let gpu_data = Self::upload_to_gpu(data, shape.to_vec(), GpuDType::F16, device)?;
                 Ok((gpu_data, QuantFormat::F16, None, None))
-            }
+            },
             DType::BF16 => {
                 // Direct BF16
                 let gpu_data = Self::upload_to_gpu(data, shape.to_vec(), GpuDType::BF16, device)?;
                 Ok((gpu_data, QuantFormat::BF16, None, None))
-            }
+            },
             DType::I4 => {
                 // INT4 with scales and zero points
                 // Format: [scales (f32)] [zero_points (i8)] [packed_int4_data]
@@ -576,7 +604,8 @@ impl WeightStore {
                 if data.len() < scales_size + zp_size + packed_size {
                     return Err(InferenceError::ModelLoad(format!(
                         "INT4 data too small: {} bytes for {} elements",
-                        data.len(), num_elements
+                        data.len(),
+                        num_elements
                     )));
                 }
 
@@ -589,43 +618,35 @@ impl WeightStore {
                     })
                     .collect();
 
-                let scales_tensor = Self::upload_to_gpu(
-                    &scales_f16,
-                    vec![num_blocks],
-                    GpuDType::F16,
-                    device,
-                )?;
+                let scales_tensor =
+                    Self::upload_to_gpu(&scales_f16, vec![num_blocks], GpuDType::F16, device)?;
 
                 // Extract zero points
                 let zp_data = &data[scales_size..scales_size + zp_size];
-                let zp_tensor = Self::upload_to_gpu(
-                    zp_data,
-                    vec![num_blocks],
-                    GpuDType::I8,
-                    device,
-                )?;
+                let zp_tensor =
+                    Self::upload_to_gpu(zp_data, vec![num_blocks], GpuDType::I8, device)?;
 
                 // Extract packed INT4 data
                 let packed_data = &data[scales_size + zp_size..];
-                let packed_tensor = Self::upload_to_gpu(
-                    packed_data,
-                    shape.to_vec(),
-                    GpuDType::I4,
-                    device,
-                )?;
+                let packed_tensor =
+                    Self::upload_to_gpu(packed_data, shape.to_vec(), GpuDType::I4, device)?;
 
-                Ok((packed_tensor, QuantFormat::Int4, Some(scales_tensor), Some(zp_tensor)))
-            }
+                Ok((
+                    packed_tensor,
+                    QuantFormat::Int4,
+                    Some(scales_tensor),
+                    Some(zp_tensor),
+                ))
+            },
             DType::I8 => {
                 // INT8 quantization
                 let gpu_data = Self::upload_to_gpu(data, shape.to_vec(), GpuDType::I8, device)?;
                 Ok((gpu_data, QuantFormat::Int8, None, None))
-            }
-            other => {
-                Err(InferenceError::ModelLoad(format!(
-                    "Unsupported dtype: {:?}", other
-                )))
-            }
+            },
+            other => Err(InferenceError::ModelLoad(format!(
+                "Unsupported dtype: {:?}",
+                other
+            ))),
         }
     }
 
@@ -725,9 +746,9 @@ impl WeightStore {
     ) -> Result<LayerWeights, InferenceError> {
         let mut get_weight = |name: &str| -> Result<LoadedWeight, InferenceError> {
             let key = format!("layers.{}.{}", index, name);
-            weights.remove(&key).ok_or_else(|| {
-                InferenceError::ModelLoad(format!("Missing weight: {}", key))
-            })
+            weights
+                .remove(&key)
+                .ok_or_else(|| InferenceError::ModelLoad(format!("Missing weight: {}", key)))
         };
 
         let to_quantized = |w: LoadedWeight| -> QuantizedWeight {
@@ -744,14 +765,12 @@ impl WeightStore {
                 zero_points: w.zero_points,
                 g_idx: None, // GPTQ group index, not used for HCT
                 shape,
-                block_size: 128, // Our HCT default
+                block_size: 128,   // Our HCT default
                 transposed: false, // HCT loading transposes weights to [in, out] format
             }
         };
 
-        let to_norm = |w: LoadedWeight| -> RMSNormWeights {
-            RMSNormWeights { weight: w.data }
-        };
+        let to_norm = |w: LoadedWeight| -> RMSNormWeights { RMSNormWeights { weight: w.data } };
 
         Ok(LayerWeights {
             index,

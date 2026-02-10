@@ -35,14 +35,19 @@ fn main() -> Result<()> {
     // Count HCT files
     let hct_count = std::fs::read_dir(hct_dir)?
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map(|ext| ext == "hct").unwrap_or(false))
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map(|ext| ext == "hct")
+                .unwrap_or(false)
+        })
         .count();
     println!("HCT files found: {}\n", hct_count);
 
     // Test 1: Create TieredHoloLoader
     println!("--- Test 1: TieredHoloLoader Creation ---");
     let config = TieredConfig {
-        vram_budget: 0, // No VRAM for CPU test
+        vram_budget: 0,                     // No VRAM for CPU test
         ram_budget: 8 * 1024 * 1024 * 1024, // 8GB RAM budget
         min_quality: 0.7,
         target_quality: 0.95,
@@ -94,10 +99,10 @@ fn main() -> Result<()> {
                     tensor.dims(),
                     elapsed
                 );
-            }
+            },
             Err(e) => {
                 println!("  Failed: {} -> {}", name, e);
-            }
+            },
         }
     }
 
@@ -129,7 +134,10 @@ fn main() -> Result<()> {
         layer_load_times.push(elapsed);
         println!(
             "  Layer {}: loaded {}/{} tensors ({:.2?})",
-            layer_idx, loaded, tensors.len(), elapsed
+            layer_idx,
+            loaded,
+            tensors.len(),
+            elapsed
         );
     }
 
@@ -137,7 +145,10 @@ fn main() -> Result<()> {
     println!("\n--- Test 6: Cache Statistics ---");
     let (cache_entries, cache_bytes) = lazy_vb.cache_stats();
     println!("  Cache entries: {}", cache_entries);
-    println!("  Cache memory: {:.2} MB", cache_bytes as f64 / (1024.0 * 1024.0));
+    println!(
+        "  Cache memory: {:.2} MB",
+        cache_bytes as f64 / (1024.0 * 1024.0)
+    );
 
     // Test 7: Reload cached tensor (should be faster)
     println!("\n--- Test 7: Cache Hit Performance ---");
@@ -155,10 +166,16 @@ fn main() -> Result<()> {
     println!("\n=== Summary ===");
     println!("Total tensors: {}", tensor_names.len());
     println!("Cache entries: {}", cache_entries);
-    println!("Cache memory: {:.2} MB", cache_bytes as f64 / (1024.0 * 1024.0));
+    println!(
+        "Cache memory: {:.2} MB",
+        cache_bytes as f64 / (1024.0 * 1024.0)
+    );
 
     if !layer_load_times.is_empty() {
-        let avg_layer_time: f64 = layer_load_times.iter().map(|t| t.as_secs_f64()).sum::<f64>()
+        let avg_layer_time: f64 = layer_load_times
+            .iter()
+            .map(|t| t.as_secs_f64())
+            .sum::<f64>()
             / layer_load_times.len() as f64;
         println!("Avg layer load time: {:.2} ms", avg_layer_time * 1000.0);
     }

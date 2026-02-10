@@ -25,8 +25,15 @@ fn tensor_stats(t: &Tensor, name: &str) -> Result<()> {
     let max = vals.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
 
     println!("  {} -> {:?}", name, t.dims());
-    println!("    non-zero: {}/{} ({:.1}%), sum: {:.6}, range: [{:.6}, {:.6}]",
-             non_zero, total, 100.0 * non_zero as f64 / total as f64, sum, min, max);
+    println!(
+        "    non-zero: {}/{} ({:.1}%), sum: {:.6}, range: [{:.6}, {:.6}]",
+        non_zero,
+        total,
+        100.0 * non_zero as f64 / total as f64,
+        sum,
+        min,
+        max
+    );
     Ok(())
 }
 
@@ -59,7 +66,8 @@ fn main() -> Result<()> {
         } else {
             println!("  {} -> NOT FOUND!", key);
             // List similar keys
-            let similar: Vec<_> = tensors.keys()
+            let similar: Vec<_> = tensors
+                .keys()
                 .filter(|k| k.contains("embed") || k.contains("norm"))
                 .take(5)
                 .collect();
@@ -101,7 +109,11 @@ fn main() -> Result<()> {
 
     // Test layer 0 components
     println!("--- Layer 0 Components ---");
-    for suffix in ["input_layernorm.weight", "self_attn.q_proj.weight", "mlp.gate_proj.weight"] {
+    for suffix in [
+        "input_layernorm.weight",
+        "self_attn.q_proj.weight",
+        "mlp.gate_proj.weight",
+    ] {
         let key = format!("model.layers.0.{}", suffix);
         if let Some(t) = tensors.get(&key) {
             tensor_stats(t, &key)?;
@@ -117,16 +129,24 @@ fn main() -> Result<()> {
 
     // Try to get embed_tokens via VarBuilder path
     println!("Trying vb.pp(\"model.embed_tokens\").get(\"weight\")...");
-    match vb.pp("model.embed_tokens").get((128256usize, 2048usize), "weight") {
+    match vb
+        .pp("model.embed_tokens")
+        .get((128256usize, 2048usize), "weight")
+    {
         Ok(w) => {
             tensor_stats(&w, "embed_tokens.weight via VarBuilder")?;
-        }
+        },
         Err(e) => {
             println!("  Error: {}", e);
             // Try to find what keys are available
-            println!("  Available keys with 'embed': {:?}",
-                     tensors.keys().filter(|k| k.contains("embed")).collect::<Vec<_>>());
-        }
+            println!(
+                "  Available keys with 'embed': {:?}",
+                tensors
+                    .keys()
+                    .filter(|k| k.contains("embed"))
+                    .collect::<Vec<_>>()
+            );
+        },
     }
 
     // Test loading embedding via candle_nn::embedding
@@ -140,10 +160,10 @@ fn main() -> Result<()> {
             let input_ids = Tensor::new(&[128000u32, 9906u32], &device)?.unsqueeze(0)?;
             let embedded = embed.forward(&input_ids)?;
             tensor_stats(&embedded, "Forward result")?;
-        }
+        },
         Err(e) => {
             println!("  Error: {}", e);
-        }
+        },
     }
 
     println!("\n=== Done ===");

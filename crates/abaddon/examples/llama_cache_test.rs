@@ -72,7 +72,10 @@ fn main() -> Result<()> {
     let cache_types: Vec<(&str, CacheType)> = {
         let mut types = vec![
             ("Standard", CacheType::Standard),
-            ("Quantized (PerToken)", CacheType::Quantized(QuantizationGranularity::PerToken)),
+            (
+                "Quantized (PerToken)",
+                CacheType::Quantized(QuantizationGranularity::PerToken),
+            ),
         ];
         #[cfg(feature = "cuda")]
         if has_cuda {
@@ -94,7 +97,8 @@ fn main() -> Result<()> {
 
         for prompt in &prompts {
             // Load model with this cache type
-            let mut model = Llama::load_with_cache_type(config.clone(), vb.clone(), cache_type.clone())?;
+            let mut model =
+                Llama::load_with_cache_type(config.clone(), vb.clone(), cache_type.clone())?;
 
             // Tokenize
             let token_ids = tokenizer.encode(prompt, true)?;
@@ -116,7 +120,11 @@ fn main() -> Result<()> {
 
             // Decode
             let text = tokenizer.decode(&current_tokens, true)?;
-            println!("  \"{prompt}\" -> \"{}\" ({:.2?})", &text[prompt.len()..].trim(), gen_time);
+            println!(
+                "  \"{prompt}\" -> \"{}\" ({:.2?})",
+                &text[prompt.len()..].trim(),
+                gen_time
+            );
 
             // Report cache stats
             println!(
@@ -180,10 +188,15 @@ fn main() -> Result<()> {
 
     let long_prompt = "Explain how attention works in neural networks:";
     let token_ids = tokenizer.encode(long_prompt, true)?;
-    println!("Prompt: \"{}\" ({} input tokens)", long_prompt, token_ids.len());
+    println!(
+        "Prompt: \"{}\" ({} input tokens)",
+        long_prompt,
+        token_ids.len()
+    );
 
     for (cache_name, cache_type) in &cache_types {
-        let mut model = Llama::load_with_cache_type(config.clone(), vb.clone(), cache_type.clone())?;
+        let mut model =
+            Llama::load_with_cache_type(config.clone(), vb.clone(), cache_type.clone())?;
         let input_tensor = Tensor::new(&token_ids[..], &device)?.unsqueeze(0)?;
 
         let start = Instant::now();
@@ -218,7 +231,7 @@ fn sample_token(logits: &Tensor) -> Result<u32> {
         3 => {
             let seq_len = dims[1];
             logits.i((0, seq_len - 1, ..))?
-        }
+        },
         2 => logits.i((dims[0] - 1, ..))?,
         1 => logits.clone(),
         _ => anyhow::bail!("Unexpected logits shape: {:?}", dims),

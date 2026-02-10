@@ -15,18 +15,17 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use infernum_core::{
-    EmbedRequest, EmbedResponse, GenerateRequest, GenerateResponse, ModelArchitecture, ModelId,
-    ModelMetadata, ModelSource, RequestId, Result, TokenStream, Usage, model::LlamaVersion,
-    response::Choice,
+    model::LlamaVersion, response::Choice, EmbedRequest, EmbedResponse, GenerateRequest,
+    GenerateResponse, ModelArchitecture, ModelId, ModelMetadata, ModelSource, RequestId, Result,
+    TokenStream, Usage,
 };
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
 use abaddon::InferenceEngine;
 use beleth::{
-    AutonomyGrant, ExecutorConfig, IterationOutcome, LoopConfig, LoopEvent,
-    LoopExecutor, NaturalTermination, ResourceTermination, TerminationReason, ToolPattern,
-    ToolRegistry,
+    AutonomyGrant, ExecutorConfig, IterationOutcome, LoopConfig, LoopEvent, LoopExecutor,
+    NaturalTermination, ResourceTermination, TerminationReason, ToolPattern, ToolRegistry,
 };
 
 // =============================================================================
@@ -185,11 +184,12 @@ async fn test_executor_explicit_answer() {
     assert_eq!(summary.iterations_completed, 1);
     assert_eq!(summary.tool_calls_made, 0);
     match &summary.termination {
-        TerminationReason::Natural(NaturalTermination::AnswerProvided {
-            confidence, ..
-        }) => {
-            assert!(*confidence > 0.9, "Expected high confidence, got {confidence}");
-        }
+        TerminationReason::Natural(NaturalTermination::AnswerProvided { confidence, .. }) => {
+            assert!(
+                *confidence > 0.9,
+                "Expected high confidence, got {confidence}"
+            );
+        },
         other => panic!("Expected AnswerProvided, got {other:?}"),
     }
     assert_eq!(engine.call_count(), 1);
@@ -233,14 +233,12 @@ async fn test_executor_implicit_answer() {
     assert_eq!(summary.tool_calls_made, 0);
     // No tools, no meta-signals → treated as implicit answer at 0.5 confidence
     match &summary.termination {
-        TerminationReason::Natural(NaturalTermination::AnswerProvided {
-            confidence, ..
-        }) => {
+        TerminationReason::Natural(NaturalTermination::AnswerProvided { confidence, .. }) => {
             assert!(
                 (*confidence - 0.5).abs() < 0.01,
                 "Expected 0.5 confidence, got {confidence}"
             );
-        }
+        },
         other => panic!("Expected AnswerProvided, got {other:?}"),
     }
 }
@@ -267,10 +265,11 @@ async fn test_executor_tool_call_and_answer() {
     ]));
 
     let tools = Arc::new(ToolRegistry::with_code_tools());
-    let config = make_permissive_config("test-tool-call", dir.path()).with_loop_config(LoopConfig {
-        detect_implicit_signals: false,
-        ..LoopConfig::default()
-    });
+    let config =
+        make_permissive_config("test-tool-call", dir.path()).with_loop_config(LoopConfig {
+            detect_implicit_signals: false,
+            ..LoopConfig::default()
+        });
 
     let executor = LoopExecutor::new(engine.clone(), tools, config);
     let (tx, rx) = mpsc::channel(64);
@@ -290,9 +289,9 @@ async fn test_executor_tool_call_and_answer() {
 
     // Check events include tool execution
     let events = collect_events(rx).await;
-    assert!(events.iter().any(
-        |e| matches!(e, LoopEvent::ToolCallDetected { tool, .. } if tool == "read_file")
-    ));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, LoopEvent::ToolCallDetected { tool, .. } if tool == "read_file")));
     assert!(events
         .iter()
         .any(|e| matches!(e, LoopEvent::ToolExecutionStarted { .. })));
@@ -493,26 +492,21 @@ async fn test_executor_requires_approval() {
 
     // Check that approval was required
     let events = collect_events(rx).await;
-    let approval_required = events.iter().any(|e| {
-        matches!(e, LoopEvent::ToolApprovalRequired { tool, .. } if tool == "read_file")
-    });
-    assert!(
-        approval_required,
-        "Should emit ToolApprovalRequired event"
-    );
+    let approval_required = events
+        .iter()
+        .any(|e| matches!(e, LoopEvent::ToolApprovalRequired { tool, .. } if tool == "read_file"));
+    assert!(approval_required, "Should emit ToolApprovalRequired event");
 }
 
 /// Stuck signal — model outputs <stuck> tag, loop terminates.
 #[tokio::test]
 async fn test_executor_stuck_signal() {
-    let engine = Arc::new(ScriptedEngine::new(vec![
-        r#"<stuck>
+    let engine = Arc::new(ScriptedEngine::new(vec![r#"<stuck>
 <attempt>Tried reading the documentation</attempt>
 <hypothesis>The API might have changed</hypothesis>
 <request>I need clarification on the new API format</request>
 </stuck>"#
-            .to_string(),
-    ]));
+        .to_string()]));
 
     let tools = Arc::new(ToolRegistry::with_builtins());
     let config = make_config("test-stuck");
@@ -649,12 +643,11 @@ async fn test_executor_max_iterations() {
     ]));
 
     let tools = Arc::new(ToolRegistry::with_code_tools());
-    let config =
-        make_permissive_config("test-max-iter", dir.path()).with_loop_config(LoopConfig {
-            max_iterations: 2, // Only allow 2 iterations
-            detect_implicit_signals: false,
-            ..LoopConfig::default()
-        });
+    let config = make_permissive_config("test-max-iter", dir.path()).with_loop_config(LoopConfig {
+        max_iterations: 2, // Only allow 2 iterations
+        detect_implicit_signals: false,
+        ..LoopConfig::default()
+    });
 
     let executor = LoopExecutor::new(engine.clone(), tools, config);
     let (tx, _rx) = mpsc::channel(64);
@@ -741,11 +734,10 @@ async fn test_executor_event_stream_completeness() {
     ]));
 
     let tools = Arc::new(ToolRegistry::with_code_tools());
-    let config =
-        make_permissive_config("test-events", dir.path()).with_loop_config(LoopConfig {
-            detect_implicit_signals: false,
-            ..LoopConfig::default()
-        });
+    let config = make_permissive_config("test-events", dir.path()).with_loop_config(LoopConfig {
+        detect_implicit_signals: false,
+        ..LoopConfig::default()
+    });
 
     let executor = LoopExecutor::new(engine.clone(), tools, config);
     let (tx, rx) = mpsc::channel(64);
@@ -777,7 +769,10 @@ async fn test_executor_event_stream_completeness() {
     assert_eq!(*names.last().expect("events"), "LoopCompleted");
 
     // Count specific events
-    let gen_count = names.iter().filter(|&&n| n == "GenerationCompleted").count();
+    let gen_count = names
+        .iter()
+        .filter(|&&n| n == "GenerationCompleted")
+        .count();
     assert_eq!(gen_count, 2, "Should have 2 generation completions");
 
     let iter_starts = names.iter().filter(|&&n| n == "IterationStarted").count();
@@ -812,10 +807,7 @@ async fn test_executor_answer_with_caveats() {
         .expect("run should succeed");
 
     match &summary.termination {
-        TerminationReason::Natural(NaturalTermination::AnswerProvided {
-            confidence,
-            answer,
-        }) => {
+        TerminationReason::Natural(NaturalTermination::AnswerProvided { confidence, answer }) => {
             assert!(
                 (*confidence - 0.7).abs() < 0.01,
                 "Expected 0.7 confidence, got {confidence}"
@@ -824,7 +816,7 @@ async fn test_executor_answer_with_caveats() {
                 answer.contains("3.14"),
                 "Answer should contain the result: {answer}"
             );
-        }
+        },
         other => panic!("Expected AnswerProvided, got {other:?}"),
     }
 }
@@ -871,8 +863,13 @@ async fn test_executor_tool_error_recovery() {
 
     // Verify the tool result was captured as failed
     let events = collect_events(rx).await;
-    let tool_completed = events.iter().find(|e| matches!(e, LoopEvent::ToolExecutionCompleted { .. }));
-    assert!(tool_completed.is_some(), "Should have ToolExecutionCompleted event");
+    let tool_completed = events
+        .iter()
+        .find(|e| matches!(e, LoopEvent::ToolExecutionCompleted { .. }));
+    assert!(
+        tool_completed.is_some(),
+        "Should have ToolExecutionCompleted event"
+    );
 }
 
 /// Bash tool execution through the executor.
@@ -891,11 +888,10 @@ async fn test_executor_bash_tool() {
     ]));
 
     let tools = Arc::new(ToolRegistry::with_code_tools());
-    let config =
-        make_permissive_config("test-bash", dir.path()).with_loop_config(LoopConfig {
-            detect_implicit_signals: false,
-            ..LoopConfig::default()
-        });
+    let config = make_permissive_config("test-bash", dir.path()).with_loop_config(LoopConfig {
+        detect_implicit_signals: false,
+        ..LoopConfig::default()
+    });
 
     let executor = LoopExecutor::new(engine.clone(), tools, config);
     let (tx, _rx) = mpsc::channel(64);

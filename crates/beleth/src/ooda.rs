@@ -96,16 +96,22 @@ fn parse_decision_response(text: &str) -> Result<OodaDecision> {
                 params: parsed.tool_params.unwrap_or(serde_json::json!({})),
             },
             "gather_info" => DecisionAction::GatherInfo {
-                query: parsed.query.unwrap_or_else(|| "Continue analysis".to_string()),
+                query: parsed
+                    .query
+                    .unwrap_or_else(|| "Continue analysis".to_string()),
             },
             "final_answer" => DecisionAction::FinalAnswer {
                 answer: parsed.answer.unwrap_or_else(|| text.to_string()),
             },
             "request_input" => DecisionAction::RequestInput {
-                question: parsed.question.unwrap_or_else(|| "Need more information".to_string()),
+                question: parsed
+                    .question
+                    .unwrap_or_else(|| "Need more information".to_string()),
             },
             "abort" => DecisionAction::Abort {
-                reason: parsed.reason.unwrap_or_else(|| "Task cannot be completed".to_string()),
+                reason: parsed
+                    .reason
+                    .unwrap_or_else(|| "Task cannot be completed".to_string()),
             },
             _ => return fallback_decision_parse(text),
         };
@@ -115,7 +121,9 @@ fn parse_decision_response(text: &str) -> Result<OodaDecision> {
             rationale: parsed.rationale.unwrap_or_else(|| text.to_string()),
             confidence: parsed.confidence.unwrap_or(0.7),
             alternatives: Vec::new(),
-            expected_outcome: parsed.expected_outcome.unwrap_or_else(|| "Task progress".to_string()),
+            expected_outcome: parsed
+                .expected_outcome
+                .unwrap_or_else(|| "Task progress".to_string()),
         });
     }
 
@@ -136,7 +144,10 @@ fn extract_json_block(text: &str) -> String {
     if let Some(start) = text.find("```") {
         let after_start = start + 3;
         // Skip language identifier if present
-        let json_start = text[after_start..].find('\n').map(|n| after_start + n + 1).unwrap_or(after_start);
+        let json_start = text[after_start..]
+            .find('\n')
+            .map(|n| after_start + n + 1)
+            .unwrap_or(after_start);
         if let Some(end) = text[json_start..].find("```") {
             return text[json_start..json_start + end].trim().to_string();
         }
@@ -162,11 +173,17 @@ fn fallback_decision_parse(text: &str) -> Result<OodaDecision> {
         DecisionAction::FinalAnswer {
             answer: text.to_string(),
         }
-    } else if text_lower.contains("abort") || text_lower.contains("cannot") || text_lower.contains("impossible") {
+    } else if text_lower.contains("abort")
+        || text_lower.contains("cannot")
+        || text_lower.contains("impossible")
+    {
         DecisionAction::Abort {
             reason: text.to_string(),
         }
-    } else if text_lower.contains("need input") || text_lower.contains("clarify") || text_lower.contains("ask user") {
+    } else if text_lower.contains("need input")
+        || text_lower.contains("clarify")
+        || text_lower.contains("ask user")
+    {
         DecisionAction::RequestInput {
             question: text.to_string(),
         }
@@ -575,7 +592,7 @@ impl OodaExecutor {
                         total_iterations: iteration,
                         total_duration_ms: start.elapsed().as_millis() as u64,
                     });
-                }
+                },
                 DecisionAction::Abort { reason } => {
                     return Ok(OodaResult {
                         answer: None,
@@ -586,7 +603,7 @@ impl OodaExecutor {
                         total_iterations: iteration,
                         total_duration_ms: start.elapsed().as_millis() as u64,
                     });
-                }
+                },
                 DecisionAction::RequestInput { question } => {
                     return Ok(OodaResult {
                         answer: None,
@@ -597,8 +614,8 @@ impl OodaExecutor {
                         total_iterations: iteration,
                         total_duration_ms: start.elapsed().as_millis() as u64,
                     });
-                }
-                _ => {}
+                },
+                _ => {},
             }
         }
 
@@ -729,8 +746,7 @@ Decide the next action. Respond with JSON in this exact format:
 }}
 
 Available tools: {}"#,
-            orientation.situation,
-            tools_list
+            orientation.situation, tools_list
         );
 
         let mut decide_messages = messages.to_vec();
@@ -794,7 +810,7 @@ Available tools: {}"#,
                         side_effects: Vec::new(),
                     }),
                 }
-            }
+            },
             DecisionAction::GatherInfo { query } => Ok(OodaActionResult {
                 success: true,
                 output: format!("Gathering info: {}", query),
@@ -1003,9 +1019,13 @@ That's my choice."#;
 
     #[test]
     fn test_parse_decision_json_final_answer() {
-        let json = r#"{"action_type": "final_answer", "answer": "The answer is 42", "confidence": 0.95}"#;
+        let json =
+            r#"{"action_type": "final_answer", "answer": "The answer is 42", "confidence": 0.95}"#;
         let decision = parse_decision_response(json).unwrap();
-        assert!(matches!(decision.action, DecisionAction::FinalAnswer { .. }));
+        assert!(matches!(
+            decision.action,
+            DecisionAction::FinalAnswer { .. }
+        ));
         assert!((decision.confidence - 0.95).abs() < 0.01);
     }
 
@@ -1017,7 +1037,7 @@ That's my choice."#;
             DecisionAction::ExecuteTool { tool, params } => {
                 assert_eq!(tool, "search");
                 assert_eq!(params["query"], "rust");
-            }
+            },
             _ => panic!("Expected ExecuteTool"),
         }
     }
@@ -1029,7 +1049,7 @@ That's my choice."#;
         match decision.action {
             DecisionAction::GatherInfo { query } => {
                 assert_eq!(query, "What files exist?");
-            }
+            },
             _ => panic!("Expected GatherInfo"),
         }
     }
@@ -1038,7 +1058,10 @@ That's my choice."#;
     fn test_parse_decision_fallback() {
         let text = "I think the final answer is that we need more data.";
         let decision = parse_decision_response(text).unwrap();
-        assert!(matches!(decision.action, DecisionAction::FinalAnswer { .. }));
+        assert!(matches!(
+            decision.action,
+            DecisionAction::FinalAnswer { .. }
+        ));
         assert!((decision.confidence - 0.6).abs() < 0.01); // Fallback has lower confidence
     }
 
@@ -1053,6 +1076,9 @@ That's my choice."#;
     fn test_fallback_decision_parse_request_input() {
         let text = "I need to clarify what you mean by that.";
         let decision = fallback_decision_parse(text).unwrap();
-        assert!(matches!(decision.action, DecisionAction::RequestInput { .. }));
+        assert!(matches!(
+            decision.action,
+            DecisionAction::RequestInput { .. }
+        ));
     }
 }

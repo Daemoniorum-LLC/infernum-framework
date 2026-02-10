@@ -19,9 +19,13 @@ use std::path::Path;
 use candle_core::{DType, Device, Tensor};
 use half::{bf16, f16};
 
-use haagenti::tensor::{CompressionAlgorithm, DType as HctDType, HctHeader, HctReader, FLAG_HOLOGRAPHIC};
-use haagenti::holotensor::{HoloTensorReader, HoloTensorHeader, HoloTensorDecoder, HoloFragment, HOLO_MAGIC};
 use haagenti::compressive::CompressiveSpectralDecoder;
+use haagenti::holotensor::{
+    HoloFragment, HoloTensorDecoder, HoloTensorHeader, HoloTensorReader, HOLO_MAGIC,
+};
+use haagenti::tensor::{
+    CompressionAlgorithm, DType as HctDType, HctHeader, HctReader, FLAG_HOLOGRAPHIC,
+};
 use haagenti::{Lz4Decompressor, ZstdDecompressor};
 use std::io::{Read, Seek, SeekFrom};
 
@@ -185,13 +189,18 @@ impl HctLoader {
             // Read header: [magic:4][width:4][height:4][retain_count:4][essential_count:4][detail_per_frag:4]
             let mut header_buf = [0u8; 24];
             header_buf[0..4].copy_from_slice(&magic);
-            file.read_exact(&mut header_buf[4..]).map_err(|e| HctError::Io {
-                path: path.to_path_buf(),
-                message: format!("Failed to read V3 header: {}", e),
-            })?;
+            file.read_exact(&mut header_buf[4..])
+                .map_err(|e| HctError::Io {
+                    path: path.to_path_buf(),
+                    message: format!("Failed to read V3 header: {}", e),
+                })?;
 
-            let width = u32::from_le_bytes([header_buf[4], header_buf[5], header_buf[6], header_buf[7]]) as u64;
-            let height = u32::from_le_bytes([header_buf[8], header_buf[9], header_buf[10], header_buf[11]]) as u64;
+            let width =
+                u32::from_le_bytes([header_buf[4], header_buf[5], header_buf[6], header_buf[7]])
+                    as u64;
+            let height =
+                u32::from_le_bytes([header_buf[8], header_buf[9], header_buf[10], header_buf[11]])
+                    as u64;
 
             // Get file size for compression stats
             let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
@@ -205,7 +214,7 @@ impl HctLoader {
                 dtype: HctDType::F32,
                 shape: vec![height, width], // [rows, cols] = [height, width]
                 algorithm: CompressionAlgorithm::Zstd, // V3 typically uses zstd compression on top
-                num_blocks: 1, // V3 is single-block spectral
+                num_blocks: 1,              // V3 is single-block spectral
                 flags: 0,
                 is_holographic: false, // V3 uses spectral/DCT, not holographic/LRDF
             };
@@ -286,7 +295,7 @@ impl HctLoader {
                     .map_err(|e| HctError::Decompress {
                         message: format!("LZ4 decompression failed: {}", e),
                     })?
-            }
+            },
             CompressionAlgorithm::Zstd => {
                 let decompressor = ZstdDecompressor::new();
                 hct_reader
@@ -294,7 +303,7 @@ impl HctLoader {
                     .map_err(|e| HctError::Decompress {
                         message: format!("Zstd decompression failed: {}", e),
                     })?
-            }
+            },
         };
 
         Ok(data)
@@ -321,7 +330,12 @@ impl HctLoader {
         const HCT3_MAGIC: u32 = 0x48435433;
         let is_hct3 = if let Some(frag0) = fragments.iter().find(|f| f.index == 0) {
             if frag0.data.len() >= 4 {
-                let magic = u32::from_le_bytes([frag0.data[0], frag0.data[1], frag0.data[2], frag0.data[3]]);
+                let magic = u32::from_le_bytes([
+                    frag0.data[0],
+                    frag0.data[1],
+                    frag0.data[2],
+                    frag0.data[3],
+                ]);
                 magic == HCT3_MAGIC
             } else {
                 false
@@ -330,15 +344,21 @@ impl HctLoader {
             false
         };
 
-        let f32_data = if is_hct3 && matches!(header.encoding, haagenti::holotensor::HolographicEncoding::Spectral) {
+        let f32_data = if is_hct3
+            && matches!(
+                header.encoding,
+                haagenti::holotensor::HolographicEncoding::Spectral
+            ) {
             // Use CompressiveSpectralDecoder for HCT3 format
             let mut decoder = CompressiveSpectralDecoder::new();
 
             // Find and add fragment 0 (essentials) first
             if let Some(frag0) = fragments.iter().find(|f| f.index == 0) {
-                decoder.add_essentials(frag0).map_err(|e| HctError::Holographic {
-                    message: format!("Failed to add HCT3 essentials: {}", e),
-                })?;
+                decoder
+                    .add_essentials(frag0)
+                    .map_err(|e| HctError::Holographic {
+                        message: format!("Failed to add HCT3 essentials: {}", e),
+                    })?;
             } else {
                 return Err(HctError::Holographic {
                     message: "HCT3 format missing fragment 0 (essentials)".to_string(),
@@ -347,9 +367,14 @@ impl HctLoader {
 
             // Add detail fragments (1..N)
             for fragment in fragments.iter().filter(|f| f.index > 0) {
-                decoder.add_detail(fragment).map_err(|e| HctError::Holographic {
-                    message: format!("Failed to add HCT3 detail fragment {}: {}", fragment.index, e),
-                })?;
+                decoder
+                    .add_detail(fragment)
+                    .map_err(|e| HctError::Holographic {
+                        message: format!(
+                            "Failed to add HCT3 detail fragment {}: {}",
+                            fragment.index, e
+                        ),
+                    })?;
             }
 
             decoder.reconstruct().map_err(|e| HctError::Holographic {
@@ -360,9 +385,11 @@ impl HctLoader {
             let mut decoder = HoloTensorDecoder::new(header.clone());
 
             for fragment in fragments {
-                decoder.add_fragment(fragment).map_err(|e| HctError::Holographic {
-                    message: format!("Failed to add fragment: {}", e),
-                })?;
+                decoder
+                    .add_fragment(fragment)
+                    .map_err(|e| HctError::Holographic {
+                        message: format!("Failed to add fragment: {}", e),
+                    })?;
             }
 
             decoder.reconstruct().map_err(|e| HctError::Holographic {
@@ -371,10 +398,7 @@ impl HctLoader {
         };
 
         // Convert f32 to bytes
-        let bytes: Vec<u8> = f32_data
-            .iter()
-            .flat_map(|&f| f.to_le_bytes())
-            .collect();
+        let bytes: Vec<u8> = f32_data.iter().flat_map(|&f| f.to_le_bytes()).collect();
 
         Ok(bytes)
     }
@@ -408,11 +432,19 @@ impl HctLoader {
 
         // V3 header is 20 bytes, zstd starts at byte 20 OR 21 depending on variant
         // Check both positions for zstd magic (0x28 0xB5 0x2F 0xFD)
-        let zstd_offset = if data.len() >= 24 &&
-            data[20] == 0x28 && data[21] == 0xB5 && data[22] == 0x2F && data[23] == 0xFD {
+        let zstd_offset = if data.len() >= 24
+            && data[20] == 0x28
+            && data[21] == 0xB5
+            && data[22] == 0x2F
+            && data[23] == 0xFD
+        {
             Some(20)
-        } else if data.len() >= 25 &&
-            data[21] == 0x28 && data[22] == 0xB5 && data[23] == 0x2F && data[24] == 0xFD {
+        } else if data.len() >= 25
+            && data[21] == 0x28
+            && data[22] == 0xB5
+            && data[23] == 0x2F
+            && data[24] == 0xFD
+        {
             Some(21)
         } else {
             None
@@ -421,14 +453,18 @@ impl HctLoader {
         let decompressed_data = if let Some(offset) = zstd_offset {
             // Decompress only the zstd portion
             let zstd_data = &data[offset..];
-            let decompressed_payload = zstd::decode_all(zstd_data).map_err(|e| HctError::Decompress {
-                message: format!("Zstd decompression failed: {}", e),
-            })?;
+            let decompressed_payload =
+                zstd::decode_all(zstd_data).map_err(|e| HctError::Decompress {
+                    message: format!("Zstd decompression failed: {}", e),
+                })?;
 
             // Check if decompressed data starts with V3 magic (self-contained format)
-            if decompressed_payload.len() >= 4 &&
-                decompressed_payload[0] == 0x33 && decompressed_payload[1] == 0x54 &&
-                decompressed_payload[2] == 0x43 && decompressed_payload[3] == 0x48 {
+            if decompressed_payload.len() >= 4
+                && decompressed_payload[0] == 0x33
+                && decompressed_payload[1] == 0x54
+                && decompressed_payload[2] == 0x43
+                && decompressed_payload[3] == 0x48
+            {
                 decompressed_payload
             } else {
                 // Reconstruct: [header (first 20 bytes)][padding to 24 bytes][decompressed bitmap+coefficients]
@@ -440,8 +476,11 @@ impl HctLoader {
             }
         } else {
             // No embedded zstd, check if entire file is zstd wrapped
-            let is_zstd = data.len() >= 4 &&
-                data[0] == 0x28 && data[1] == 0xB5 && data[2] == 0x2F && data[3] == 0xFD;
+            let is_zstd = data.len() >= 4
+                && data[0] == 0x28
+                && data[1] == 0xB5
+                && data[2] == 0x2F
+                && data[3] == 0xFD;
 
             if is_zstd {
                 zstd::decode_all(&data[..]).map_err(|e| HctError::Decompress {
@@ -463,9 +502,11 @@ impl HctLoader {
             data: decompressed_data,
         };
 
-        decoder.add_essentials(&fragment0).map_err(|e| HctError::Decompress {
-            message: format!("V3 essentials parsing failed: {}", e),
-        })?;
+        decoder
+            .add_essentials(&fragment0)
+            .map_err(|e| HctError::Decompress {
+                message: format!("V3 essentials parsing failed: {}", e),
+            })?;
 
         // Reconstruct tensor via IDCT
         let f32_data = decoder.reconstruct().map_err(|e| HctError::Decompress {
@@ -473,10 +514,7 @@ impl HctLoader {
         })?;
 
         // Convert f32 to bytes
-        let bytes: Vec<u8> = f32_data
-            .iter()
-            .flat_map(|&f| f.to_le_bytes())
-            .collect();
+        let bytes: Vec<u8> = f32_data.iter().flat_map(|&f| f.to_le_bytes()).collect();
 
         Ok(bytes)
     }
@@ -501,7 +539,9 @@ impl HctLoader {
         let shape: Vec<usize> = self.metadata.shape.iter().map(|&d| d as usize).collect();
 
         // Handle quantized types with dequantization (only for standard HCT format)
-        if self.format == TensorFileFormat::Hct && matches!(self.metadata.dtype, HctDType::I4 | HctDType::I8) {
+        if self.format == TensorFileFormat::Hct
+            && matches!(self.metadata.dtype, HctDType::I4 | HctDType::I8)
+        {
             return self.dequantize_to_tensor(&data, &shape, device, target_dtype);
         }
 
@@ -512,7 +552,7 @@ impl HctLoader {
             TensorFileFormat::HoloTensor | TensorFileFormat::CompressiveV3 => {
                 // Reconstruction always outputs F32 data converted to bytes
                 DType::F32
-            }
+            },
             TensorFileFormat::Hct => {
                 // Standard HCT stores data in native dtype
                 match self.metadata.dtype {
@@ -521,7 +561,7 @@ impl HctLoader {
                     HctDType::BF16 => DType::BF16,
                     HctDType::I8 | HctDType::I4 => unreachable!(), // Handled above
                 }
-            }
+            },
         };
 
         // Create tensor from raw bytes
@@ -532,27 +572,27 @@ impl HctLoader {
                     .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                     .collect();
                 Tensor::from_vec(floats, shape.as_slice(), device)
-            }
+            },
             DType::F16 => {
                 let halfs: Vec<f16> = data
                     .chunks_exact(2)
                     .map(|chunk| f16::from_le_bytes([chunk[0], chunk[1]]))
                     .collect();
                 Tensor::from_vec(halfs, shape.as_slice(), device)
-            }
+            },
             DType::BF16 => {
                 let bfloats: Vec<bf16> = data
                     .chunks_exact(2)
                     .map(|chunk| bf16::from_le_bytes([chunk[0], chunk[1]]))
                     .collect();
                 Tensor::from_vec(bfloats, shape.as_slice(), device)
-            }
+            },
             _ => {
                 // Should not reach here for supported types
                 return Err(HctError::UnsupportedDtype {
                     dtype: format!("{:?}", self.metadata.dtype),
                 });
-            }
+            },
         }
         .map_err(|e| HctError::Tensor {
             message: format!("Failed to create tensor: {}", e),
@@ -647,9 +687,10 @@ impl HctLoader {
                     values.push((centered_val as f32) * scale);
                 }
 
-                let tensor = Tensor::from_vec(values, shape, device).map_err(|e| HctError::Tensor {
-                    message: format!("Failed to create tensor from Q4_0 data: {}", e),
-                })?;
+                let tensor =
+                    Tensor::from_vec(values, shape, device).map_err(|e| HctError::Tensor {
+                        message: format!("Failed to create tensor from Q4_0 data: {}", e),
+                    })?;
 
                 // Convert to target dtype if needed
                 let target = target_dtype.unwrap_or(DType::F32);
@@ -660,7 +701,7 @@ impl HctLoader {
                 } else {
                     Ok(tensor)
                 }
-            }
+            },
             HctDType::I8 => {
                 // INT8: 1 value per byte, symmetric quantization
                 // Data layout: [FP16 scales][INT8 values]
@@ -698,9 +739,10 @@ impl HctLoader {
                     values.push((signed_val as f32) * scale);
                 }
 
-                let tensor = Tensor::from_vec(values, shape, device).map_err(|e| HctError::Tensor {
-                    message: format!("Failed to create tensor from INT8 data: {}", e),
-                })?;
+                let tensor =
+                    Tensor::from_vec(values, shape, device).map_err(|e| HctError::Tensor {
+                        message: format!("Failed to create tensor from INT8 data: {}", e),
+                    })?;
 
                 // Convert to target dtype if needed
                 let target = target_dtype.unwrap_or(DType::F32);
@@ -711,7 +753,7 @@ impl HctLoader {
                 } else {
                     Ok(tensor)
                 }
-            }
+            },
             _ => Err(HctError::UnsupportedDtype {
                 dtype: format!("{:?}", self.metadata.dtype),
             }),
@@ -756,12 +798,7 @@ pub fn load_hct_directory(
             message: e.to_string(),
         })?
         .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry
-                .path()
-                .extension()
-                .is_some_and(|ext| ext == "hct")
-        })
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "hct"))
         .map(|entry| entry.path())
         .collect();
 
@@ -818,7 +855,6 @@ pub fn load_hct_directory_gpu(
     dtype: DType,
 ) -> Result<HashMap<String, Tensor>, HctError> {
     use crate::gpu_lz4::GpuLz4Context;
-    
 
     let dir = dir.as_ref();
 
@@ -837,16 +873,16 @@ pub fn load_hct_directory_gpu(
                     } else {
                         Some(ctx)
                     }
-                }
+                },
                 Err(e) => {
                     tracing::warn!(
                         error = %e,
                         "Failed to create GPU LZ4 context, falling back to CPU"
                     );
                     None
-                }
+                },
             }
-        }
+        },
         _ => None,
     };
 
@@ -857,12 +893,7 @@ pub fn load_hct_directory_gpu(
             message: e.to_string(),
         })?
         .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry
-                .path()
-                .extension()
-                .is_some_and(|ext| ext == "hct")
-        })
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "hct"))
         .map(|entry| entry.path())
         .collect();
 
@@ -908,7 +939,7 @@ pub fn load_hct_directory_gpu(
             match gpu_decompress_tensor(ctx, &loader, device, dtype) {
                 Ok(tensor) => {
                     tensors.insert(name, tensor);
-                }
+                },
                 Err(e) => {
                     tracing::warn!(
                         name = %name,
@@ -918,7 +949,7 @@ pub fn load_hct_directory_gpu(
                     // Fallback to CPU
                     let tensor = loader.to_tensor(device, Some(dtype))?;
                     tensors.insert(name, tensor);
-                }
+                },
             }
         }
 
@@ -981,7 +1012,12 @@ fn gpu_decompress_tensor(
         .collect::<Result<Vec<_>, HctError>>()?;
 
     // Decompress using GPU
-    let shape: Vec<usize> = loader.metadata().shape.iter().map(|&d| d as usize).collect();
+    let shape: Vec<usize> = loader
+        .metadata()
+        .shape
+        .iter()
+        .map(|&d| d as usize)
+        .collect();
 
     ctx.decompress_to_tensor(&blocks, &shape, dtype, device)
         .map_err(|e| HctError::Decompress {
@@ -1038,12 +1074,7 @@ pub fn load_hct_directory_gpu_progressive(
             message: e.to_string(),
         })?
         .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry
-                .path()
-                .extension()
-                .is_some_and(|ext| ext == "hct")
-        })
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "hct"))
         .map(|entry| entry.path())
         .collect();
 
@@ -1076,34 +1107,30 @@ pub fn load_hct_directory_gpu_progressive(
 
     // Try to create GPU contexts
     let lz4_ctx = match device {
-        Device::Cuda(_) => {
-            match GpuLz4Context::new(0) {
-                Ok(mut ctx) => {
-                    if ctx.load_kernel().is_ok() {
-                        Some(ctx)
-                    } else {
-                        None
-                    }
+        Device::Cuda(_) => match GpuLz4Context::new(0) {
+            Ok(mut ctx) => {
+                if ctx.load_kernel().is_ok() {
+                    Some(ctx)
+                } else {
+                    None
                 }
-                Err(_) => None,
-            }
-        }
+            },
+            Err(_) => None,
+        },
         _ => None,
     };
 
     let holo_ctx = match device {
-        Device::Cuda(_) => {
-            match StreamingHoloContext::new(0, 4) {
-                Ok(ctx) => Some(ctx),
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "Failed to create holographic context, holographic files will fail"
-                    );
-                    None
-                }
-            }
-        }
+        Device::Cuda(_) => match StreamingHoloContext::new(0, 4) {
+            Ok(ctx) => Some(ctx),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to create holographic context, holographic files will fail"
+                );
+                None
+            },
+        },
         _ => None,
     };
 
@@ -1128,7 +1155,8 @@ pub fn load_hct_directory_gpu_progressive(
     if !holographic_loaders.is_empty() {
         if holo_ctx.is_none() {
             return Err(HctError::Holographic {
-                message: "Holographic files present but GPU holographic context unavailable".to_string(),
+                message: "Holographic files present but GPU holographic context unavailable"
+                    .to_string(),
             });
         }
 
@@ -1139,12 +1167,12 @@ pub fn load_hct_directory_gpu_progressive(
                 Ok((tensor, quality)) => {
                     tensors.insert(name.clone(), tensor);
                     qualities.insert(name.clone(), quality);
-                }
+                },
                 Err(e) => {
                     return Err(HctError::Holographic {
                         message: format!("Failed to load holographic tensor '{}': {}", name, e),
                     });
-                }
+                },
             }
         }
     }
@@ -1182,38 +1210,44 @@ fn load_holographic_tensor(
     })?;
 
     // Read fragments up to target quality, or all if needed for minimum quality
-    let (fragments, _predicted_quality) = holo_reader.read_to_quality(min_quality)
-        .map_err(|e| HctError::Holographic {
-            message: format!("Failed to read fragments: {}", e),
-        })?;
+    let (fragments, _predicted_quality) =
+        holo_reader
+            .read_to_quality(min_quality)
+            .map_err(|e| HctError::Holographic {
+                message: format!("Failed to read fragments: {}", e),
+            })?;
 
     let holo_header = holo_reader.header().clone();
 
     // Reconstruct using streaming context
-    let reconstructed = ctx.reconstruct_streaming(
-        &holo_header,
-        fragments.iter(),
-        min_quality,
-    ).map_err(|e| HctError::Holographic {
-        message: format!("Holographic reconstruction failed: {}", e),
-    })?;
-
-    // Calculate achieved quality
-    let quality = holo_header.quality_curve.predict(
-        fragments.len() as u16,
-        holo_header.total_fragments,
-    );
-
-    // Copy to host and create tensor
-    let host_data = ctx.context().copy_to_host(&reconstructed)
+    let reconstructed = ctx
+        .reconstruct_streaming(&holo_header, fragments.iter(), min_quality)
         .map_err(|e| HctError::Holographic {
-            message: format!("Failed to copy reconstructed data to host: {}", e),
+            message: format!("Holographic reconstruction failed: {}", e),
         })?;
 
+    // Calculate achieved quality
+    let quality = holo_header
+        .quality_curve
+        .predict(fragments.len() as u16, holo_header.total_fragments);
+
+    // Copy to host and create tensor
+    let host_data =
+        ctx.context()
+            .copy_to_host(&reconstructed)
+            .map_err(|e| HctError::Holographic {
+                message: format!("Failed to copy reconstructed data to host: {}", e),
+            })?;
+
     // Create tensor
-    let shape: Vec<usize> = loader.metadata().shape.iter().map(|&d| d as usize).collect();
-    let tensor = Tensor::from_vec(host_data, shape.as_slice(), device)
-        .map_err(|e| HctError::Tensor {
+    let shape: Vec<usize> = loader
+        .metadata()
+        .shape
+        .iter()
+        .map(|&d| d as usize)
+        .collect();
+    let tensor =
+        Tensor::from_vec(host_data, shape.as_slice(), device).map_err(|e| HctError::Tensor {
             message: format!("Failed to create tensor from reconstructed data: {}", e),
         })?;
 
@@ -1245,12 +1279,7 @@ pub fn load_hct_directory_gpu_progressive(
             message: e.to_string(),
         })?
         .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry
-                .path()
-                .extension()
-                .is_some_and(|ext| ext == "hct")
-        })
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "hct"))
         .map(|entry| entry.path())
         .collect();
 
@@ -1290,9 +1319,7 @@ pub fn load_hct_directory_gpu(
 pub fn filename_to_tensor_name(filename: &str) -> String {
     // Known patterns that should be kept together with underscores
     // These are common transformer component suffixes (reserved for future use)
-    let _compound_suffixes = [
-        "_tokens", "_proj", "_attn", "_layernorm", "_norm", "_mlp",
-    ];
+    let _compound_suffixes = ["_tokens", "_proj", "_attn", "_layernorm", "_norm", "_mlp"];
 
     // Build regex-like state machine
     let mut result = String::new();
@@ -1356,7 +1383,11 @@ pub fn filename_to_tensor_name(filename: &str) -> String {
         }
 
         // Handle "post_attention_layernorm"
-        if part == "post" && i + 2 < parts.len() && parts[i + 1] == "attention" && parts[i + 2] == "layernorm" {
+        if part == "post"
+            && i + 2 < parts.len()
+            && parts[i + 1] == "attention"
+            && parts[i + 2] == "layernorm"
+        {
             if !result.is_empty() {
                 result.push('.');
             }
@@ -1581,11 +1612,7 @@ mod tests {
         let result = dequantize_int4(&data, 64, 32);
 
         for (i, &v) in result.iter().enumerate() {
-            assert!(
-                v.abs() < 1e-6,
-                "Element {} should be ~0, got {}",
-                i, v
-            );
+            assert!(v.abs() < 1e-6, "Element {} should be ~0, got {}", i, v);
         }
     }
 
@@ -1603,7 +1630,11 @@ mod tests {
             assert!(
                 error <= max_error + 1e-6,
                 "Element {}: orig={}, dequant={}, error={} > max_error={}",
-                i, orig, dequant, error, max_error
+                i,
+                orig,
+                dequant,
+                error,
+                max_error
             );
         }
     }
@@ -1623,7 +1654,10 @@ mod tests {
             assert!(
                 error <= max_error + 1e-6,
                 "Element {}: orig={}, dequant={}, error={}",
-                i, orig, dequant, error
+                i,
+                orig,
+                dequant,
+                error
             );
         }
     }
@@ -1631,9 +1665,7 @@ mod tests {
     #[test]
     fn test_int4_dequant_mixed_values() {
         // Test mixed positive/negative (typical weight distribution)
-        let values: Vec<f32> = (0..64)
-            .map(|i| ((i as f32) - 32.0) * 0.01)
-            .collect();
+        let values: Vec<f32> = (0..64).map(|i| ((i as f32) - 32.0) * 0.01).collect();
         let data = create_int4_data(&values, 32);
         let result = dequantize_int4(&data, 64, 32);
 
@@ -1643,7 +1675,8 @@ mod tests {
         assert!(
             (orig_mean - dequant_mean).abs() < 0.01,
             "Mean not preserved: orig={}, dequant={}",
-            orig_mean, dequant_mean
+            orig_mean,
+            dequant_mean
         );
     }
 
@@ -1651,9 +1684,7 @@ mod tests {
     fn test_int4_dequant_layernorm_values() {
         // LayerNorm weights are typically around 0.2-0.4 with small variation
         // This tests the case that was previously buggy
-        let values: Vec<f32> = (0..32)
-            .map(|i| 0.28 + (i as f32 - 16.0) * 0.005)
-            .collect();
+        let values: Vec<f32> = (0..32).map(|i| 0.28 + (i as f32 - 16.0) * 0.005).collect();
 
         let data = create_int4_data(&values, 32);
         let result = dequantize_int4(&data, 32, 32);
@@ -1665,15 +1696,13 @@ mod tests {
         assert!(
             (orig_mean - dequant_mean).abs() < 0.05,
             "LayerNorm mean not preserved: orig={:.4}, dequant={:.4}",
-            orig_mean, dequant_mean
+            orig_mean,
+            dequant_mean
         );
 
         // Verify no value is exactly 1.0 (the previous bug returned all ones)
         let all_ones = result.iter().all(|&v| (v - 1.0).abs() < 1e-6);
-        assert!(
-            !all_ones,
-            "LayerNorm values should NOT all be 1.0"
-        );
+        assert!(!all_ones, "LayerNorm values should NOT all be 1.0");
     }
 
     #[test]
@@ -1682,7 +1711,7 @@ mod tests {
         // Test maximum nibble (15 -> +7 * scale)
         let scale = 0.1f32;
         let min_val = -8.0 * scale; // nibble 0
-        let max_val = 7.0 * scale;  // nibble 15
+        let max_val = 7.0 * scale; // nibble 15
 
         let values = vec![min_val, max_val];
         let data = create_int4_data(&values, 32);
@@ -1691,12 +1720,14 @@ mod tests {
         assert!(
             (result[0] - min_val).abs() < 0.02,
             "Min value: expected {}, got {}",
-            min_val, result[0]
+            min_val,
+            result[0]
         );
         assert!(
             (result[1] - max_val).abs() < 0.02,
             "Max value: expected {}, got {}",
-            max_val, result[1]
+            max_val,
+            result[1]
         );
     }
 
@@ -1724,9 +1755,11 @@ mod tests {
 
         // Std should be roughly preserved (within 50% due to quantization noise)
         assert!(
-            block0_dequant_std > block0_orig_std * 0.5 && block0_dequant_std < block0_orig_std * 1.5,
+            block0_dequant_std > block0_orig_std * 0.5
+                && block0_dequant_std < block0_orig_std * 1.5,
             "Block 0 std not preserved: orig={}, dequant={}",
-            block0_orig_std, block0_dequant_std
+            block0_orig_std,
+            block0_dequant_std
         );
     }
 
@@ -1748,12 +1781,14 @@ mod tests {
         assert!(
             (result[0] - 7.0 * scale).abs() < 0.01,
             "First nibble (low): expected {}, got {}",
-            7.0 * scale, result[0]
+            7.0 * scale,
+            result[0]
         );
         assert!(
             (result[1] - (-8.0 * scale)).abs() < 0.01,
             "Second nibble (high): expected {}, got {}",
-            -8.0 * scale, result[1]
+            -8.0 * scale,
+            result[1]
         );
     }
 
@@ -1771,10 +1806,7 @@ mod tests {
             filename_to_tensor_name("model_norm_weight"),
             "model.norm.weight"
         );
-        assert_eq!(
-            filename_to_tensor_name("lm_head_weight"),
-            "lm_head.weight"
-        );
+        assert_eq!(filename_to_tensor_name("lm_head_weight"), "lm_head.weight");
     }
 
     #[test]
@@ -1842,7 +1874,9 @@ mod tests {
             assert!(
                 (orig - deq).abs() <= max_error + 0.01,
                 "Block_size=128 dequant error at index {}: orig={}, got={}",
-                i, orig, deq
+                i,
+                orig,
+                deq
             );
         }
     }
@@ -1871,8 +1905,8 @@ mod tests {
     /// This tests trust boundary §4 (Quantization Math) from GPU-CODEC-PIPELINE-TDD.md.
     #[test]
     fn test_hct_dequant_matches_quantizer_int4_symmetric() {
-        use crate::quantize::{Quantizer, QuantizeConfig, QuantizeFormat, DEFAULT_BLOCK_SIZE};
-        use candle_core::{Device, Tensor, DType};
+        use crate::quantize::{QuantizeConfig, QuantizeFormat, Quantizer, DEFAULT_BLOCK_SIZE};
+        use candle_core::{DType, Device, Tensor};
 
         // 1. Create known input data (2 blocks of 128 = 256 elements)
         let input: Vec<f32> = (0..256).map(|i| ((i as f32) - 128.0) * 0.01).collect();
@@ -1903,7 +1937,10 @@ mod tests {
             assert!(
                 (r - h).abs() < 1e-7,
                 "Element {}: quantize.rs={} vs hct.rs={} (diff={})",
-                i, r, h, (r - h).abs()
+                i,
+                r,
+                h,
+                (r - h).abs()
             );
         }
     }
@@ -1916,12 +1953,14 @@ mod tests {
         use candle_core::{Device, Tensor};
 
         let n = DEFAULT_BLOCK_SIZE * 10; // 1280 elements
-        let input: Vec<f32> = (0..n).map(|i| {
-            let block = i / DEFAULT_BLOCK_SIZE;
-            let pos = i % DEFAULT_BLOCK_SIZE;
-            // Different scale per block so each block has a unique scale factor
-            ((pos as f32) - 64.0) * 0.001 * ((block + 1) as f32)
-        }).collect();
+        let input: Vec<f32> = (0..n)
+            .map(|i| {
+                let block = i / DEFAULT_BLOCK_SIZE;
+                let pos = i % DEFAULT_BLOCK_SIZE;
+                // Different scale per block so each block has a unique scale factor
+                ((pos as f32) - 64.0) * 0.001 * ((block + 1) as f32)
+            })
+            .collect();
 
         let tensor = Tensor::from_vec(input.clone(), &[n], &Device::Cpu).unwrap();
         let quantizer = Quantizer::int4_symmetric();
@@ -1940,7 +1979,9 @@ mod tests {
         let hct_values = dequantize_int4(&hct_bytes, n, DEFAULT_BLOCK_SIZE);
 
         assert_eq!(ref_values.len(), hct_values.len());
-        let max_diff: f32 = ref_values.iter().zip(hct_values.iter())
+        let max_diff: f32 = ref_values
+            .iter()
+            .zip(hct_values.iter())
             .map(|(r, h)| (r - h).abs())
             .fold(0.0f32, f32::max);
         assert!(
@@ -1977,8 +2018,18 @@ mod tests {
             let low = byte & 0x0F;
             let high = (byte >> 4) & 0x0F;
             // Both should be in valid nibble range [0, 15]
-            assert!(low <= 15, "Low nibble at byte {} out of range: {}", byte_idx, low);
-            assert!(high <= 15, "High nibble at byte {} out of range: {}", byte_idx, high);
+            assert!(
+                low <= 15,
+                "Low nibble at byte {} out of range: {}",
+                byte_idx,
+                low
+            );
+            assert!(
+                high <= 15,
+                "High nibble at byte {} out of range: {}",
+                byte_idx,
+                high
+            );
         }
 
         // Round-trip: create → dequant should not panic and produce sane values
@@ -1989,7 +2040,9 @@ mod tests {
             assert!(
                 v.abs() < 2.0,
                 "Element {} out of expected range: {} (original: {})",
-                i, v, values[i]
+                i,
+                v,
+                values[i]
             );
         }
     }

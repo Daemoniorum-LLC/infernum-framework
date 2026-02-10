@@ -43,7 +43,11 @@ fn main() -> Result<()> {
     println!("Loading HCT weights...");
     let start = Instant::now();
     let tensors = load_hct_directory_sequential(hct_dir, &device, dtype)?;
-    println!("Loaded {} tensors in {:.2}s\n", tensors.len(), start.elapsed().as_secs_f64());
+    println!(
+        "Loaded {} tensors in {:.2}s\n",
+        tensors.len(),
+        start.elapsed().as_secs_f64()
+    );
 
     // Check embedding tensor
     if let Some(embed) = tensors.get("model.embed_tokens.weight") {
@@ -83,9 +87,8 @@ fn main() -> Result<()> {
     let top_probs: Vec<f32> = probs.flatten_all()?.to_vec1()?;
 
     // Find top 5 tokens
-    let mut indexed: Vec<(usize, f32)> = top_probs.iter().enumerate()
-        .map(|(i, &p)| (i, p))
-        .collect();
+    let mut indexed: Vec<(usize, f32)> =
+        top_probs.iter().enumerate().map(|(i, &p)| (i, p)).collect();
     indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
     println!("\nTop 5 predicted tokens:");
@@ -95,7 +98,8 @@ fn main() -> Result<()> {
 
     // Check if output looks reasonable
     let top_prob = indexed[0].1;
-    let entropy: f64 = top_probs.iter()
+    let entropy: f64 = top_probs
+        .iter()
         .filter(|&&p| p > 0.0)
         .map(|&p| -(p as f64) * (p as f64).ln())
         .sum();

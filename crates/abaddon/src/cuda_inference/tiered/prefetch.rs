@@ -30,10 +30,7 @@ pub struct PrefetchRequest {
 #[derive(Debug)]
 pub enum PrefetchResult {
     /// Layer is now ready in the target tier.
-    Ready {
-        layer_idx: usize,
-        duration_ms: f64,
-    },
+    Ready { layer_idx: usize, duration_ms: f64 },
     /// Prefetch was cancelled (e.g., layer already accessed).
     Cancelled { layer_idx: usize },
     /// Prefetch failed.
@@ -77,11 +74,7 @@ impl PrefetchController {
     /// * `num_workers` - Number of worker threads
     /// * `prefetch_depth` - How many layers ahead to prefetch
     /// * `stats` - Statistics tracker
-    pub fn new(
-        num_workers: usize,
-        prefetch_depth: usize,
-        stats: Arc<TieredStats>,
-    ) -> Self {
+    pub fn new(num_workers: usize, prefetch_depth: usize, stats: Arc<TieredStats>) -> Self {
         let (request_tx, request_rx) = bounded(64);
         let (result_tx, result_rx) = bounded(64);
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -161,16 +154,19 @@ impl PrefetchController {
 
                     match result {
                         Ok(()) => {
-                            let _ = tx.send(PrefetchResult::Ready { layer_idx, duration_ms });
-                        }
+                            let _ = tx.send(PrefetchResult::Ready {
+                                layer_idx,
+                                duration_ms,
+                            });
+                        },
                         Err(e) => {
                             let _ = tx.send(PrefetchResult::Failed {
                                 layer_idx,
                                 error: e,
                             });
-                        }
+                        },
                     }
-                }
+                },
                 Err(crossbeam::channel::RecvTimeoutError::Timeout) => continue,
                 Err(crossbeam::channel::RecvTimeoutError::Disconnected) => break,
             }
@@ -252,7 +248,7 @@ impl PrefetchController {
                         self.stats.record_prefetch_hit();
                     }
                     results.push(result);
-                }
+                },
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => break,
             }

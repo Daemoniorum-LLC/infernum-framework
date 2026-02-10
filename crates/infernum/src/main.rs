@@ -4,9 +4,6 @@
 //!
 //! The main command-line interface for the Infernum ecosystem.
 
-#![warn(clippy::all)]
-#![warn(clippy::pedantic)]
-#![deny(clippy::unwrap_used)]
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::must_use_candidate)]
 
@@ -631,7 +628,17 @@ async fn main() -> Result<()> {
         }) => {
             // Use config default model if not specified on command line
             let model = model.or(cli.model).or(cfg.default_model.clone());
-            commands::generate(prompt, model, max_tokens, temperature, stream, backend, n_gpu_layers, context_size).await?;
+            commands::generate(
+                prompt,
+                model,
+                max_tokens,
+                temperature,
+                stream,
+                backend,
+                n_gpu_layers,
+                context_size,
+            )
+            .await?;
         },
 
         Some(Commands::Embed { text, model }) => {
@@ -654,9 +661,18 @@ async fn main() -> Result<()> {
                 cpu_only,
                 encoding,
             } => {
-                commands::model_convert(model, output, fragments, max_rank, min_quality, verify, cpu_only, encoding)
-                    .await?;
-            }
+                commands::model_convert(
+                    model,
+                    output,
+                    fragments,
+                    max_rank,
+                    min_quality,
+                    verify,
+                    cpu_only,
+                    encoding,
+                )
+                .await?;
+            },
             ModelAction::Quantize {
                 model,
                 output,
@@ -665,10 +681,16 @@ async fn main() -> Result<()> {
                 verify,
             } => {
                 commands::model_quantize(model, output, format, block_size, verify).await?;
-            }
+            },
         },
 
-        Some(Commands::Chat { model, system, backend, n_gpu_layers, context_size }) => {
+        Some(Commands::Chat {
+            model,
+            system,
+            backend,
+            n_gpu_layers,
+            context_size,
+        }) => {
             // Use config default model if not specified on command line
             let model = model.or(cli.model).or(cfg.default_model.clone());
             let system = system.or(cli.system);
@@ -706,7 +728,19 @@ async fn main() -> Result<()> {
         }) => {
             let model = model.or(cli.model).or(cfg.default_model.clone());
             let system = system.or(cli.system);
-            commands::agent(objective, model, system, max_iterations, verbose, working_dir, code_tools, backend, n_gpu_layers, context_size).await?;
+            commands::agent(
+                objective,
+                model,
+                system,
+                max_iterations,
+                verbose,
+                working_dir,
+                code_tools,
+                backend,
+                n_gpu_layers,
+                context_size,
+            )
+            .await?;
         },
 
         Some(Commands::Config { action }) => match action {

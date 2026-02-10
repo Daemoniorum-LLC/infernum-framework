@@ -9,7 +9,7 @@ repository.workspace = true
 description = "Grimoire prompt system integration for Infernum"
 
 [dependencies]
-infernum-core = { path = "../infernum-core", version = "0.1.0" }
+infernum-core = { path = "../infernum-core", version = "0.2.0-rc.1" }
 
 # Async
 tokio = { workspace = true, features = ["fs"] }
@@ -40,3 +40,6 @@ dirs = "6.0"
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
 tempfile = "3.14"
+
+[lints]
+workspace = true

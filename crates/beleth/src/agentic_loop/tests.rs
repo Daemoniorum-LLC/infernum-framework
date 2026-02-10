@@ -86,9 +86,12 @@ mod state_machine {
         lp.generation_complete("stuck", 10).unwrap();
 
         assert!(lp
-            .stuck_detected(vec![], StuckRequest::HumanIntervention {
-                reason: "help".into(),
-            })
+            .stuck_detected(
+                vec![],
+                StuckRequest::HumanIntervention {
+                    reason: "help".into(),
+                }
+            )
             .is_ok());
         assert_eq!(lp.state(), LoopState::Stuck);
         assert!(lp.is_terminated());
@@ -138,20 +141,27 @@ mod state_machine {
             match terminal {
                 LoopState::Completed => {
                     lp.answer_detected("done".into(), 1.0, vec![]).unwrap();
-                }
+                },
                 LoopState::Stuck => {
-                    lp.stuck_detected(vec![], StuckRequest::HumanIntervention {
-                        reason: "stuck".into(),
-                    })
+                    lp.stuck_detected(
+                        vec![],
+                        StuckRequest::HumanIntervention {
+                            reason: "stuck".into(),
+                        },
+                    )
                     .unwrap();
-                }
+                },
                 LoopState::Yielded => {
                     lp.yield_detected(None, "yield".into()).unwrap();
-                }
+                },
                 _ => unreachable!(),
             }
 
-            assert!(lp.is_terminated(), "state {:?} should be terminal", terminal);
+            assert!(
+                lp.is_terminated(),
+                "state {:?} should be terminal",
+                terminal
+            );
             assert!(
                 lp.valid_transitions().is_empty(),
                 "terminal state {:?} should have no valid transitions",
@@ -449,7 +459,9 @@ mod termination {
         assert!(lp.is_terminated());
         assert!(matches!(
             lp.termination_reason(),
-            Some(TerminationReason::Natural(NaturalTermination::AnswerProvided { .. }))
+            Some(TerminationReason::Natural(
+                NaturalTermination::AnswerProvided { .. }
+            ))
         ));
     }
 
@@ -469,7 +481,9 @@ mod termination {
         assert!(lp.is_terminated());
         assert!(matches!(
             lp.termination_reason(),
-            Some(TerminationReason::Natural(NaturalTermination::AgentStuck { .. }))
+            Some(TerminationReason::Natural(
+                NaturalTermination::AgentStuck { .. }
+            ))
         ));
     }
 
@@ -486,7 +500,9 @@ mod termination {
         assert!(lp.is_terminated());
         assert!(matches!(
             lp.termination_reason(),
-            Some(TerminationReason::Natural(NaturalTermination::AgentYielded { .. }))
+            Some(TerminationReason::Natural(
+                NaturalTermination::AgentYielded { .. }
+            ))
         ));
     }
 
@@ -512,7 +528,9 @@ mod termination {
         assert!(result.is_err());
         assert!(matches!(
             lp.termination_reason(),
-            Some(TerminationReason::Resource(ResourceTermination::MaxIterations { .. }))
+            Some(TerminationReason::Resource(
+                ResourceTermination::MaxIterations { .. }
+            ))
         ));
     }
 
@@ -588,7 +606,9 @@ mod termination {
         assert!(lp.is_terminated());
         assert!(matches!(
             lp.termination_reason(),
-            Some(TerminationReason::External(ExternalTermination::ClientCancelled))
+            Some(TerminationReason::External(
+                ExternalTermination::ClientCancelled
+            ))
         ));
     }
 
@@ -736,7 +756,10 @@ mod meta_signals {
 
         assert!(matches!(signal, Some(MetaSignal::Answer { .. })));
         if let Some(MetaSignal::Answer {
-            confidence, caveats, content, ..
+            confidence,
+            caveats,
+            content,
+            ..
         }) = signal
         {
             assert!((confidence - 0.92).abs() < 0.01);
@@ -961,28 +984,28 @@ mod token_budget {
 /// Advance a loop to the specified state for testing.
 fn advance_to_state(lp: &mut AgenticLoop, target: LoopState) {
     match target {
-        LoopState::Initialized => {} // already there
+        LoopState::Initialized => {}, // already there
         LoopState::Generating => {
             lp.start().unwrap();
-        }
+        },
         LoopState::Detecting => {
             lp.start().unwrap();
             lp.generation_complete("output", 10).unwrap();
-        }
+        },
         LoopState::Executing => {
             lp.start().unwrap();
             lp.generation_complete("output", 10).unwrap();
             lp.tool_calls_detected(1).unwrap();
-        }
+        },
         LoopState::Integrating => {
             lp.start().unwrap();
             lp.generation_complete("output", 10).unwrap();
             lp.tool_calls_detected(1).unwrap();
             lp.execution_complete(vec![]).unwrap();
-        }
+        },
         LoopState::Completed | LoopState::Stuck | LoopState::Yielded => {
             panic!("Use terminal state helpers directly");
-        }
+        },
     }
 }
 

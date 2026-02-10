@@ -259,7 +259,10 @@ impl AllocationPlan {
     }
 
     /// Returns tensors allocated to a specific tier.
-    pub fn tensors_in_tier(&self, tier: MemoryTier) -> impl Iterator<Item = (&String, &TensorAllocation)> {
+    pub fn tensors_in_tier(
+        &self,
+        tier: MemoryTier,
+    ) -> impl Iterator<Item = (&String, &TensorAllocation)> {
         self.allocations.iter().filter(move |(_, a)| a.tier == tier)
     }
 }
@@ -361,16 +364,28 @@ impl TensorType {
     pub fn from_name(name: &str) -> Self {
         let name_lower = name.to_lowercase();
 
-        if name_lower.contains("embed") || name_lower.contains("wte") || name_lower.contains("wpe") {
+        if name_lower.contains("embed") || name_lower.contains("wte") || name_lower.contains("wpe")
+        {
             TensorType::Embedding
-        } else if name_lower.contains("lm_head") || name_lower.contains("output") && name_lower.contains("weight") && !name_lower.contains("layer") {
+        } else if name_lower.contains("lm_head")
+            || name_lower.contains("output")
+                && name_lower.contains("weight")
+                && !name_lower.contains("layer")
+        {
             TensorType::LmHead
-        } else if name_lower.contains("q_proj") || name_lower.contains("k_proj")
-            || name_lower.contains("v_proj") || name_lower.contains("o_proj")
-            || name_lower.contains("self_attn") || name_lower.contains("attention") {
+        } else if name_lower.contains("q_proj")
+            || name_lower.contains("k_proj")
+            || name_lower.contains("v_proj")
+            || name_lower.contains("o_proj")
+            || name_lower.contains("self_attn")
+            || name_lower.contains("attention")
+        {
             TensorType::Attention
-        } else if name_lower.contains("layernorm") || name_lower.contains("ln_")
-            || name_lower.contains("_norm") || name_lower.contains("rmsnorm") {
+        } else if name_lower.contains("layernorm")
+            || name_lower.contains("ln_")
+            || name_lower.contains("_norm")
+            || name_lower.contains("rmsnorm")
+        {
             TensorType::LayerNorm
         } else if name_lower.contains("gate_proj") || name_lower.contains("w1") {
             TensorType::MlpGate
@@ -488,7 +503,9 @@ impl ModelProfile {
     ///
     /// # Errors
     /// Returns error if directory cannot be read or contains no tensors.
-    pub fn from_hct_directory(directory: impl AsRef<std::path::Path>) -> Result<Self, ProfileError> {
+    pub fn from_hct_directory(
+        directory: impl AsRef<std::path::Path>,
+    ) -> Result<Self, ProfileError> {
         use crate::hct::{filename_to_tensor_name, HctLoader};
 
         let directory = directory.as_ref();
@@ -521,14 +538,14 @@ impl ModelProfile {
                         metadata.original_size,
                         metadata.shape.clone(),
                     ));
-                }
+                },
                 Err(e) => {
                     tracing::warn!(
                         path = %path.display(),
                         error = %e,
                         "Failed to load HCT metadata, skipping tensor"
                     );
-                }
+                },
             }
         }
 
@@ -619,11 +636,23 @@ mod tests {
 
     #[test]
     fn test_tensor_type_from_name() {
-        assert_eq!(TensorType::from_name("model.embed_tokens.weight"), TensorType::Embedding);
+        assert_eq!(
+            TensorType::from_name("model.embed_tokens.weight"),
+            TensorType::Embedding
+        );
         assert_eq!(TensorType::from_name("lm_head.weight"), TensorType::LmHead);
-        assert_eq!(TensorType::from_name("model.layers.0.self_attn.q_proj.weight"), TensorType::Attention);
-        assert_eq!(TensorType::from_name("model.layers.0.mlp.gate_proj.weight"), TensorType::MlpGate);
-        assert_eq!(TensorType::from_name("model.layers.0.input_layernorm.weight"), TensorType::LayerNorm);
+        assert_eq!(
+            TensorType::from_name("model.layers.0.self_attn.q_proj.weight"),
+            TensorType::Attention
+        );
+        assert_eq!(
+            TensorType::from_name("model.layers.0.mlp.gate_proj.weight"),
+            TensorType::MlpGate
+        );
+        assert_eq!(
+            TensorType::from_name("model.layers.0.input_layernorm.weight"),
+            TensorType::LayerNorm
+        );
     }
 
     #[test]
@@ -714,15 +743,16 @@ mod tests {
     fn test_loading_backend_eager_no_swap() {
         // Model fits entirely in VRAM+RAM → Eager
         let plan = AllocationPlan {
-            allocations: HashMap::from([
-                ("t1".to_string(), TensorAllocation {
+            allocations: HashMap::from([(
+                "t1".to_string(),
+                TensorAllocation {
                     tier: MemoryTier::Vram,
                     precision: TensorPrecision::BF16,
                     priority: 1.0,
                     prefetch: false,
                     storage_size: 1000,
-                }),
-            ]),
+                },
+            )]),
             vram_usage: 1000,
             ram_usage: 0,
             nvme_usage: 0,
@@ -737,13 +767,16 @@ mod tests {
         // Many swaps needed → Progressive
         let mut allocations = HashMap::new();
         for i in 0..100 {
-            allocations.insert(format!("t{i}"), TensorAllocation {
-                tier: MemoryTier::Nvme,
-                precision: TensorPrecision::BF16,
-                priority: 0.5,
-                prefetch: false,
-                storage_size: 1000,
-            });
+            allocations.insert(
+                format!("t{i}"),
+                TensorAllocation {
+                    tier: MemoryTier::Nvme,
+                    precision: TensorPrecision::BF16,
+                    priority: 0.5,
+                    prefetch: false,
+                    storage_size: 1000,
+                },
+            );
         }
         let plan = AllocationPlan {
             allocations,

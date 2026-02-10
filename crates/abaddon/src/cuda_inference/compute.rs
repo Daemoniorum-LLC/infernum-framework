@@ -214,18 +214,11 @@ impl ComputeEngine {
         )?;
 
         // Position buffer
-        let positions = GpuTensor::zeros(
-            vec![max_seq_len],
-            GpuDType::I32,
-            Arc::clone(&device),
-        )?;
+        let positions = GpuTensor::zeros(vec![max_seq_len], GpuDType::I32, Arc::clone(&device))?;
 
         // Token IDs buffer for embedding lookup
-        let token_ids_buffer = GpuTensor::zeros(
-            vec![max_seq_len],
-            GpuDType::I32,
-            Arc::clone(&device),
-        )?;
+        let token_ids_buffer =
+            GpuTensor::zeros(vec![max_seq_len], GpuDType::I32, Arc::clone(&device))?;
 
         // Logits buffer - pre-allocated to avoid allocation during forward
         let logits_buffer = GpuTensor::zeros(
@@ -274,23 +267,30 @@ impl ComputeEngine {
         match weight.format {
             QuantFormat::Int4 => {
                 // Use fused INT4 dequant + GEMM (symmetric quantization)
-                let scales = weight.scales.as_ref()
+                let scales = weight
+                    .scales
+                    .as_ref()
                     .ok_or_else(|| InferenceError::Shape {
                         expected: "INT4 weights require scales".to_string(),
                         got: "no scales".to_string(),
                     })?;
 
-                self.fused_gemm.forward_int4(input, &weight.data, scales, output)
-            }
+                self.fused_gemm
+                    .forward_int4(input, &weight.data, scales, output)
+            },
             QuantFormat::Gptq => {
                 // GPTQ uses asymmetric INT4 with zero points and optional g_idx for act_order
-                let scales = weight.scales.as_ref()
+                let scales = weight
+                    .scales
+                    .as_ref()
                     .ok_or_else(|| InferenceError::Shape {
                         expected: "GPTQ weights require scales".to_string(),
                         got: "no scales".to_string(),
                     })?;
 
-                let zeros = weight.zero_points.as_ref()
+                let zeros = weight
+                    .zero_points
+                    .as_ref()
                     .ok_or_else(|| InferenceError::Shape {
                         expected: "GPTQ weights require zero_points".to_string(),
                         got: "no zero_points".to_string(),
@@ -306,16 +306,20 @@ impl ComputeEngine {
                     output,
                     weight.block_size,
                 )
-            }
+            },
             QuantFormat::Awq => {
                 // AWQ uses asymmetric INT4 with zero points (sequential groups, no g_idx)
-                let scales = weight.scales.as_ref()
+                let scales = weight
+                    .scales
+                    .as_ref()
                     .ok_or_else(|| InferenceError::Shape {
                         expected: "AWQ weights require scales".to_string(),
                         got: "no scales".to_string(),
                     })?;
 
-                let zeros = weight.zero_points.as_ref()
+                let zeros = weight
+                    .zero_points
+                    .as_ref()
                     .ok_or_else(|| InferenceError::Shape {
                         expected: "AWQ weights require zero_points".to_string(),
                         got: "no zero_points".to_string(),
@@ -330,7 +334,7 @@ impl ComputeEngine {
                     output,
                     weight.block_size,
                 )
-            }
+            },
             QuantFormat::F16 | QuantFormat::BF16 => {
                 // Direct F16 GEMM
                 if weight.transposed {
@@ -340,11 +344,13 @@ impl ComputeEngine {
                     // Weight is in standard format [in, out], use A @ B
                     self.fused_gemm.forward_f16(input, &weight.data, output)
                 }
-            }
+            },
             QuantFormat::Int8 => {
                 // INT8 not yet implemented
-                Err(InferenceError::UnsupportedArch("INT8 quantization not yet supported".to_string()))
-            }
+                Err(InferenceError::UnsupportedArch(
+                    "INT8 quantization not yet supported".to_string(),
+                ))
+            },
         }
     }
 
@@ -437,14 +443,24 @@ impl ComputeEngine {
                     RopeScaling::Dynamic(factor) => 1.0 / factor,
                     RopeScaling::Yarn { factor, .. } => 1.0 / factor,
                 }
-            }
+            },
         };
 
         let mut q_rope = q_reshaped;
         let mut k_rope = k_reshaped;
 
-        self.rope.forward(&mut q_rope, &pos_view, self.config.rope_theta, scaling_factor)?;
-        self.rope.forward(&mut k_rope, &pos_view, self.config.rope_theta, scaling_factor)?;
+        self.rope.forward(
+            &mut q_rope,
+            &pos_view,
+            self.config.rope_theta,
+            scaling_factor,
+        )?;
+        self.rope.forward(
+            &mut k_rope,
+            &pos_view,
+            self.config.rope_theta,
+            scaling_factor,
+        )?;
 
         // Update KV cache for this layer
         // Note: advance() is called after all layers in forward()
@@ -522,22 +538,26 @@ impl ComputeEngine {
         let mut mlp_hidden = self.mlp_buffer.slice_dim0(0, seq_len)?;
         match self.config.hidden_act {
             Activation::SiLU => {
-                self.activation.silu_mul(&gate_out, &up_out, &mut mlp_hidden)?;
-            }
+                self.activation
+                    .silu_mul(&gate_out, &up_out, &mut mlp_hidden)?;
+            },
             Activation::GELU => {
                 // GELU doesn't have a fused version, do separately
-                self.activation.forward(&gate_out, &mut mlp_hidden, ActivationType::GELUFast)?;
+                self.activation
+                    .forward(&gate_out, &mut mlp_hidden, ActivationType::GELUFast)?;
                 self.mul_inplace(&mut mlp_hidden, &up_out, seq_len)?;
-            }
+            },
             Activation::GELUApprox => {
-                self.activation.forward(&gate_out, &mut mlp_hidden, ActivationType::GELUTanh)?;
+                self.activation
+                    .forward(&gate_out, &mut mlp_hidden, ActivationType::GELUTanh)?;
                 self.mul_inplace(&mut mlp_hidden, &up_out, seq_len)?;
-            }
+            },
             Activation::ReLU | Activation::ReLU2 => {
                 // ReLU and ReLU2 both use ReLU kernel (ReLU2 would need squaring, not yet implemented)
-                self.activation.forward(&gate_out, &mut mlp_hidden, ActivationType::ReLU)?;
+                self.activation
+                    .forward(&gate_out, &mut mlp_hidden, ActivationType::ReLU)?;
                 self.mul_inplace(&mut mlp_hidden, &up_out, seq_len)?;
-            }
+            },
         }
 
         // Down projection: [seq_len, intermediate_size] @ [intermediate_size, hidden_size]
@@ -605,7 +625,7 @@ impl ComputeEngine {
             )?;
         } else {
             return Err(InferenceError::ModelLoad(
-                "No LM head and embeddings not tied".to_string()
+                "No LM head and embeddings not tied".to_string(),
             ));
         }
 
@@ -693,7 +713,7 @@ impl ComputeEngine {
             )?;
         } else {
             return Err(InferenceError::ModelLoad(
-                "No LM head and embeddings not tied".to_string()
+                "No LM head and embeddings not tied".to_string(),
             ));
         }
 
@@ -749,7 +769,8 @@ impl ComputeEngine {
         let mut hidden = self.hidden_buffer.slice_dim0(0, seq_len)?;
 
         // Use GPU kernel to gather embeddings
-        self.embedding.forward(embed_table, &token_ids, &mut hidden)?;
+        self.embedding
+            .forward(embed_table, &token_ids, &mut hidden)?;
 
         Ok(hidden)
     }
@@ -814,10 +835,11 @@ impl ComputeEngine {
     /// Returns logits for the last token in the sequence.
     /// Shape: [vocab_size] as F16.
     pub fn get_logits(&self) -> Result<GpuTensor, InferenceError> {
-        let logits = self.last_logits.as_ref()
-            .ok_or_else(|| InferenceError::Kernel(
-                "No logits available - call forward/prefill/decode first".to_string()
-            ))?;
+        let logits = self.last_logits.as_ref().ok_or_else(|| {
+            InferenceError::Kernel(
+                "No logits available - call forward/prefill/decode first".to_string(),
+            )
+        })?;
 
         let shape = logits.shape();
         if shape.len() != 2 {
@@ -890,9 +912,9 @@ impl ComputeEngine {
         let num_layers = weights.num_layers();
 
         // 1. Token embedding lookup (shared weights are always in VRAM)
-        let shared = weights.shared().ok_or_else(|| {
-            InferenceError::ModelLoad("Shared weights not loaded".to_string())
-        })?;
+        let shared = weights
+            .shared()
+            .ok_or_else(|| InferenceError::ModelLoad("Shared weights not loaded".to_string()))?;
         let mut hidden = self.embed_tokens(&shared.embed_tokens, input_ids)?;
 
         // 2. Forward through all layers with prefetching
@@ -916,9 +938,9 @@ impl ComputeEngine {
         // 3. Final norm + 4. LM head projection (fused)
         let mut logits = self.logits_buffer.slice_dim0(0, seq_len)?;
 
-        let shared = weights.shared().ok_or_else(|| {
-            InferenceError::ModelLoad("Shared weights not loaded".to_string())
-        })?;
+        let shared = weights
+            .shared()
+            .ok_or_else(|| InferenceError::ModelLoad("Shared weights not loaded".to_string()))?;
 
         if let Some(ref lm_head) = shared.lm_head {
             // Separate LM head with B transposed
@@ -940,7 +962,7 @@ impl ComputeEngine {
             )?;
         } else {
             return Err(InferenceError::ModelLoad(
-                "No LM head and embeddings not tied".to_string()
+                "No LM head and embeddings not tied".to_string(),
             ));
         }
 

@@ -3,8 +3,8 @@
 //! Manages fragments across memory tiers with async streaming and LRU eviction.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, AtomicU64, Ordering};
-use std::sync::{RwLock, Mutex};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Mutex, RwLock};
 
 use super::{HoloInferenceError, Result};
 
@@ -240,11 +240,7 @@ impl HoloMemoryManager {
     }
 
     /// Register fragment location.
-    pub fn register_fragment(
-        &self,
-        id: FragmentId,
-        location: FragmentLocation,
-    ) -> Result<()> {
+    pub fn register_fragment(&self, id: FragmentId, location: FragmentLocation) -> Result<()> {
         let size = location.size();
         let tier = location.tier();
 
@@ -253,29 +249,31 @@ impl HoloMemoryManager {
             MemoryTier::Vram => {
                 self.vram_used.fetch_add(size, Ordering::Relaxed);
                 self.add_to_lru(id, size);
-            }
+            },
             MemoryTier::Ram => {
                 self.ram_used.fetch_add(size, Ordering::Relaxed);
-            }
-            MemoryTier::Disk => {}
+            },
+            MemoryTier::Disk => {},
         }
 
         // Store location
-        let mut locations = self.locations.write().map_err(|e| {
-            HoloInferenceError::MemoryAlloc {
-                tier,
-                message: format!("lock poisoned: {}", e),
-            }
-        })?;
+        let mut locations =
+            self.locations
+                .write()
+                .map_err(|e| HoloInferenceError::MemoryAlloc {
+                    tier,
+                    message: format!("lock poisoned: {}", e),
+                })?;
         locations.insert(id, location);
 
         // Update stats
-        let mut stats = self.stats.write().map_err(|_| {
-            HoloInferenceError::MemoryAlloc {
+        let mut stats = self
+            .stats
+            .write()
+            .map_err(|_| HoloInferenceError::MemoryAlloc {
                 tier,
                 message: "stats lock poisoned".to_string(),
-            }
-        })?;
+            })?;
         match tier {
             MemoryTier::Vram => stats.vram_fragments += 1,
             MemoryTier::Ram => stats.ram_fragments += 1,
@@ -329,12 +327,12 @@ impl HoloMemoryManager {
     ///
     /// Returns the new RAM location.
     pub fn evict_to_ram(&self, id: &FragmentId) -> Result<FragmentLocation> {
-        let old_location = self.get_location(id).ok_or_else(|| {
-            HoloInferenceError::FragmentNotFound {
-                layer: id.layer,
-                fragment_index: id.fragment_index,
-            }
-        })?;
+        let old_location =
+            self.get_location(id)
+                .ok_or_else(|| HoloInferenceError::FragmentNotFound {
+                    layer: id.layer,
+                    fragment_index: id.fragment_index,
+                })?;
 
         let size = old_location.size();
 
@@ -382,12 +380,12 @@ impl HoloMemoryManager {
     ///
     /// May trigger eviction of other fragments.
     pub fn promote_to_vram(&self, id: &FragmentId) -> Result<FragmentLocation> {
-        let old_location = self.get_location(id).ok_or_else(|| {
-            HoloInferenceError::FragmentNotFound {
-                layer: id.layer,
-                fragment_index: id.fragment_index,
-            }
-        })?;
+        let old_location =
+            self.get_location(id)
+                .ok_or_else(|| HoloInferenceError::FragmentNotFound {
+                    layer: id.layer,
+                    fragment_index: id.fragment_index,
+                })?;
 
         let size = old_location.size();
 
@@ -573,7 +571,7 @@ mod tests {
         let (vram, ram) = manager.optimal_distribution(32, 1024 * 1024, 0.7);
 
         assert_eq!(vram, 10); // 10MB budget / 1MB per fragment
-        assert_eq!(ram, 22);  // Remaining 22 fragments
+        assert_eq!(ram, 22); // Remaining 22 fragments
     }
 
     #[test]

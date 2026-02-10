@@ -165,7 +165,7 @@ impl MessageContent {
                         max: config.max_text_length,
                     });
                 }
-            }
+            },
             Self::Parts(parts) => {
                 if parts.is_empty() {
                     return Err(VisionError::EmptyContent);
@@ -182,7 +182,7 @@ impl MessageContent {
                 for part in parts {
                     part.validate(config)?;
                 }
-            }
+            },
         }
         Ok(())
     }
@@ -256,13 +256,13 @@ impl ContentPart {
                         max: config.max_text_length,
                     });
                 }
-            }
+            },
             Self::ImageUrl { image_url } => {
                 image_url.validate(config)?;
-            }
+            },
             Self::ImageBase64 { image_base64 } => {
                 image_base64.validate(config)?;
-            }
+            },
         }
         Ok(())
     }
@@ -357,7 +357,9 @@ impl ImageBase64 {
 
         // Validate base64 format (rough check)
         if !is_valid_base64(&self.data) {
-            return Err(VisionError::InvalidBase64("Invalid base64 format".to_string()));
+            return Err(VisionError::InvalidBase64(
+                "Invalid base64 format".to_string(),
+            ));
         }
 
         // Check approximate decoded size
@@ -562,13 +564,13 @@ impl fmt::Display for VisionError {
         match self {
             Self::TextTooLong { actual, max } => {
                 write!(f, "Text too long: {} characters (max {})", actual, max)
-            }
+            },
             Self::ImageTooLarge { actual, max } => {
                 write!(f, "Image too large: {} bytes (max {})", actual, max)
-            }
+            },
             Self::TooManyImages { actual, max } => {
                 write!(f, "Too many images: {} (max {})", actual, max)
-            }
+            },
             Self::InvalidUrl(msg) => write!(f, "Invalid URL: {}", msg),
             Self::InvalidBase64(msg) => write!(f, "Invalid base64: {}", msg),
             Self::UnsupportedMediaType(mt) => write!(f, "Unsupported media type: {}", mt),
@@ -616,16 +618,18 @@ fn validate_data_url(url: &str) -> Result<(), VisionError> {
 /// Checks if a string is valid base64.
 fn is_valid_base64(data: &str) -> bool {
     // Check for valid base64 characters
-    data.chars().all(|c| {
-        c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=' || c.is_whitespace()
-    })
+    data.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=' || c.is_whitespace())
 }
 
 /// Estimates the decoded size of base64 data.
 fn estimate_base64_size(data: &str) -> usize {
     // Base64 encoding uses 4 characters for every 3 bytes
     // Remove whitespace and padding for estimate
-    let clean_len = data.chars().filter(|c| !c.is_whitespace() && *c != '=').count();
+    let clean_len = data
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '=')
+        .count();
     (clean_len * 3) / 4
 }
 
@@ -1004,7 +1008,7 @@ mod tests {
             Err(VisionError::TooManyImages { actual, max }) => {
                 assert_eq!(actual, 3);
                 assert_eq!(max, 2);
-            }
+            },
             _ => panic!("Expected TooManyImages error"),
         }
     }
@@ -1116,7 +1120,7 @@ mod tests {
             ContentPart::ImageUrl { image_url } => {
                 assert_eq!(image_url.url, "https://example.com/img.png");
                 assert_eq!(image_url.detail, Some(ImageDetail::High));
-            }
+            },
             _ => panic!("Expected ImageUrl part"),
         }
     }

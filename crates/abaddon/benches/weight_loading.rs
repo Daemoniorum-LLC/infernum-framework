@@ -97,16 +97,11 @@ impl TestFiles {
 
         for (name, shape, data) in tensors {
             // Convert f32 to bytes - leak to static lifetime for safetensors API
-            let bytes: Vec<u8> = data.iter()
-                .flat_map(|f| f.to_le_bytes())
-                .collect();
+            let bytes: Vec<u8> = data.iter().flat_map(|f| f.to_le_bytes()).collect();
             let bytes_static: &'static [u8] = Box::leak(bytes.into_boxed_slice());
 
-            let view = TensorView::new(
-                safetensors::Dtype::F32,
-                shape.to_vec(),
-                bytes_static,
-            ).expect("create tensor view");
+            let view = TensorView::new(safetensors::Dtype::F32, shape.to_vec(), bytes_static)
+                .expect("create tensor view");
 
             tensor_map.insert(name.to_string(), view);
         }
@@ -116,9 +111,7 @@ impl TestFiles {
 
         // Create HCT files (LZ4 and Zstd)
         for (name, shape, data) in tensors {
-            let bytes: Vec<u8> = data.iter()
-                .flat_map(|f| f.to_le_bytes())
-                .collect();
+            let bytes: Vec<u8> = data.iter().flat_map(|f| f.to_le_bytes()).collect();
 
             let shape_u64: Vec<u64> = shape.iter().map(|&s| s as u64).collect();
 
@@ -132,20 +125,20 @@ impl TestFiles {
                 HctDType::F32,
                 shape_u64.clone(),
             );
-            writer.compress_data(&bytes, &compressor).expect("compress lz4");
+            writer
+                .compress_data(&bytes, &compressor)
+                .expect("compress lz4");
             writer.finish().expect("finish lz4");
 
             // Zstd
             let zstd_path = self.hct_zstd_dir.join(format!("{}.hct", name));
             let file = File::create(&zstd_path).expect("create zstd file");
             let compressor = ZstdCompressor::with_level(CompressionLevel::Default);
-            let mut writer = HctWriter::new(
-                file,
-                CompressionAlgorithm::Zstd,
-                HctDType::F32,
-                shape_u64,
-            );
-            writer.compress_data(&bytes, &compressor).expect("compress zstd");
+            let mut writer =
+                HctWriter::new(file, CompressionAlgorithm::Zstd, HctDType::F32, shape_u64);
+            writer
+                .compress_data(&bytes, &compressor)
+                .expect("compress zstd");
             writer.finish().expect("finish zstd");
         }
     }
@@ -166,7 +159,7 @@ fn weight_loading_benchmark(c: &mut Criterion) {
 
     // Test with different tensor sizes (simulating model weights)
     let sizes: [(usize, &str); 3] = [
-        (1024 * 1024, "1M_params"),      // ~4MB F32
+        (1024 * 1024, "1M_params"),       // ~4MB F32
         (16 * 1024 * 1024, "16M_params"), // ~64MB F32
         (64 * 1024 * 1024, "64M_params"), // ~256MB F32
     ];
@@ -184,18 +177,36 @@ fn weight_loading_benchmark(c: &mut Criterion) {
         files.create_f32_files(&[("weights", &shape, &weights)]);
 
         // Report file sizes
-        let st_size = fs::metadata(&files.safetensors_path).map(|m| m.len()).unwrap_or(0);
+        let st_size = fs::metadata(&files.safetensors_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
         let lz4_size: u64 = fs::read_dir(&files.hct_lz4_dir)
-            .map(|d| d.filter_map(|e| e.ok()).map(|e| e.metadata().map(|m| m.len()).unwrap_or(0)).sum())
+            .map(|d| {
+                d.filter_map(|e| e.ok())
+                    .map(|e| e.metadata().map(|m| m.len()).unwrap_or(0))
+                    .sum()
+            })
             .unwrap_or(0);
         let zstd_size: u64 = fs::read_dir(&files.hct_zstd_dir)
-            .map(|d| d.filter_map(|e| e.ok()).map(|e| e.metadata().map(|m| m.len()).unwrap_or(0)).sum())
+            .map(|d| {
+                d.filter_map(|e| e.ok())
+                    .map(|e| e.metadata().map(|m| m.len()).unwrap_or(0))
+                    .sum()
+            })
             .unwrap_or(0);
 
         eprintln!("\n=== {} ===", label);
         eprintln!("SafeTensors: {:.2} MB", st_size as f64 / 1_000_000.0);
-        eprintln!("HCT (LZ4):   {:.2} MB ({:.2}x)", lz4_size as f64 / 1_000_000.0, st_size as f64 / lz4_size as f64);
-        eprintln!("HCT (Zstd):  {:.2} MB ({:.2}x)", zstd_size as f64 / 1_000_000.0, st_size as f64 / zstd_size as f64);
+        eprintln!(
+            "HCT (LZ4):   {:.2} MB ({:.2}x)",
+            lz4_size as f64 / 1_000_000.0,
+            st_size as f64 / lz4_size as f64
+        );
+        eprintln!(
+            "HCT (Zstd):  {:.2} MB ({:.2}x)",
+            zstd_size as f64 / 1_000_000.0,
+            st_size as f64 / zstd_size as f64
+        );
 
         // Benchmark safetensors loading
         group.bench_function("safetensors", |b| {
@@ -272,8 +283,16 @@ fn decompression_throughput_benchmark(c: &mut Criterion) {
 
     eprintln!("\n=== Decompression Throughput (16MB INT8 data) ===");
     eprintln!("Original:  {:.2} MB", size as f64 / 1_000_000.0);
-    eprintln!("LZ4:       {:.2} MB ({:.2}x)", lz4_size as f64 / 1_000_000.0, size as f64 / lz4_size as f64);
-    eprintln!("Zstd:      {:.2} MB ({:.2}x)", zstd_size as f64 / 1_000_000.0, size as f64 / zstd_size as f64);
+    eprintln!(
+        "LZ4:       {:.2} MB ({:.2}x)",
+        lz4_size as f64 / 1_000_000.0,
+        size as f64 / lz4_size as f64
+    );
+    eprintln!(
+        "Zstd:      {:.2} MB ({:.2}x)",
+        zstd_size as f64 / 1_000_000.0,
+        size as f64 / zstd_size as f64
+    );
 
     group.bench_function("lz4_decompress", |b| {
         b.iter(|| {

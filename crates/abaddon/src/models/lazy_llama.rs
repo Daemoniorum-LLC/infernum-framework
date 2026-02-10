@@ -45,7 +45,9 @@ use std::collections::HashMap;
 use candle_core::{DType, Device, Module, Result as CandleResult, Tensor, D};
 use candle_nn::{Embedding, Linear};
 
-use crate::attention_cache::{attention_with_cache, CacheType, KvCache, KvCacheConfig, StandardCache};
+use crate::attention_cache::{
+    attention_with_cache, CacheType, KvCache, KvCacheConfig, StandardCache,
+};
 use crate::hct::HctError;
 use crate::lazy_varbuilder::LazyVarBuilder;
 
@@ -95,7 +97,11 @@ impl ExternalKvStore {
     }
 
     /// Restore a layer's KV cache from CPU storage to GPU.
-    fn restore(&mut self, layer_idx: usize, device: &Device) -> CandleResult<Option<(Tensor, Tensor)>> {
+    fn restore(
+        &mut self,
+        layer_idx: usize,
+        device: &Device,
+    ) -> CandleResult<Option<(Tensor, Tensor)>> {
         if let Some((k_cpu, v_cpu)) = self.caches.get(&layer_idx) {
             let k = k_cpu.to_device(device)?;
             let v = v_cpu.to_device(device)?;
@@ -113,10 +119,13 @@ impl ExternalKvStore {
 
     /// Get total memory usage in bytes.
     fn memory_bytes(&self) -> usize {
-        self.caches.values().map(|(k, v)| {
-            k.elem_count() * k.dtype().size_in_bytes() +
-            v.elem_count() * v.dtype().size_in_bytes()
-        }).sum()
+        self.caches
+            .values()
+            .map(|(k, v)| {
+                k.elem_count() * k.dtype().size_in_bytes()
+                    + v.elem_count() * v.dtype().size_in_bytes()
+            })
+            .sum()
     }
 
     /// Get number of cached layers.
@@ -190,13 +199,24 @@ impl LazyLlama {
         let embed_tokens = Self::load_embedding(&config, &lazy_vb)?;
 
         // Load final norm
-        let norm = Self::load_norm(config.hidden_size, config.rms_norm_eps, &lazy_vb, "model.norm")?;
+        let norm = Self::load_norm(
+            config.hidden_size,
+            config.rms_norm_eps,
+            &lazy_vb,
+            "model.norm",
+        )?;
 
         // Load lm_head (or tie to embeddings)
         let lm_head = if config.tie_word_embeddings {
             Linear::new(embed_tokens.embeddings().clone(), None)
         } else {
-            Self::load_linear(&lazy_vb, "lm_head", config.hidden_size, config.vocab_size, false)?
+            Self::load_linear(
+                &lazy_vb,
+                "lm_head",
+                config.hidden_size,
+                config.vocab_size,
+                false,
+            )?
         };
 
         // Create rotary embeddings
@@ -253,7 +273,11 @@ impl LazyLlama {
     /// `start_pos` is used only for rotary position embeddings, not for mask construction.
     /// The mask is created based on the current sequence length only, as the cache is
     /// effectively empty after layer reload.
-    pub fn forward(&mut self, input_ids: &Tensor, start_pos: usize) -> Result<Tensor, LazyLoadError> {
+    pub fn forward(
+        &mut self,
+        input_ids: &Tensor,
+        start_pos: usize,
+    ) -> Result<Tensor, LazyLoadError> {
         let (_batch_size, seq_len) = input_ids
             .dims2()
             .map_err(|e| LazyLoadError::Candle(e.to_string()))?;
@@ -273,7 +297,10 @@ impl LazyLlama {
         //
         // Note: We check kv_store for layer 0's cache as representative of all layers.
         // All layers should have the same cache length after a forward pass.
-        let stored_cache_len = self.kv_store.caches.get(&0)
+        let stored_cache_len = self
+            .kv_store
+            .caches
+            .get(&0)
             .map(|(k, _)| k.dims().get(2).copied().unwrap_or(0))
             .unwrap_or(0);
         let kv_len = stored_cache_len + seq_len;
@@ -351,7 +378,11 @@ impl LazyLlama {
                 self.force_memory_cleanup();
             }
 
-            tracing::debug!(layer = layer_idx, attempt = attempt, "Loading decoder layer");
+            tracing::debug!(
+                layer = layer_idx,
+                attempt = attempt,
+                "Loading decoder layer"
+            );
 
             match self.load_decoder_layer(layer_idx) {
                 Ok(mut layer) => {
@@ -369,7 +400,7 @@ impl LazyLlama {
                     self.lru_order.push(layer_idx);
                     self.layer_loads += 1;
                     return Ok(());
-                }
+                },
                 Err(e) if Self::is_oom_error(&e) => {
                     let (cache_count, cache_bytes) = self.lazy_vb.cache_stats();
                     tracing::warn!(
@@ -414,11 +445,11 @@ impl LazyLlama {
                             evictions: total_evictions,
                         });
                     }
-                }
+                },
                 Err(e) => {
                     // Non-OOM error, don't retry
                     return Err(e);
-                }
+                },
             }
         }
 
@@ -539,7 +570,7 @@ impl LazyLlama {
                 Err(e) => {
                     tracing::warn!(layer = layer_idx, error = %e, "Warmup prefetch failed");
                     break;
-                }
+                },
             }
         }
 
@@ -592,7 +623,10 @@ impl LazyLlama {
 
     // ==================== Loading Helpers ====================
 
-    fn load_embedding(config: &LlamaConfig, vb: &LazyVarBuilder) -> Result<Embedding, LazyLoadError> {
+    fn load_embedding(
+        config: &LlamaConfig,
+        vb: &LazyVarBuilder,
+    ) -> Result<Embedding, LazyLoadError> {
         let weight = vb.get("model.embed_tokens.weight")?;
         Ok(Embedding::new(weight, config.hidden_size))
     }
@@ -715,7 +749,9 @@ pub enum LazyLoadError {
     #[error("Layer not found: {0}")]
     LayerNotFound(usize),
     /// Out of memory error after exhausting recovery attempts.
-    #[error("Out of memory: layer {layer} failed after {attempts} retries with {evictions} evictions")]
+    #[error(
+        "Out of memory: layer {layer} failed after {attempts} retries with {evictions} evictions"
+    )]
     OutOfMemory {
         /// Layer that failed to load.
         layer: usize,
@@ -871,7 +907,11 @@ struct Mlp {
 }
 
 impl Mlp {
-    fn load(config: &LlamaConfig, vb: &LazyVarBuilder, prefix: &str) -> Result<Self, LazyLoadError> {
+    fn load(
+        config: &LlamaConfig,
+        vb: &LazyVarBuilder,
+        prefix: &str,
+    ) -> Result<Self, LazyLoadError> {
         let gate_proj = LazyLlama::load_linear(
             vb,
             &format!("{}.gate_proj", prefix),
@@ -1024,9 +1064,11 @@ impl Attention {
         )?;
 
         // Reshape and project output
-        let attn_output = attn_output
-            .transpose(1, 2)?
-            .reshape((batch_size, seq_len, self.num_heads * self.head_dim))?;
+        let attn_output = attn_output.transpose(1, 2)?.reshape((
+            batch_size,
+            seq_len,
+            self.num_heads * self.head_dim,
+        ))?;
         self.o_proj.forward(&attn_output)
     }
 
@@ -1070,8 +1112,12 @@ impl DecoderLayer {
     ) -> Result<Self, LazyLoadError> {
         let self_attn = Attention::load(config, &vb, "self_attn", cache_type)?;
         let mlp = Mlp::load(config, &vb, "mlp")?;
-        let input_layernorm =
-            LazyLlama::load_norm(config.hidden_size, config.rms_norm_eps, &vb, "input_layernorm")?;
+        let input_layernorm = LazyLlama::load_norm(
+            config.hidden_size,
+            config.rms_norm_eps,
+            &vb,
+            "input_layernorm",
+        )?;
         let post_attention_layernorm = LazyLlama::load_norm(
             config.hidden_size,
             config.rms_norm_eps,
@@ -1143,17 +1189,15 @@ mod tests {
                 .map(|i| (i as f32) * 0.001)
                 .collect();
             let tensor = Tensor::from_vec(data, shape, device).unwrap();
-            self.tensors.write().unwrap().insert(name.to_string(), tensor);
+            self.tensors
+                .write()
+                .unwrap()
+                .insert(name.to_string(), tensor);
         }
     }
 
     impl crate::lazy_varbuilder::TensorProvider for MockTensorProvider {
-        fn get(
-            &self,
-            name: &str,
-            _device: &Device,
-            _dtype: DType,
-        ) -> Result<Tensor, HctError> {
+        fn get(&self, name: &str, _device: &Device, _dtype: DType) -> Result<Tensor, HctError> {
             self.tensors
                 .read()
                 .unwrap()

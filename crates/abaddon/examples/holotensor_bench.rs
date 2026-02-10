@@ -62,8 +62,12 @@ fn benchmark_quality_curve() {
     let cols = HIDDEN_SIZE;
     let original = create_realistic_weights(rows, cols, 42);
 
-    println!("   Test tensor: {}x{} ({:.2} MB)",
-             rows, cols, (rows * cols * 4) as f64 / 1024.0 / 1024.0);
+    println!(
+        "   Test tensor: {}x{} ({:.2} MB)",
+        rows,
+        cols,
+        (rows * cols * 4) as f64 / 1024.0 / 1024.0
+    );
 
     // Encode
     let encoder = LrdfEncoder::new(NUM_FRAGMENTS).with_max_rank(MAX_RANK);
@@ -139,18 +143,24 @@ fn benchmark_encoding_speed() {
 
         let speed = size_mb / elapsed.as_secs_f64();
 
-        println!("   {:>9} │ {:>5}x{:<7} │ {:>9.2} │ {:>11.2?} │ {:>5.1}",
-                 name, rows, cols, size_mb, elapsed, speed);
+        println!(
+            "   {:>9} │ {:>5}x{:<7} │ {:>9.2} │ {:>11.2?} │ {:>5.1}",
+            name, rows, cols, size_mb, elapsed, speed
+        );
     }
 
     println!("   ──────────┴────────────────┴───────────┴─────────────┴──────");
-    println!("   Total per layer: {:.2} MB in {:?} ({:.1} MB/s)",
-             total_size as f64 / 1024.0 / 1024.0,
-             total_time,
-             (total_size as f64 / 1024.0 / 1024.0) / total_time.as_secs_f64());
-    println!("   Full model ({} layers): {:.2} GB",
-             NUM_LAYERS,
-             (total_size * NUM_LAYERS) as f64 / 1024.0 / 1024.0 / 1024.0);
+    println!(
+        "   Total per layer: {:.2} MB in {:?} ({:.1} MB/s)",
+        total_size as f64 / 1024.0 / 1024.0,
+        total_time,
+        (total_size as f64 / 1024.0 / 1024.0) / total_time.as_secs_f64()
+    );
+    println!(
+        "   Full model ({} layers): {:.2} GB",
+        NUM_LAYERS,
+        (total_size * NUM_LAYERS) as f64 / 1024.0 / 1024.0 / 1024.0
+    );
     println!();
 }
 
@@ -195,8 +205,13 @@ fn benchmark_reconstruction_speed() {
         let size_mb = (rows * cols * 4) as f64 / 1024.0 / 1024.0;
         let throughput = size_mb / avg_time.as_secs_f64();
 
-        println!("   {:>9} │ {:>11.2?} │ {:>8.1} MB/s │ {:>5.1}%",
-                 count, avg_time, throughput, last_quality * 100.0);
+        println!(
+            "   {:>9} │ {:>11.2?} │ {:>8.1} MB/s │ {:>5.1}%",
+            count,
+            avg_time,
+            throughput,
+            last_quality * 100.0
+        );
     }
     println!();
 }
@@ -232,8 +247,14 @@ fn benchmark_progressive_quality() {
             "Building..."
         };
 
-        println!("   {:>5} │ {:>8}/{:<8} │ {:>10.1}% │ {}",
-                 token, loaded, total, quality * 100.0, status);
+        println!(
+            "   {:>5} │ {:>8}/{:<8} │ {:>10.1}% │ {}",
+            token,
+            loaded,
+            total,
+            quality * 100.0,
+            status
+        );
 
         // Stream more fragments
         loaded = (loaded + fragments_per_token).min(total);
@@ -257,24 +278,34 @@ fn benchmark_pipelining_simulation() {
 
     println!("   Hardware assumptions (RTX 4500 Ada):");
     println!("   - Layer compute time: {:.1} ms", layer_compute_ms);
-    println!("   - Fragment transfer:  {:.1} ms (PCIe 4.0 x16)", fragment_transfer_ms);
+    println!(
+        "   - Fragment transfer:  {:.1} ms (PCIe 4.0 x16)",
+        fragment_transfer_ms
+    );
     println!("   - Fragments/layer:    {}", NUM_FRAGMENTS);
     println!();
 
     // Scenario 1: Traditional loading (all weights in VRAM)
     println!("   Scenario 1: Traditional (all weights preloaded in VRAM)");
     let traditional_per_layer = layer_compute_ms;
-    println!("   └─ Time per layer: {:.1} ms (compute only)", traditional_per_layer);
+    println!(
+        "   └─ Time per layer: {:.1} ms (compute only)",
+        traditional_per_layer
+    );
     println!();
 
     // Scenario 2: Naive streaming (wait for all fragments before compute)
     println!("   Scenario 2: Naive Streaming (load → compute → load → ...)");
     let naive_transfer = fragments_per_layer * fragment_transfer_ms;
     let naive_per_layer = naive_transfer + layer_compute_ms;
-    println!("   └─ Time per layer: {:.1} ms ({:.1} transfer + {:.1} compute)",
-             naive_per_layer, naive_transfer, layer_compute_ms);
-    println!("   └─ Overhead: {:.1}x slower than traditional",
-             naive_per_layer / traditional_per_layer);
+    println!(
+        "   └─ Time per layer: {:.1} ms ({:.1} transfer + {:.1} compute)",
+        naive_per_layer, naive_transfer, layer_compute_ms
+    );
+    println!(
+        "   └─ Overhead: {:.1}x slower than traditional",
+        naive_per_layer / traditional_per_layer
+    );
     println!();
 
     // Scenario 3: Pipelined streaming (stream next layer during compute)
@@ -282,8 +313,10 @@ fn benchmark_pipelining_simulation() {
     let transfer_during_compute = layer_compute_ms / fragment_transfer_ms; // fragments we can stream
     let can_stream = transfer_during_compute as usize;
 
-    println!("   └─ Fragments streamable during compute: {:.0} ({} needed)",
-             transfer_during_compute, NUM_FRAGMENTS);
+    println!(
+        "   └─ Fragments streamable during compute: {:.0} ({} needed)",
+        transfer_during_compute, NUM_FRAGMENTS
+    );
 
     let pipelined_per_layer = if can_stream >= NUM_FRAGMENTS as usize {
         layer_compute_ms // Transfer completely hidden
@@ -307,10 +340,16 @@ fn benchmark_pipelining_simulation() {
     let traditional_total = traditional_per_layer * NUM_LAYERS as f64;
     let pipelined_total = pipelined_per_layer * NUM_LAYERS as f64;
 
-    println!("   - Traditional: {:.0} ms ({:.1} tok/s at 1 tok/forward)",
-             traditional_total, 1000.0 / traditional_total);
-    println!("   - Pipelined:   {:.0} ms ({:.1} tok/s)",
-             pipelined_total, 1000.0 / pipelined_total);
+    println!(
+        "   - Traditional: {:.0} ms ({:.1} tok/s at 1 tok/forward)",
+        traditional_total,
+        1000.0 / traditional_total
+    );
+    println!(
+        "   - Pipelined:   {:.0} ms ({:.1} tok/s)",
+        pipelined_total,
+        1000.0 / pipelined_total
+    );
     println!();
 
     // The key insight

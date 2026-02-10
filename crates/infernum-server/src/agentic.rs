@@ -123,7 +123,7 @@ pub async fn run_agent(
                 )),
             )
                 .into_response();
-        }
+        },
     };
     drop(engine_guard);
 
@@ -194,13 +194,13 @@ pub async fn run_agent(
                 sessions
                     .end_session(&sid, SessionStatus::Completed, final_answer)
                     .await;
-            }
+            },
             Err(e) => {
                 warn!(session_id = %sid, error = %e, "Agentic loop failed");
                 sessions
                     .end_session(&sid, SessionStatus::Failed, Some(e.to_string()))
                     .await;
-            }
+            },
         }
     });
 
@@ -289,7 +289,7 @@ async fn bridge_event_to_session(
     match &event {
         LoopEvent::IterationStarted { iteration, .. } => {
             sessions.set_iteration(&session_id, *iteration).await;
-        }
+        },
         LoopEvent::GenerationCompleted { content, .. } => {
             sessions
                 .emit_event(
@@ -303,11 +303,8 @@ async fn bridge_event_to_session(
                     },
                 )
                 .await;
-        }
-        LoopEvent::ToolCallDetected {
-            call_id,
-            tool,
-        } => {
+        },
+        LoopEvent::ToolCallDetected { call_id, tool } => {
             sessions
                 .emit_event(
                     &session_id,
@@ -318,7 +315,7 @@ async fn bridge_event_to_session(
                     },
                 )
                 .await;
-        }
+        },
         LoopEvent::ToolExecutionCompleted { call_id, result } => {
             sessions
                 .emit_event(
@@ -334,12 +331,12 @@ async fn bridge_event_to_session(
                     },
                 )
                 .await;
-        }
+        },
         LoopEvent::ToolApprovalRequired { .. } => {
             sessions
                 .set_status(&session_id, SessionStatus::AwaitingApproval)
                 .await;
-        }
+        },
         LoopEvent::Error { message, .. } => {
             sessions
                 .emit_event(
@@ -349,9 +346,9 @@ async fn bridge_event_to_session(
                     },
                 )
                 .await;
-        }
+        },
         // Other events don't need bridging
-        _ => {}
+        _ => {},
     }
 }
 

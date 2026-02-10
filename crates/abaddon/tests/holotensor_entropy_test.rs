@@ -6,8 +6,8 @@
 use std::time::Instant;
 
 use haagenti::entropy::{
-    fast_entropy_estimate, fast_should_compress, fast_predict_block_type,
-    FastBlockType, CompressibilityFingerprint, PatternType,
+    fast_entropy_estimate, fast_predict_block_type, fast_should_compress,
+    CompressibilityFingerprint, FastBlockType, PatternType,
 };
 
 // =============================================================================
@@ -32,7 +32,9 @@ fn test_fast_entropy_random() {
     // Random data should have high entropy (~8 bits/byte)
     let random: Vec<u8> = (0u64..1000)
         .map(|i| {
-            let x = i.wrapping_mul(0x5851f42d4c957f2d).wrapping_add(0x14057b7ef767814f);
+            let x = i
+                .wrapping_mul(0x5851f42d4c957f2d)
+                .wrapping_add(0x14057b7ef767814f);
             ((x >> 32) ^ x) as u8
         })
         .collect();
@@ -177,7 +179,10 @@ fn test_predict_raw_block_for_high_entropy() {
     let entropy = fast_entropy_estimate(&data);
     let block_type = fast_predict_block_type(&data);
 
-    println!("High-entropy data: entropy={:.3}, block_type={:?}", entropy, block_type);
+    println!(
+        "High-entropy data: entropy={:.3}, block_type={:?}",
+        entropy, block_type
+    );
 
     // If entropy > 7.5, should predict Raw
     if entropy > 7.5 {
@@ -233,14 +238,19 @@ fn test_fingerprint_text_like() {
 fn test_fingerprint_random() {
     let random: Vec<u8> = (0u64..1000)
         .map(|i| {
-            let x = i.wrapping_mul(0x5851f42d4c957f2d).wrapping_add(0x14057b7ef767814f);
+            let x = i
+                .wrapping_mul(0x5851f42d4c957f2d)
+                .wrapping_add(0x14057b7ef767814f);
             ((x >> 32) ^ x) as u8
         })
         .collect();
 
     let fp = CompressibilityFingerprint::analyze(&random);
 
-    println!("Random fingerprint: entropy={:.3}, pattern={:?}", fp.entropy, fp.pattern);
+    println!(
+        "Random fingerprint: entropy={:.3}, pattern={:?}",
+        fp.entropy, fp.pattern
+    );
 
     // Should have high entropy
     assert!(fp.entropy > 6.0, "Random should have high entropy");

@@ -330,11 +330,7 @@ impl HealthMonitor {
                     }
                 } else {
                     AgentHealth::Unresponsive {
-                        last_seen: self
-                            .last_heartbeat
-                            .get(&agent_id)
-                            .copied()
-                            .unwrap_or(now),
+                        last_seen: self.last_heartbeat.get(&agent_id).copied().unwrap_or(now),
                         retries,
                     }
                 }
@@ -906,10 +902,7 @@ mod tests {
         monitor.register(1);
 
         monitor.heartbeat(1);
-        assert!(matches!(
-            monitor.check_agent(1),
-            Some(AgentHealth::Healthy)
-        ));
+        assert!(matches!(monitor.check_agent(1), Some(AgentHealth::Healthy)));
     }
 
     #[test]

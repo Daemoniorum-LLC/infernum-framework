@@ -1,7 +1,7 @@
 //! Debug inference step by step to find where quality degrades
 
-use std::path::Path;
 use std::collections::HashMap;
+use std::path::Path;
 
 use candle_core::{DType, Device, IndexOp, Module, Tensor};
 use candle_nn::VarBuilder;
@@ -30,11 +30,17 @@ fn get_config() -> LlamaConfig {
 }
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() { return 0.0; }
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
     let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
     let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
     let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a > 0.0 && norm_b > 0.0 { dot / (norm_a * norm_b) } else { 0.0 }
+    if norm_a > 0.0 && norm_b > 0.0 {
+        dot / (norm_a * norm_b)
+    } else {
+        0.0
+    }
 }
 
 fn load_safetensors(path: &Path, device: &Device) -> Result<HashMap<String, Tensor>> {
@@ -50,25 +56,28 @@ fn load_safetensors(path: &Path, device: &Device) -> Result<HashMap<String, Tens
 
         let tensor = match st_tensor.dtype() {
             safetensors::Dtype::BF16 => {
-                let halfs: Vec<half::bf16> = data.chunks_exact(2)
+                let halfs: Vec<half::bf16> = data
+                    .chunks_exact(2)
                     .map(|chunk| half::bf16::from_le_bytes([chunk[0], chunk[1]]))
                     .collect();
                 let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
                 Tensor::from_vec(floats, shape.as_slice(), device)?
-            }
+            },
             safetensors::Dtype::F32 => {
-                let floats: Vec<f32> = data.chunks_exact(4)
+                let floats: Vec<f32> = data
+                    .chunks_exact(4)
                     .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                     .collect();
                 Tensor::from_vec(floats, shape.as_slice(), device)?
-            }
+            },
             safetensors::Dtype::F16 => {
-                let halfs: Vec<half::f16> = data.chunks_exact(2)
+                let halfs: Vec<half::f16> = data
+                    .chunks_exact(2)
                     .map(|chunk| half::f16::from_le_bytes([chunk[0], chunk[1]]))
                     .collect();
                 let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
                 Tensor::from_vec(floats, shape.as_slice(), device)?
-            }
+            },
             _ => continue,
         };
 
@@ -78,7 +87,12 @@ fn load_safetensors(path: &Path, device: &Device) -> Result<HashMap<String, Tens
     Ok(tensors)
 }
 
-fn load_hybrid(hct_dir: &Path, safetensors_path: &Path, device: &Device, dtype: DType) -> Result<HashMap<String, Tensor>> {
+fn load_hybrid(
+    hct_dir: &Path,
+    safetensors_path: &Path,
+    device: &Device,
+    dtype: DType,
+) -> Result<HashMap<String, Tensor>> {
     let mut tensors = load_hct_directory_sequential(hct_dir, device, dtype)?;
     let file_content = std::fs::read(safetensors_path)?;
     let st = SafeTensors::deserialize(&file_content)?;
@@ -92,25 +106,28 @@ fn load_hybrid(hct_dir: &Path, safetensors_path: &Path, device: &Device, dtype: 
 
             let tensor = match st_tensor.dtype() {
                 safetensors::Dtype::BF16 => {
-                    let halfs: Vec<half::bf16> = data.chunks_exact(2)
+                    let halfs: Vec<half::bf16> = data
+                        .chunks_exact(2)
                         .map(|chunk| half::bf16::from_le_bytes([chunk[0], chunk[1]]))
                         .collect();
                     let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
                     Tensor::from_vec(floats, shape.as_slice(), device)?
-                }
+                },
                 safetensors::Dtype::F32 => {
-                    let floats: Vec<f32> = data.chunks_exact(4)
+                    let floats: Vec<f32> = data
+                        .chunks_exact(4)
                         .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                         .collect();
                     Tensor::from_vec(floats, shape.as_slice(), device)?
-                }
+                },
                 safetensors::Dtype::F16 => {
-                    let halfs: Vec<half::f16> = data.chunks_exact(2)
+                    let halfs: Vec<half::f16> = data
+                        .chunks_exact(2)
                         .map(|chunk| half::f16::from_le_bytes([chunk[0], chunk[1]]))
                         .collect();
                     let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
                     Tensor::from_vec(floats, shape.as_slice(), device)?
-                }
+                },
                 _ => continue,
             };
 
@@ -145,7 +162,7 @@ fn main() -> Result<()> {
         "model.layers.0.mlp.up_proj.weight",
         "model.layers.0.mlp.down_proj.weight",
         "model.layers.0.self_attn.q_proj.weight",
-        "model.layers.15.mlp.down_proj.weight",  // Last layer
+        "model.layers.15.mlp.down_proj.weight", // Last layer
         "model.norm.weight",
     ];
 
@@ -161,8 +178,12 @@ fn main() -> Result<()> {
                 let sim = cosine_similarity(&o_flat, &c_flat);
                 let o_mean: f32 = o_flat.iter().sum::<f32>() / o_flat.len() as f32;
                 let c_mean: f32 = c_flat.iter().sum::<f32>() / c_flat.len() as f32;
-                let o_std: f32 = (o_flat.iter().map(|x| (x - o_mean).powi(2)).sum::<f32>() / o_flat.len() as f32).sqrt();
-                let c_std: f32 = (c_flat.iter().map(|x| (x - c_mean).powi(2)).sum::<f32>() / c_flat.len() as f32).sqrt();
+                let o_std: f32 = (o_flat.iter().map(|x| (x - o_mean).powi(2)).sum::<f32>()
+                    / o_flat.len() as f32)
+                    .sqrt();
+                let c_std: f32 = (c_flat.iter().map(|x| (x - c_mean).powi(2)).sum::<f32>()
+                    / c_flat.len() as f32)
+                    .sqrt();
 
                 println!("{}", name);
                 println!("  Shapes: {:?} vs {:?}", o.dims(), c.dims());
@@ -176,13 +197,20 @@ fn main() -> Result<()> {
                 let c_nan = c_flat.iter().any(|x| x.is_nan());
                 let c_inf = c_flat.iter().any(|x| x.is_infinite());
                 if o_nan || o_inf || c_nan || c_inf {
-                    println!("  WARNING: NaN/Inf! orig_nan={}, orig_inf={}, hct_nan={}, hct_inf={}",
-                             o_nan, o_inf, c_nan, c_inf);
+                    println!(
+                        "  WARNING: NaN/Inf! orig_nan={}, orig_inf={}, hct_nan={}, hct_inf={}",
+                        o_nan, o_inf, c_nan, c_inf
+                    );
                 }
-            }
+            },
             _ => {
-                println!("{}: MISSING (orig={}, comp={})", name, orig.is_some(), comp.is_some());
-            }
+                println!(
+                    "{}: MISSING (orig={}, comp={})",
+                    name,
+                    orig.is_some(),
+                    comp.is_some()
+                );
+            },
         }
     }
 
@@ -211,14 +239,18 @@ fn main() -> Result<()> {
     let comp_vec: Vec<f32> = comp_last.to_vec1()?;
 
     println!("\nFinal logits comparison:");
-    println!("  Original: min={:.4}, max={:.4}, mean={:.4}",
-             orig_vec.iter().cloned().fold(f32::INFINITY, f32::min),
-             orig_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max),
-             orig_vec.iter().sum::<f32>() / orig_vec.len() as f32);
-    println!("  HCT:      min={:.4}, max={:.4}, mean={:.4}",
-             comp_vec.iter().cloned().fold(f32::INFINITY, f32::min),
-             comp_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max),
-             comp_vec.iter().sum::<f32>() / comp_vec.len() as f32);
+    println!(
+        "  Original: min={:.4}, max={:.4}, mean={:.4}",
+        orig_vec.iter().cloned().fold(f32::INFINITY, f32::min),
+        orig_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max),
+        orig_vec.iter().sum::<f32>() / orig_vec.len() as f32
+    );
+    println!(
+        "  HCT:      min={:.4}, max={:.4}, mean={:.4}",
+        comp_vec.iter().cloned().fold(f32::INFINITY, f32::min),
+        comp_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max),
+        comp_vec.iter().sum::<f32>() / comp_vec.len() as f32
+    );
 
     let sim = cosine_similarity(&orig_vec, &comp_vec);
     println!("  Cosine similarity: {:.6}", sim);
@@ -230,10 +262,14 @@ fn main() -> Result<()> {
 
     // Top predictions comparison
     println!("\nTop 5 predictions:");
-    let mut orig_indexed: Vec<(u32, f32)> = orig_vec.iter().enumerate()
+    let mut orig_indexed: Vec<(u32, f32)> = orig_vec
+        .iter()
+        .enumerate()
         .map(|(i, &v)| (i as u32, v))
         .collect();
-    let mut comp_indexed: Vec<(u32, f32)> = comp_vec.iter().enumerate()
+    let mut comp_indexed: Vec<(u32, f32)> = comp_vec
+        .iter()
+        .enumerate()
         .map(|(i, &v)| (i as u32, v))
         .collect();
 
@@ -242,17 +278,29 @@ fn main() -> Result<()> {
 
     println!("  Original:");
     for i in 0..5 {
-        println!("    {}. Token {} ({:.4})", i+1, orig_indexed[i].0, orig_indexed[i].1);
+        println!(
+            "    {}. Token {} ({:.4})",
+            i + 1,
+            orig_indexed[i].0,
+            orig_indexed[i].1
+        );
     }
     println!("  HCT:");
     for i in 0..5 {
-        println!("    {}. Token {} ({:.4})", i+1, comp_indexed[i].0, comp_indexed[i].1);
+        println!(
+            "    {}. Token {} ({:.4})",
+            i + 1,
+            comp_indexed[i].0,
+            comp_indexed[i].1
+        );
     }
 
     // Correlation analysis
     println!("\nCorrelation analysis:");
-    let mut sorted_orig: Vec<(usize, f32)> = orig_vec.iter().enumerate().map(|(i, &v)| (i, v)).collect();
-    let mut sorted_comp: Vec<(usize, f32)> = comp_vec.iter().enumerate().map(|(i, &v)| (i, v)).collect();
+    let mut sorted_orig: Vec<(usize, f32)> =
+        orig_vec.iter().enumerate().map(|(i, &v)| (i, v)).collect();
+    let mut sorted_comp: Vec<(usize, f32)> =
+        comp_vec.iter().enumerate().map(|(i, &v)| (i, v)).collect();
     sorted_orig.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
     sorted_comp.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
 
@@ -261,7 +309,9 @@ fn main() -> Result<()> {
 
     // Spearman correlation approximation
     let n = orig_ranks.len() as f32;
-    let rank_diffs: f32 = orig_ranks.iter().zip(comp_ranks.iter())
+    let rank_diffs: f32 = orig_ranks
+        .iter()
+        .zip(comp_ranks.iter())
         .map(|(&a, &b)| ((a as i64 - b as i64).pow(2)) as f32)
         .sum();
     let spearman = 1.0 - (6.0 * rank_diffs) / (n * (n * n - 1.0));

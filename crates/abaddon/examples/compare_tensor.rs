@@ -1,7 +1,7 @@
 //! Compare single tensor: original safetensors vs HCT compressed
 
-use std::path::Path;
 use std::collections::HashMap;
+use std::path::Path;
 
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
@@ -13,7 +13,11 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
     let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
     let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a > 0.0 && norm_b > 0.0 { dot / (norm_a * norm_b) } else { 0.0 }
+    if norm_a > 0.0 && norm_b > 0.0 {
+        dot / (norm_a * norm_b)
+    } else {
+        0.0
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -48,14 +52,17 @@ fn main() -> anyhow::Result<()> {
         let data = st_tensor.data();
 
         // Convert BF16 to F32
-        let original: Vec<f32> = data.chunks_exact(2)
+        let original: Vec<f32> = data
+            .chunks_exact(2)
             .map(|chunk| half::bf16::from_le_bytes([chunk[0], chunk[1]]).to_f32())
             .collect();
 
         println!("  Original shape: {:?}", shape);
-        println!("  Original range: [{:.6}, {:.6}]",
-                 original.iter().cloned().fold(f32::INFINITY, f32::min),
-                 original.iter().cloned().fold(f32::NEG_INFINITY, f32::max));
+        println!(
+            "  Original range: [{:.6}, {:.6}]",
+            original.iter().cloned().fold(f32::INFINITY, f32::min),
+            original.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
+        );
 
         // Get HCT tensor
         if let Some(hct_tensor) = hct_tensors.get(*name) {
@@ -63,13 +70,19 @@ fn main() -> anyhow::Result<()> {
             let hct_values: Vec<f32> = hct_flat.to_vec1()?;
 
             println!("  HCT shape: {:?}", hct_tensor.dims());
-            println!("  HCT range: [{:.6}, {:.6}]",
-                     hct_values.iter().cloned().fold(f32::INFINITY, f32::min),
-                     hct_values.iter().cloned().fold(f32::NEG_INFINITY, f32::max));
+            println!(
+                "  HCT range: [{:.6}, {:.6}]",
+                hct_values.iter().cloned().fold(f32::INFINITY, f32::min),
+                hct_values.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
+            );
 
             // Check size match
             if original.len() != hct_values.len() {
-                println!("  SIZE MISMATCH: {} vs {}", original.len(), hct_values.len());
+                println!(
+                    "  SIZE MISMATCH: {} vs {}",
+                    original.len(),
+                    hct_values.len()
+                );
                 continue;
             }
 
@@ -80,8 +93,13 @@ fn main() -> anyhow::Result<()> {
             // Sample values
             println!("  Sample values (first 5):");
             for i in 0..5 {
-                println!("    [{:4}] Original: {:12.6} HCT: {:12.6} diff: {:12.6}",
-                         i, original[i], hct_values[i], (original[i] - hct_values[i]).abs());
+                println!(
+                    "    [{:4}] Original: {:12.6} HCT: {:12.6} diff: {:12.6}",
+                    i,
+                    original[i],
+                    hct_values[i],
+                    (original[i] - hct_values[i]).abs()
+                );
             }
 
             // Check for transposition

@@ -18,8 +18,8 @@ use std::fmt;
 
 use axum::http::StatusCode;
 
-use crate::error_response::{ApiError, ErrorCode, ErrorSubcode};
 use crate::api_types::{ChatCompletionRequest, CompletionRequest, EmbeddingRequest};
+use crate::error_response::{ApiError, ErrorCode, ErrorSubcode};
 use crate::server::ValidationLimits;
 
 /// Validation error for API requests.
@@ -112,7 +112,7 @@ impl RequestValidationError {
         match self {
             Self::EmptyMessages | Self::TooManyMessages { .. } | Self::MessageTooLong { .. } => {
                 ErrorCode::InvalidMessages
-            }
+            },
             Self::InvalidTemperature { .. } => ErrorCode::InvalidTemperature,
             Self::InvalidTopP { .. } => ErrorCode::InvalidTemperature, // Reuse same code for range errors
             Self::InvalidMaxTokens { .. } => ErrorCode::InvalidMaxTokens,
@@ -129,7 +129,7 @@ impl RequestValidationError {
         match self {
             Self::TooManyMessages { .. } | Self::TooManyEmbeddingInputs { .. } => {
                 Some(ErrorSubcode::TooManyItems)
-            }
+            },
             Self::MessageTooLong { .. } => Some(ErrorSubcode::SingleMessageTooLong),
             Self::InvalidMaxTokens { value, .. } if *value == 0 => Some(ErrorSubcode::BelowMinimum),
             Self::InvalidMaxTokens { .. } => Some(ErrorSubcode::AboveMaximum),
@@ -174,14 +174,14 @@ impl RequestValidationError {
             Self::TooManyMessages { count, limit }
             | Self::TooManyEmbeddingInputs { count, limit } => {
                 builder = builder.limit_exceeded(*limit as u64, *count as u64);
-            }
+            },
             Self::MessageTooLong { length, limit, .. } | Self::PromptTooLong { length, limit } => {
                 builder = builder.limit_exceeded(*limit as u64, *length as u64);
-            }
+            },
             Self::InvalidMaxTokens { value, limit } => {
                 builder = builder.limit_exceeded(*limit as u64, *value as u64);
-            }
-            _ => {}
+            },
+            _ => {},
         }
 
         builder.build()
@@ -198,7 +198,7 @@ impl fmt::Display for RequestValidationError {
                     "too many messages: {} provided, maximum is {}",
                     count, limit
                 )
-            }
+            },
             Self::MessageTooLong {
                 index,
                 length,
@@ -209,13 +209,17 @@ impl fmt::Display for RequestValidationError {
                     "message at index {} is too long: {} characters, maximum is {}",
                     index, length, limit
                 )
-            }
+            },
             Self::InvalidTemperature { value } => {
-                write!(f, "invalid temperature {}: must be between 0.0 and 2.0", value)
-            }
+                write!(
+                    f,
+                    "invalid temperature {}: must be between 0.0 and 2.0",
+                    value
+                )
+            },
             Self::InvalidTopP { value } => {
                 write!(f, "invalid top_p {}: must be between 0.0 and 1.0", value)
-            }
+            },
             Self::InvalidMaxTokens { value, limit } => {
                 if *value == 0 {
                     write!(f, "max_tokens must be at least 1")
@@ -226,7 +230,7 @@ impl fmt::Display for RequestValidationError {
                         value, limit
                     )
                 }
-            }
+            },
             Self::EmptyPrompt => write!(f, "prompt cannot be empty"),
             Self::PromptTooLong { length, limit } => {
                 write!(
@@ -234,17 +238,17 @@ impl fmt::Display for RequestValidationError {
                     "prompt too long: {} characters, maximum is {}",
                     length, limit
                 )
-            }
+            },
             Self::TooManyEmbeddingInputs { count, limit } => {
                 write!(
                     f,
                     "too many embedding inputs: {} provided, maximum is {}",
                     count, limit
                 )
-            }
+            },
             Self::InvalidModelId { model, reason } => {
                 write!(f, "invalid model '{}': {}", model, reason)
-            }
+            },
         }
     }
 }
@@ -466,7 +470,10 @@ mod tests {
             length: 150_000,
             limit: 100_000,
         };
-        assert_eq!(err.error_subcode(), Some(ErrorSubcode::SingleMessageTooLong));
+        assert_eq!(
+            err.error_subcode(),
+            Some(ErrorSubcode::SingleMessageTooLong)
+        );
         assert!(err.to_string().contains("index 2"));
         assert!(err.to_string().contains("150000"));
     }

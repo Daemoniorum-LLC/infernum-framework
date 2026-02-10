@@ -14,7 +14,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         eprintln!("Usage: {} <model_dir>", args[0]);
-        eprintln!("Example: {} /home/crook/models/llama-3.1-70b-hct-holo", args[0]);
+        eprintln!(
+            "Example: {} /home/crook/models/llama-3.1-70b-hct-holo",
+            args[0]
+        );
         std::process::exit(1);
     }
 
@@ -25,7 +28,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Query GPU info
     println!("\n--- GPU Information ---");
     let output = std::process::Command::new("nvidia-smi")
-        .args(["--query-gpu=name,memory.total,memory.free", "--format=csv,noheader"])
+        .args([
+            "--query-gpu=name,memory.total,memory.free",
+            "--format=csv,noheader",
+        ])
         .output()?;
     println!("{}", String::from_utf8_lossy(&output.stdout));
 
@@ -35,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "cuda")]
     {
         use abaddon::cuda_inference::{
-            LazyWeightStore, LazyWeightConfig, LazyGenerator, SamplingParams,
+            LazyGenerator, LazyWeightConfig, LazyWeightStore, SamplingParams,
         };
 
         // Test 1: Lazy Loading
@@ -51,11 +57,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => {
                 eprintln!("Failed to load weights: {}", e);
                 return Err(e.into());
-            }
+            },
         };
         let weights_time = weights_start.elapsed();
         println!("Weight indexing time: {:.2?}", weights_time);
-        println!("Shared memory loaded: {} MB", weights.shared_memory() / (1024 * 1024));
+        println!(
+            "Shared memory loaded: {} MB",
+            weights.shared_memory() / (1024 * 1024)
+        );
         println!("Total layers: {}", weights.num_layers());
 
         // Create generator
@@ -65,7 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => {
                 eprintln!("Failed to create generator: {}", e);
                 return Err(e.into());
-            }
+            },
         };
         let gen_time = gen_start.elapsed();
         println!("Generator creation time: {:.2?}", gen_time);
@@ -104,17 +113,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let tokens_per_sec = tokens.len() as f64 / gen_time.as_secs_f64();
                     println!("\nThroughput: {:.2} tokens/sec", tokens_per_sec);
                 }
-            }
+            },
             Err(e) => {
                 eprintln!("Generation failed: {}", e);
                 return Err(e.into());
-            }
+            },
         }
 
         // Report GPU memory after generation
         println!("\n--- GPU Memory After Generation ---");
         let output = std::process::Command::new("nvidia-smi")
-            .args(["--query-gpu=memory.used,memory.free", "--format=csv,noheader"])
+            .args([
+                "--query-gpu=memory.used,memory.free",
+                "--format=csv,noheader",
+            ])
             .output()?;
         println!("{}", String::from_utf8_lossy(&output.stdout));
     }

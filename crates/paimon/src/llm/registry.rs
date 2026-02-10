@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
-use tracing::{info, warn, debug};
+use tracing::{debug, info, warn};
 
 use super::client::{LlmClient, LlmError, Result};
 
@@ -100,11 +100,9 @@ impl LlmClientRegistry {
 
     /// Gets a client by name.
     pub fn get(&self, name: &str) -> Result<Arc<dyn LlmClient>> {
-        self.clients
-            .read()
-            .get(name)
-            .cloned()
-            .ok_or_else(|| LlmError::ProviderUnavailable(format!("Provider '{}' not registered", name)))
+        self.clients.read().get(name).cloned().ok_or_else(|| {
+            LlmError::ProviderUnavailable(format!("Provider '{}' not registered", name))
+        })
     }
 
     /// Gets the default client.
@@ -112,7 +110,9 @@ impl LlmClientRegistry {
         let default = self.default_provider.read().clone();
         match default {
             Some(name) => self.get(&name),
-            None => Err(LlmError::ProviderUnavailable("No default provider set".to_string())),
+            None => Err(LlmError::ProviderUnavailable(
+                "No default provider set".to_string(),
+            )),
         }
     }
 
@@ -130,7 +130,9 @@ impl LlmClientRegistry {
             }
         }
 
-        Err(LlmError::ProviderUnavailable("No available providers".to_string()))
+        Err(LlmError::ProviderUnavailable(
+            "No available providers".to_string(),
+        ))
     }
 
     /// Returns the names of all registered providers.
@@ -190,8 +192,8 @@ impl Default for LlmClientRegistry {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::mock::MockLlmClient;
+    use super::*;
 
     #[test]
     fn test_registry_register() {
@@ -257,8 +259,7 @@ mod tests {
 
     #[test]
     fn test_registry_unregister() {
-        let registry = LlmClientRegistry::new()
-            .register("test", MockLlmClient::new());
+        let registry = LlmClientRegistry::new().register("test", MockLlmClient::new());
 
         assert_eq!(registry.len(), 1);
 

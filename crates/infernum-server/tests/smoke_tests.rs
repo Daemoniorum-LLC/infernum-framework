@@ -130,9 +130,7 @@ async fn smoke_engine_loads_and_generates() {
 
     eprintln!(
         "[smoke] Generated: {:?} ({} prompt + {} completion tokens)",
-        response.choices[0].text,
-        response.usage.prompt_tokens,
-        response.usage.completion_tokens,
+        response.choices[0].text, response.usage.prompt_tokens, response.usage.completion_tokens,
     );
 }
 
@@ -174,7 +172,10 @@ async fn smoke_http_chat_completion() {
     assert_eq!(resp.status(), 200, "chat completion should succeed");
 
     let body = json_body(resp).await;
-    eprintln!("[smoke] HTTP response: {}", serde_json::to_string_pretty(&body).unwrap_or_default());
+    eprintln!(
+        "[smoke] HTTP response: {}",
+        serde_json::to_string_pretty(&body).unwrap_or_default()
+    );
 
     // Verify API response structure.
     assert!(

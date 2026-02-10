@@ -17,12 +17,12 @@ use std::path::Path;
 use std::time::Instant;
 
 use abaddon::holotensor::{
-    HoloModelMetadata,
     memory::FragmentId,
     provider::{ProviderBuilder, WeightType},
+    HoloModelMetadata,
 };
 use anyhow::{Context, Result};
-use haagenti::holotensor::{HolographicEncoding, HoloTensorReader};
+use haagenti::holotensor::{HoloTensorReader, HolographicEncoding};
 
 fn main() -> Result<()> {
     println!("╔════════════════════════════════════════════════════════════════╗");
@@ -39,7 +39,7 @@ fn main() -> Result<()> {
 
     // Hardware configuration
     let vram_bytes = 24 * 1024 * 1024 * 1024; // 24GB
-    let ram_bytes = 80 * 1024 * 1024 * 1024;  // 80GB
+    let ram_bytes = 80 * 1024 * 1024 * 1024; // 80GB
 
     println!("🖥️  Hardware: 24GB VRAM, 80GB RAM");
     println!();
@@ -49,7 +49,7 @@ fn main() -> Result<()> {
     let mut provider = ProviderBuilder::new()
         .with_vram_budget(vram_bytes)
         .with_ram_budget(ram_bytes)
-        .with_min_quality(0.7)   // 70% = 16 fragments
+        .with_min_quality(0.7) // 70% = 16 fragments
         .with_target_quality(0.95) // 95% = 29 fragments
         .with_max_streams(8)
         .build();
@@ -115,8 +115,8 @@ fn main() -> Result<()> {
         let hct_path = hct_files.iter().find(|p| {
             let name = p.file_name().unwrap().to_string_lossy();
             // Match exact weight file (not _scale variants)
-            (name.contains(&pattern_attn) || name.contains(&pattern_mlp)) &&
-            name.ends_with("_weight.hct")
+            (name.contains(&pattern_attn) || name.contains(&pattern_mlp))
+                && name.ends_with("_weight.hct")
         });
 
         if hct_path.is_none() {
@@ -139,8 +139,13 @@ fn main() -> Result<()> {
 
         // Load 16 fragments (70% quality)
         for frag_idx in 0..min_fragments {
-            let fragment = reader.read_fragment(frag_idx)
-                .with_context(|| format!("Failed to read fragment {} from {}", frag_idx, hct_path.display()))?;
+            let fragment = reader.read_fragment(frag_idx).with_context(|| {
+                format!(
+                    "Failed to read fragment {} from {}",
+                    frag_idx,
+                    hct_path.display()
+                )
+            })?;
 
             let frag_id = FragmentId::new(layer, *weight_type as u8, frag_idx);
             provider.add_fragment(frag_id, fragment)?;
@@ -152,7 +157,11 @@ fn main() -> Result<()> {
 
     let load_time = start_load.elapsed();
     println!();
-    println!("✓ Loaded {} weights in {:.2}s", loaded_count, load_time.as_secs_f64());
+    println!(
+        "✓ Loaded {} weights in {:.2}s",
+        loaded_count,
+        load_time.as_secs_f64()
+    );
     println!();
 
     // Check provider status
@@ -166,7 +175,10 @@ fn main() -> Result<()> {
     println!();
 
     if !ready {
-        anyhow::bail!("Provider not ready for inference. Quality: {:.1}%", overall_quality * 100.0);
+        anyhow::bail!(
+            "Provider not ready for inference. Quality: {:.1}%",
+            overall_quality * 100.0
+        );
     }
 
     // Test weight reconstruction
@@ -175,11 +187,13 @@ fn main() -> Result<()> {
 
     provider.start_inference();
 
-    for (weight_type, weight_name) in &weight_configs[..3] {  // Test first 3 weights
+    for (weight_type, weight_name) in &weight_configs[..3] {
+        // Test first 3 weights
         provider.notify_layer_start(layer);
 
         let start_recon = Instant::now();
-        let weights = provider.get_weights(layer, *weight_type)
+        let weights = provider
+            .get_weights(layer, *weight_type)
             .with_context(|| format!("Failed to reconstruct {}", weight_name))?;
         let recon_time = start_recon.elapsed();
 
@@ -188,7 +202,8 @@ fn main() -> Result<()> {
         let data_mb = weights.data.len() as f64 * 4.0 / (1024.0 * 1024.0);
 
         println!("   {} [{} × {}]:", weight_name, shape.0, shape.1);
-        println!("      Quality: {:.1}% ({}/{})",
+        println!(
+            "      Quality: {:.1}% ({}/{})",
             quality.current_quality * 100.0,
             quality.fragments_loaded,
             quality.total_fragments
@@ -217,8 +232,14 @@ fn main() -> Result<()> {
     let stream_stats = provider.stream_stats();
     println!("   Requests submitted: {}", stream_stats.requests_submitted);
     println!("   Requests completed: {}", stream_stats.requests_completed);
-    println!("   Bytes transferred: {} MB", stream_stats.bytes_transferred / (1024 * 1024));
-    println!("   Avg speed: {:.1} MB/s", stream_stats.avg_speed_bps / (1024.0 * 1024.0));
+    println!(
+        "   Bytes transferred: {} MB",
+        stream_stats.bytes_transferred / (1024 * 1024)
+    );
+    println!(
+        "   Avg speed: {:.1} MB/s",
+        stream_stats.avg_speed_bps / (1024.0 * 1024.0)
+    );
     println!();
 
     println!("╔════════════════════════════════════════════════════════════════╗");

@@ -204,11 +204,11 @@ impl FragmentCache {
         match tier {
             CacheTier::Vram => {
                 self.vram_used.fetch_add(size, Ordering::Relaxed);
-            }
+            },
             CacheTier::Ram => {
                 self.ram_used.fetch_add(size, Ordering::Relaxed);
-            }
-            CacheTier::None => {}
+            },
+            CacheTier::None => {},
         }
 
         self.entries.write().insert(fragment_id, entry);
@@ -221,11 +221,11 @@ impl FragmentCache {
             match entry.tier {
                 CacheTier::Vram => {
                     self.vram_used.fetch_sub(entry.size, Ordering::Relaxed);
-                }
+                },
                 CacheTier::Ram => {
                     self.ram_used.fetch_sub(entry.size, Ordering::Relaxed);
-                }
-                CacheTier::None => {}
+                },
+                CacheTier::None => {},
             }
         }
     }
@@ -243,21 +243,21 @@ impl FragmentCache {
             match from_tier {
                 CacheTier::Vram => {
                     self.vram_used.fetch_sub(entry.size, Ordering::Relaxed);
-                }
+                },
                 CacheTier::Ram => {
                     self.ram_used.fetch_sub(entry.size, Ordering::Relaxed);
-                }
-                CacheTier::None => {}
+                },
+                CacheTier::None => {},
             }
 
             match to_tier {
                 CacheTier::Vram => {
                     self.vram_used.fetch_add(entry.size, Ordering::Relaxed);
-                }
+                },
                 CacheTier::Ram => {
                     self.ram_used.fetch_add(entry.size, Ordering::Relaxed);
-                }
-                CacheTier::None => {}
+                },
+                CacheTier::None => {},
             }
 
             entry.tier = to_tier;
@@ -311,8 +311,14 @@ impl FragmentCache {
     /// Ensures capacity for a new entry, evicting if necessary.
     fn ensure_capacity(&self, size: u64, tier: CacheTier) {
         let (capacity, used) = match tier {
-            CacheTier::Vram => (self.config.vram_capacity, self.vram_used.load(Ordering::Relaxed)),
-            CacheTier::Ram => (self.config.ram_capacity, self.ram_used.load(Ordering::Relaxed)),
+            CacheTier::Vram => (
+                self.config.vram_capacity,
+                self.vram_used.load(Ordering::Relaxed),
+            ),
+            CacheTier::Ram => (
+                self.config.ram_capacity,
+                self.ram_used.load(Ordering::Relaxed),
+            ),
             CacheTier::None => return,
         };
 
@@ -335,9 +341,7 @@ impl FragmentCache {
             .collect();
 
         // Sort by: shared count (evict non-shared first), then access time
-        candidates.sort_by(|a, b| {
-            a.3.cmp(&b.3).then(a.1.cmp(&b.1))
-        });
+        candidates.sort_by(|a, b| a.3.cmp(&b.3).then(a.1.cmp(&b.1)));
 
         let mut freed = 0u64;
         for (id, _, _size, _) in candidates {
@@ -351,12 +355,12 @@ impl FragmentCache {
                     CacheTier::Vram => {
                         self.vram_used.fetch_sub(entry.size, Ordering::Relaxed);
                         self.vram_evictions.fetch_add(1, Ordering::Relaxed);
-                    }
+                    },
                     CacheTier::Ram => {
                         self.ram_used.fetch_sub(entry.size, Ordering::Relaxed);
                         self.ram_evictions.fetch_add(1, Ordering::Relaxed);
-                    }
-                    CacheTier::None => {}
+                    },
+                    CacheTier::None => {},
                 }
             }
         }

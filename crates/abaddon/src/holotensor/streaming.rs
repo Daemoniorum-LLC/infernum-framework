@@ -159,9 +159,10 @@ impl StreamManager {
 
     /// Submit a stream request.
     pub fn submit(&self, request: StreamRequest) -> Result<()> {
-        let mut queue = self.queue.lock().map_err(|_| {
-            HoloInferenceError::Cuda("queue lock poisoned".to_string())
-        })?;
+        let mut queue = self
+            .queue
+            .lock()
+            .map_err(|_| HoloInferenceError::Cuda("queue lock poisoned".to_string()))?;
 
         // Insert by priority (higher priority first).
         let insert_pos = queue
@@ -189,7 +190,12 @@ impl StreamManager {
     }
 
     /// Request streaming for a layer's fragments.
-    pub fn request_layer(&self, layer: usize, num_fragments: u16, priority: StreamPriority) -> Result<()> {
+    pub fn request_layer(
+        &self,
+        layer: usize,
+        num_fragments: u16,
+        priority: StreamPriority,
+    ) -> Result<()> {
         let requests: Vec<_> = (0..num_fragments)
             .map(|i| StreamRequest::new(FragmentId::new(layer, 0, i), priority))
             .collect();
@@ -197,7 +203,12 @@ impl StreamManager {
     }
 
     /// Request streaming for next N layers (prefetch).
-    pub fn prefetch_layers(&self, start_layer: usize, count: usize, fragments_per_layer: u16) -> Result<()> {
+    pub fn prefetch_layers(
+        &self,
+        start_layer: usize,
+        count: usize,
+        fragments_per_layer: u16,
+    ) -> Result<()> {
         for layer in start_layer..(start_layer + count) {
             // Priority decreases with distance from current layer
             let priority = match layer - start_layer {
@@ -338,7 +349,8 @@ impl StreamManager {
 
         // Update counters
         self.bytes_transferred.fetch_add(bytes, Ordering::Relaxed);
-        self.transfer_time_us.fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+        self.transfer_time_us
+            .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
 
         // Update stats
         if let Ok(mut stats) = self.stats.write() {
@@ -348,8 +360,8 @@ impl StreamManager {
 
             // Calculate speeds
             if stats.transfer_time_us > 0 {
-                stats.avg_speed_bps = (stats.bytes_transferred as f64 * 1_000_000.0)
-                    / stats.transfer_time_us as f64;
+                stats.avg_speed_bps =
+                    (stats.bytes_transferred as f64 * 1_000_000.0) / stats.transfer_time_us as f64;
             }
 
             let instant_speed = (bytes as f64 * 1_000_000.0) / duration.as_micros() as f64;
@@ -444,8 +456,8 @@ impl StreamManager {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::memory::MemoryConfig;
+    use super::*;
 
     fn create_test_manager() -> StreamManager {
         let memory = Arc::new(HoloMemoryManager::new(MemoryConfig::default()));
@@ -466,16 +478,20 @@ mod tests {
         let manager = create_test_manager();
 
         // Submit low priority first
-        manager.submit(StreamRequest::new(
-            FragmentId::new(0, 0, 0),
-            StreamPriority::Low,
-        )).unwrap();
+        manager
+            .submit(StreamRequest::new(
+                FragmentId::new(0, 0, 0),
+                StreamPriority::Low,
+            ))
+            .unwrap();
 
         // Submit high priority
-        manager.submit(StreamRequest::new(
-            FragmentId::new(0, 0, 1),
-            StreamPriority::High,
-        )).unwrap();
+        manager
+            .submit(StreamRequest::new(
+                FragmentId::new(0, 0, 1),
+                StreamPriority::High,
+            ))
+            .unwrap();
 
         // High priority should come first
         let next = manager.next_request().unwrap();
@@ -487,10 +503,12 @@ mod tests {
     fn test_pause_resume() {
         let manager = create_test_manager();
 
-        manager.submit(StreamRequest::new(
-            FragmentId::new(0, 0, 0),
-            StreamPriority::Normal,
-        )).unwrap();
+        manager
+            .submit(StreamRequest::new(
+                FragmentId::new(0, 0, 0),
+                StreamPriority::Normal,
+            ))
+            .unwrap();
 
         // Pause should prevent getting next request
         manager.pause();
@@ -535,10 +553,12 @@ mod tests {
 
         // Add 10 requests
         for i in 0..10 {
-            manager.submit(StreamRequest::new(
-                FragmentId::new(0, 0, i),
-                StreamPriority::Normal,
-            )).unwrap();
+            manager
+                .submit(StreamRequest::new(
+                    FragmentId::new(0, 0, i),
+                    StreamPriority::Normal,
+                ))
+                .unwrap();
         }
 
         // Get 4 (max_concurrent) requests

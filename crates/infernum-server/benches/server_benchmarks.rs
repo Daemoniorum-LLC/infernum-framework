@@ -9,13 +9,13 @@
 //! - Observability metrics recording
 
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
-use std::hint::black_box;
 use infernum_server::{
     error_response::{api_error, ErrorCode},
     observability::ObservabilityState,
     security::{RateLimitConfig, RateLimiter},
     server::ValidationLimits,
 };
+use std::hint::black_box;
 use std::time::Duration;
 
 // ============================================================================

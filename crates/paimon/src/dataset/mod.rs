@@ -254,7 +254,12 @@ impl Dataset {
     where
         F: Fn(&Example) -> bool,
     {
-        let filtered: Vec<Example> = self.examples.iter().filter(|e| predicate(e)).cloned().collect();
+        let filtered: Vec<Example> = self
+            .examples
+            .iter()
+            .filter(|e| predicate(e))
+            .cloned()
+            .collect();
         let stats = DatasetStats::compute(&filtered);
 
         Self {
@@ -281,8 +286,14 @@ impl Dataset {
         if config.shuffle {
             // Simple shuffle using hash-based sorting for reproducibility
             examples.sort_by(|a, b| {
-                let hash_a = a.id.as_bytes().iter().fold(0u64, |acc, &b| acc.wrapping_add(b as u64));
-                let hash_b = b.id.as_bytes().iter().fold(0u64, |acc, &b| acc.wrapping_add(b as u64));
+                let hash_a =
+                    a.id.as_bytes()
+                        .iter()
+                        .fold(0u64, |acc, &b| acc.wrapping_add(b as u64));
+                let hash_b =
+                    b.id.as_bytes()
+                        .iter()
+                        .fold(0u64, |acc, &b| acc.wrapping_add(b as u64));
                 hash_a.cmp(&hash_b)
             });
         }
@@ -474,11 +485,17 @@ impl DatasetManager {
 
         // Save to database or disk
         if let Some(ref db) = self.db {
-            db.save_dataset(&dataset)
-                .map_err(|e| DatasetError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            db.save_dataset(&dataset).map_err(|e| {
+                DatasetError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))
+            })?;
         } else {
             self.save(&dataset).await?;
-            self.datasets.write().insert(dataset.id.clone(), dataset.clone());
+            self.datasets
+                .write()
+                .insert(dataset.id.clone(), dataset.clone());
         }
 
         info!(id = %dataset.id, examples = dataset.len(), "Created dataset");
@@ -489,8 +506,14 @@ impl DatasetManager {
     pub async fn get(&self, id: &str) -> Result<Dataset> {
         // Try database first
         if let Some(ref db) = self.db {
-            return db.load_dataset(id)
-                .map_err(|e| DatasetError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
+            return db
+                .load_dataset(id)
+                .map_err(|e| {
+                    DatasetError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e.to_string(),
+                    ))
+                })?
                 .ok_or_else(|| DatasetError::NotFound(id.to_string()));
         }
 
@@ -548,8 +571,12 @@ impl DatasetManager {
         let _span = info_span!("dataset.delete", id = %id).entered();
 
         if let Some(ref db) = self.db {
-            db.delete_dataset(id)
-                .map_err(|e| DatasetError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            db.delete_dataset(id).map_err(|e| {
+                DatasetError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))
+            })?;
         } else {
             self.datasets.write().remove(id);
             let path = self.dataset_path(id);
@@ -571,20 +598,19 @@ impl DatasetManager {
     /// Augments a dataset with synthetic examples.
     ///
     /// Requires the data curator agent to be configured.
-    pub async fn augment(
-        &self,
-        id: &str,
-        count: usize,
-    ) -> Result<Dataset> {
+    pub async fn augment(&self, id: &str, count: usize) -> Result<Dataset> {
         let _span = info_span!("dataset.augment", id = %id, count = count).entered();
 
-        let curator = self.curator.as_ref()
-            .ok_or_else(|| DatasetError::ValidationFailed("Data curator agent not configured".to_string()))?;
+        let curator = self.curator.as_ref().ok_or_else(|| {
+            DatasetError::ValidationFailed("Data curator agent not configured".to_string())
+        })?;
 
         let dataset = self.get(id).await?;
 
         info!("Generating {} synthetic examples", count);
-        let synthetic = curator.generate_examples(&dataset.examples, count).await
+        let synthetic = curator
+            .generate_examples(&dataset.examples, count)
+            .await
             .map_err(|e| DatasetError::ValidationFailed(e.to_string()))?;
 
         let mut augmented = dataset;
@@ -597,11 +623,17 @@ impl DatasetManager {
 
         // Save to database or disk
         if let Some(ref db) = self.db {
-            db.save_dataset(&augmented)
-                .map_err(|e| DatasetError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            db.save_dataset(&augmented).map_err(|e| {
+                DatasetError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))
+            })?;
         } else {
             self.save(&augmented).await?;
-            self.datasets.write().insert(augmented.id.clone(), augmented.clone());
+            self.datasets
+                .write()
+                .insert(augmented.id.clone(), augmented.clone());
         }
 
         info!(new_total = augmented.len(), "Augmented dataset");
@@ -614,7 +646,9 @@ impl DatasetManager {
         let mut suggestions = Vec::new();
 
         // Check for empty examples
-        let empty_inputs: Vec<_> = dataset.examples.iter()
+        let empty_inputs: Vec<_> = dataset
+            .examples
+            .iter()
             .filter(|e| e.input.trim().is_empty())
             .map(|e| e.id.clone())
             .collect();
@@ -626,7 +660,9 @@ impl DatasetManager {
             });
         }
 
-        let empty_outputs: Vec<_> = dataset.examples.iter()
+        let empty_outputs: Vec<_> = dataset
+            .examples
+            .iter()
             .filter(|e| e.output.trim().is_empty())
             .map(|e| e.id.clone())
             .collect();
@@ -639,7 +675,9 @@ impl DatasetManager {
         }
 
         // Check for very short examples
-        let short_examples: Vec<_> = dataset.examples.iter()
+        let short_examples: Vec<_> = dataset
+            .examples
+            .iter()
             .filter(|e| e.char_count() < 20)
             .map(|e| e.id.clone())
             .collect();
@@ -653,7 +691,9 @@ impl DatasetManager {
 
         // Check for potential duplicates
         let mut seen = std::collections::HashSet::new();
-        let duplicates: Vec<_> = dataset.examples.iter()
+        let duplicates: Vec<_> = dataset
+            .examples
+            .iter()
             .filter(|e| !seen.insert(&e.input))
             .map(|e| e.id.clone())
             .collect();
@@ -667,14 +707,22 @@ impl DatasetManager {
         }
 
         // Suggest system prompts if few have them
-        let system_ratio = dataset.stats.with_system_count as f32 / dataset.stats.example_count.max(1) as f32;
+        let system_ratio =
+            dataset.stats.with_system_count as f32 / dataset.stats.example_count.max(1) as f32;
         if system_ratio < 0.5 && dataset.stats.example_count > 10 {
-            suggestions.push("Consider adding system prompts to improve model behavior".to_string());
+            suggestions
+                .push("Consider adding system prompts to improve model behavior".to_string());
         }
 
         // Calculate quality score
-        let error_count = issues.iter().filter(|i| i.severity == IssueSeverity::Error).count();
-        let warning_count = issues.iter().filter(|i| i.severity == IssueSeverity::Warning).count();
+        let error_count = issues
+            .iter()
+            .filter(|i| i.severity == IssueSeverity::Error)
+            .count();
+        let warning_count = issues
+            .iter()
+            .filter(|i| i.severity == IssueSeverity::Warning)
+            .count();
         let quality_score = 1.0 - (error_count as f32 * 0.2) - (warning_count as f32 * 0.05);
 
         ValidationReport {
@@ -781,8 +829,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_dataset_manager_with_database() {
-        use std::sync::Arc;
         use crate::persistence::StudioDatabase;
+        use std::sync::Arc;
 
         let temp = tempfile::TempDir::new().expect("temp dir");
         let db = Arc::new(StudioDatabase::in_memory().expect("create db"));
@@ -793,8 +841,7 @@ mod tests {
             Example::new("What is 3+3?", "6"),
         ];
 
-        let config = DatasetConfig::new("math-dataset")
-            .with_description("Math examples");
+        let config = DatasetConfig::new("math-dataset").with_description("Math examples");
 
         // Create dataset
         let dataset = manager.create(config, examples).await.expect("create");
@@ -820,8 +867,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_dataset_manager_persistence_across_instances() {
-        use std::sync::Arc;
         use crate::persistence::StudioDatabase;
+        use std::sync::Arc;
 
         let temp = tempfile::TempDir::new().expect("temp dir");
         let db_path = temp.path().join("test.db");
@@ -876,7 +923,9 @@ mod tests {
         assert!(file_path.exists(), "Dataset file should be created");
 
         // Read file content asynchronously to verify
-        let content = tokio::fs::read_to_string(&file_path).await.expect("read file");
+        let content = tokio::fs::read_to_string(&file_path)
+            .await
+            .expect("read file");
         assert!(content.contains("async-test-dataset"));
         assert!(content.contains("async input 1"));
 

@@ -5,7 +5,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
 use beleth::dynamic_context::{
-    semantic_chunk, score_message_relevance, ContextComplexity, DynamicContextManager,
+    score_message_relevance, semantic_chunk, ContextComplexity, DynamicContextManager,
 };
 use beleth::long_term_memory::{ImportanceLevel, MemoryEntry, MemoryType};
 use beleth::tool::{TaskComplexity, ToolTimeoutConfig};
@@ -130,7 +130,10 @@ fn bench_memory_entry_matching(c: &mut Criterion) {
         .map(|i| {
             MemoryEntry::new(
                 MemoryType::Context,
-                format!("Entry {} about Rust programming and system design patterns", i),
+                format!(
+                    "Entry {} about Rust programming and system design patterns",
+                    i
+                ),
             )
             .with_tag("rust")
             .with_tag("patterns")

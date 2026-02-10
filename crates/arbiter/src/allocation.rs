@@ -2,9 +2,9 @@
 //!
 //! Represents GPU memory allocations and requests for workloads.
 
-use std::time::Instant;
-use serde::{Deserialize, Serialize};
 use crate::priority::{Priority, WorkloadType};
+use serde::{Deserialize, Serialize};
+use std::time::Instant;
 
 /// A GPU memory allocation.
 #[derive(Debug, Clone)]
@@ -140,7 +140,8 @@ impl AllocationRequest {
 
     /// Returns effective minimum quality.
     pub fn effective_min_quality(&self) -> f32 {
-        self.min_quality.unwrap_or_else(|| self.workload_type.min_quality())
+        self.min_quality
+            .unwrap_or_else(|| self.workload_type.min_quality())
     }
 }
 

@@ -11,10 +11,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use infernum_core::{
-    EmbedRequest, EmbedResponse, GenerateRequest, GenerateResponse, ModelArchitecture,
-    ModelId, ModelMetadata, ModelSource, RequestId, Result, TokenStream, Usage,
-    model::LlamaVersion,
-    response::Choice,
+    model::LlamaVersion, response::Choice, EmbedRequest, EmbedResponse, GenerateRequest,
+    GenerateResponse, ModelArchitecture, ModelId, ModelMetadata, ModelSource, RequestId, Result,
+    TokenStream, Usage,
 };
 use parking_lot::Mutex;
 
@@ -42,9 +41,14 @@ impl ScriptedEngine {
     fn new(responses: Vec<String>) -> Self {
         Self {
             responses: Mutex::new(responses),
-            metadata: ModelMetadata::builder("test-model", ModelArchitecture::Llama { version: LlamaVersion::V3 })
-                .source(ModelSource::local("/tmp/test-model"))
-                .build(),
+            metadata: ModelMetadata::builder(
+                "test-model",
+                ModelArchitecture::Llama {
+                    version: LlamaVersion::V3,
+                },
+            )
+            .source(ModelSource::local("/tmp/test-model"))
+            .build(),
             call_count: Mutex::new(0),
         }
     }
@@ -92,7 +96,9 @@ impl InferenceEngine for ScriptedEngine {
     }
 
     async fn embed(&self, _request: EmbedRequest) -> Result<EmbedResponse> {
-        Err(infernum_core::Error::internal("Embedding not supported in mock"))
+        Err(infernum_core::Error::internal(
+            "Embedding not supported in mock",
+        ))
     }
 
     fn model_info(&self) -> &ModelMetadata {
@@ -129,8 +135,11 @@ fn make_code_tools() -> ToolRegistry {
 async fn test_agent_read_edit_verify_flow() {
     let dir = tempfile::tempdir().expect("tempdir");
     let file_path = dir.path().join("hello.txt");
-    std::fs::write(&file_path, "Hello, world!\nThis is a test file.\nGoodbye.\n")
-        .expect("write seed file");
+    std::fs::write(
+        &file_path,
+        "Hello, world!\nThis is a test file.\nGoodbye.\n",
+    )
+    .expect("write seed file");
 
     let file_path_str = file_path.to_string_lossy().to_string();
 
@@ -169,7 +178,9 @@ async fn test_agent_read_edit_verify_flow() {
         .working_dir(dir.path())
         .build();
 
-    let result = agent.run("Edit hello.txt to say 'Hello, Infernum!' instead of 'Hello, world!'").await;
+    let result = agent
+        .run("Edit hello.txt to say 'Hello, Infernum!' instead of 'Hello, world!'")
+        .await;
 
     let answer = result.expect("agent run should succeed");
     assert!(
@@ -190,7 +201,10 @@ async fn test_agent_read_edit_verify_flow() {
 
     // Verify engine was called exactly 4 times
     let count = *engine.call_count.lock();
-    assert_eq!(count, 4, "Engine should have been called 4 times, got {count}");
+    assert_eq!(
+        count, 4,
+        "Engine should have been called 4 times, got {count}"
+    );
 }
 
 /// Test: Agent writes a new file and then lists the directory.
@@ -234,7 +248,9 @@ async fn test_agent_write_and_list_flow() {
         .working_dir(dir.path())
         .build();
 
-    let result = agent.run("Create a file called output.txt with some content.").await;
+    let result = agent
+        .run("Create a file called output.txt with some content.")
+        .await;
 
     let answer = result.expect("agent run should succeed");
     assert!(
@@ -428,7 +444,11 @@ async fn test_agent_max_iterations_graceful_exit() {
 #[tokio::test]
 async fn test_agent_tool_error_recovery() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let missing_path = dir.path().join("nonexistent.txt").to_string_lossy().to_string();
+    let missing_path = dir
+        .path()
+        .join("nonexistent.txt")
+        .to_string_lossy()
+        .to_string();
 
     let responses = vec![
         // Step 1: Try to read a file that doesn't exist (within working dir)
@@ -438,7 +458,8 @@ async fn test_agent_tool_error_recovery() {
              Action Input: {{\"path\": \"{missing_path}\"}}"
         ),
         // Step 2: Acknowledge the error and give final answer
-        "Final Answer: The file does not exist. I received an error when trying to read it.".to_string(),
+        "Final Answer: The file does not exist. I received an error when trying to read it."
+            .to_string(),
     ];
 
     let engine = Arc::new(ScriptedEngine::new(responses));
@@ -534,5 +555,8 @@ async fn test_agent_multi_tool_workflow() {
 
     // Verify engine call count: 5 scripted responses
     let count = *engine.call_count.lock();
-    assert_eq!(count, 5, "Engine should have been called 5 times, got {count}");
+    assert_eq!(
+        count, 5,
+        "Engine should have been called 5 times, got {count}"
+    );
 }

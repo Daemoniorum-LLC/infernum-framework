@@ -15,7 +15,9 @@ use abaddon::models::qwen2::{Qwen2, Qwen2Config};
 fn main() -> anyhow::Result<()> {
     println!("=== INT4 Inference Test ===\n");
 
-    let model_dir = Path::new("/home/crook/dev2/workspace/nyx/infernum/infernum-complete/test_models/qwen2.5-7b-int4-v3");
+    let model_dir = Path::new(
+        "/home/crook/dev2/workspace/nyx/infernum/infernum-complete/test_models/qwen2.5-7b-int4-v3",
+    );
     let config_path = model_dir.join("config.json");
 
     // Check if model exists
@@ -48,14 +50,14 @@ fn main() -> anyhow::Result<()> {
     println!("Loading INT4 weights (this may take a while on CPU)...");
     let start = Instant::now();
 
-    let tensors = load_hct_directory_sequential(
-        model_dir,
-        &device,
-        dtype,
-    )?;
+    let tensors = load_hct_directory_sequential(model_dir, &device, dtype)?;
 
     let load_time = start.elapsed();
-    println!("  Loaded {} tensors in {:.2}s\n", tensors.len(), load_time.as_secs_f64());
+    println!(
+        "  Loaded {} tensors in {:.2}s\n",
+        tensors.len(),
+        load_time.as_secs_f64()
+    );
 
     // Create VarBuilder
     let vb = VarBuilder::from_tensors(tensors, dtype, &device);
@@ -101,7 +103,11 @@ fn main() -> anyhow::Result<()> {
     println!("    Finite values: {} ({:.1}%)", finite_count, finite_ratio);
 
     if finite_ratio > 99.0 {
-        let valid: Vec<f32> = logits_data.iter().copied().filter(|x| x.is_finite()).collect();
+        let valid: Vec<f32> = logits_data
+            .iter()
+            .copied()
+            .filter(|x| x.is_finite())
+            .collect();
         let mean: f32 = valid.iter().sum::<f32>() / valid.len() as f32;
         let min = valid.iter().cloned().fold(f32::INFINITY, f32::min);
         let max = valid.iter().cloned().fold(f32::NEG_INFINITY, f32::max);

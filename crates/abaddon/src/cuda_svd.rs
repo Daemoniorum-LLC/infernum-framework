@@ -8,10 +8,10 @@
 /// CUDA-accelerated SVD using cuBLAS power iteration.
 #[cfg(feature = "cuda")]
 pub mod cuda {
-    use std::sync::Arc;
-    use cudarc::cublas::{CudaBlas, Gemv, GemvConfig};
     use cudarc::cublas::sys::lib as cublas_lib;
+    use cudarc::cublas::{CudaBlas, Gemv, GemvConfig};
     use cudarc::driver::{CudaDevice, CudaSlice, DevicePtr, DevicePtrMut};
+    use std::sync::Arc;
 
     /// GPU-accelerated SVD using power iteration with cuBLAS.
     ///
@@ -37,7 +37,7 @@ pub mod cuda {
                 // Try to set TF32 mode - ignore errors on older GPUs
                 let _ = cublas_lib().cublasSetMathMode(
                     handle,
-                    cudarc::cublas::sys::cublasMath_t::CUBLAS_TF32_TENSOR_OP_MATH
+                    cudarc::cublas::sys::cublasMath_t::CUBLAS_TF32_TENSOR_OP_MATH,
                 );
             }
 
@@ -80,7 +80,6 @@ pub mod cuda {
             rank: usize,
             iterations: usize,
         ) -> Result<(Vec<f32>, Vec<f32>, Vec<f32>), Box<dyn std::error::Error>> {
-
             let mut d_u: CudaSlice<f32> = self.device.alloc_zeros(rows)?;
             let mut d_v: CudaSlice<f32> = self.device.alloc_zeros(cols)?;
 
@@ -149,9 +148,17 @@ pub mod cuda {
             transpose: bool,
         ) -> Result<(), Box<dyn std::error::Error>> {
             let (trans, m, n) = if transpose {
-                (cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_N, cols, rows)
+                (
+                    cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_N,
+                    cols,
+                    rows,
+                )
             } else {
-                (cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_T, cols, rows)
+                (
+                    cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_T,
+                    cols,
+                    rows,
+                )
             };
 
             unsafe {
@@ -192,15 +199,15 @@ pub mod cuda {
                 // Use ger(m=cols, n=rows, x=v, y=u) on the col-major view
                 let status = cublas_lib().cublasSger_v2(
                     handle,
-                    cols as i32,  // m
-                    rows as i32,  // n
+                    cols as i32, // m
+                    rows as i32, // n
                     &alpha as *const f32,
-                    *d_v.device_ptr() as *const f32,  // x = v
+                    *d_v.device_ptr() as *const f32, // x = v
                     1,
-                    *d_u.device_ptr() as *const f32,  // y = u
+                    *d_u.device_ptr() as *const f32, // y = u
                     1,
                     *d_a.device_ptr_mut() as *mut f32,
-                    cols as i32,  // lda
+                    cols as i32, // lda
                 );
                 if status != cudarc::cublas::sys::cublasStatus_t::CUBLAS_STATUS_SUCCESS {
                     return Err(format!("cublasSger failed: {:?}", status).into());
@@ -210,7 +217,11 @@ pub mod cuda {
         }
 
         /// GPU vector normalization: x = x / ||x||
-        fn gpu_normalize(&self, d_x: &mut CudaSlice<f32>, n: usize) -> Result<(), Box<dyn std::error::Error>> {
+        fn gpu_normalize(
+            &self,
+            d_x: &mut CudaSlice<f32>,
+            n: usize,
+        ) -> Result<(), Box<dyn std::error::Error>> {
             let norm = self.gpu_norm(d_x, n)?;
             if norm > 1e-10 {
                 self.gpu_scale(d_x, n, 1.0 / norm)?;
@@ -219,7 +230,11 @@ pub mod cuda {
         }
 
         /// GPU vector norm: ||x||
-        fn gpu_norm(&self, d_x: &CudaSlice<f32>, n: usize) -> Result<f32, Box<dyn std::error::Error>> {
+        fn gpu_norm(
+            &self,
+            d_x: &CudaSlice<f32>,
+            n: usize,
+        ) -> Result<f32, Box<dyn std::error::Error>> {
             unsafe {
                 let handle = *self.blas.handle();
                 let mut result: f32 = 0.0;
@@ -238,7 +253,12 @@ pub mod cuda {
         }
 
         /// GPU vector scale: x = alpha * x
-        fn gpu_scale(&self, d_x: &mut CudaSlice<f32>, n: usize, alpha: f32) -> Result<(), Box<dyn std::error::Error>> {
+        fn gpu_scale(
+            &self,
+            d_x: &mut CudaSlice<f32>,
+            n: usize,
+            alpha: f32,
+        ) -> Result<(), Box<dyn std::error::Error>> {
             unsafe {
                 let handle = *self.blas.handle();
                 let status = cublas_lib().cublasSscal_v2(

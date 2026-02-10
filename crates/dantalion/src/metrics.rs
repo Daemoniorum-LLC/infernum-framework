@@ -56,11 +56,14 @@ impl MetricsCollector {
         latency_secs: f64,
         model: &str,
     ) {
-        self.inference.record_request(prompt_tokens, completion_tokens);
+        self.inference
+            .record_request(prompt_tokens, completion_tokens);
         self.prometheus.record_request("chat", model);
         self.prometheus.record_latency("chat", model, latency_secs);
-        self.prometheus.record_tokens("prompt", model, prompt_tokens);
-        self.prometheus.record_tokens("completion", model, completion_tokens);
+        self.prometheus
+            .record_tokens("prompt", model, prompt_tokens);
+        self.prometheus
+            .record_tokens("completion", model, completion_tokens);
     }
 
     /// Records a completed completion request with timing.
@@ -71,11 +74,15 @@ impl MetricsCollector {
         latency_secs: f64,
         model: &str,
     ) {
-        self.inference.record_request(prompt_tokens, completion_tokens);
+        self.inference
+            .record_request(prompt_tokens, completion_tokens);
         self.prometheus.record_request("completion", model);
-        self.prometheus.record_latency("completion", model, latency_secs);
-        self.prometheus.record_tokens("prompt", model, prompt_tokens);
-        self.prometheus.record_tokens("completion", model, completion_tokens);
+        self.prometheus
+            .record_latency("completion", model, latency_secs);
+        self.prometheus
+            .record_tokens("prompt", model, prompt_tokens);
+        self.prometheus
+            .record_tokens("completion", model, completion_tokens);
     }
 
     /// Records a completed embedding request with timing.
@@ -88,7 +95,8 @@ impl MetricsCollector {
     ) {
         self.inference.record_request(tokens, 0);
         self.prometheus.record_request("embedding", model);
-        self.prometheus.record_latency("embedding", model, latency_secs);
+        self.prometheus
+            .record_latency("embedding", model, latency_secs);
         self.prometheus.record_tokens("embedding", model, tokens);
         self.prometheus.record_embedding_batch(model, batch_size);
     }
@@ -151,7 +159,8 @@ impl PrometheusRegistry {
 
     /// Sets model loaded state.
     pub fn set_model_loaded(&self, loaded: bool) {
-        self.model_loaded.store(if loaded { 1 } else { 0 }, Ordering::Relaxed);
+        self.model_loaded
+            .store(if loaded { 1 } else { 0 }, Ordering::Relaxed);
     }
 
     /// Records a request.
@@ -163,7 +172,11 @@ impl PrometheusRegistry {
 
     /// Records an error.
     fn record_error(&self, endpoint: &str, model: &str, error_type: &str) {
-        let key = (endpoint.to_string(), model.to_string(), error_type.to_string());
+        let key = (
+            endpoint.to_string(),
+            model.to_string(),
+            error_type.to_string(),
+        );
         let mut errors = self.errors.write();
         *errors.entry(key).or_insert(0) += 1;
     }
@@ -223,7 +236,9 @@ impl PrometheusRegistry {
         }
 
         // Active requests gauge
-        output.push_str("# HELP infernum_active_requests Number of requests currently being processed.\n");
+        output.push_str(
+            "# HELP infernum_active_requests Number of requests currently being processed.\n",
+        );
         output.push_str("# TYPE infernum_active_requests gauge\n");
         output.push_str(&format!(
             "infernum_active_requests {}\n",
@@ -231,7 +246,9 @@ impl PrometheusRegistry {
         ));
 
         // Model loaded gauge
-        output.push_str("# HELP infernum_model_loaded Whether a model is currently loaded (1) or not (0).\n");
+        output.push_str(
+            "# HELP infernum_model_loaded Whether a model is currently loaded (1) or not (0).\n",
+        );
         output.push_str("# TYPE infernum_model_loaded gauge\n");
         output.push_str(&format!(
             "infernum_model_loaded {}\n",
@@ -252,20 +269,23 @@ impl PrometheusRegistry {
         output.push_str("# HELP infernum_tokens Token counts per request.\n");
         output.push_str("# TYPE infernum_tokens histogram\n");
         for ((token_type, model), histogram) in self.token_histograms.read().iter() {
-            output.push_str(&histogram.render_prometheus(
-                "infernum_tokens",
-                &[("type", token_type), ("model", model)],
-            ));
+            output.push_str(
+                &histogram.render_prometheus(
+                    "infernum_tokens",
+                    &[("type", token_type), ("model", model)],
+                ),
+            );
         }
 
         // Embedding batch sizes
-        output.push_str("# HELP infernum_embedding_batch_size Number of inputs per embedding request.\n");
+        output.push_str(
+            "# HELP infernum_embedding_batch_size Number of inputs per embedding request.\n",
+        );
         output.push_str("# TYPE infernum_embedding_batch_size histogram\n");
         for (model, histogram) in self.embedding_batches.read().iter() {
-            output.push_str(&histogram.render_prometheus(
-                "infernum_embedding_batch_size",
-                &[("model", model)],
-            ));
+            output.push_str(
+                &histogram.render_prometheus("infernum_embedding_batch_size", &[("model", model)]),
+            );
         }
 
         output
@@ -487,9 +507,9 @@ mod tests {
     fn test_histogram_observe() {
         let mut histogram = HistogramData::new(&[1.0, 5.0, 10.0]);
 
-        histogram.observe(0.5);  // goes to bucket 0 (<=1.0)
-        histogram.observe(3.0);  // goes to bucket 1 (<=5.0)
-        histogram.observe(7.0);  // goes to bucket 2 (<=10.0)
+        histogram.observe(0.5); // goes to bucket 0 (<=1.0)
+        histogram.observe(3.0); // goes to bucket 1 (<=5.0)
+        histogram.observe(7.0); // goes to bucket 2 (<=10.0)
         histogram.observe(15.0); // exceeds all buckets (only in +Inf)
 
         assert_eq!(histogram.count, 4);
@@ -498,7 +518,7 @@ mod tests {
         assert_eq!(histogram.bucket_counts[0], 1); // observations <= 1.0
         assert_eq!(histogram.bucket_counts[1], 1); // observations (1.0, 5.0]
         assert_eq!(histogram.bucket_counts[2], 1); // observations (5.0, 10.0]
-        // Note: 15.0 exceeds all buckets, so it's only counted in +Inf (handled by count)
+                                                   // Note: 15.0 exceeds all buckets, so it's only counted in +Inf (handled by count)
     }
 
     #[test]
@@ -526,11 +546,15 @@ mod tests {
 
         let requests = registry.requests.read();
         assert_eq!(
-            *requests.get(&("chat".to_string(), "llama-3".to_string())).unwrap(),
+            *requests
+                .get(&("chat".to_string(), "llama-3".to_string()))
+                .unwrap(),
             2
         );
         assert_eq!(
-            *requests.get(&("completion".to_string(), "llama-3".to_string())).unwrap(),
+            *requests
+                .get(&("completion".to_string(), "llama-3".to_string()))
+                .unwrap(),
             1
         );
     }
@@ -545,11 +569,23 @@ mod tests {
 
         let errors = registry.errors.read();
         assert_eq!(
-            *errors.get(&("chat".to_string(), "llama-3".to_string(), "timeout".to_string())).unwrap(),
+            *errors
+                .get(&(
+                    "chat".to_string(),
+                    "llama-3".to_string(),
+                    "timeout".to_string()
+                ))
+                .unwrap(),
             2
         );
         assert_eq!(
-            *errors.get(&("chat".to_string(), "llama-3".to_string(), "internal".to_string())).unwrap(),
+            *errors
+                .get(&(
+                    "chat".to_string(),
+                    "llama-3".to_string(),
+                    "internal".to_string()
+                ))
+                .unwrap(),
             1
         );
     }
@@ -594,7 +630,9 @@ mod tests {
 
         assert!(output.contains("# HELP infernum_requests_total"));
         assert!(output.contains("# TYPE infernum_requests_total counter"));
-        assert!(output.contains("infernum_requests_total{endpoint=\"chat\",model=\"test-model\"} 1"));
+        assert!(
+            output.contains("infernum_requests_total{endpoint=\"chat\",model=\"test-model\"} 1")
+        );
 
         assert!(output.contains("# HELP infernum_errors_total"));
         assert!(output.contains("infernum_errors_total{endpoint=\"chat\",model=\"test-model\",error_type=\"timeout\"} 1"));
@@ -815,7 +853,9 @@ mod tests {
         registry.record_latency("chat", "model", 1.5);
 
         let histograms = registry.latency_histograms.read();
-        let histogram = histograms.get(&("chat".to_string(), "model".to_string())).unwrap();
+        let histogram = histograms
+            .get(&("chat".to_string(), "model".to_string()))
+            .unwrap();
         assert_eq!(histogram.count, 2);
         assert!((histogram.sum - 2.0).abs() < 0.001);
     }
@@ -828,10 +868,14 @@ mod tests {
         registry.record_tokens("completion", "model", 50);
 
         let histograms = registry.token_histograms.read();
-        let prompt = histograms.get(&("prompt".to_string(), "model".to_string())).unwrap();
+        let prompt = histograms
+            .get(&("prompt".to_string(), "model".to_string()))
+            .unwrap();
         assert_eq!(prompt.count, 2);
 
-        let completion = histograms.get(&("completion".to_string(), "model".to_string())).unwrap();
+        let completion = histograms
+            .get(&("completion".to_string(), "model".to_string()))
+            .unwrap();
         assert_eq!(completion.count, 1);
     }
 
@@ -854,8 +898,18 @@ mod tests {
         registry.record_request("chat", "llama-3");
 
         let requests = registry.requests.read();
-        assert_eq!(*requests.get(&("chat".to_string(), "llama-3".to_string())).unwrap(), 2);
-        assert_eq!(*requests.get(&("chat".to_string(), "mistral".to_string())).unwrap(), 1);
+        assert_eq!(
+            *requests
+                .get(&("chat".to_string(), "llama-3".to_string()))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            *requests
+                .get(&("chat".to_string(), "mistral".to_string()))
+                .unwrap(),
+            1
+        );
     }
 
     #[test]

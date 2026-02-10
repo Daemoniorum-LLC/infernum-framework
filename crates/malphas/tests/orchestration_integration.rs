@@ -14,10 +14,9 @@
 use std::time::Duration;
 
 use malphas::{
-    BatchScheduler, FailoverConfig, HealthConfig, HealthMonitor, HealthStatus,
-    LatencyStats, Malphas, ModelCost, ModelRegistry, PowerProfile, Priority,
-    RoutingStrategy, SchedulerConfig, ThermalManager, ThermalState,
-    ThermalThresholds,
+    BatchScheduler, FailoverConfig, HealthConfig, HealthMonitor, HealthStatus, LatencyStats,
+    Malphas, ModelCost, ModelRegistry, PowerProfile, Priority, RoutingStrategy, SchedulerConfig,
+    ThermalManager, ThermalState, ThermalThresholds,
 };
 
 use malphas::experiments::{
@@ -507,8 +506,8 @@ fn test_experiment_manager_register() {
 fn test_experiment_manager_get() {
     let manager = ExperimentManager::new();
 
-    let exp = Experiment::new("my-experiment", "My Experiment")
-        .with_variant(Variant::control("model-a"));
+    let exp =
+        Experiment::new("my-experiment", "My Experiment").with_variant(Variant::control("model-a"));
 
     manager.register(exp);
 
@@ -533,8 +532,7 @@ fn test_experiment_start_and_select() {
 
 #[test]
 fn test_experiment_pause_blocks_selection() {
-    let exp = Experiment::new("test-003", "Test")
-        .with_variant(Variant::control("a"));
+    let exp = Experiment::new("test-003", "Test").with_variant(Variant::control("a"));
 
     exp.start();
     exp.pause();
@@ -568,8 +566,7 @@ fn test_experiment_lifecycle() {
 
 #[test]
 fn test_experiment_cancel() {
-    let exp = Experiment::new("cancel-test", "Cancel Test")
-        .with_variant(Variant::control("model"));
+    let exp = Experiment::new("cancel-test", "Cancel Test").with_variant(Variant::control("model"));
 
     exp.start();
     exp.cancel();
@@ -650,12 +647,7 @@ fn test_tenant_manager_check_quota() {
     manager.register(tenant);
 
     // Check should pass
-    let result = manager.check_quota(
-        &TenantId("quota-test".to_string()),
-        "model-1",
-        1000,
-        1000,
-    );
+    let result = manager.check_quota(&TenantId("quota-test".to_string()), "model-1", 1000, 1000);
     assert!(matches!(result, QuotaCheckResult::Allowed));
 }
 
@@ -736,8 +728,7 @@ fn test_tenant_context() {
 
 #[test]
 fn test_tenant_context_with_tokens() {
-    let ctx = TenantContext::new("tenant", "request")
-        .with_estimated_tokens(1000);
+    let ctx = TenantContext::new("tenant", "request").with_estimated_tokens(1000);
 
     assert_eq!(ctx.estimated_tokens, 1000);
 }
@@ -787,7 +778,9 @@ fn test_routing_strategies() {
         RoutingStrategy::RoundRobin,
         RoutingStrategy::LeastConnections,
         RoutingStrategy::LatencyOptimized { target_p99_ms: 100 },
-        RoutingStrategy::CostOptimized { max_cost_per_token: 0.001 },
+        RoutingStrategy::CostOptimized {
+            max_cost_per_token: 0.001,
+        },
         RoutingStrategy::Weighted {
             latency_weight: 0.4,
             cost_weight: 0.3,
@@ -856,10 +849,9 @@ fn test_multi_tenant_workflow() {
     let manager = TenantManager::new();
 
     // Create multiple tenants with different limits
-    let free_tenant = Tenant::new("free-user", "Free User")
-        .with_limits(QuotaLimits::free_tier());
-    let premium_tenant = Tenant::new("premium-user", "Premium User")
-        .with_limits(QuotaLimits::premium_tier());
+    let free_tenant = Tenant::new("free-user", "Free User").with_limits(QuotaLimits::free_tier());
+    let premium_tenant =
+        Tenant::new("premium-user", "Premium User").with_limits(QuotaLimits::premium_tier());
 
     manager.register(free_tenant);
     manager.register(premium_tenant);
@@ -868,12 +860,8 @@ fn test_multi_tenant_workflow() {
     assert_eq!(manager.list().len(), 2);
 
     // Check quotas
-    let free_result = manager.check_quota(
-        &TenantId("free-user".to_string()),
-        "small-model",
-        100,
-        1000,
-    );
+    let free_result =
+        manager.check_quota(&TenantId("free-user".to_string()), "small-model", 100, 1000);
     let premium_result = manager.check_quota(
         &TenantId("premium-user".to_string()),
         "small-model",

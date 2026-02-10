@@ -14,9 +14,6 @@
 //! - **Automatic Failover**: Retry failed requests on healthy alternatives
 
 #![warn(missing_docs)]
-#![warn(clippy::all)]
-#![warn(clippy::pedantic)]
-#![deny(clippy::unwrap_used)]
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::must_use_candidate)]
 
@@ -32,30 +29,31 @@ pub mod spectral_blend;
 pub mod tenant;
 pub mod thermal;
 
-pub use batched::{BatchedInferenceService, BatchedInferenceServiceBuilder, BatchedServiceConfig, BatchedServiceStats};
+pub use batched::{
+    BatchedInferenceService, BatchedInferenceServiceBuilder, BatchedServiceConfig,
+    BatchedServiceStats,
+};
 pub use experiments::{
     Experiment, ExperimentId, ExperimentManager, ExperimentStatus, ExperimentSummary, Variant,
     VariantMetrics, VariantSummary,
 };
-pub use federation::{
-    ExternalProvider, FederatedModel, FederationRouter, ModelFamily, TaskType,
-};
+pub use federation::{ExternalProvider, FederatedModel, FederationRouter, ModelFamily, TaskType};
 pub use health::{HealthConfig, HealthMonitor, HealthStatus, HealthSummary, ModelHealthState};
+pub use legion_speculative::{
+    BandStats, LegionSpeculativeConfig, LegionSpeculativeDecoder, LegionSpeculativeStats,
+};
 pub use registry::{LatencyStats, ModelCost, ModelRegistry, RegisteredModel};
 pub use router::{RequestRouter, RoutingStrategy};
 pub use scheduler::{BatchScheduler, Priority, SchedulerConfig, SchedulerStats};
+pub use spectral_blend::{
+    BlendManager, BlendModelConfig, BlendPreset, SpectralBlendConfig, SpectralBlendEngine,
+    SpectralBlendEngineBuilder, SpectralBlendEngineError, SpectralBlendEngineStats,
+};
 pub use tenant::{
     AggregateUsageStats, QuotaCheckResult, QuotaDenialReason, QuotaLimits, Tenant, TenantContext,
     TenantId, TenantManager, TenantUsageStats,
 };
 pub use thermal::{PowerProfile, ThermalManager, ThermalState, ThermalThresholds};
-pub use legion_speculative::{
-    LegionSpeculativeDecoder, LegionSpeculativeConfig, LegionSpeculativeStats, BandStats,
-};
-pub use spectral_blend::{
-    SpectralBlendEngine, SpectralBlendEngineBuilder, SpectralBlendConfig, BlendModelConfig,
-    SpectralBlendEngineStats, BlendPreset, BlendManager, SpectralBlendEngineError,
-};
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -310,7 +308,8 @@ impl Malphas {
     pub async fn dequeue_thermal_batch(&self) -> Vec<GenerateRequest> {
         let max_batch = self.scheduler.config().max_batch_size as u32;
         let effective_batch = self.thermal.recommended_batch_size(max_batch).await;
-        self.scheduler.dequeue_batch_with_limit(effective_batch as usize)
+        self.scheduler
+            .dequeue_batch_with_limit(effective_batch as usize)
     }
 
     /// Routes and executes a generation request with health tracking.
@@ -330,11 +329,11 @@ impl Malphas {
             Ok(response) => {
                 self.health.record_success(&model_id);
                 Ok(response)
-            }
+            },
             Err(e) => {
                 self.health.record_failure(&model_id, e.to_string());
                 Err(e)
-            }
+            },
         }
     }
 
@@ -484,7 +483,10 @@ impl Malphas {
             .unwrap_or_else(|| "auto".to_string());
 
         // First attempt with normal routing
-        let mut last_error = match self.try_generate(&request, &initial_model_id, &mut tried_models).await {
+        let mut last_error = match self
+            .try_generate(&request, &initial_model_id, &mut tried_models)
+            .await
+        {
             Ok(response) => {
                 let successful = tried_models.last().cloned();
                 return FailoverResult {
@@ -494,7 +496,7 @@ impl Malphas {
                     tried_models,
                     successful_model: successful,
                 };
-            }
+            },
             Err(e) => {
                 tracing::warn!(
                     model_id = %initial_model_id,
@@ -502,7 +504,7 @@ impl Malphas {
                     "Initial request failed, attempting failover"
                 );
                 Some(e)
-            }
+            },
         };
 
         // Track attempts starting from the initial failed attempt
@@ -528,18 +530,21 @@ impl Malphas {
                         "Attempting failover to alternative model"
                     );
                     id
-                }
+                },
                 None => {
                     tracing::warn!("No healthy alternative models available for failover");
                     break;
-                }
+                },
             };
 
             // Try the alternative model
             let mut failover_request = request.clone();
             failover_request.model = Some(infernum_core::ModelId(model_id.clone()));
 
-            match self.try_generate(&failover_request, &model_id, &mut tried_models).await {
+            match self
+                .try_generate(&failover_request, &model_id, &mut tried_models)
+                .await
+            {
                 Ok(response) => {
                     tracing::info!(
                         model_id = %model_id,
@@ -553,7 +558,7 @@ impl Malphas {
                         tried_models,
                         successful_model: Some(model_id),
                     };
-                }
+                },
                 Err(e) => {
                     tracing::warn!(
                         model_id = %model_id,
@@ -563,7 +568,7 @@ impl Malphas {
                     );
                     last_error = Some(e);
                     attempts += 1;
-                }
+                },
             }
         }
 
@@ -597,11 +602,11 @@ impl Malphas {
             Ok(response) => {
                 self.health.record_success(model_id);
                 Ok(response)
-            }
+            },
             Err(e) => {
                 self.health.record_failure(model_id, e.to_string());
                 Err(e)
-            }
+            },
         }
     }
 
@@ -641,38 +646,36 @@ impl Malphas {
         // 1. Health status (healthy > degraded)
         // 2. Load (fewer active requests)
         // 3. Latency (lower is better)
-        candidates
-            .into_iter()
-            .min_by(|a, b| {
-                // Compare health status first
-                let health_a = self.health.status(&a.id.0);
-                let health_b = self.health.status(&b.id.0);
-                let health_cmp = match (health_a, health_b) {
-                    (HealthStatus::Healthy, HealthStatus::Degraded) => std::cmp::Ordering::Less,
-                    (HealthStatus::Degraded, HealthStatus::Healthy) => std::cmp::Ordering::Greater,
-                    _ => std::cmp::Ordering::Equal,
-                };
+        candidates.into_iter().min_by(|a, b| {
+            // Compare health status first
+            let health_a = self.health.status(&a.id.0);
+            let health_b = self.health.status(&b.id.0);
+            let health_cmp = match (health_a, health_b) {
+                (HealthStatus::Healthy, HealthStatus::Degraded) => std::cmp::Ordering::Less,
+                (HealthStatus::Degraded, HealthStatus::Healthy) => std::cmp::Ordering::Greater,
+                _ => std::cmp::Ordering::Equal,
+            };
 
-                if health_cmp != std::cmp::Ordering::Equal {
-                    return health_cmp;
-                }
+            if health_cmp != std::cmp::Ordering::Equal {
+                return health_cmp;
+            }
 
-                // Compare load
-                let load_a = a.active_requests.load(Ordering::Relaxed);
-                let load_b = b.active_requests.load(Ordering::Relaxed);
-                let load_cmp = load_a.cmp(&load_b);
+            // Compare load
+            let load_a = a.active_requests.load(Ordering::Relaxed);
+            let load_b = b.active_requests.load(Ordering::Relaxed);
+            let load_cmp = load_a.cmp(&load_b);
 
-                if load_cmp != std::cmp::Ordering::Equal {
-                    return load_cmp;
-                }
+            if load_cmp != std::cmp::Ordering::Equal {
+                return load_cmp;
+            }
 
-                // Compare latency
-                let latency_a = a.latency_stats.average_latency_ms();
-                let latency_b = b.latency_stats.average_latency_ms();
-                latency_a
-                    .partial_cmp(&latency_b)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+            // Compare latency
+            let latency_a = a.latency_stats.average_latency_ms();
+            let latency_b = b.latency_stats.average_latency_ms();
+            latency_a
+                .partial_cmp(&latency_b)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
     }
 
     /// Generates with failover using a custom failover configuration.
@@ -692,7 +695,10 @@ impl Malphas {
             .unwrap_or_else(|| "auto".to_string());
 
         // First attempt
-        let mut last_error = match self.try_generate(&request, &initial_model_id, &mut tried_models).await {
+        let mut last_error = match self
+            .try_generate(&request, &initial_model_id, &mut tried_models)
+            .await
+        {
             Ok(response) => {
                 let successful = tried_models.last().cloned();
                 return FailoverResult {
@@ -702,7 +708,7 @@ impl Malphas {
                     tried_models,
                     successful_model: successful,
                 };
-            }
+            },
             Err(e) => Some(e),
         };
 
@@ -725,7 +731,10 @@ impl Malphas {
             let mut failover_request = request.clone();
             failover_request.model = Some(infernum_core::ModelId(model_id.clone()));
 
-            match self.try_generate(&failover_request, &model_id, &mut tried_models).await {
+            match self
+                .try_generate(&failover_request, &model_id, &mut tried_models)
+                .await
+            {
                 Ok(response) => {
                     return FailoverResult {
                         response: Some(response),
@@ -734,11 +743,11 @@ impl Malphas {
                         tried_models,
                         successful_model: Some(model_id),
                     };
-                }
+                },
                 Err(e) => {
                     last_error = Some(e);
                     attempts += 1;
-                }
+                },
             }
         }
 
@@ -928,8 +937,8 @@ mod tests {
 
     #[test]
     fn test_failover_result_success_structure() {
-        use infernum_core::types::{FinishReason, ModelId, RequestId, Usage};
         use infernum_core::response::Choice;
+        use infernum_core::types::{FinishReason, ModelId, RequestId, Usage};
 
         let result = FailoverResult {
             response: Some(GenerateResponse {

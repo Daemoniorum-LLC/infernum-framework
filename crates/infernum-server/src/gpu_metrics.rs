@@ -121,12 +121,15 @@ pub trait GpuMetricsProvider: Send + Sync {
         output.push('\n');
 
         // Memory utilization (derived)
-        output.push_str("# HELP infernum_gpu_memory_utilization GPU memory utilization (0.0-1.0)\n");
+        output
+            .push_str("# HELP infernum_gpu_memory_utilization GPU memory utilization (0.0-1.0)\n");
         output.push_str("# TYPE infernum_gpu_memory_utilization gauge\n");
         for gpu in &gpus {
             output.push_str(&format!(
                 "infernum_gpu_memory_utilization{{gpu=\"{}\",name=\"{}\"}} {:.4}\n",
-                gpu.index, gpu.name, gpu.memory_utilization()
+                gpu.index,
+                gpu.name,
+                gpu.memory_utilization()
             ));
         }
 
@@ -267,10 +270,7 @@ impl MockGpuMetrics {
 
 impl GpuMetricsProvider for MockGpuMetrics {
     fn gpu_count(&self) -> u32 {
-        self.gpus
-            .read()
-            .map(|g| g.len() as u32)
-            .unwrap_or(0)
+        self.gpus.read().map(|g| g.len() as u32).unwrap_or(0)
     }
 
     fn gpu_info(&self, index: u32) -> Option<GpuInfo> {
@@ -369,7 +369,7 @@ mod tests {
         let gpu = GpuInfo {
             index: 0,
             name: "Test".to_string(),
-            memory_used: 4 * 1024 * 1024 * 1024, // 4 GB
+            memory_used: 4 * 1024 * 1024 * 1024,   // 4 GB
             memory_total: 16 * 1024 * 1024 * 1024, // 16 GB
             ..Default::default()
         };

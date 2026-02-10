@@ -33,11 +33,7 @@
 use std::time::Duration;
 
 use axum::{
-    body::Body,
-    extract::Request,
-    http::header::HeaderValue,
-    middleware::Next,
-    response::Response,
+    body::Body, extract::Request, http::header::HeaderValue, middleware::Next, response::Response,
 };
 use opentelemetry::{
     global,

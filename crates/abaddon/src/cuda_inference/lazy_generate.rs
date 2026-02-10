@@ -9,9 +9,9 @@ use std::time::Instant;
 use cudarc::driver::CudaDevice;
 
 use super::compute::ComputeEngine;
+use super::generate::{GenerationStats, SamplingParams, TokenCallback};
 use super::kernels::sampling::{RepetitionPenalty, SamplingKernel};
 use super::lazy_weight_store::LazyWeightStore;
-use super::generate::{GenerationStats, SamplingParams, TokenCallback};
 use super::InferenceError;
 
 /// Token generator with lazy layer loading.
@@ -98,10 +98,8 @@ impl LazyGenerator {
         self.position = input_ids.len();
 
         // Set up repetition penalty
-        let mut rep_penalty = RepetitionPenalty::new(
-            params.repetition_penalty,
-            params.repetition_context,
-        );
+        let mut rep_penalty =
+            RepetitionPenalty::new(params.repetition_penalty, params.repetition_context);
         for &id in input_ids {
             rep_penalty.add_token(id);
         }
@@ -112,11 +110,7 @@ impl LazyGenerator {
             let logits = self.engine.get_logits()?;
 
             // Sample next token
-            let next_token = self.sample_token(
-                logits,
-                &params,
-                &mut rep_penalty,
-            )?;
+            let next_token = self.sample_token(logits, &params, &mut rep_penalty)?;
 
             // Check for stop token
             if params.stop_tokens.contains(&next_token) {
@@ -159,10 +153,8 @@ impl LazyGenerator {
         stats.prefill_tokens = input_ids.len();
 
         // Set up repetition penalty
-        let mut rep_penalty = RepetitionPenalty::new(
-            params.repetition_penalty,
-            params.repetition_context,
-        );
+        let mut rep_penalty =
+            RepetitionPenalty::new(params.repetition_penalty, params.repetition_context);
         for &id in input_ids {
             rep_penalty.add_token(id);
         }
@@ -173,11 +165,7 @@ impl LazyGenerator {
             let logits = self.engine.get_logits()?;
 
             // Sample next token
-            let next_token = self.sample_token(
-                logits,
-                &params,
-                &mut rep_penalty,
-            )?;
+            let next_token = self.sample_token(logits, &params, &mut rep_penalty)?;
 
             let decode_time = forward_start.elapsed().as_secs_f64() * 1000.0;
             stats.forward_time_ms += decode_time;
@@ -203,7 +191,8 @@ impl LazyGenerator {
 
         stats.total_time_ms = start_time.elapsed().as_secs_f64() * 1000.0;
         if stats.forward_time_ms > 0.0 {
-            stats.tokens_per_second = stats.tokens_generated as f64 / (stats.forward_time_ms / 1000.0);
+            stats.tokens_per_second =
+                stats.tokens_generated as f64 / (stats.forward_time_ms / 1000.0);
         }
 
         // Log lazy loading stats
@@ -254,7 +243,10 @@ impl LazyGenerator {
             self.sampler.sample_greedy(&logits)
         } else {
             // Update RNG state
-            self.rng_state = self.rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            self.rng_state = self
+                .rng_state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1);
 
             self.sampler.sample(
                 &mut logits,

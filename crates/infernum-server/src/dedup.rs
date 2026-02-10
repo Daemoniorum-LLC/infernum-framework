@@ -490,7 +490,7 @@ impl<T: Clone + Send + Sync + 'static> RequestDeduplicator<T> {
             Err(_) => {
                 self.metrics.wait_timeouts.fetch_add(1, Ordering::Relaxed);
                 Some(DeduplicatedResult::Failed("Wait timeout".to_string()))
-            }
+            },
         }
     }
 
@@ -505,11 +505,11 @@ impl<T: Clone + Send + Sync + 'static> RequestDeduplicator<T> {
             Ok(DeduplicatedResult::Failed(e)) => {
                 self.metrics.failures.fetch_add(1, Ordering::Relaxed);
                 DeduplicatedResult::Failed(e)
-            }
+            },
             Err(_) => {
                 self.metrics.failures.fetch_add(1, Ordering::Relaxed);
                 DeduplicatedResult::Failed("Channel closed".to_string())
-            }
+            },
         }
     }
 

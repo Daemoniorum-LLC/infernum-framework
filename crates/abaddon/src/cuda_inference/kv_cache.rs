@@ -146,14 +146,20 @@ impl KvCache {
         if self.seq_len + new_tokens > self.max_seq_len {
             return Err(InferenceError::Shape {
                 expected: format!("seq_len + new_tokens <= {}", self.max_seq_len),
-                got: format!("{} + {} = {}", self.seq_len, new_tokens, self.seq_len + new_tokens),
+                got: format!(
+                    "{} + {} = {}",
+                    self.seq_len,
+                    new_tokens,
+                    self.seq_len + new_tokens
+                ),
             });
         }
 
         // Write to the cache at current position
         let write_offset = self.seq_len;
         self.keys.write_layer_at(layer_idx, write_offset, keys)?;
-        self.values.write_layer_at(layer_idx, write_offset, values)?;
+        self.values
+            .write_layer_at(layer_idx, write_offset, values)?;
 
         // Track pending tokens for get_kv() to include them
         self.pending_tokens = new_tokens;
@@ -202,14 +208,21 @@ impl KvCache {
         if self.seq_len + new_tokens > self.max_seq_len {
             return Err(InferenceError::Shape {
                 expected: format!("seq_len + new_tokens <= {}", self.max_seq_len),
-                got: format!("{} + {} = {}", self.seq_len, new_tokens, self.seq_len + new_tokens),
+                got: format!(
+                    "{} + {} = {}",
+                    self.seq_len,
+                    new_tokens,
+                    self.seq_len + new_tokens
+                ),
             });
         }
 
         // Write to the cache at current position using async copies
         let write_offset = self.seq_len;
-        self.keys.write_layer_at_async(layer_idx, write_offset, keys, stream)?;
-        self.values.write_layer_at_async(layer_idx, write_offset, values, stream)?;
+        self.keys
+            .write_layer_at_async(layer_idx, write_offset, keys, stream)?;
+        self.values
+            .write_layer_at_async(layer_idx, write_offset, values, stream)?;
 
         // Track pending tokens for get_kv() to include them
         self.pending_tokens = new_tokens;

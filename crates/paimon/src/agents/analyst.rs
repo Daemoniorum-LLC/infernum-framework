@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, info_span, warn};
 
 use super::{AgentError, ImprovementPlan, ImprovementStep, Result};
-use crate::llm::{LlmClient, GenerateRequest, Message};
+use crate::llm::{GenerateRequest, LlmClient, Message};
 
 /// System prompt for the Eval Analyst agent.
 const ANALYST_SYSTEM_PROMPT: &str = r#"You are an expert ML Evaluation Analyst specializing in benchmark interpretation and model comparison.
@@ -86,8 +86,11 @@ impl EvalAnalystAgent {
             match self.interpret_with_llm(llm, results).await {
                 Ok(report) => return Ok(report),
                 Err(e) => {
-                    warn!("LLM interpretation failed, falling back to heuristics: {}", e);
-                }
+                    warn!(
+                        "LLM interpretation failed, falling back to heuristics: {}",
+                        e
+                    );
+                },
             }
         }
 
@@ -110,7 +113,9 @@ impl EvalAnalystAgent {
         .with_temperature(0.3)
         .with_max_tokens(2048);
 
-        let response = llm.generate(request).await
+        let response = llm
+            .generate(request)
+            .await
             .map_err(|e| AgentError::Llm(format!("LLM request failed: {}", e)))?;
 
         self.parse_interpret_response(&response.content, results)
@@ -136,7 +141,8 @@ impl EvalAnalystAgent {
         for benchmark in &results.benchmarks {
             prompt.push_str(&format!(
                 "- {}: {:.1}%",
-                benchmark.name, benchmark.score * 100.0
+                benchmark.name,
+                benchmark.score * 100.0
             ));
             if let Some(ref cat) = benchmark.category {
                 prompt.push_str(&format!(" ({})", cat));
@@ -179,7 +185,9 @@ impl EvalAnalystAgent {
         if !parsed.strengths.is_empty() {
             sections.push(ReportSection {
                 title: "Strengths".to_string(),
-                content: parsed.strengths.iter()
+                content: parsed
+                    .strengths
+                    .iter()
                     .map(|s| format!("- {}", s))
                     .collect::<Vec<_>>()
                     .join("\n"),
@@ -189,7 +197,9 @@ impl EvalAnalystAgent {
         if !parsed.weaknesses.is_empty() {
             sections.push(ReportSection {
                 title: "Areas for Improvement".to_string(),
-                content: parsed.weaknesses.iter()
+                content: parsed
+                    .weaknesses
+                    .iter()
                     .map(|w| format!("- {}", w))
                     .collect::<Vec<_>>()
                     .join("\n"),
@@ -199,7 +209,9 @@ impl EvalAnalystAgent {
         if !parsed.key_insights.is_empty() {
             sections.push(ReportSection {
                 title: "Key Insights".to_string(),
-                content: parsed.key_insights.iter()
+                content: parsed
+                    .key_insights
+                    .iter()
                     .map(|i| format!("- {}", i))
                     .collect::<Vec<_>>()
                     .join("\n"),
@@ -209,7 +221,9 @@ impl EvalAnalystAgent {
         if !parsed.recommendations.is_empty() {
             sections.push(ReportSection {
                 title: "Recommendations".to_string(),
-                content: parsed.recommendations.iter()
+                content: parsed
+                    .recommendations
+                    .iter()
                     .map(|r| format!("- {}", r))
                     .collect::<Vec<_>>()
                     .join("\n"),
@@ -253,12 +267,15 @@ impl EvalAnalystAgent {
         });
 
         // Strengths
-        let strengths: Vec<_> = results.benchmarks.iter()
+        let strengths: Vec<_> = results
+            .benchmarks
+            .iter()
             .filter(|b| b.score >= 0.8)
             .collect();
 
         if !strengths.is_empty() {
-            let strength_list: String = strengths.iter()
+            let strength_list: String = strengths
+                .iter()
                 .map(|b| format!("- {}: {:.1}%", b.name, b.score * 100.0))
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -273,12 +290,15 @@ impl EvalAnalystAgent {
         }
 
         // Weaknesses
-        let weaknesses: Vec<_> = results.benchmarks.iter()
+        let weaknesses: Vec<_> = results
+            .benchmarks
+            .iter()
             .filter(|b| b.score < 0.6)
             .collect();
 
         if !weaknesses.is_empty() {
-            let weakness_list: String = weaknesses.iter()
+            let weakness_list: String = weaknesses
+                .iter()
                 .map(|b| format!("- {}: {:.1}%", b.name, b.score * 100.0))
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -326,11 +346,17 @@ impl EvalAnalystAgent {
 
         // Try LLM analysis first if available
         if let Some(ref llm) = self.llm_client {
-            match self.competitive_with_llm(llm, model_results, baselines).await {
+            match self
+                .competitive_with_llm(llm, model_results, baselines)
+                .await
+            {
                 Ok(report) => return Ok(report),
                 Err(e) => {
-                    warn!("LLM competitive analysis failed, falling back to heuristics: {}", e);
-                }
+                    warn!(
+                        "LLM competitive analysis failed, falling back to heuristics: {}",
+                        e
+                    );
+                },
             }
         }
 
@@ -354,7 +380,9 @@ impl EvalAnalystAgent {
         .with_temperature(0.3)
         .with_max_tokens(2048);
 
-        let response = llm.generate(request).await
+        let response = llm
+            .generate(request)
+            .await
             .map_err(|e| AgentError::Llm(format!("LLM request failed: {}", e)))?;
 
         self.parse_competitive_response(&response.content, model_results, baselines)
@@ -421,11 +449,8 @@ impl EvalAnalystAgent {
 
         // Combine LLM insights with computed data
         let mut summary = parsed.overall_assessment;
-        if !parsed.strategic_recommendations.is_empty() {
-            summary.push_str(&format!(
-                "\n\nKey recommendation: {}",
-                parsed.strategic_recommendations.first().unwrap()
-            ));
+        if let Some(first_rec) = parsed.strategic_recommendations.first() {
+            summary.push_str(&format!("\n\nKey recommendation: {}", first_rec));
         }
 
         Ok(CompetitiveReport {
@@ -476,17 +501,25 @@ impl EvalAnalystAgent {
                 model_score,
                 baseline_score,
                 difference: diff,
-                better_on: model_results.benchmarks.iter()
+                better_on: model_results
+                    .benchmarks
+                    .iter()
                     .filter(|b| {
-                        baseline.benchmarks.iter()
+                        baseline
+                            .benchmarks
+                            .iter()
                             .find(|bb| bb.name == b.name)
                             .map_or(false, |bb| b.score > bb.score)
                     })
                     .map(|b| b.name.clone())
                     .collect(),
-                worse_on: model_results.benchmarks.iter()
+                worse_on: model_results
+                    .benchmarks
+                    .iter()
                     .filter(|b| {
-                        baseline.benchmarks.iter()
+                        baseline
+                            .benchmarks
+                            .iter()
                             .find(|bb| bb.name == b.name)
                             .map_or(false, |bb| b.score < bb.score)
                     })
@@ -504,13 +537,18 @@ impl EvalAnalystAgent {
         model_results: &BenchmarkResults,
         baselines: &[BenchmarkResults],
     ) -> (usize, usize) {
-        let mut all_scores: Vec<_> = baselines.iter()
+        let mut all_scores: Vec<_> = baselines
+            .iter()
             .map(|b| (b.model_name.clone(), b.overall_score()))
             .collect();
-        all_scores.push((model_results.model_name.clone(), model_results.overall_score()));
+        all_scores.push((
+            model_results.model_name.clone(),
+            model_results.overall_score(),
+        ));
         all_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        let rank = all_scores.iter()
+        let rank = all_scores
+            .iter()
             .position(|(name, _)| name == &model_results.model_name)
             .map(|p| p + 1)
             .unwrap_or(0);
@@ -519,10 +557,7 @@ impl EvalAnalystAgent {
     }
 
     /// Creates an improvement roadmap.
-    pub async fn improvement_roadmap(
-        &self,
-        results: &BenchmarkResults,
-    ) -> Result<ImprovementPlan> {
+    pub async fn improvement_roadmap(&self, results: &BenchmarkResults) -> Result<ImprovementPlan> {
         let _span = info_span!("analyst.roadmap", model = %results.model_name).entered();
 
         info!("Creating improvement roadmap for {}", results.model_name);
@@ -532,7 +567,11 @@ impl EvalAnalystAgent {
 
         // Sort benchmarks by score (lowest first)
         let mut sorted_benchmarks = results.benchmarks.clone();
-        sorted_benchmarks.sort_by(|a, b| a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal));
+        sorted_benchmarks.sort_by(|a, b| {
+            a.score
+                .partial_cmp(&b.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // Create improvement steps for weak areas
         for benchmark in sorted_benchmarks.iter().take(3) {
@@ -543,7 +582,10 @@ impl EvalAnalystAgent {
                     rationale: format!(
                         "Current score of {:.1}% is below target. This benchmark tests {}.",
                         benchmark.score * 100.0,
-                        benchmark.description.as_deref().unwrap_or("key capabilities")
+                        benchmark
+                            .description
+                            .as_deref()
+                            .unwrap_or("key capabilities")
                     ),
                     impact: format!(
                         "Expected {:.0}% improvement in {} with targeted training data",
@@ -560,7 +602,8 @@ impl EvalAnalystAgent {
             steps.push(ImprovementStep {
                 step: step_num,
                 action: "Expand training data diversity".to_string(),
-                rationale: "Broader training data improves generalization across all tasks".to_string(),
+                rationale: "Broader training data improves generalization across all tasks"
+                    .to_string(),
                 impact: "5-10% improvement across all benchmarks".to_string(),
             });
             step_num += 1;
@@ -598,18 +641,24 @@ impl EvalAnalystAgent {
         let overall = results.overall_score();
 
         if overall < 0.6 {
-            recommendations.push("Consider additional fine-tuning on domain-specific data".to_string());
+            recommendations
+                .push("Consider additional fine-tuning on domain-specific data".to_string());
             recommendations.push("Review training data quality and coverage".to_string());
         } else if overall < 0.8 {
-            recommendations.push("Target specific weak areas with additional training examples".to_string());
-            recommendations.push("Consider data augmentation for underperforming categories".to_string());
+            recommendations
+                .push("Target specific weak areas with additional training examples".to_string());
+            recommendations
+                .push("Consider data augmentation for underperforming categories".to_string());
         } else {
-            recommendations.push("Model is performing well; focus on maintaining quality".to_string());
+            recommendations
+                .push("Model is performing well; focus on maintaining quality".to_string());
             recommendations.push("Consider edge case testing for robustness".to_string());
         }
 
         // Check for specific issues
-        let low_performers: Vec<_> = results.benchmarks.iter()
+        let low_performers: Vec<_> = results
+            .benchmarks
+            .iter()
             .filter(|b| b.score < 0.5)
             .collect();
 
@@ -620,7 +669,8 @@ impl EvalAnalystAgent {
             ));
         }
 
-        recommendations.iter()
+        recommendations
+            .iter()
             .map(|r| format!("- {}", r))
             .collect::<Vec<_>>()
             .join("\n")
@@ -649,7 +699,9 @@ impl BenchmarkResults {
 
     /// Returns unique categories.
     pub fn categories(&self) -> Vec<String> {
-        let mut cats: Vec<_> = self.benchmarks.iter()
+        let mut cats: Vec<_> = self
+            .benchmarks
+            .iter()
             .filter_map(|b| b.category.clone())
             .collect();
         cats.sort();
@@ -814,11 +866,17 @@ mod tests {
         let analyst = EvalAnalystAgent::new(None);
         let results = sample_results();
 
-        let report = analyst.interpret_results(&results).await.expect("interpret");
+        let report = analyst
+            .interpret_results(&results)
+            .await
+            .expect("interpret");
 
         assert_eq!(report.model_name, "test-model");
         assert!(!report.sections.is_empty());
-        assert!(report.sections.iter().any(|s| s.title == "Executive Summary"));
+        assert!(report
+            .sections
+            .iter()
+            .any(|s| s.title == "Executive Summary"));
     }
 
     #[tokio::test]
@@ -847,7 +905,10 @@ mod tests {
             evaluated_at: chrono::Utc::now(),
         };
 
-        let report = analyst.competitive_analysis(&model, &[baseline]).await.expect("compare");
+        let report = analyst
+            .competitive_analysis(&model, &[baseline])
+            .await
+            .expect("compare");
 
         assert_eq!(report.model_name, "test-model");
         assert_eq!(report.comparisons.len(), 1);
@@ -858,7 +919,10 @@ mod tests {
         let analyst = EvalAnalystAgent::new(None);
         let results = sample_results();
 
-        let plan = analyst.improvement_roadmap(&results).await.expect("roadmap");
+        let plan = analyst
+            .improvement_roadmap(&results)
+            .await
+            .expect("roadmap");
 
         assert!(!plan.steps.is_empty());
         assert!(!plan.summary.is_empty());
@@ -883,11 +947,20 @@ mod tests {
         assert!(analyst.has_llm());
 
         let results = sample_results();
-        let report = analyst.interpret_results(&results).await.expect("interpret");
+        let report = analyst
+            .interpret_results(&results)
+            .await
+            .expect("interpret");
 
         assert_eq!(report.model_name, "test-model");
-        assert!(report.sections.iter().any(|s| s.title == "Executive Summary"));
-        assert!(report.sections.iter().any(|s| s.content.contains("strong performance")));
+        assert!(report
+            .sections
+            .iter()
+            .any(|s| s.title == "Executive Summary"));
+        assert!(report
+            .sections
+            .iter()
+            .any(|s| s.content.contains("strong performance")));
     }
 
     #[tokio::test]
@@ -908,19 +981,20 @@ mod tests {
 
         let baseline = BenchmarkResults {
             model_name: "baseline-model".to_string(),
-            benchmarks: vec![
-                BenchmarkScore {
-                    name: "MMLU".to_string(),
-                    score: 0.70,
-                    category: None,
-                    description: None,
-                    test_cases: None,
-                },
-            ],
+            benchmarks: vec![BenchmarkScore {
+                name: "MMLU".to_string(),
+                score: 0.70,
+                category: None,
+                description: None,
+                test_cases: None,
+            }],
             evaluated_at: chrono::Utc::now(),
         };
 
-        let report = analyst.competitive_analysis(&model, &[baseline]).await.expect("competitive");
+        let report = analyst
+            .competitive_analysis(&model, &[baseline])
+            .await
+            .expect("competitive");
 
         assert!(!report.summary.is_empty());
         assert!(report.summary.contains("outperforms"));
@@ -938,10 +1012,16 @@ mod tests {
         let results = sample_results();
 
         // Should fall back to heuristic analysis
-        let report = analyst.interpret_results(&results).await.expect("interpret");
+        let report = analyst
+            .interpret_results(&results)
+            .await
+            .expect("interpret");
 
         assert_eq!(report.model_name, "test-model");
-        assert!(report.sections.iter().any(|s| s.title == "Executive Summary"));
+        assert!(report
+            .sections
+            .iter()
+            .any(|s| s.title == "Executive Summary"));
     }
 
     #[tokio::test]
@@ -950,9 +1030,15 @@ mod tests {
         assert!(!analyst.has_llm());
 
         let results = sample_results();
-        let report = analyst.interpret_results(&results).await.expect("interpret");
+        let report = analyst
+            .interpret_results(&results)
+            .await
+            .expect("interpret");
 
         assert_eq!(report.model_name, "test-model");
-        assert!(report.sections.iter().any(|s| s.title == "Executive Summary"));
+        assert!(report
+            .sections
+            .iter()
+            .any(|s| s.title == "Executive Summary"));
     }
 }

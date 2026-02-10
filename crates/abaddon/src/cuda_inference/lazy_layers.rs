@@ -100,11 +100,7 @@ impl LazyLayerStore {
     /// * `loader` - Layer loader for on-demand loading
     /// * `device` - CUDA device
     /// * `vram_budget` - Maximum VRAM for layer storage in bytes
-    pub fn new(
-        loader: Arc<dyn LayerLoader>,
-        device: Arc<CudaDevice>,
-        vram_budget: u64,
-    ) -> Self {
+    pub fn new(loader: Arc<dyn LayerLoader>, device: Arc<CudaDevice>, vram_budget: u64) -> Self {
         info!(
             "LazyLayerStore created: {} layers, {:.2} GB budget",
             loader.num_layers(),
@@ -244,7 +240,11 @@ impl LazyLayerStore {
         }
 
         // Load the layer
-        debug!("Loading layer {} ({:.2} MB)", idx, layer_size as f64 / (1024.0 * 1024.0));
+        debug!(
+            "Loading layer {} ({:.2} MB)",
+            idx,
+            layer_size as f64 / (1024.0 * 1024.0)
+        );
 
         let layer = self.loader.load_layer(idx, &self.device)?;
         self.loaded.insert(idx, layer);
@@ -350,8 +350,8 @@ impl HoloLayerLoader {
         for entry in std::fs::read_dir(hct_dir)
             .map_err(|e| InferenceError::ModelLoad(format!("Cannot read dir: {}", e)))?
         {
-            let entry = entry
-                .map_err(|e| InferenceError::ModelLoad(format!("Dir entry error: {}", e)))?;
+            let entry =
+                entry.map_err(|e| InferenceError::ModelLoad(format!("Dir entry error: {}", e)))?;
             let path = entry.path();
             if path.extension().map(|e| e == "hct").unwrap_or(false) {
                 hct_files.push(path);
@@ -407,9 +407,9 @@ impl HoloLayerLoader {
         gpu_ctx
             .load_all_kernels()
             .map_err(|e| InferenceError::ModelLoad(format!("Failed to load GPU kernels: {}", e)))?;
-        gpu_ctx
-            .load_fused_kernel()
-            .map_err(|e| InferenceError::ModelLoad(format!("Failed to load fused kernel: {}", e)))?;
+        gpu_ctx.load_fused_kernel().map_err(|e| {
+            InferenceError::ModelLoad(format!("Failed to load fused kernel: {}", e))
+        })?;
 
         Ok(Self {
             layer_files,
@@ -431,8 +431,9 @@ impl HoloLayerLoader {
         path: &Path,
         device: &Arc<CudaDevice>,
     ) -> Result<(GpuTensor, Vec<usize>), InferenceError> {
-        let file = File::open(path)
-            .map_err(|e| InferenceError::ModelLoad(format!("Cannot open {}: {}", path.display(), e)))?;
+        let file = File::open(path).map_err(|e| {
+            InferenceError::ModelLoad(format!("Cannot open {}: {}", path.display(), e))
+        })?;
         let reader = BufReader::new(file);
         let mut holo_reader = HoloTensorReader::new(reader)
             .map_err(|e| InferenceError::ModelLoad(format!("Failed to parse HoloTensor: {}", e)))?;
@@ -448,16 +449,17 @@ impl HoloLayerLoader {
             // CPU reconstruction for 1D tensors (norms, biases)
             let mut decoder = HoloTensorDecoder::new(header);
             for fragment in &fragments {
-                decoder
-                    .add_fragment(fragment.clone())
-                    .map_err(|e| InferenceError::ModelLoad(format!("Failed to add fragment: {}", e)))?;
+                decoder.add_fragment(fragment.clone()).map_err(|e| {
+                    InferenceError::ModelLoad(format!("Failed to add fragment: {}", e))
+                })?;
             }
-            let cpu_data = decoder
-                .reconstruct()
-                .map_err(|e| InferenceError::ModelLoad(format!("CPU reconstruction failed: {}", e)))?;
+            let cpu_data = decoder.reconstruct().map_err(|e| {
+                InferenceError::ModelLoad(format!("CPU reconstruction failed: {}", e))
+            })?;
 
             // Convert f32 to f16 and upload
-            let f16_data: Vec<half::f16> = cpu_data.iter().map(|&f| half::f16::from_f32(f)).collect();
+            let f16_data: Vec<half::f16> =
+                cpu_data.iter().map(|&f| half::f16::from_f32(f)).collect();
             let bytes: &[u8] = unsafe {
                 std::slice::from_raw_parts(f16_data.as_ptr() as *const u8, f16_data.len() * 2)
             };
@@ -470,17 +472,18 @@ impl HoloLayerLoader {
         } else {
             // GPU reconstruction for 2D+ tensors
             let mut gpu_ctx_guard = self.gpu_ctx.lock().unwrap();
-            let gpu_ctx = gpu_ctx_guard.as_mut().ok_or_else(|| {
-                InferenceError::Device("GPU context not initialized".to_string())
+            let gpu_ctx = gpu_ctx_guard
+                .as_mut()
+                .ok_or_else(|| InferenceError::Device("GPU context not initialized".to_string()))?;
+
+            let gpu_data_f32: CudaSlice<f32> =
+                gpu_ctx.reconstruct(&header, &fragments).map_err(|e| {
+                    InferenceError::ModelLoad(format!("GPU reconstruction failed: {}", e))
+                })?;
+
+            let gpu_data_f16 = gpu_ctx.convert_f32_to_f16(&gpu_data_f32).map_err(|e| {
+                InferenceError::ModelLoad(format!("F32->F16 conversion failed: {}", e))
             })?;
-
-            let gpu_data_f32: CudaSlice<f32> = gpu_ctx
-                .reconstruct(&header, &fragments)
-                .map_err(|e| InferenceError::ModelLoad(format!("GPU reconstruction failed: {}", e)))?;
-
-            let gpu_data_f16 = gpu_ctx
-                .convert_f32_to_f16(&gpu_data_f32)
-                .map_err(|e| InferenceError::ModelLoad(format!("F32->F16 conversion failed: {}", e)))?;
 
             GpuTensor::from_cuda_slice_f16(gpu_data_f16, shape.clone(), Arc::clone(device))?
         };
@@ -519,7 +522,10 @@ impl LayerLoader for HoloLayerLoader {
         }
 
         // Build LayerWeights from loaded tensors
-        fn to_quantized(weights: &mut HashMap<String, (GpuTensor, Vec<usize>)>, name: &str) -> QuantizedWeight {
+        fn to_quantized(
+            weights: &mut HashMap<String, (GpuTensor, Vec<usize>)>,
+            name: &str,
+        ) -> QuantizedWeight {
             let (data, shape) = weights.remove(name).unwrap();
             let shape_2d = if shape.len() >= 2 {
                 (shape[0], shape[1])
@@ -539,7 +545,10 @@ impl LayerLoader for HoloLayerLoader {
             }
         }
 
-        fn to_norm(weights: &mut HashMap<String, (GpuTensor, Vec<usize>)>, name: &str) -> RMSNormWeights {
+        fn to_norm(
+            weights: &mut HashMap<String, (GpuTensor, Vec<usize>)>,
+            name: &str,
+        ) -> RMSNormWeights {
             let (data, _) = weights.remove(name).unwrap();
             RMSNormWeights { weight: data }
         }
@@ -698,8 +707,8 @@ fn estimate_layer_vram(config: &ModelConfig) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::arch::{Activation, ModelArch};
+    use super::*;
 
     /// Creates a minimal mock ModelConfig for testing.
     fn mock_config(num_layers: usize) -> ModelConfig {
@@ -751,7 +760,9 @@ mod tests {
             _device: &Arc<CudaDevice>,
         ) -> Result<LayerWeights, InferenceError> {
             // Mock - would need actual device to test
-            Err(InferenceError::Device("Mock loader - no actual device".into()))
+            Err(InferenceError::Device(
+                "Mock loader - no actual device".into(),
+            ))
         }
 
         fn layer_vram_size(&self, _idx: usize) -> u64 {

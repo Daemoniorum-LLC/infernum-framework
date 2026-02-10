@@ -14,11 +14,11 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 use abaddon::{
-    TieredConfig, TieredHoloLoader, TieredStats, LazyVarBuilder, TensorProvider,
-    load_hct_directory_sequential,
+    load_hct_directory_sequential, LazyVarBuilder, TensorProvider, TieredConfig, TieredHoloLoader,
+    TieredStats,
 };
 use candle_core::{DType, Device, Tensor};
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use haagenti::tensor::{CompressionAlgorithm, DType as HctDType, HctWriter};
 use haagenti::Lz4Compressor;
 
@@ -36,10 +36,13 @@ fn create_test_hct_file(dir: &Path, name: &str, shape: &[u64]) -> std::path::Pat
         CompressionAlgorithm::Lz4,
         HctDType::F32,
         shape.to_vec(),
-    ).with_block_size(64 * 1024);
+    )
+    .with_block_size(64 * 1024);
 
     let compressor = Lz4Compressor::new();
-    writer.compress_data(&bytes, &compressor).expect("write data");
+    writer
+        .compress_data(&bytes, &compressor)
+        .expect("write data");
     writer.finish().expect("finish");
 
     path
@@ -47,7 +50,11 @@ fn create_test_hct_file(dir: &Path, name: &str, shape: &[u64]) -> std::path::Pat
 
 /// Creates a simulated model directory with scaled-down 405B-like structure.
 /// 126 layers, each with attention and MLP weights.
-fn create_scaled_model_dir(num_layers: usize, hidden_size: usize, intermediate_size: usize) -> TempDir {
+fn create_scaled_model_dir(
+    num_layers: usize,
+    hidden_size: usize,
+    intermediate_size: usize,
+) -> TempDir {
     let temp_dir = TempDir::new().expect("create temp dir");
 
     // Embedding
@@ -121,11 +128,7 @@ fn create_scaled_model_dir(num_layers: usize, hidden_size: usize, intermediate_s
     );
 
     // Final norm
-    create_test_hct_file(
-        temp_dir.path(),
-        "model_norm_weight",
-        &[hidden_size as u64],
-    );
+    create_test_hct_file(temp_dir.path(), "model_norm_weight", &[hidden_size as u64]);
 
     temp_dir
 }
@@ -142,7 +145,7 @@ fn bench_time_to_first_token(c: &mut Criterion) {
     group.bench_function("time_to_first_tensor", |b| {
         b.iter(|| {
             let config = TieredConfig {
-                vram_budget: 1024 * 1024 * 1024, // 1GB
+                vram_budget: 1024 * 1024 * 1024,    // 1GB
                 ram_budget: 4 * 1024 * 1024 * 1024, // 4GB
                 min_quality: 0.7,
                 target_quality: 0.95,
@@ -150,15 +153,12 @@ fn bench_time_to_first_token(c: &mut Criterion) {
                 background_streams: 0,
             };
 
-            let loader = TieredHoloLoader::new(
-                temp_dir.path(),
-                config,
-                Device::Cpu,
-                DType::F32,
-            ).expect("create loader");
+            let loader = TieredHoloLoader::new(temp_dir.path(), config, Device::Cpu, DType::F32)
+                .expect("create loader");
 
             // Load embedding (first tensor needed for inference)
-            let tensor = loader.get("model.embed_tokens.weight", &Device::Cpu, DType::F32)
+            let tensor = loader
+                .get("model.embed_tokens.weight", &Device::Cpu, DType::F32)
                 .expect("load embedding");
 
             black_box(tensor)
@@ -180,12 +180,8 @@ fn bench_loading_throughput(c: &mut Criterion) {
     group.bench_function("load_all_tensors", |b| {
         b.iter(|| {
             let config = TieredConfig::default();
-            let loader = TieredHoloLoader::new(
-                temp_dir.path(),
-                config,
-                Device::Cpu,
-                DType::F32,
-            ).expect("create loader");
+            let loader = TieredHoloLoader::new(temp_dir.path(), config, Device::Cpu, DType::F32)
+                .expect("create loader");
 
             let tensor_names = loader.tensor_names();
             let mut count = 0;
@@ -213,11 +209,8 @@ fn bench_loading_strategies(c: &mut Criterion) {
 
     group.bench_function("sequential_loader", |b| {
         b.iter(|| {
-            let tensors = load_hct_directory_sequential(
-                temp_dir.path(),
-                &Device::Cpu,
-                DType::F32,
-            ).expect("load");
+            let tensors = load_hct_directory_sequential(temp_dir.path(), &Device::Cpu, DType::F32)
+                .expect("load");
 
             black_box(tensors.len())
         })
@@ -226,12 +219,8 @@ fn bench_loading_strategies(c: &mut Criterion) {
     group.bench_function("tiered_loader", |b| {
         b.iter(|| {
             let config = TieredConfig::default();
-            let loader = TieredHoloLoader::new(
-                temp_dir.path(),
-                config,
-                Device::Cpu,
-                DType::F32,
-            ).expect("create loader");
+            let loader = TieredHoloLoader::new(temp_dir.path(), config, Device::Cpu, DType::F32)
+                .expect("create loader");
 
             let tensor_names = loader.tensor_names();
             let mut count = 0;
@@ -264,12 +253,8 @@ fn bench_placement_decisions(c: &mut Criterion) {
         background_streams: 0,
     };
 
-    let loader = TieredHoloLoader::new(
-        temp_dir.path(),
-        config,
-        Device::Cpu,
-        DType::F32,
-    ).expect("create loader");
+    let loader = TieredHoloLoader::new(temp_dir.path(), config, Device::Cpu, DType::F32)
+        .expect("create loader");
 
     group.bench_function("calculate_placement", |b| {
         use abaddon::LayerWeightInfo;
@@ -302,7 +287,7 @@ fn bench_memory_usage(c: &mut Criterion) {
     group.bench_function("load_with_budget", |b| {
         b.iter(|| {
             let config = TieredConfig {
-                vram_budget: 512 * 1024 * 1024, // 512MB
+                vram_budget: 512 * 1024 * 1024,     // 512MB
                 ram_budget: 2 * 1024 * 1024 * 1024, // 2GB
                 min_quality: 0.7,
                 target_quality: 0.95,
@@ -310,12 +295,8 @@ fn bench_memory_usage(c: &mut Criterion) {
                 background_streams: 0,
             };
 
-            let loader = TieredHoloLoader::new(
-                temp_dir.path(),
-                config,
-                Device::Cpu,
-                DType::F32,
-            ).expect("create loader");
+            let loader = TieredHoloLoader::new(temp_dir.path(), config, Device::Cpu, DType::F32)
+                .expect("create loader");
 
             let tensor_names = loader.tensor_names();
             let mut loaded = 0;

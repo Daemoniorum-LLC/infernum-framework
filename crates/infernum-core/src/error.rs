@@ -226,7 +226,7 @@ mod tests {
             Error::Backend { backend, message } => {
                 assert_eq!(backend, "cuda");
                 assert_eq!(message, "CUDA out of memory");
-            }
+            },
             _ => panic!("Expected Backend error"),
         }
     }

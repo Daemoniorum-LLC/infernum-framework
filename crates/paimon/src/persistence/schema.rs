@@ -204,11 +204,10 @@ pub struct Migration {
 }
 
 /// All available migrations.
-pub const MIGRATIONS: &[Migration] = &[
-    Migration {
-        version: 2,
-        description: "Expand prompt and model registry tables",
-        sql: r#"
+pub const MIGRATIONS: &[Migration] = &[Migration {
+    version: 2,
+    description: "Expand prompt and model registry tables",
+    sql: r#"
 -- This migration is for databases created with v1 schema.
 -- New databases use the updated CREATE TABLE statements.
 
@@ -266,8 +265,7 @@ CREATE TABLE IF NOT EXISTS deployments (
 CREATE INDEX IF NOT EXISTS idx_deployments_model ON deployments(model_id);
 CREATE INDEX IF NOT EXISTS idx_deployments_status ON deployments(status);
 "#,
-    },
-];
+}];
 
 #[cfg(test)]
 mod tests {
@@ -279,7 +277,8 @@ mod tests {
         let conn = Connection::open_in_memory().expect("open in-memory db");
 
         // Execute schema SQL
-        conn.execute_batch(SCHEMA_SQL).expect("schema should be valid SQL");
+        conn.execute_batch(SCHEMA_SQL)
+            .expect("schema should be valid SQL");
 
         // Verify tables exist
         let tables: Vec<String> = conn
@@ -316,7 +315,8 @@ mod tests {
     #[test]
     fn test_foreign_key_cascade() {
         let conn = Connection::open_in_memory().expect("open in-memory db");
-        conn.execute_batch("PRAGMA foreign_keys = ON;").expect("enable FK");
+        conn.execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("enable FK");
         conn.execute_batch(SCHEMA_SQL).expect("create schema");
 
         // Insert a dataset
@@ -324,17 +324,20 @@ mod tests {
             "INSERT INTO datasets (id, name, format, tags_json, created_at, updated_at, stats_json)
              VALUES ('ds1', 'test', 'JsonLines', '[]', '2025-01-01', '2025-01-01', '{}')",
             [],
-        ).expect("insert dataset");
+        )
+        .expect("insert dataset");
 
         // Insert an example
         conn.execute(
             "INSERT INTO dataset_examples (id, dataset_id, input, output, created_at)
              VALUES ('ex1', 'ds1', 'hello', 'world', '2025-01-01')",
             [],
-        ).expect("insert example");
+        )
+        .expect("insert example");
 
         // Delete dataset should cascade to examples
-        conn.execute("DELETE FROM datasets WHERE id = 'ds1'", []).expect("delete dataset");
+        conn.execute("DELETE FROM datasets WHERE id = 'ds1'", [])
+            .expect("delete dataset");
 
         // Example should be gone
         let count: i64 = conn

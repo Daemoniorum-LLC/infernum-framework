@@ -13,7 +13,7 @@ use cudarc::driver::CudaDevice;
 use tracing::info;
 
 use super::arch::{ModelArch, ModelConfig};
-use super::lazy_layers::{HoloLayerLoader, LazyLayerStats, LazyLayerStore, LayerLoader};
+use super::lazy_layers::{HoloLayerLoader, LayerLoader, LazyLayerStats, LazyLayerStore};
 use super::tensor::{GpuDType, GpuTensor};
 use super::weight_store::{LayerWeights, RMSNormWeights};
 use super::InferenceError;
@@ -222,8 +222,9 @@ impl LazyWeightStore {
         // Try config.json first
         let config_path = model_dir.join("config.json");
         if config_path.exists() {
-            let config_str = std::fs::read_to_string(&config_path)
-                .map_err(|e| InferenceError::ModelLoad(format!("Cannot read config.json: {}", e)))?;
+            let config_str = std::fs::read_to_string(&config_path).map_err(|e| {
+                InferenceError::ModelLoad(format!("Cannot read config.json: {}", e))
+            })?;
 
             // Parse and detect architecture
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&config_str) {
@@ -273,35 +274,40 @@ impl LazyWeightStore {
             let key = shared_files
                 .keys()
                 .find(|k| k.contains(name))
-                .ok_or_else(|| InferenceError::ModelLoad(format!("Missing shared weight: {}", name)))?;
+                .ok_or_else(|| {
+                    InferenceError::ModelLoad(format!("Missing shared weight: {}", name))
+                })?;
 
             let path = shared_files.get(key).unwrap();
 
-            let file = File::open(path)
-                .map_err(|e| InferenceError::ModelLoad(format!("Cannot open {}: {}", path.display(), e)))?;
+            let file = File::open(path).map_err(|e| {
+                InferenceError::ModelLoad(format!("Cannot open {}: {}", path.display(), e))
+            })?;
             let reader = BufReader::new(file);
-            let mut holo_reader = HoloTensorReader::new(reader)
-                .map_err(|e| InferenceError::ModelLoad(format!("Failed to parse HoloTensor: {}", e)))?;
+            let mut holo_reader = HoloTensorReader::new(reader).map_err(|e| {
+                InferenceError::ModelLoad(format!("Failed to parse HoloTensor: {}", e))
+            })?;
 
-            let (header, fragments) = holo_reader
-                .read_all()
-                .map_err(|e| InferenceError::ModelLoad(format!("Failed to read fragments: {}", e)))?;
+            let (header, fragments) = holo_reader.read_all().map_err(|e| {
+                InferenceError::ModelLoad(format!("Failed to read fragments: {}", e))
+            })?;
 
             let shape: Vec<usize> = header.shape.iter().map(|&d| d as usize).collect();
 
             // CPU reconstruction for all shared weights (simpler, works for any dimension)
             let mut decoder = HoloTensorDecoder::new(header);
             for fragment in &fragments {
-                decoder
-                    .add_fragment(fragment.clone())
-                    .map_err(|e| InferenceError::ModelLoad(format!("Failed to add fragment: {}", e)))?;
+                decoder.add_fragment(fragment.clone()).map_err(|e| {
+                    InferenceError::ModelLoad(format!("Failed to add fragment: {}", e))
+                })?;
             }
-            let cpu_data = decoder
-                .reconstruct()
-                .map_err(|e| InferenceError::ModelLoad(format!("CPU reconstruction failed: {}", e)))?;
+            let cpu_data = decoder.reconstruct().map_err(|e| {
+                InferenceError::ModelLoad(format!("CPU reconstruction failed: {}", e))
+            })?;
 
             // Convert f32 to f16 and upload
-            let f16_data: Vec<half::f16> = cpu_data.iter().map(|&f| half::f16::from_f32(f)).collect();
+            let f16_data: Vec<half::f16> =
+                cpu_data.iter().map(|&f| half::f16::from_f32(f)).collect();
             let bytes: &[u8] = unsafe {
                 std::slice::from_raw_parts(f16_data.as_ptr() as *const u8, f16_data.len() * 2)
             };
@@ -316,7 +322,10 @@ impl LazyWeightStore {
         // Load embed_tokens
         let embed_tokens = load_file("embed_tokens")?;
         total_memory += embed_tokens.size_bytes();
-        info!("Loaded embed_tokens: {} MB", embed_tokens.size_bytes() / (1024 * 1024));
+        info!(
+            "Loaded embed_tokens: {} MB",
+            embed_tokens.size_bytes() / (1024 * 1024)
+        );
 
         // Load final_norm (try various names)
         let final_norm_tensor = load_file("norm").or_else(|_| load_file("final_norm"))?;
@@ -331,14 +340,17 @@ impl LazyWeightStore {
                 total_memory += tensor.size_bytes();
                 info!("Loaded lm_head: {} MB", tensor.size_bytes() / (1024 * 1024));
                 Some(tensor)
-            }
+            },
             Err(_) => {
                 info!("No lm_head found - assuming tied embeddings");
                 None
-            }
+            },
         };
 
-        info!("Total shared weight memory: {} MB", total_memory / (1024 * 1024));
+        info!(
+            "Total shared weight memory: {} MB",
+            total_memory / (1024 * 1024)
+        );
 
         Ok((embed_tokens, final_norm, lm_head, total_memory))
     }

@@ -7,15 +7,20 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use rusqlite::{Connection, params};
-use tracing::{info, debug, warn, info_span};
+use rusqlite::{params, Connection};
+use tracing::{debug, info, info_span, warn};
 
 use super::error::{PersistenceError, Result};
-use super::schema::{CURRENT_SCHEMA_VERSION, SCHEMA_SQL, MIGRATIONS};
-use crate::dataset::{Dataset, Example, DatasetFormat, DatasetStats, ValidationReport};
+use super::schema::{CURRENT_SCHEMA_VERSION, MIGRATIONS, SCHEMA_SQL};
+use crate::dataset::{Dataset, DatasetFormat, DatasetStats, Example, ValidationReport};
 use crate::experiment::{Experiment, Run, RunStatus};
-use crate::prompt::{PromptTemplate, PromptVersion, VersionMetrics, TestResult, TestStatus, TestVersionResults};
-use crate::registry::{Model, ModelVersion, ModelMetadata, ModelStage, StageTransition, Deployment, DeploymentEnvironment, DeploymentStatus, DeploymentResources, DeploymentEvent};
+use crate::prompt::{
+    PromptTemplate, PromptVersion, TestResult, TestStatus, TestVersionResults, VersionMetrics,
+};
+use crate::registry::{
+    Deployment, DeploymentEnvironment, DeploymentEvent, DeploymentResources, DeploymentStatus,
+    Model, ModelMetadata, ModelStage, ModelVersion, StageTransition,
+};
 
 /// Configuration for the studio database.
 #[derive(Debug, Clone)]
@@ -76,7 +81,9 @@ impl<'a> Transaction<'a> {
     pub fn insert_dataset(&self, dataset: &Dataset) -> Result<()> {
         let tags_json = serde_json::to_string(&dataset.tags)?;
         let stats_json = serde_json::to_string(&dataset.stats)?;
-        let validation_json = dataset.validation.as_ref()
+        let validation_json = dataset
+            .validation
+            .as_ref()
             .map(serde_json::to_string)
             .transpose()?;
         let format_str = format!("{:?}", dataset.format);
@@ -127,7 +134,9 @@ impl<'a> Transaction<'a> {
 
     /// Deletes a dataset and its examples (via cascade).
     pub fn delete_dataset(&self, id: &str) -> Result<bool> {
-        let count = self.conn.execute("DELETE FROM datasets WHERE id = ?1", params![id])?;
+        let count = self
+            .conn
+            .execute("DELETE FROM datasets WHERE id = ?1", params![id])?;
         Ok(count > 0)
     }
 
@@ -176,7 +185,12 @@ impl<'a> Transaction<'a> {
     }
 
     /// Updates run status.
-    pub fn update_run_status(&self, run_id: &str, status: RunStatus, error: Option<&str>) -> Result<bool> {
+    pub fn update_run_status(
+        &self,
+        run_id: &str,
+        status: RunStatus,
+        error: Option<&str>,
+    ) -> Result<bool> {
         let status_str = format!("{:?}", status);
         let completed_at = if matches!(status, RunStatus::Completed | RunStatus::Failed) {
             Some(chrono::Utc::now().to_rfc3339())
@@ -196,7 +210,7 @@ impl<'a> Transaction<'a> {
     pub fn log_metrics(&self, run_id: &str, metrics: &[(&str, f64)]) -> Result<()> {
         let mut stmt = self.conn.prepare(
             "INSERT INTO run_metrics (run_id, name, value, timestamp)
-             VALUES (?1, ?2, ?3, ?4)"
+             VALUES (?1, ?2, ?3, ?4)",
         )?;
 
         let now = chrono::Utc::now().to_rfc3339();
@@ -256,7 +270,11 @@ impl<'a> Transaction<'a> {
     }
 
     /// Updates a prompt template's active version.
-    pub fn update_prompt_active_version(&self, template_id: &str, version_id: &str) -> Result<bool> {
+    pub fn update_prompt_active_version(
+        &self,
+        template_id: &str,
+        version_id: &str,
+    ) -> Result<bool> {
         let now = chrono::Utc::now().to_rfc3339();
         let count = self.conn.execute(
             "UPDATE prompt_templates SET active_version_id = ?1, updated_at = ?2 WHERE id = ?3",
@@ -267,7 +285,9 @@ impl<'a> Transaction<'a> {
 
     /// Deletes a prompt template.
     pub fn delete_prompt_template(&self, id: &str) -> Result<bool> {
-        let count = self.conn.execute("DELETE FROM prompt_templates WHERE id = ?1", params![id])?;
+        let count = self
+            .conn
+            .execute("DELETE FROM prompt_templates WHERE id = ?1", params![id])?;
         Ok(count > 0)
     }
 
@@ -387,7 +407,12 @@ impl<'a> Transaction<'a> {
     }
 
     /// Updates a model version's stage.
-    pub fn update_model_version_stage(&self, version_id: &str, stage: ModelStage, stage_history: &[StageTransition]) -> Result<bool> {
+    pub fn update_model_version_stage(
+        &self,
+        version_id: &str,
+        stage: ModelStage,
+        stage_history: &[StageTransition],
+    ) -> Result<bool> {
         let stage_str = stage.as_str();
         let stage_history_json = serde_json::to_string(stage_history)?;
 
@@ -400,7 +425,11 @@ impl<'a> Transaction<'a> {
     }
 
     /// Updates a model version's metrics.
-    pub fn update_model_version_metrics(&self, version_id: &str, metrics: &std::collections::HashMap<String, f64>) -> Result<bool> {
+    pub fn update_model_version_metrics(
+        &self,
+        version_id: &str,
+        metrics: &std::collections::HashMap<String, f64>,
+    ) -> Result<bool> {
         let metrics_json = serde_json::to_string(metrics)?;
 
         let count = self.conn.execute(
@@ -413,7 +442,9 @@ impl<'a> Transaction<'a> {
 
     /// Deletes a model.
     pub fn delete_model(&self, id: &str) -> Result<bool> {
-        let count = self.conn.execute("DELETE FROM models WHERE id = ?1", params![id])?;
+        let count = self
+            .conn
+            .execute("DELETE FROM models WHERE id = ?1", params![id])?;
         Ok(count > 0)
     }
 
@@ -485,7 +516,9 @@ impl<'a> Transaction<'a> {
 
     /// Deletes a deployment.
     pub fn delete_deployment(&self, id: &str) -> Result<bool> {
-        let count = self.conn.execute("DELETE FROM deployments WHERE id = ?1", params![id])?;
+        let count = self
+            .conn
+            .execute("DELETE FROM deployments WHERE id = ?1", params![id])?;
         Ok(count > 0)
     }
 }
@@ -522,7 +555,8 @@ impl StudioDatabase {
                 }
             }
             Connection::open(&config.path)
-        }.map_err(|e| PersistenceError::Connection(e.to_string()))?;
+        }
+        .map_err(|e| PersistenceError::Connection(e.to_string()))?;
 
         // Configure connection
         if config.foreign_keys {
@@ -531,11 +565,14 @@ impl StudioDatabase {
 
         if config.wal_mode && config.path.to_string_lossy() != ":memory:" {
             // journal_mode returns result, use query_row instead of execute
-            let _: String = conn.query_row("PRAGMA journal_mode = WAL;", [], |row| row.get(0))
+            let _: String = conn
+                .query_row("PRAGMA journal_mode = WAL;", [], |row| row.get(0))
                 .unwrap_or_else(|_| "wal".to_string());
         }
 
-        conn.busy_timeout(std::time::Duration::from_millis(config.busy_timeout_ms as u64))?;
+        conn.busy_timeout(std::time::Duration::from_millis(
+            config.busy_timeout_ms as u64,
+        ))?;
 
         let db = Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -594,11 +631,19 @@ impl StudioDatabase {
             return Ok(());
         }
 
-        info!(from = current_version, to = CURRENT_SCHEMA_VERSION, "Running migrations");
+        info!(
+            from = current_version,
+            to = CURRENT_SCHEMA_VERSION,
+            "Running migrations"
+        );
 
         for migration in MIGRATIONS {
             if migration.version > current_version {
-                debug!(version = migration.version, desc = migration.description, "Applying migration");
+                debug!(
+                    version = migration.version,
+                    desc = migration.description,
+                    "Applying migration"
+                );
                 conn.execute_batch(migration.sql)?;
                 conn.execute(
                     "INSERT INTO _migrations (version, description) VALUES (?1, ?2)",
@@ -666,13 +711,13 @@ impl StudioDatabase {
             Ok(result) => {
                 conn.execute("COMMIT", [])?;
                 Ok(result)
-            }
+            },
             Err(e) => {
                 if let Err(rollback_err) = conn.execute("ROLLBACK", []) {
                     warn!(error = %rollback_err, "Failed to rollback transaction");
                 }
                 Err(e)
-            }
+            },
         }
     }
 
@@ -714,7 +759,17 @@ impl StudioDatabase {
             },
         );
 
-        let (id, name, description, format_str, tags_json, created_at, updated_at, validation_json, stats_json) = match result {
+        let (
+            id,
+            name,
+            description,
+            format_str,
+            tags_json,
+            created_at,
+            updated_at,
+            validation_json,
+            stats_json,
+        ) = match result {
             Ok(r) => r,
             Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
             Err(e) => return Err(e.into()),
@@ -761,7 +816,7 @@ impl StudioDatabase {
     fn load_examples_internal(&self, conn: &Connection, dataset_id: &str) -> Result<Vec<Example>> {
         let mut stmt = conn.prepare(
             "SELECT id, input, output, system, metadata_json, quality_score, synthetic
-             FROM dataset_examples WHERE dataset_id = ?1"
+             FROM dataset_examples WHERE dataset_id = ?1",
         )?;
 
         let examples = stmt.query_map(params![dataset_id], |row| {
@@ -803,7 +858,7 @@ impl StudioDatabase {
              FROM datasets d
              LEFT JOIN dataset_examples e ON d.id = e.dataset_id
              GROUP BY d.id
-             ORDER BY d.created_at DESC"
+             ORDER BY d.created_at DESC",
         )?;
 
         let rows = stmt.query_map([], |row| {
@@ -840,20 +895,21 @@ impl StudioDatabase {
 
     /// Saves an experiment.
     pub fn save_experiment(&self, experiment: &Experiment) -> Result<()> {
-        self.transaction(|tx| {
-            tx.insert_experiment(experiment)
-        })
+        self.transaction(|tx| tx.insert_experiment(experiment))
     }
 
     /// Saves a run.
     pub fn save_run(&self, experiment_id: &str, run: &Run) -> Result<()> {
-        self.transaction(|tx| {
-            tx.insert_run(run, experiment_id)
-        })
+        self.transaction(|tx| tx.insert_run(run, experiment_id))
     }
 
     /// Updates run status.
-    pub fn update_run_status(&self, run_id: &str, status: RunStatus, error: Option<&str>) -> Result<bool> {
+    pub fn update_run_status(
+        &self,
+        run_id: &str,
+        status: RunStatus,
+        error: Option<&str>,
+    ) -> Result<bool> {
         self.transaction(|tx| tx.update_run_status(run_id, status, error))
     }
 
@@ -865,7 +921,8 @@ impl StudioDatabase {
     /// Counts experiments.
     pub fn count_experiments(&self) -> Result<usize> {
         let conn = self.conn.lock();
-        let count: usize = conn.query_row("SELECT COUNT(*) FROM experiments", [], |row| row.get(0))?;
+        let count: usize =
+            conn.query_row("SELECT COUNT(*) FROM experiments", [], |row| row.get(0))?;
         Ok(count)
     }
 
@@ -886,7 +943,10 @@ impl StudioDatabase {
         conn.execute("BEGIN TRANSACTION", [])?;
 
         // Delete existing template if updating
-        conn.execute("DELETE FROM prompt_templates WHERE id = ?1", params![&template.id])?;
+        conn.execute(
+            "DELETE FROM prompt_templates WHERE id = ?1",
+            params![&template.id],
+        )?;
 
         // Insert template
         let tags_json = serde_json::to_string(&template.tags)?;
@@ -949,11 +1009,12 @@ impl StudioDatabase {
             },
         );
 
-        let (id, name, description, active_version_id, tags_json, created_at, updated_at) = match result {
-            Ok(r) => r,
-            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
-            Err(e) => return Err(e.into()),
-        };
+        let (id, name, description, active_version_id, tags_json, created_at, updated_at) =
+            match result {
+                Ok(r) => r,
+                Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+                Err(e) => return Err(e.into()),
+            };
 
         // Load versions
         let mut stmt = conn.prepare(
@@ -976,7 +1037,16 @@ impl StudioDatabase {
 
         let mut versions = Vec::new();
         for row in versions_result {
-            let (vid, version_number, content, system_prompt, message, author, metrics_json, v_created_at) = row?;
+            let (
+                vid,
+                version_number,
+                content,
+                system_prompt,
+                message,
+                author,
+                metrics_json,
+                v_created_at,
+            ) = row?;
             let metrics: VersionMetrics = serde_json::from_str(&metrics_json)?;
 
             versions.push(PromptVersion {
@@ -1019,7 +1089,7 @@ impl StudioDatabase {
              FROM prompt_templates pt
              LEFT JOIN prompt_versions pv ON pt.id = pv.template_id
              GROUP BY pt.id
-             ORDER BY pt.created_at DESC"
+             ORDER BY pt.created_at DESC",
         )?;
 
         let rows = stmt.query_map([], |row| {
@@ -1048,7 +1118,9 @@ impl StudioDatabase {
     /// Counts prompt templates.
     pub fn count_prompt_templates(&self) -> Result<usize> {
         let conn = self.conn.lock();
-        let count: usize = conn.query_row("SELECT COUNT(*) FROM prompt_templates", [], |row| row.get(0))?;
+        let count: usize = conn.query_row("SELECT COUNT(*) FROM prompt_templates", [], |row| {
+            row.get(0)
+        })?;
         Ok(count)
     }
 
@@ -1112,7 +1184,19 @@ impl StudioDatabase {
             },
         );
 
-        let (test_id, name, version_a_id, version_b_id, version_a_results_json, version_b_results_json, winner, significance, status_str, started_at, ended_at) = match result {
+        let (
+            test_id,
+            name,
+            version_a_id,
+            version_b_id,
+            version_a_results_json,
+            version_b_results_json,
+            winner,
+            significance,
+            status_str,
+            started_at,
+            ended_at,
+        ) = match result {
             Ok(r) => r,
             Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
             Err(e) => return Err(e.into()),
@@ -1141,11 +1225,13 @@ impl StudioDatabase {
             started_at: chrono::DateTime::parse_from_rfc3339(&started_at)
                 .map_err(|e| PersistenceError::InvalidData(e.to_string()))?
                 .with_timezone(&chrono::Utc),
-            ended_at: ended_at.map(|t| {
-                chrono::DateTime::parse_from_rfc3339(&t)
-                    .map(|dt| dt.with_timezone(&chrono::Utc))
-                    .ok()
-            }).flatten(),
+            ended_at: ended_at
+                .map(|t| {
+                    chrono::DateTime::parse_from_rfc3339(&t)
+                        .map(|dt| dt.with_timezone(&chrono::Utc))
+                        .ok()
+                })
+                .flatten(),
         }))
     }
 
@@ -1153,7 +1239,7 @@ impl StudioDatabase {
     pub fn list_prompt_tests(&self, template_id: &str) -> Result<Vec<(String, String)>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, name FROM prompt_tests WHERE template_id = ?1 ORDER BY started_at DESC"
+            "SELECT id, name FROM prompt_tests WHERE template_id = ?1 ORDER BY started_at DESC",
         )?;
 
         let rows = stmt.query_map(params![template_id], |row| {
@@ -1249,7 +1335,17 @@ impl StudioDatabase {
             },
         );
 
-        let (id, name, description, base_model, task_type, tags_json, owner, created_at, updated_at) = match result {
+        let (
+            id,
+            name,
+            description,
+            base_model,
+            task_type,
+            tags_json,
+            owner,
+            created_at,
+            updated_at,
+        ) = match result {
             Ok(r) => r,
             Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
             Err(e) => return Err(e.into()),
@@ -1278,7 +1374,18 @@ impl StudioDatabase {
 
         let mut versions = Vec::new();
         for row in versions_result {
-            let (vid, version, stage_str, metadata_json, artifact_path, metrics_json, experiment_run_id, dataset_id, stage_history_json, v_created_at) = row?;
+            let (
+                vid,
+                version,
+                stage_str,
+                metadata_json,
+                artifact_path,
+                metrics_json,
+                experiment_run_id,
+                dataset_id,
+                stage_history_json,
+                v_created_at,
+            ) = row?;
 
             let stage = match stage_str.as_str() {
                 "Staging" => ModelStage::Staging,
@@ -1288,7 +1395,8 @@ impl StudioDatabase {
             };
 
             let metadata: ModelMetadata = serde_json::from_str(&metadata_json)?;
-            let metrics: std::collections::HashMap<String, f64> = serde_json::from_str(&metrics_json)?;
+            let metrics: std::collections::HashMap<String, f64> =
+                serde_json::from_str(&metrics_json)?;
             let stage_history: Vec<StageTransition> = serde_json::from_str(&stage_history_json)?;
 
             versions.push(ModelVersion {
@@ -1335,7 +1443,7 @@ impl StudioDatabase {
              FROM models m
              LEFT JOIN model_versions mv ON m.id = mv.model_id
              GROUP BY m.id
-             ORDER BY m.created_at DESC"
+             ORDER BY m.created_at DESC",
         )?;
 
         let rows = stmt.query_map([], |row| {
@@ -1433,7 +1541,19 @@ impl StudioDatabase {
             },
         );
 
-        let (id, name, model_id, model_version, environment_str, status_str, endpoint_url, resources_json, history_json, created_at, updated_at) = match result {
+        let (
+            id,
+            name,
+            model_id,
+            model_version,
+            environment_str,
+            status_str,
+            endpoint_url,
+            resources_json,
+            history_json,
+            created_at,
+            updated_at,
+        ) = match result {
             Ok(r) => r,
             Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
             Err(e) => return Err(e.into()),
@@ -1478,9 +1598,8 @@ impl StudioDatabase {
     /// Lists all deployments.
     pub fn list_deployments(&self) -> Result<Vec<(String, String, String)>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT id, name, status FROM deployments ORDER BY created_at DESC"
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT id, name, status FROM deployments ORDER BY created_at DESC")?;
 
         let rows = stmt.query_map([], |row| {
             Ok((
@@ -1508,7 +1627,8 @@ impl StudioDatabase {
     /// Counts deployments.
     pub fn count_deployments(&self) -> Result<usize> {
         let conn = self.conn.lock();
-        let count: usize = conn.query_row("SELECT COUNT(*) FROM deployments", [], |row| row.get(0))?;
+        let count: usize =
+            conn.query_row("SELECT COUNT(*) FROM deployments", [], |row| row.get(0))?;
         Ok(count)
     }
 }
@@ -1540,11 +1660,17 @@ mod tests {
         assert!(db.table_exists("experiments").expect("check experiments"));
         assert!(db.table_exists("runs").expect("check runs"));
         assert!(db.table_exists("run_metrics").expect("check metrics"));
-        assert!(db.table_exists("prompt_templates").expect("check prompt_templates"));
-        assert!(db.table_exists("prompt_versions").expect("check prompt_versions"));
+        assert!(db
+            .table_exists("prompt_templates")
+            .expect("check prompt_templates"));
+        assert!(db
+            .table_exists("prompt_versions")
+            .expect("check prompt_versions"));
         assert!(db.table_exists("prompt_tests").expect("check prompt_tests"));
         assert!(db.table_exists("models").expect("check models"));
-        assert!(db.table_exists("model_versions").expect("check model_versions"));
+        assert!(db
+            .table_exists("model_versions")
+            .expect("check model_versions"));
         assert!(db.table_exists("deployments").expect("check deployments"));
         assert!(db.table_exists("_migrations").expect("check migrations"));
     }
@@ -1565,9 +1691,13 @@ mod tests {
             tx.insert_dataset(&dataset)?;
             tx.insert_examples(&dataset.id, &dataset.examples)?;
             Ok(())
-        }).expect("transaction should succeed");
+        })
+        .expect("transaction should succeed");
 
-        let loaded = db.load_dataset(&dataset.id).expect("load").expect("should exist");
+        let loaded = db
+            .load_dataset(&dataset.id)
+            .expect("load")
+            .expect("should exist");
         assert_eq!(loaded.name, "test-dataset");
         assert_eq!(loaded.examples.len(), 2);
     }
@@ -1597,7 +1727,10 @@ mod tests {
 
         db.save_dataset(&dataset).expect("save");
 
-        let loaded = db.load_dataset(&dataset.id).expect("load").expect("should exist");
+        let loaded = db
+            .load_dataset(&dataset.id)
+            .expect("load")
+            .expect("should exist");
         assert_eq!(loaded.id, dataset.id);
         assert_eq!(loaded.name, dataset.name);
         assert_eq!(loaded.examples.len(), dataset.examples.len());
@@ -1678,8 +1811,7 @@ mod tests {
         example.quality_score = Some(0.95);
 
         let mut dataset = Dataset::new(
-            DatasetConfig::new("full-dataset")
-                .with_description("A complete dataset"),
+            DatasetConfig::new("full-dataset").with_description("A complete dataset"),
             vec![example],
         );
 
@@ -1687,7 +1819,10 @@ mod tests {
 
         let loaded = db.load_dataset(&dataset.id).expect("load").expect("exists");
         assert_eq!(loaded.description, Some("A complete dataset".to_string()));
-        assert_eq!(loaded.examples[0].system, Some("You are helpful".to_string()));
+        assert_eq!(
+            loaded.examples[0].system,
+            Some("You are helpful".to_string())
+        );
         assert!(loaded.examples[0].synthetic);
         assert_eq!(loaded.examples[0].quality_score, Some(0.95));
     }
@@ -1713,7 +1848,10 @@ mod tests {
 
         db.save_prompt_template(&template).expect("save");
 
-        let loaded = db.load_prompt_template(&template.id).expect("load").expect("exists");
+        let loaded = db
+            .load_prompt_template(&template.id)
+            .expect("load")
+            .expect("exists");
         assert_eq!(loaded.id, template.id);
         assert_eq!(loaded.name, "test-template");
         assert_eq!(loaded.description, Some("A test template".to_string()));
@@ -1753,12 +1891,18 @@ mod tests {
         let template = create_test_template();
 
         db.save_prompt_template(&template).expect("save");
-        assert!(db.load_prompt_template(&template.id).expect("load").is_some());
+        assert!(db
+            .load_prompt_template(&template.id)
+            .expect("load")
+            .is_some());
 
         let deleted = db.delete_prompt_template(&template.id).expect("delete");
         assert!(deleted);
 
-        assert!(db.load_prompt_template(&template.id).expect("load").is_none());
+        assert!(db
+            .load_prompt_template(&template.id)
+            .expect("load")
+            .is_none());
     }
 
     #[test]
@@ -1769,7 +1913,10 @@ mod tests {
 
         db.save_prompt_test(None, &test_result).expect("save");
 
-        let loaded = db.load_prompt_test(&test_result.test_id).expect("load").expect("exists");
+        let loaded = db
+            .load_prompt_test(&test_result.test_id)
+            .expect("load")
+            .expect("exists");
         assert_eq!(loaded.test_id, test_result.test_id);
         assert_eq!(loaded.name, "A/B Test");
         assert_eq!(loaded.version_a_id, "v1");
@@ -1857,11 +2004,19 @@ mod tests {
         db.save_model(&model).expect("save model");
 
         // Create a deployment
-        let deployment = Deployment::new("prod-deploy", &model.id, 1, DeploymentEnvironment::Production);
+        let deployment = Deployment::new(
+            "prod-deploy",
+            &model.id,
+            1,
+            DeploymentEnvironment::Production,
+        );
 
         db.save_deployment(&deployment).expect("save deployment");
 
-        let loaded = db.load_deployment(&deployment.id).expect("load").expect("exists");
+        let loaded = db
+            .load_deployment(&deployment.id)
+            .expect("load")
+            .expect("exists");
         assert_eq!(loaded.id, deployment.id);
         assert_eq!(loaded.name, "prod-deploy");
         assert_eq!(loaded.model_id, model.id);
@@ -1900,7 +2055,8 @@ mod tests {
         let model = create_test_model();
         db.save_model(&model).expect("save model");
 
-        let deployment = Deployment::new("deploy", &model.id, 1, DeploymentEnvironment::Development);
+        let deployment =
+            Deployment::new("deploy", &model.id, 1, DeploymentEnvironment::Development);
         db.save_deployment(&deployment).expect("save deployment");
 
         assert_eq!(db.count_deployments().expect("count"), 1);

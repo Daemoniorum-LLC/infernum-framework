@@ -1,8 +1,8 @@
 //! Test original safetensors vs 45% compressed - baseline comparison
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
-use std::collections::HashMap;
 
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
@@ -43,25 +43,28 @@ fn load_safetensors(path: &Path, device: &Device) -> Result<HashMap<String, Tens
 
         let tensor = match st_tensor.dtype() {
             safetensors::Dtype::BF16 => {
-                let halfs: Vec<half::bf16> = data.chunks_exact(2)
+                let halfs: Vec<half::bf16> = data
+                    .chunks_exact(2)
                     .map(|chunk| half::bf16::from_le_bytes([chunk[0], chunk[1]]))
                     .collect();
                 let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
                 Tensor::from_vec(floats, shape.as_slice(), device)?
-            }
+            },
             safetensors::Dtype::F32 => {
-                let floats: Vec<f32> = data.chunks_exact(4)
+                let floats: Vec<f32> = data
+                    .chunks_exact(4)
                     .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                     .collect();
                 Tensor::from_vec(floats, shape.as_slice(), device)?
-            }
+            },
             safetensors::Dtype::F16 => {
-                let halfs: Vec<half::f16> = data.chunks_exact(2)
+                let halfs: Vec<half::f16> = data
+                    .chunks_exact(2)
                     .map(|chunk| half::f16::from_le_bytes([chunk[0], chunk[1]]))
                     .collect();
                 let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
                 Tensor::from_vec(floats, shape.as_slice(), device)?
-            }
+            },
             _ => continue,
         };
 
@@ -71,7 +74,12 @@ fn load_safetensors(path: &Path, device: &Device) -> Result<HashMap<String, Tens
     Ok(tensors)
 }
 
-fn load_hybrid(hct_dir: &Path, safetensors_path: &Path, device: &Device, dtype: DType) -> Result<HashMap<String, Tensor>> {
+fn load_hybrid(
+    hct_dir: &Path,
+    safetensors_path: &Path,
+    device: &Device,
+    dtype: DType,
+) -> Result<HashMap<String, Tensor>> {
     let mut tensors = load_hct_directory_sequential(hct_dir, device, dtype)?;
     let file_content = std::fs::read(safetensors_path)?;
     let st = SafeTensors::deserialize(&file_content)?;
@@ -85,25 +93,28 @@ fn load_hybrid(hct_dir: &Path, safetensors_path: &Path, device: &Device, dtype: 
 
             let tensor = match st_tensor.dtype() {
                 safetensors::Dtype::BF16 => {
-                    let halfs: Vec<half::bf16> = data.chunks_exact(2)
+                    let halfs: Vec<half::bf16> = data
+                        .chunks_exact(2)
                         .map(|chunk| half::bf16::from_le_bytes([chunk[0], chunk[1]]))
                         .collect();
                     let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
                     Tensor::from_vec(floats, shape.as_slice(), device)?
-                }
+                },
                 safetensors::Dtype::F32 => {
-                    let floats: Vec<f32> = data.chunks_exact(4)
+                    let floats: Vec<f32> = data
+                        .chunks_exact(4)
                         .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                         .collect();
                     Tensor::from_vec(floats, shape.as_slice(), device)?
-                }
+                },
                 safetensors::Dtype::F16 => {
-                    let halfs: Vec<half::f16> = data.chunks_exact(2)
+                    let halfs: Vec<half::f16> = data
+                        .chunks_exact(2)
                         .map(|chunk| half::f16::from_le_bytes([chunk[0], chunk[1]]))
                         .collect();
                     let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
                     Tensor::from_vec(floats, shape.as_slice(), device)?
-                }
+                },
                 _ => continue,
             };
 
@@ -114,7 +125,12 @@ fn load_hybrid(hct_dir: &Path, safetensors_path: &Path, device: &Device, dtype: 
     Ok(tensors)
 }
 
-fn run_inference(tensors: HashMap<String, Tensor>, name: &str, device: &Device, dtype: DType) -> Result<(Vec<u32>, Vec<f32>)> {
+fn run_inference(
+    tensors: HashMap<String, Tensor>,
+    name: &str,
+    device: &Device,
+    dtype: DType,
+) -> Result<(Vec<u32>, Vec<f32>)> {
     println!("\n=== {} ===", name);
 
     let vb = VarBuilder::from_tensors(tensors, dtype, device);
@@ -130,7 +146,9 @@ fn run_inference(tensors: HashMap<String, Tensor>, name: &str, device: &Device, 
     let last_logits = logits.i((0, logits.dim(1)? - 1, ..))?;
     let logits_vec: Vec<f32> = last_logits.to_vec1()?;
 
-    let mut indexed: Vec<(u32, f32)> = logits_vec.iter().enumerate()
+    let mut indexed: Vec<(u32, f32)> = logits_vec
+        .iter()
+        .enumerate()
         .map(|(i, &v)| (i as u32, v))
         .collect();
     indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
@@ -140,18 +158,24 @@ fn run_inference(tensors: HashMap<String, Tensor>, name: &str, device: &Device, 
     println!("  Top 5 predictions:");
     for i in 0..5 {
         let (token, score) = indexed[i];
-        println!("    {}. Token {} (score: {:.4})", i+1, token, score);
+        println!("    {}. Token {} (score: {:.4})", i + 1, token, score);
     }
 
     Ok((top_tokens, logits_vec))
 }
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() { return 0.0; }
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
     let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
     let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
     let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a > 0.0 && norm_b > 0.0 { dot / (norm_a * norm_b) } else { 0.0 }
+    if norm_a > 0.0 && norm_b > 0.0 {
+        dot / (norm_a * norm_b)
+    } else {
+        0.0
+    }
 }
 
 fn main() -> Result<()> {
@@ -167,39 +191,70 @@ fn main() -> Result<()> {
     println!("Loading original safetensors...");
     let start = Instant::now();
     let original_tensors = load_safetensors(safetensors_path, &device)?;
-    println!("Loaded {} tensors in {:.2}s", original_tensors.len(), start.elapsed().as_secs_f64());
-    let (original_tokens, original_logits) = run_inference(original_tensors, "Original (safetensors)", &device, dtype)?;
+    println!(
+        "Loaded {} tensors in {:.2}s",
+        original_tensors.len(),
+        start.elapsed().as_secs_f64()
+    );
+    let (original_tokens, original_logits) =
+        run_inference(original_tensors, "Original (safetensors)", &device, dtype)?;
 
     // Load 45% compressed hybrid
     println!("\nLoading 45% compressed hybrid...");
     let start = Instant::now();
     let compressed_tensors = load_hybrid(compressed_dir, safetensors_path, &device, dtype)?;
-    println!("Loaded {} tensors in {:.2}s", compressed_tensors.len(), start.elapsed().as_secs_f64());
-    let (compressed_tokens, compressed_logits) = run_inference(compressed_tensors, "45% Retention (hybrid)", &device, dtype)?;
+    println!(
+        "Loaded {} tensors in {:.2}s",
+        compressed_tensors.len(),
+        start.elapsed().as_secs_f64()
+    );
+    let (compressed_tokens, compressed_logits) =
+        run_inference(compressed_tensors, "45% Retention (hybrid)", &device, dtype)?;
 
     // Compare
     println!("\n=== Quality Comparison ===");
 
     let mut matching = 0;
     for i in 0..10.min(original_tokens.len()).min(compressed_tokens.len()) {
-        if original_tokens[i] == compressed_tokens[i] { matching += 1; }
+        if original_tokens[i] == compressed_tokens[i] {
+            matching += 1;
+        }
     }
 
     let similarity = cosine_similarity(&original_logits, &compressed_logits);
 
     println!("  Top-10 token agreement: {}/10", matching);
-    println!("  Top-1 match: {}", if original_tokens[0] == compressed_tokens[0] { "✓" } else { "✗" });
+    println!(
+        "  Top-1 match: {}",
+        if original_tokens[0] == compressed_tokens[0] {
+            "✓"
+        } else {
+            "✗"
+        }
+    );
     println!("  Logit cosine similarity: {:.6}", similarity);
 
     println!("\n=== Summary ===");
     if similarity > 0.95 {
-        println!("  Result: EXCELLENT - High similarity ({:.2}%)", similarity * 100.0);
+        println!(
+            "  Result: EXCELLENT - High similarity ({:.2}%)",
+            similarity * 100.0
+        );
     } else if similarity > 0.90 {
-        println!("  Result: GOOD - Moderate similarity ({:.2}%)", similarity * 100.0);
+        println!(
+            "  Result: GOOD - Moderate similarity ({:.2}%)",
+            similarity * 100.0
+        );
     } else if similarity > 0.80 {
-        println!("  Result: ACCEPTABLE - Lower similarity ({:.2}%)", similarity * 100.0);
+        println!(
+            "  Result: ACCEPTABLE - Lower similarity ({:.2}%)",
+            similarity * 100.0
+        );
     } else {
-        println!("  Result: POOR - Low similarity ({:.2}%)", similarity * 100.0);
+        println!(
+            "  Result: POOR - Low similarity ({:.2}%)",
+            similarity * 100.0
+        );
     }
 
     Ok(())

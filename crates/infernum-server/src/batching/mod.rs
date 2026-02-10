@@ -161,23 +161,26 @@ impl fmt::Display for BatchError {
         match self {
             Self::QueueFull { current, max } => {
                 write!(f, "Queue full: {}/{}", current, max)
-            }
+            },
             Self::QueueTimeout { waited, max } => {
                 write!(f, "Queue timeout: {:?} > {:?}", waited, max)
-            }
+            },
             Self::Preempted { reason } => {
                 write!(f, "Request preempted: {}", reason)
-            }
-            Self::MemoryPressure { available, required } => {
+            },
+            Self::MemoryPressure {
+                available,
+                required,
+            } => {
                 write!(
                     f,
                     "Memory pressure: {} available, {} required",
                     available, required
                 )
-            }
+            },
             Self::SequenceTooLong { actual, max } => {
                 write!(f, "Sequence too long: {} > {}", actual, max)
-            }
+            },
             Self::ShuttingDown => write!(f, "Scheduler is shutting down"),
             Self::Internal(msg) => write!(f, "Internal error: {}", msg),
         }

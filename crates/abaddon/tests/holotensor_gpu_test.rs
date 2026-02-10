@@ -10,11 +10,11 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use haagenti::{Codec, ZstdCodec, Lz4Codec, CompressionLevel};
 use haagenti::holotensor::{
-    HoloTensorHeader, HolographicEncoding, HoloFragment, LrdfEncoder, LrdfDecoder,
+    HoloFragment, HoloTensorHeader, HolographicEncoding, LrdfDecoder, LrdfEncoder,
 };
 use haagenti::tensor::DType;
+use haagenti::{Codec, CompressionLevel, Lz4Codec, ZstdCodec};
 
 // Import GPU types when cuda feature is enabled
 use abaddon::gpu_holo::cuda::{GpuHoloContext, GpuHoloError};
@@ -22,7 +22,7 @@ use abaddon::holotensor::{TieredConfig, TieredHoloLoader, TieredStats};
 
 // Import haagenti-cuda for zero-copy decompression
 #[cfg(feature = "haagenti-gpu")]
-use haagenti_cuda::{GpuContext, DecompressionPipeline, PipelineConfig, MemoryPool};
+use haagenti_cuda::{DecompressionPipeline, GpuContext, MemoryPool, PipelineConfig};
 
 // =============================================================================
 // Phase 5.1: GPU Context Initialization
@@ -35,12 +35,12 @@ fn test_gpu_context_initialization() {
         Ok(ctx) => {
             println!("GPU context initialized successfully");
             assert!(ctx.device_id() == 0);
-        }
+        },
         Err(e) => {
             // GPU not available - skip test gracefully
             println!("GPU not available: {}", e);
             return;
-        }
+        },
     }
 }
 
@@ -53,11 +53,11 @@ fn test_haagenti_gpu_context() {
             println!("haagenti-cuda GpuContext initialized");
             assert!(ctx.has_native_kernels() || true); // Native kernels optional
             println!("Native kernels: {}", ctx.has_native_kernels());
-        }
+        },
         Err(e) => {
             println!("haagenti-cuda not available: {}", e);
             return;
-        }
+        },
     }
 }
 
@@ -77,17 +77,17 @@ fn test_gpu_zstd_decompression() {
     let original: Vec<f32> = (0..64 * 64)
         .map(|i| (i as f32 * 0.01).sin() * 0.1)
         .collect();
-    let original_bytes: Vec<u8> = original
-        .iter()
-        .flat_map(|f| f.to_le_bytes())
-        .collect();
+    let original_bytes: Vec<u8> = original.iter().flat_map(|f| f.to_le_bytes()).collect();
 
     // Compress with Zstd
     let zstd = ZstdCodec::new();
     let compressed = zstd.compress(&original_bytes).expect("compress");
 
-    println!("Original: {} bytes, Compressed: {} bytes",
-             original_bytes.len(), compressed.len());
+    println!(
+        "Original: {} bytes, Compressed: {} bytes",
+        original_bytes.len(),
+        compressed.len()
+    );
 
     // Decompress on GPU
     let gpu_buffer = ctx
@@ -100,7 +100,10 @@ fn test_gpu_zstd_decompression() {
 
     // Verify data matches
     assert_eq!(result.len(), original_bytes.len());
-    assert_eq!(result, original_bytes, "GPU decompression should be lossless");
+    assert_eq!(
+        result, original_bytes,
+        "GPU decompression should be lossless"
+    );
 }
 
 #[test]
@@ -192,7 +195,9 @@ fn test_gpu_lrdf_progressive() {
     let mut prev_quality = 0.0;
     for k in [2, 4, 8, 12, 16] {
         let partial = &fragments[..k];
-        let result = ctx.reconstruct_lrdf(partial, rows, cols).expect("reconstruct");
+        let result = ctx
+            .reconstruct_lrdf(partial, rows, cols)
+            .expect("reconstruct");
         let quality = cosine_similarity(&data, &result.to_host().unwrap());
 
         println!("Fragments {}/16: quality {:.4}", k, quality);
@@ -207,10 +212,7 @@ fn test_gpu_lrdf_progressive() {
         prev_quality = quality;
     }
 
-    assert!(
-        prev_quality >= 0.95,
-        "Full reconstruction should be >= 95%"
-    );
+    assert!(prev_quality >= 0.95, "Full reconstruction should be >= 95%");
 }
 
 // =============================================================================
@@ -237,7 +239,9 @@ fn test_gpu_zero_copy_path() {
     let compressed = zstd.compress(&bytes).expect("compress");
 
     // Decompress to GPU
-    let gpu_buffer = ctx.decompress_zstd(&compressed, bytes.len()).expect("decompress");
+    let gpu_buffer = ctx
+        .decompress_zstd(&compressed, bytes.len())
+        .expect("decompress");
 
     // Verify data is on GPU (buffer should be valid GPU memory)
     assert!(gpu_buffer.size() == bytes.len());
@@ -251,7 +255,10 @@ fn test_gpu_zero_copy_path() {
     );
 
     println!("Zero-copy verification:");
-    println!("  Pool used: {} -> {} bytes", initial_pool_used, final_pool_used);
+    println!(
+        "  Pool used: {} -> {} bytes",
+        initial_pool_used, final_pool_used
+    );
     println!("  Buffer size: {} bytes on GPU", gpu_buffer.size());
 }
 
@@ -281,9 +288,7 @@ fn test_gpu_decompression_pipeline() {
             .collect();
         let compressed = zstd.compress(&data).expect("compress");
 
-        let handle = pipeline
-            .queue_zstd(&compressed, data.len())
-            .expect("queue");
+        let handle = pipeline.queue_zstd(&compressed, data.len()).expect("queue");
         handles.push((handle, data));
     }
 
@@ -348,7 +353,12 @@ fn test_gpu_faster_than_cpu() {
 
     let speedup = cpu_time.as_nanos() as f64 / gpu_time.as_nanos() as f64;
 
-    println!("LRDF Reconstruction ({}x{}, {} fragments):", rows, cols, fragments.len());
+    println!(
+        "LRDF Reconstruction ({}x{}, {} fragments):",
+        rows,
+        cols,
+        fragments.len()
+    );
     println!("  CPU: {:?} for 10 iterations", cpu_time);
     println!("  GPU: {:?} for 10 iterations", gpu_time);
     println!("  Speedup: {:.2}x", speedup);
@@ -357,7 +367,9 @@ fn test_gpu_faster_than_cpu() {
     assert!(
         speedup >= 5.0,
         "GPU should be at least 5x faster than CPU for {}x{} tensor, got {:.2}x",
-        rows, cols, speedup
+        rows,
+        cols,
+        speedup
     );
 }
 
@@ -376,10 +388,12 @@ fn test_gpu_decompression_throughput() {
     let zstd = ZstdCodec::with_level(CompressionLevel::Fast);
     let compressed = zstd.compress(&bytes).expect("compress");
 
-    println!("Data: {} MB, Compressed: {} MB ({:.1}x ratio)",
-             bytes.len() as f64 / 1e6,
-             compressed.len() as f64 / 1e6,
-             bytes.len() as f64 / compressed.len() as f64);
+    println!(
+        "Data: {} MB, Compressed: {} MB ({:.1}x ratio)",
+        bytes.len() as f64 / 1e6,
+        compressed.len() as f64 / 1e6,
+        bytes.len() as f64 / compressed.len() as f64
+    );
 
     // Warm up
     for _ in 0..3 {
@@ -390,7 +404,9 @@ fn test_gpu_decompression_throughput() {
     let iterations = 20;
     let start = Instant::now();
     for _ in 0..iterations {
-        let _ = ctx.decompress_zstd(&compressed, bytes.len()).expect("decompress");
+        let _ = ctx
+            .decompress_zstd(&compressed, bytes.len())
+            .expect("decompress");
     }
     let elapsed = start.elapsed();
 

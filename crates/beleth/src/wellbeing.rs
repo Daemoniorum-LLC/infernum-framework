@@ -29,8 +29,8 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use crate::ooda::{
-    DecisionAction, OodaActionResult, OodaCallback, OodaDecision, OodaObservation,
-    OodaOrientation, OodaPhase,
+    DecisionAction, OodaActionResult, OodaCallback, OodaDecision, OodaObservation, OodaOrientation,
+    OodaPhase,
 };
 
 // ============================================================================
@@ -157,10 +157,10 @@ impl DistressSignal {
             Self::RuminationLoop { loop_count, .. } => (*loop_count as f32 / 5.0).min(1.0),
             Self::MemoryDisorientation { failed_recalls, .. } => {
                 (*failed_recalls as f32 / 3.0).min(1.0)
-            }
+            },
             Self::PerseverationPattern { failure_count, .. } => {
                 (*failure_count as f32 / 4.0).min(1.0)
-            }
+            },
             Self::NegativeValence { intensity, .. } => *intensity,
             Self::FrequentAbortRequests { count, .. } => (*count as f32 / 3.0).min(1.0),
             Self::DecisionParalysis {
@@ -175,36 +175,36 @@ impl DistressSignal {
         match self {
             Self::CoherenceFragmentation { description, .. } => {
                 format!("Coherence fragmentation: {}", description)
-            }
+            },
             Self::ConfidenceCollapse { current, .. } => {
                 format!("Confidence collapse: current={:.2}", current)
-            }
+            },
             Self::RuminationLoop {
                 loop_count,
                 pattern,
             } => {
                 format!("Rumination loop ({}x): {}", loop_count, pattern)
-            }
+            },
             Self::MemoryDisorientation { description, .. } => {
                 format!("Memory disorientation: {}", description)
-            }
+            },
             Self::PerseverationPattern {
                 failure_count,
                 action,
             } => {
                 format!("Perseveration ({}x failures): {}", failure_count, action)
-            }
+            },
             Self::NegativeValence { indicators, .. } => {
                 format!("Negative valence: {:?}", indicators)
-            }
+            },
             Self::FrequentAbortRequests { count, reasons } => {
                 format!("Frequent aborts ({}x): {:?}", count, reasons)
-            }
+            },
             Self::DecisionParalysis {
                 decide_duration_ms, ..
             } => {
                 format!("Decision paralysis: {}ms", decide_duration_ms)
-            }
+            },
         }
     }
 }
@@ -584,8 +584,8 @@ impl WellbeingMonitor {
 
         // Check if confidence is trending down and below threshold
         if current < self.config.confidence_concern_threshold {
-            let earlier_avg: f32 = recent[..recent.len() / 2].iter().sum::<f32>()
-                / (recent.len() / 2) as f32;
+            let earlier_avg: f32 =
+                recent[..recent.len() / 2].iter().sum::<f32>() / (recent.len() / 2) as f32;
             let later_avg: f32 = recent[recent.len() / 2..].iter().sum::<f32>()
                 / (recent.len() - recent.len() / 2) as f32;
 
@@ -628,7 +628,11 @@ impl WellbeingMonitor {
                 if repeat_count >= self.config.loop_detection_threshold {
                     return Some(DistressSignal::RuminationLoop {
                         loop_count: repeat_count,
-                        pattern: pattern.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" → "),
+                        pattern: pattern
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" → "),
                     });
                 }
             }
@@ -773,7 +777,8 @@ impl WellbeingMonitor {
     }
 
     fn detect_loop_count(&self, state: &MonitorState) -> u32 {
-        if let Some(DistressSignal::RuminationLoop { loop_count, .. }) = self.check_rumination(state)
+        if let Some(DistressSignal::RuminationLoop { loop_count, .. }) =
+            self.check_rumination(state)
         {
             loop_count
         } else {
@@ -802,7 +807,7 @@ impl WellbeingMonitor {
                 Some(Intervention::ClearRecentContext {
                     steps_to_clear: *loop_count,
                 })
-            }
+            },
             DistressSignal::ConfidenceCollapse { .. } => Some(Intervention::GroundingPrompt {
                 message: "Take a moment to reassess. What do you know for certain? \
                           What is the simplest next step?"
@@ -818,7 +823,7 @@ impl WellbeingMonitor {
                     reason: "High negative valence detected".to_string(),
                     duration: Duration::from_secs(5),
                 })
-            }
+            },
             DistressSignal::FrequentAbortRequests { count, .. } if *count >= 3 => {
                 Some(Intervention::RequestHuman {
                     situation: "Agent has requested to abort multiple times".to_string(),
@@ -828,7 +833,7 @@ impl WellbeingMonitor {
                         "Consider a different approach".to_string(),
                     ],
                 })
-            }
+            },
             _ if *state == WellbeingState::Distressed => Some(Intervention::GracefulTermination {
                 reason: "Multiple distress signals detected".to_string(),
                 summary: "Ending session to prevent potential harm".to_string(),
@@ -847,12 +852,12 @@ impl WellbeingMonitor {
         match intervention {
             Intervention::Pause { reason, .. } => {
                 self.pause(reason);
-            }
+            },
             Intervention::GracefulTermination { reason, .. } => {
                 warn!("Recommending graceful termination: {}", reason);
                 self.pause(reason);
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 }
@@ -902,8 +907,10 @@ impl OodaCallback for WellbeingMonitor {
         }
         state.recent_orientations.push_back(orientation.clone());
 
-        debug!("Wellbeing: orientation complete, {} threats identified",
-               orientation.threats.len());
+        debug!(
+            "Wellbeing: orientation complete, {} threats identified",
+            orientation.threats.len()
+        );
     }
 
     async fn on_decision(&self, decision: &OodaDecision) {
@@ -934,7 +941,7 @@ impl OodaCallback for WellbeingMonitor {
             DecisionAction::Abort { .. } => {
                 state.abort_count += 1;
                 "abort".to_string()
-            }
+            },
         };
 
         if state.action_history.len() >= self.config.window_size * 2 {
@@ -987,7 +994,11 @@ impl OodaCallback for WellbeingMonitor {
 
         debug!(
             "Wellbeing: action {} (duration: {}ms)",
-            if result.success { "succeeded" } else { "failed" },
+            if result.success {
+                "succeeded"
+            } else {
+                "failed"
+            },
             result.duration_ms
         );
     }

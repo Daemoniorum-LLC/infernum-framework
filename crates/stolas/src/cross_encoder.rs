@@ -124,7 +124,11 @@ pub trait CrossEncoder: Send + Sync {
             .collect();
 
         // Sort by score descending
-        scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         Ok(scored)
     }
@@ -177,7 +181,12 @@ impl CrossEncoder for MockCrossEncoder {
         Ok(documents
             .iter()
             .enumerate()
-            .map(|(i, _)| self.scores.get(i % self.scores.len()).copied().unwrap_or(0.5))
+            .map(|(i, _)| {
+                self.scores
+                    .get(i % self.scores.len())
+                    .copied()
+                    .unwrap_or(0.5)
+            })
             .collect())
     }
 
@@ -367,7 +376,11 @@ impl<E: crate::embedding::Embedder> EmbeddingCrossEncoder<E> {
         }
 
         // Standard cosine similarity
-        let dot: f32 = query_emb.iter().zip(doc_emb.iter()).map(|(a, b)| a * b).sum();
+        let dot: f32 = query_emb
+            .iter()
+            .zip(doc_emb.iter())
+            .map(|(a, b)| a * b)
+            .sum();
         let norm_q: f32 = query_emb.iter().map(|x| x * x).sum::<f32>().sqrt();
         let norm_d: f32 = doc_emb.iter().map(|x| x * x).sum::<f32>().sqrt();
 
@@ -492,7 +505,11 @@ impl EnsembleReranker {
             .collect();
 
         // Sort by score descending
-        scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         Ok(RerankResult {
             documents: scored,
@@ -716,12 +733,18 @@ mod tests {
 
         // Relevant document should score higher
         let relevant_score = encoder
-            .score_single("rust programming language", "Rust is a systems programming language focusing on safety")
+            .score_single(
+                "rust programming language",
+                "Rust is a systems programming language focusing on safety",
+            )
             .await
             .unwrap();
 
         let irrelevant_score = encoder
-            .score_single("rust programming language", "Iron oxide is commonly known as rust")
+            .score_single(
+                "rust programming language",
+                "Iron oxide is commonly known as rust",
+            )
             .await
             .unwrap();
 
@@ -733,12 +756,18 @@ mod tests {
         let encoder = HeuristicCrossEncoder::new();
 
         let exact_score = encoder
-            .score_single("machine learning", "Introduction to machine learning algorithms")
+            .score_single(
+                "machine learning",
+                "Introduction to machine learning algorithms",
+            )
             .await
             .unwrap();
 
         let partial_score = encoder
-            .score_single("machine learning", "The machine was used for learning purposes")
+            .score_single(
+                "machine learning",
+                "The machine was used for learning purposes",
+            )
             .await
             .unwrap();
 
@@ -764,7 +793,14 @@ mod tests {
     async fn test_heuristic_batch_scoring() {
         let encoder = HeuristicCrossEncoder::new();
         let scores = encoder
-            .score_batch("programming", &["Rust programming language", "cooking recipes", "programming tutorial"])
+            .score_batch(
+                "programming",
+                &[
+                    "Rust programming language",
+                    "cooking recipes",
+                    "programming tutorial",
+                ],
+            )
             .await
             .unwrap();
 
@@ -780,12 +816,18 @@ mod tests {
 
         // Query term at beginning should score higher than at end
         let early_score = encoder
-            .score_single("rust", "Rust is great for systems programming and has many features")
+            .score_single(
+                "rust",
+                "Rust is great for systems programming and has many features",
+            )
             .await
             .unwrap();
 
         let late_score = encoder
-            .score_single("rust", "There are many programming languages but none compare to Rust")
+            .score_single(
+                "rust",
+                "There are many programming languages but none compare to Rust",
+            )
             .await
             .unwrap();
 
@@ -936,11 +978,7 @@ mod tests {
 
         let reranker = EnsembleReranker::new(vec![encoder1, encoder2], vec![0.5, 0.5]).unwrap();
 
-        let docs = vec![
-            "doc1".to_string(),
-            "doc2".to_string(),
-            "doc3".to_string(),
-        ];
+        let docs = vec!["doc1".to_string(), "doc2".to_string(), "doc3".to_string()];
 
         let result = reranker.rerank("query", docs).await.unwrap();
 

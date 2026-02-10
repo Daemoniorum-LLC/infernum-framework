@@ -201,7 +201,8 @@ impl ObservabilityState {
         }
 
         // HTTP latency summary
-        output.push_str("# HELP infernum_http_duration_ms HTTP request duration in milliseconds.\n");
+        output
+            .push_str("# HELP infernum_http_duration_ms HTTP request duration in milliseconds.\n");
         output.push_str("# TYPE infernum_http_duration_ms summary\n");
         for ((method, path), stats) in self.inner.http_latencies.read().iter() {
             output.push_str(&format!(
@@ -238,7 +239,9 @@ fn normalize_path(path: &str) -> String {
     let mut result = path.to_string();
 
     // Replace UUIDs with :id placeholder
-    if let Ok(re) = regex::Regex::new(r"/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}") {
+    if let Ok(re) =
+        regex::Regex::new(r"/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+    {
         result = re.replace_all(&result, "/:id").to_string();
     }
 
@@ -298,7 +301,9 @@ pub async fn http_metrics_middleware(
 
     // Add timing header
     if let Ok(header_value) = HeaderValue::from_str(&format!("{:.2}", duration_ms)) {
-        response.headers_mut().insert("x-response-time-ms", header_value);
+        response
+            .headers_mut()
+            .insert("x-response-time-ms", header_value);
     }
 
     response
@@ -359,7 +364,9 @@ pub async fn observability_middleware(
         response.headers_mut().insert("x-request-id", header_value);
     }
     if let Ok(header_value) = HeaderValue::from_str(&format!("{:.2}", duration_ms)) {
-        response.headers_mut().insert("x-response-time-ms", header_value);
+        response
+            .headers_mut()
+            .insert("x-response-time-ms", header_value);
     }
 
     response
@@ -413,10 +420,7 @@ mod tests {
 
     #[test]
     fn test_normalize_path() {
-        assert_eq!(
-            normalize_path("/users/123/posts"),
-            "/users/:num/posts"
-        );
+        assert_eq!(normalize_path("/users/123/posts"), "/users/:num/posts");
         assert_eq!(
             normalize_path("/items/550e8400-e29b-41d4-a716-446655440000"),
             "/items/:id"

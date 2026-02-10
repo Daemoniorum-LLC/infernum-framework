@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use infernum_core::Result;
 use serde_json::Value;
 
-use crate::tool::{RiskLevel, Tool, ToolContext, ToolResult};
 use super::{require_str_param, validate_path};
+use crate::tool::{RiskLevel, Tool, ToolContext, ToolResult};
 
 /// Creates or overwrites a file.
 pub struct WriteFileTool;
@@ -68,7 +68,7 @@ impl Tool for WriteFileTool {
                     "path": path_str,
                     "bytes_written": byte_count,
                 })))
-            }
+            },
             Err(e) => Ok(ToolResult::error(format!(
                 "Failed to write '{}': {}",
                 path_str, e

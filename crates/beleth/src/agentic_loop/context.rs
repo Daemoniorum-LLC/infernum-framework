@@ -110,17 +110,17 @@ impl ContextWindowManager {
         match strategy {
             CompressionStrategy::SummarizeOldResults { keep_recent } => {
                 self.summarize_old_results(*keep_recent);
-            }
+            },
             CompressionStrategy::PruneDeadEnds => {
                 self.prune_dead_ends();
-            }
+            },
             CompressionStrategy::CollapseExploration { summary_tokens } => {
                 self.collapse_exploration(*summary_tokens);
-            }
+            },
             CompressionStrategy::AgentDirected => {
                 // Agent-directed compression requires LLM call — not handled here.
                 // The executor should call this separately.
-            }
+            },
         }
 
         let after = self.estimated_tokens;
@@ -316,10 +316,7 @@ impl ContextWindowManager {
 
         // Insert summary after the system message
         let insert_pos = 1.min(self.messages.len());
-        self.messages.insert(
-            insert_pos,
-            Message::system(summary),
-        );
+        self.messages.insert(insert_pos, Message::system(summary));
 
         tracing::debug!(
             collapsed = to_collapse.len(),
@@ -403,10 +400,7 @@ mod tests {
 
         // Add 5 tool results with long content
         for i in 0..5 {
-            let mut msg = Message::tool_result(
-                format!("call_{i}"),
-                &"x".repeat(500),
-            );
+            let mut msg = Message::tool_result(format!("call_{i}"), &"x".repeat(500));
             msg.tool_call_id = Some(format!("call_{i}"));
             mgr.push_message(msg);
         }
@@ -425,7 +419,7 @@ mod tests {
             .filter(|m| m.tool_call_id.is_some())
             .collect();
         assert_eq!(tool_msgs.len(), 5); // All still present, just summarized
-        // Last 2 should be full length
+                                        // Last 2 should be full length
         assert!(tool_msgs[3].content.len() >= 500);
         assert!(tool_msgs[4].content.len() >= 500);
     }
@@ -463,10 +457,7 @@ mod tests {
     #[test]
     fn test_snapshot() {
         let mut mgr = ContextWindowManager::new(4096);
-        mgr.set_initial_messages(vec![
-            Message::system("sys"),
-            Message::user("do"),
-        ]);
+        mgr.set_initial_messages(vec![Message::system("sys"), Message::user("do")]);
         let snap = mgr.snapshot();
         assert_eq!(snap.messages.len(), 2);
         assert_eq!(snap.original_token_count, snap.current_token_count);

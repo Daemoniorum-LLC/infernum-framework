@@ -32,7 +32,11 @@ pub struct TrainingPair {
 
 impl TrainingPair {
     /// Creates a new training pair.
-    pub fn new(input: impl Into<String>, output: impl Into<String>, source: TrainingSource) -> Self {
+    pub fn new(
+        input: impl Into<String>,
+        output: impl Into<String>,
+        source: TrainingSource,
+    ) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             input: input.into(),
@@ -123,8 +127,8 @@ impl Specialization {
         match self {
             Self::General => 0.5,
             Self::SyntaxCompletion => 1.0,
-            Self::EvidentialityInference => 1.5,  // High priority - unique to Sigil
-            Self::MorphemeChains => 1.5,          // High priority - unique to Sigil
+            Self::EvidentialityInference => 1.5, // High priority - unique to Sigil
+            Self::MorphemeChains => 1.5,         // High priority - unique to Sigil
             Self::PatternRecognition => 1.0,
             Self::ErrorDiagnosis => 1.2,
             Self::MigrationExpertise => 1.3,
@@ -260,7 +264,8 @@ impl SigilDataset {
 
     /// Filters pairs by minimum quality score.
     pub fn filter_by_quality(&self, min_score: f32) -> Self {
-        let pairs: Vec<_> = self.pairs
+        let pairs: Vec<_> = self
+            .pairs
             .iter()
             .filter(|p| p.quality_score >= min_score)
             .cloned()
@@ -274,7 +279,8 @@ impl SigilDataset {
 
     /// Filters pairs by specialization.
     pub fn filter_by_specialization(&self, specs: &[Specialization]) -> Self {
-        let pairs: Vec<_> = self.pairs
+        let pairs: Vec<_> = self
+            .pairs
             .iter()
             .filter(|p| specs.contains(&p.specialization))
             .cloned()
@@ -395,7 +401,10 @@ impl CheckpointCollector {
     ) {
         // Create conversion pair
         let pair = TrainingPair::new(
-            format!("Convert this Rust code to Sigil:\n\n```rust\n{}\n```", rust_code),
+            format!(
+                "Convert this Rust code to Sigil:\n\n```rust\n{}\n```",
+                rust_code
+            ),
             format!("```sigil\n{}\n```", sigil_code),
             TrainingSource::Checkpoint {
                 checkpoint_id: checkpoint_id.to_string(),
@@ -443,12 +452,7 @@ impl CheckpointCollector {
     }
 
     /// Collects training data from a discovered pattern.
-    pub fn collect_from_pattern(
-        &self,
-        pattern_name: &str,
-        description: &str,
-        example: &str,
-    ) {
+    pub fn collect_from_pattern(&self, pattern_name: &str, description: &str, example: &str) {
         if !self.config.include_patterns {
             return;
         }
@@ -457,10 +461,7 @@ impl CheckpointCollector {
             "What is the {} pattern in Sigil and when should I use it?",
             pattern_name
         );
-        let output = format!(
-            "{}\n\nExample:\n```sigil\n{}\n```",
-            description, example
-        );
+        let output = format!("{}\n\nExample:\n```sigil\n{}\n```", description, example);
 
         let pair = TrainingPair::new(
             input,
@@ -691,13 +692,27 @@ mod tests {
     fn test_dataset_operations() {
         let mut dataset = SigilDataset::new("test");
 
-        dataset.add(TrainingPair::new("input1", "output1", TrainingSource::Curated {
-            curator: "test".to_string(),
-        }).with_quality(0.8));
+        dataset.add(
+            TrainingPair::new(
+                "input1",
+                "output1",
+                TrainingSource::Curated {
+                    curator: "test".to_string(),
+                },
+            )
+            .with_quality(0.8),
+        );
 
-        dataset.add(TrainingPair::new("input2", "output2", TrainingSource::Curated {
-            curator: "test".to_string(),
-        }).with_quality(0.4));
+        dataset.add(
+            TrainingPair::new(
+                "input2",
+                "output2",
+                TrainingSource::Curated {
+                    curator: "test".to_string(),
+                },
+            )
+            .with_quality(0.4),
+        );
 
         let filtered = dataset.filter_by_quality(0.6);
         assert_eq!(filtered.pairs.len(), 1);
@@ -707,12 +722,7 @@ mod tests {
     fn test_checkpoint_collector() {
         let collector = CheckpointCollector::new(CollectorConfig::default());
 
-        collector.collect_from_conversion(
-            "cp-001",
-            "infernum",
-            "fn hello() {}",
-            "fn hello() {}",
-        );
+        collector.collect_from_conversion("cp-001", "infernum", "fn hello() {}", "fn hello() {}");
 
         collector.collect_from_pattern(
             "builder",
@@ -738,17 +748,29 @@ mod tests {
     fn test_dataset_stats() {
         let mut dataset = SigilDataset::new("test");
 
-        dataset.add(TrainingPair::new("a", "b", TrainingSource::Curated {
-            curator: "test".to_string(),
-        })
+        dataset.add(
+            TrainingPair::new(
+                "a",
+                "b",
+                TrainingSource::Curated {
+                    curator: "test".to_string(),
+                },
+            )
             .with_quality(0.8)
-            .with_specialization(Specialization::SyntaxCompletion));
+            .with_specialization(Specialization::SyntaxCompletion),
+        );
 
-        dataset.add(TrainingPair::new("c", "d", TrainingSource::Pattern {
-            pattern_name: "test".to_string(),
-        })
+        dataset.add(
+            TrainingPair::new(
+                "c",
+                "d",
+                TrainingSource::Pattern {
+                    pattern_name: "test".to_string(),
+                },
+            )
             .with_quality(0.6)
-            .with_specialization(Specialization::PatternRecognition));
+            .with_specialization(Specialization::PatternRecognition),
+        );
 
         let stats = dataset.stats();
         assert_eq!(stats.total_pairs, 2);

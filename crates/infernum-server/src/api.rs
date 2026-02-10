@@ -286,7 +286,10 @@ impl ErrorResponse {
 
     /// Convenience: model busy error.
     pub fn model_busy() -> Self {
-        Self::new(ErrorCode::ModelBusy, "Model is currently processing other requests")
+        Self::new(
+            ErrorCode::ModelBusy,
+            "Model is currently processing other requests",
+        )
     }
 
     /// Convenience: internal error.
@@ -308,12 +311,10 @@ mod tests {
     #[test]
     fn test_models_response_serialization() {
         let response = ModelsResponse {
-            models: vec![
-                ModelListEntry::new("llama-3.2-3b")
-                    .with_architecture("llama")
-                    .with_context_length(8192)
-                    .with_quantization("gguf_q4_k_m"),
-            ],
+            models: vec![ModelListEntry::new("llama-3.2-3b")
+                .with_architecture("llama")
+                .with_context_length(8192)
+                .with_quantization("gguf_q4_k_m")],
         };
 
         let json = serde_json::to_value(&response).expect("serialize");

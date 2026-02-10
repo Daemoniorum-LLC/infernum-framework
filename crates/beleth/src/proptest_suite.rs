@@ -7,7 +7,7 @@
 
 use proptest::prelude::*;
 
-use crate::dynamic_context::{semantic_chunk, score_message_relevance, ContextComplexity};
+use crate::dynamic_context::{score_message_relevance, semantic_chunk, ContextComplexity};
 use crate::long_term_memory::{ImportanceLevel, MemoryEntry, MemoryType};
 use crate::tool::{TaskComplexity, ToolTimeoutConfig};
 use infernum_core::{Message, Role};

@@ -1,21 +1,27 @@
 //! Test error accumulation through single transformer layer
 
-use std::path::Path;
 use std::collections::HashMap;
+use std::path::Path;
 
 use candle_core::{DType, Device, IndexOp, Tensor, D};
-use candle_nn::{VarBuilder, Linear, Module, RmsNorm};
+use candle_nn::{Linear, Module, RmsNorm, VarBuilder};
 use safetensors::SafeTensors;
 
 use abaddon::hct_sequential::load_hct_directory_sequential;
 use anyhow::Result;
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() { return 0.0; }
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
     let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
     let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
     let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a > 0.0 && norm_b > 0.0 { dot / (norm_a * norm_b) } else { 0.0 }
+    if norm_a > 0.0 && norm_b > 0.0 {
+        dot / (norm_a * norm_b)
+    } else {
+        0.0
+    }
 }
 
 fn load_safetensors(path: &Path, device: &Device) -> Result<HashMap<String, Tensor>> {
@@ -31,18 +37,20 @@ fn load_safetensors(path: &Path, device: &Device) -> Result<HashMap<String, Tens
 
         let tensor = match st_tensor.dtype() {
             safetensors::Dtype::BF16 => {
-                let halfs: Vec<half::bf16> = data.chunks_exact(2)
+                let halfs: Vec<half::bf16> = data
+                    .chunks_exact(2)
                     .map(|chunk| half::bf16::from_le_bytes([chunk[0], chunk[1]]))
                     .collect();
                 let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
                 Tensor::from_vec(floats, shape.as_slice(), device)?
-            }
+            },
             safetensors::Dtype::F32 => {
-                let floats: Vec<f32> = data.chunks_exact(4)
+                let floats: Vec<f32> = data
+                    .chunks_exact(4)
                     .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                     .collect();
                 Tensor::from_vec(floats, shape.as_slice(), device)?
-            }
+            },
             _ => continue,
         };
 
@@ -52,7 +60,12 @@ fn load_safetensors(path: &Path, device: &Device) -> Result<HashMap<String, Tens
     Ok(tensors)
 }
 
-fn load_hybrid(hct_dir: &Path, safetensors_path: &Path, device: &Device, dtype: DType) -> Result<HashMap<String, Tensor>> {
+fn load_hybrid(
+    hct_dir: &Path,
+    safetensors_path: &Path,
+    device: &Device,
+    dtype: DType,
+) -> Result<HashMap<String, Tensor>> {
     let mut tensors = load_hct_directory_sequential(hct_dir, device, dtype)?;
     let file_content = std::fs::read(safetensors_path)?;
     let st = SafeTensors::deserialize(&file_content)?;
@@ -66,18 +79,20 @@ fn load_hybrid(hct_dir: &Path, safetensors_path: &Path, device: &Device, dtype: 
 
             let tensor = match st_tensor.dtype() {
                 safetensors::Dtype::BF16 => {
-                    let halfs: Vec<half::bf16> = data.chunks_exact(2)
+                    let halfs: Vec<half::bf16> = data
+                        .chunks_exact(2)
                         .map(|chunk| half::bf16::from_le_bytes([chunk[0], chunk[1]]))
                         .collect();
                     let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
                     Tensor::from_vec(floats, shape.as_slice(), device)?
-                }
+                },
                 safetensors::Dtype::F32 => {
-                    let floats: Vec<f32> = data.chunks_exact(4)
+                    let floats: Vec<f32> = data
+                        .chunks_exact(4)
                         .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                         .collect();
                     Tensor::from_vec(floats, shape.as_slice(), device)?
-                }
+                },
                 _ => continue,
             };
 
@@ -134,18 +149,33 @@ fn main() -> Result<()> {
     let hidden_hct_flat: Vec<f32> = hidden_hct.flatten_all()?.to_vec1()?;
 
     println!("\n=== Initial Hidden State ===");
-    println!("Cosine similarity: {:.6}", cosine_similarity(&hidden_orig_flat, &hidden_hct_flat));
+    println!(
+        "Cosine similarity: {:.6}",
+        cosine_similarity(&hidden_orig_flat, &hidden_hct_flat)
+    );
 
     // Test MLP layer 0
     println!("\n=== MLP Layer 0 Test ===");
 
-    let gate_orig = orig_tensors.get("model.layers.0.mlp.gate_proj.weight").unwrap();
-    let up_orig = orig_tensors.get("model.layers.0.mlp.up_proj.weight").unwrap();
-    let down_orig = orig_tensors.get("model.layers.0.mlp.down_proj.weight").unwrap();
+    let gate_orig = orig_tensors
+        .get("model.layers.0.mlp.gate_proj.weight")
+        .unwrap();
+    let up_orig = orig_tensors
+        .get("model.layers.0.mlp.up_proj.weight")
+        .unwrap();
+    let down_orig = orig_tensors
+        .get("model.layers.0.mlp.down_proj.weight")
+        .unwrap();
 
-    let gate_hct = hct_tensors.get("model.layers.0.mlp.gate_proj.weight").unwrap();
-    let up_hct = hct_tensors.get("model.layers.0.mlp.up_proj.weight").unwrap();
-    let down_hct = hct_tensors.get("model.layers.0.mlp.down_proj.weight").unwrap();
+    let gate_hct = hct_tensors
+        .get("model.layers.0.mlp.gate_proj.weight")
+        .unwrap();
+    let up_hct = hct_tensors
+        .get("model.layers.0.mlp.up_proj.weight")
+        .unwrap();
+    let down_hct = hct_tensors
+        .get("model.layers.0.mlp.down_proj.weight")
+        .unwrap();
 
     // Test with original hidden state
     let mlp_out_orig = mlp_forward(&hidden_orig, gate_orig, up_orig, down_orig)?;
@@ -154,21 +184,30 @@ fn main() -> Result<()> {
     let mlp_orig_flat: Vec<f32> = mlp_out_orig.flatten_all()?.to_vec1()?;
     let mlp_hct_flat: Vec<f32> = mlp_out_hct.flatten_all()?.to_vec1()?;
 
-    println!("MLP output cosine (orig hidden, orig vs hct weights): {:.6}", cosine_similarity(&mlp_orig_flat, &mlp_hct_flat));
+    println!(
+        "MLP output cosine (orig hidden, orig vs hct weights): {:.6}",
+        cosine_similarity(&mlp_orig_flat, &mlp_hct_flat)
+    );
     println!("MLP output stats:");
-    println!("  Original: mean={:.6}, std={:.6}",
-             mlp_orig_flat.iter().sum::<f32>() / mlp_orig_flat.len() as f32,
-             (mlp_orig_flat.iter().map(|x| x.powi(2)).sum::<f32>() / mlp_orig_flat.len() as f32).sqrt());
-    println!("  HCT:      mean={:.6}, std={:.6}",
-             mlp_hct_flat.iter().sum::<f32>() / mlp_hct_flat.len() as f32,
-             (mlp_hct_flat.iter().map(|x| x.powi(2)).sum::<f32>() / mlp_hct_flat.len() as f32).sqrt());
+    println!(
+        "  Original: mean={:.6}, std={:.6}",
+        mlp_orig_flat.iter().sum::<f32>() / mlp_orig_flat.len() as f32,
+        (mlp_orig_flat.iter().map(|x| x.powi(2)).sum::<f32>() / mlp_orig_flat.len() as f32).sqrt()
+    );
+    println!(
+        "  HCT:      mean={:.6}, std={:.6}",
+        mlp_hct_flat.iter().sum::<f32>() / mlp_hct_flat.len() as f32,
+        (mlp_hct_flat.iter().map(|x| x.powi(2)).sum::<f32>() / mlp_hct_flat.len() as f32).sqrt()
+    );
 
     // Test with HCT hidden state
     let mlp_out_both_hct = mlp_forward(&hidden_hct, gate_hct, up_hct, down_hct)?;
     let mlp_both_hct_flat: Vec<f32> = mlp_out_both_hct.flatten_all()?.to_vec1()?;
 
-    println!("\nMLP output cosine (hct hidden + hct weights vs orig): {:.6}",
-             cosine_similarity(&mlp_orig_flat, &mlp_both_hct_flat));
+    println!(
+        "\nMLP output cosine (hct hidden + hct weights vs orig): {:.6}",
+        cosine_similarity(&mlp_orig_flat, &mlp_both_hct_flat)
+    );
 
     // Test cumulative error through multiple layers
     println!("\n=== Cumulative Error Through Layers ===");
@@ -177,13 +216,25 @@ fn main() -> Result<()> {
     let mut hidden_h = hidden_hct.clone();
 
     for layer_idx in 0..16 {
-        let gate_o = orig_tensors.get(&format!("model.layers.{}.mlp.gate_proj.weight", layer_idx)).unwrap();
-        let up_o = orig_tensors.get(&format!("model.layers.{}.mlp.up_proj.weight", layer_idx)).unwrap();
-        let down_o = orig_tensors.get(&format!("model.layers.{}.mlp.down_proj.weight", layer_idx)).unwrap();
+        let gate_o = orig_tensors
+            .get(&format!("model.layers.{}.mlp.gate_proj.weight", layer_idx))
+            .unwrap();
+        let up_o = orig_tensors
+            .get(&format!("model.layers.{}.mlp.up_proj.weight", layer_idx))
+            .unwrap();
+        let down_o = orig_tensors
+            .get(&format!("model.layers.{}.mlp.down_proj.weight", layer_idx))
+            .unwrap();
 
-        let gate_h = hct_tensors.get(&format!("model.layers.{}.mlp.gate_proj.weight", layer_idx)).unwrap();
-        let up_h = hct_tensors.get(&format!("model.layers.{}.mlp.up_proj.weight", layer_idx)).unwrap();
-        let down_h = hct_tensors.get(&format!("model.layers.{}.mlp.down_proj.weight", layer_idx)).unwrap();
+        let gate_h = hct_tensors
+            .get(&format!("model.layers.{}.mlp.gate_proj.weight", layer_idx))
+            .unwrap();
+        let up_h = hct_tensors
+            .get(&format!("model.layers.{}.mlp.up_proj.weight", layer_idx))
+            .unwrap();
+        let down_h = hct_tensors
+            .get(&format!("model.layers.{}.mlp.down_proj.weight", layer_idx))
+            .unwrap();
 
         // Simple: just pass through MLP (skip attention for now)
         let mlp_out_o = mlp_forward(&hidden_o, gate_o, up_o, down_o)?;

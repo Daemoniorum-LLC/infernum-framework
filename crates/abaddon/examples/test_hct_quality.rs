@@ -1,8 +1,8 @@
 //! Quick HCT quality test - compares lossless vs 45% compressed 1B model outputs
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
-use std::collections::HashMap;
 
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
@@ -13,7 +13,12 @@ use abaddon::models::{Llama, LlamaConfig};
 use anyhow::Result;
 
 /// Load HCT tensors and supplement with original safetensors for missing tensors
-fn load_hybrid(hct_dir: &Path, safetensors_path: &Path, device: &Device, dtype: DType) -> Result<HashMap<String, Tensor>> {
+fn load_hybrid(
+    hct_dir: &Path,
+    safetensors_path: &Path,
+    device: &Device,
+    dtype: DType,
+) -> Result<HashMap<String, Tensor>> {
     // Load HCT tensors first
     let mut tensors = load_hct_directory_sequential(hct_dir, device, dtype)?;
 
@@ -33,25 +38,28 @@ fn load_hybrid(hct_dir: &Path, safetensors_path: &Path, device: &Device, dtype: 
             // Handle different dtypes
             let tensor = match st_tensor.dtype() {
                 safetensors::Dtype::F32 => {
-                    let floats: Vec<f32> = data.chunks_exact(4)
+                    let floats: Vec<f32> = data
+                        .chunks_exact(4)
                         .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                         .collect();
                     Tensor::from_vec(floats, shape.as_slice(), device)?
-                }
+                },
                 safetensors::Dtype::BF16 => {
-                    let halfs: Vec<half::bf16> = data.chunks_exact(2)
+                    let halfs: Vec<half::bf16> = data
+                        .chunks_exact(2)
                         .map(|chunk| half::bf16::from_le_bytes([chunk[0], chunk[1]]))
                         .collect();
                     let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
                     Tensor::from_vec(floats, shape.as_slice(), device)?
-                }
+                },
                 safetensors::Dtype::F16 => {
-                    let halfs: Vec<half::f16> = data.chunks_exact(2)
+                    let halfs: Vec<half::f16> = data
+                        .chunks_exact(2)
                         .map(|chunk| half::f16::from_le_bytes([chunk[0], chunk[1]]))
                         .collect();
                     let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
                     Tensor::from_vec(floats, shape.as_slice(), device)?
-                }
+                },
                 _ => continue, // Skip unsupported dtypes
             };
 
@@ -89,7 +97,11 @@ fn run_inference_lossless(model_dir: &Path, model_name: &str) -> Result<(Vec<u32
     // Load HCT weights
     let start = Instant::now();
     let tensors = load_hct_directory_sequential(model_dir, &device, dtype)?;
-    println!("  Loaded {} tensors in {:.2}s", tensors.len(), start.elapsed().as_secs_f64());
+    println!(
+        "  Loaded {} tensors in {:.2}s",
+        tensors.len(),
+        start.elapsed().as_secs_f64()
+    );
 
     // Build model
     let vb = VarBuilder::from_tensors(tensors, dtype, &device);
@@ -98,7 +110,11 @@ fn run_inference_lossless(model_dir: &Path, model_name: &str) -> Result<(Vec<u32
     run_forward(&mut model, &device)
 }
 
-fn run_inference_hybrid(hct_dir: &Path, safetensors_path: &Path, model_name: &str) -> Result<(Vec<u32>, Vec<f32>)> {
+fn run_inference_hybrid(
+    hct_dir: &Path,
+    safetensors_path: &Path,
+    model_name: &str,
+) -> Result<(Vec<u32>, Vec<f32>)> {
     println!("\n=== Testing {} ===", model_name);
     println!("HCT Path: {}", hct_dir.display());
 
@@ -125,7 +141,11 @@ fn run_inference_hybrid(hct_dir: &Path, safetensors_path: &Path, model_name: &st
     // Load hybrid weights
     let start = Instant::now();
     let tensors = load_hybrid(hct_dir, safetensors_path, &device, dtype)?;
-    println!("  Loaded {} tensors in {:.2}s", tensors.len(), start.elapsed().as_secs_f64());
+    println!(
+        "  Loaded {} tensors in {:.2}s",
+        tensors.len(),
+        start.elapsed().as_secs_f64()
+    );
 
     // Build model
     let vb = VarBuilder::from_tensors(tensors, dtype, &device);
@@ -151,7 +171,9 @@ fn run_forward(model: &mut Llama, device: &Device) -> Result<(Vec<u32>, Vec<f32>
     let logits_vec: Vec<f32> = last_logits.to_vec1()?;
 
     // Get top 10 token predictions
-    let mut indexed: Vec<(u32, f32)> = logits_vec.iter().enumerate()
+    let mut indexed: Vec<(u32, f32)> = logits_vec
+        .iter()
+        .enumerate()
         .map(|(i, &v)| (i as u32, v))
         .collect();
     indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
@@ -161,14 +183,21 @@ fn run_forward(model: &mut Llama, device: &Device) -> Result<(Vec<u32>, Vec<f32>
 
     println!("  Top 5 predictions:");
     for i in 0..5 {
-        println!("    {}. Token {} (score: {:.4})", i+1, top_tokens[i], top_scores[i]);
+        println!(
+            "    {}. Token {} (score: {:.4})",
+            i + 1,
+            top_tokens[i],
+            top_scores[i]
+        );
     }
 
     Ok((top_tokens, logits_vec))
 }
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() { return 0.0; }
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
 
     let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
     let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -198,13 +227,21 @@ fn main() -> Result<()> {
         return Ok(());
     }
     if !original_safetensors.exists() {
-        println!("Original safetensors not found: {}", original_safetensors.display());
+        println!(
+            "Original safetensors not found: {}",
+            original_safetensors.display()
+        );
         return Ok(());
     }
 
     // Run inference on both
-    let (lossless_tokens, lossless_logits) = run_inference_lossless(lossless_dir, "Lossless (100%)")?;
-    let (compressed_tokens, compressed_logits) = run_inference_hybrid(compressed_dir, original_safetensors, "45% Retention (hybrid)")?;
+    let (lossless_tokens, lossless_logits) =
+        run_inference_lossless(lossless_dir, "Lossless (100%)")?;
+    let (compressed_tokens, compressed_logits) = run_inference_hybrid(
+        compressed_dir,
+        original_safetensors,
+        "45% Retention (hybrid)",
+    )?;
 
     // Compare results
     println!("\n=== Quality Comparison ===");
@@ -217,7 +254,14 @@ fn main() -> Result<()> {
         }
     }
     println!("  Top-10 token agreement: {}/10", matching);
-    println!("  Top-1 match: {}", if lossless_tokens[0] == compressed_tokens[0] { "✓" } else { "✗" });
+    println!(
+        "  Top-1 match: {}",
+        if lossless_tokens[0] == compressed_tokens[0] {
+            "✓"
+        } else {
+            "✗"
+        }
+    );
 
     // Compute cosine similarity of logit distributions
     let similarity = cosine_similarity(&lossless_logits, &compressed_logits);
@@ -226,20 +270,34 @@ fn main() -> Result<()> {
     // Summary
     println!("\n=== Summary ===");
     if similarity > 0.95 {
-        println!("  Result: EXCELLENT - High similarity ({:.2}%)", similarity * 100.0);
+        println!(
+            "  Result: EXCELLENT - High similarity ({:.2}%)",
+            similarity * 100.0
+        );
     } else if similarity > 0.90 {
-        println!("  Result: GOOD - Moderate similarity ({:.2}%)", similarity * 100.0);
+        println!(
+            "  Result: GOOD - Moderate similarity ({:.2}%)",
+            similarity * 100.0
+        );
     } else if similarity > 0.80 {
-        println!("  Result: ACCEPTABLE - Lower similarity ({:.2}%)", similarity * 100.0);
+        println!(
+            "  Result: ACCEPTABLE - Lower similarity ({:.2}%)",
+            similarity * 100.0
+        );
     } else {
-        println!("  Result: POOR - Low similarity ({:.2}%)", similarity * 100.0);
+        println!(
+            "  Result: POOR - Low similarity ({:.2}%)",
+            similarity * 100.0
+        );
     }
 
     if lossless_tokens[0] == compressed_tokens[0] {
         println!("  Top prediction matches: ✓");
     } else {
-        println!("  Top prediction differs: Lossless={} vs Compressed={}",
-                 lossless_tokens[0], compressed_tokens[0]);
+        println!(
+            "  Top prediction differs: Lossless={} vs Compressed={}",
+            lossless_tokens[0], compressed_tokens[0]
+        );
     }
 
     Ok(())

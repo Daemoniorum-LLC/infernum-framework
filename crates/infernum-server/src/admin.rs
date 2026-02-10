@@ -283,14 +283,17 @@ impl fmt::Display for AdminError {
             Self::ModelLoading(model) => write!(f, "model is currently loading: {model}"),
             Self::ModelBusy(model, count) => {
                 write!(f, "model has {count} active requests: {model}")
-            }
-            Self::InsufficientMemory { required, available } => {
+            },
+            Self::InsufficientMemory {
+                required,
+                available,
+            } => {
                 write!(
                     f,
                     "insufficient memory: required {} bytes, available {} bytes",
                     required, available
                 )
-            }
+            },
             Self::InvalidConfig(msg) => write!(f, "invalid configuration: {msg}"),
             Self::Timeout(duration) => write!(f, "operation timed out after {:?}", duration),
             Self::Internal(msg) => write!(f, "internal error: {msg}"),
@@ -394,7 +397,8 @@ impl ModelRegistry {
             models.insert(request.model.clone(), loaded_model);
         }
 
-        self.total_memory.fetch_add(required_memory, Ordering::AcqRel);
+        self.total_memory
+            .fetch_add(required_memory, Ordering::AcqRel);
 
         Ok(LoadModelResponse {
             model: request.model.clone(),
@@ -632,7 +636,9 @@ impl ModelRegistry {
         }
 
         // Total memory
-        output.push_str("# HELP infernum_models_memory_total_bytes Total memory used by all models\n");
+        output.push_str(
+            "# HELP infernum_models_memory_total_bytes Total memory used by all models\n",
+        );
         output.push_str("# TYPE infernum_models_memory_total_bytes gauge\n");
         output.push_str(&format!(
             "infernum_models_memory_total_bytes {}\n",
@@ -640,7 +646,9 @@ impl ModelRegistry {
         ));
 
         // Available memory
-        output.push_str("# HELP infernum_models_memory_available_bytes Available memory for models\n");
+        output.push_str(
+            "# HELP infernum_models_memory_available_bytes Available memory for models\n",
+        );
         output.push_str("# TYPE infernum_models_memory_available_bytes gauge\n");
         output.push_str(&format!(
             "infernum_models_memory_available_bytes {}\n",

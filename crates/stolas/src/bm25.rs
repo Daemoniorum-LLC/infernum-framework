@@ -379,7 +379,11 @@ impl BM25Index {
             .collect();
 
         // Sort by score descending
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // Return top k
         results.truncate(top_k);
@@ -387,7 +391,12 @@ impl BM25Index {
     }
 
     /// Searches with minimum score threshold.
-    pub fn search_with_threshold(&self, query: &str, top_k: usize, min_score: f32) -> Vec<BM25Result> {
+    pub fn search_with_threshold(
+        &self,
+        query: &str,
+        top_k: usize,
+        min_score: f32,
+    ) -> Vec<BM25Result> {
         self.search(query, top_k)
             .into_iter()
             .filter(|r| r.score >= min_score)
@@ -397,10 +406,13 @@ impl BM25Index {
     /// Returns the IDF scores for query terms (useful for debugging).
     pub fn get_term_idfs(&self, query: &str) -> HashMap<String, f32> {
         let terms = self.tokenize(query);
-        terms.into_iter().map(|t| {
-            let idf = self.idf(&t);
-            (t, idf)
-        }).collect()
+        terms
+            .into_iter()
+            .map(|t| {
+                let idf = self.idf(&t);
+                (t, idf)
+            })
+            .collect()
     }
 
     /// Clears the index.
@@ -514,24 +526,37 @@ impl HybridRetriever {
         top_k: usize,
     ) -> Vec<HybridResult> {
         // Get BM25 results
-        let bm25_results = self.bm25_index.search(query, dense_results.len().max(top_k * 2));
+        let bm25_results = self
+            .bm25_index
+            .search(query, dense_results.len().max(top_k * 2));
 
         // Normalize BM25 scores
         let max_bm25 = bm25_results.iter().map(|r| r.score).fold(0.0_f32, f32::max);
         let bm25_scores: HashMap<String, f32> = bm25_results
             .into_iter()
             .map(|r| {
-                let normalized = if max_bm25 > 0.0 { r.score / max_bm25 } else { 0.0 };
+                let normalized = if max_bm25 > 0.0 {
+                    r.score / max_bm25
+                } else {
+                    0.0
+                };
                 (r.id, normalized)
             })
             .collect();
 
         // Normalize dense scores
-        let max_dense = dense_results.iter().map(|(_, s)| *s).fold(0.0_f32, f32::max);
+        let max_dense = dense_results
+            .iter()
+            .map(|(_, s)| *s)
+            .fold(0.0_f32, f32::max);
         let dense_scores: HashMap<String, f32> = dense_results
             .iter()
             .map(|(id, score)| {
-                let normalized = if max_dense > 0.0 { *score / max_dense } else { 0.0 };
+                let normalized = if max_dense > 0.0 {
+                    *score / max_dense
+                } else {
+                    0.0
+                };
                 (id.clone(), normalized)
             })
             .collect();
@@ -784,8 +809,8 @@ mod tests {
     fn test_bm25_score_ordering() {
         let mut index = BM25Index::with_defaults();
         index.add_documents([
-            ("doc1", "fox fox fox fox fox"), // High frequency
-            ("doc2", "fox"),                  // Low frequency
+            ("doc1", "fox fox fox fox fox"),          // High frequency
+            ("doc2", "fox"),                          // Low frequency
             ("doc3", "the quick brown animal jumps"), // No match
         ]);
 

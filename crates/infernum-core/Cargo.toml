@@ -31,3 +31,6 @@ md5 = "0.8"
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
 tempfile = "3.10"
+
+[lints]
+workspace = true

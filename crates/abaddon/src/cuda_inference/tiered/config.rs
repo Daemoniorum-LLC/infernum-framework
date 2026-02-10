@@ -102,9 +102,9 @@ impl HardwareConfig {
     /// CUDA and system APIs for actual available memory.
     pub fn auto_detect() -> Self {
         Self {
-            vram_budget: 22 * GB,  // Conservative 24GB GPU estimate
-            ram_budget: 60 * GB,   // Conservative 64GB RAM estimate
-            nvme_cache_size: 0,    // Unlimited
+            vram_budget: 22 * GB, // Conservative 24GB GPU estimate
+            ram_budget: 60 * GB,  // Conservative 64GB RAM estimate
+            nvme_cache_size: 0,   // Unlimited
             use_pinned_memory: true,
         }
     }
@@ -213,8 +213,8 @@ impl LoadingStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use crate::adaptive_tiering::{MemoryTier, TensorAllocation};
+    use std::collections::HashMap;
 
     fn make_plan(vram: u64, ram: u64, nvme: u64) -> AllocationPlan {
         AllocationPlan {

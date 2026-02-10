@@ -108,8 +108,7 @@ impl LegionAgent {
         let n = self.tasks_completed.load(Ordering::Relaxed) as f64;
         let current = f64::from_bits(self.avg_quality.load(Ordering::Relaxed));
         let new_avg = current * (n - 1.0) / n + quality as f64 / n;
-        self.avg_quality
-            .store(new_avg.to_bits(), Ordering::Relaxed);
+        self.avg_quality.store(new_avg.to_bits(), Ordering::Relaxed);
     }
 
     /// Returns average quality achieved.

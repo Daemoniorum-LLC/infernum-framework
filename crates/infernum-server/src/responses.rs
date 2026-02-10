@@ -256,8 +256,7 @@ mod tests {
     #[test]
     fn test_api_response_wrapper() {
         let inner = HealthResponse::new("1.0.0", 100);
-        let response = ApiResponse::ok(inner)
-            .with_request_id("req-123");
+        let response = ApiResponse::ok(inner).with_request_id("req-123");
         assert!(response.success);
         assert!(response.meta.is_some());
         assert_eq!(response.meta.unwrap().request_id, "req-123");
@@ -265,8 +264,7 @@ mod tests {
 
     #[test]
     fn test_response_meta() {
-        let meta = ResponseMeta::new("req-456")
-            .with_processing_time(42);
+        let meta = ResponseMeta::new("req-456").with_processing_time(42);
         assert_eq!(meta.request_id, "req-456");
         assert_eq!(meta.processing_time_ms, Some(42));
     }

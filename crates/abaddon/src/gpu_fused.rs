@@ -48,8 +48,6 @@ pub mod cuda {
     use cudarc::driver::{CudaDevice, CudaSlice, LaunchAsync, LaunchConfig};
     use cudarc::nvrtc::Ptx;
 
-    
-
     /// Fused decompression + dequantization context.
     pub struct GpuFusedContext {
         device: Arc<CudaDevice>,
@@ -145,20 +143,19 @@ pub mod cuda {
             }
 
             // Copy compressed data to GPU
-            let d_compressed = self
-                .device
-                .htod_copy(compressed.to_vec())
-                .map_err(|e| GpuFusedError::MemoryAlloc {
+            let d_compressed = self.device.htod_copy(compressed.to_vec()).map_err(|e| {
+                GpuFusedError::MemoryAlloc {
                     message: e.to_string(),
-                })?;
+                }
+            })?;
 
             // Allocate output buffer
-            let d_output: CudaSlice<half::f16> = self
-                .device
-                .alloc_zeros(num_values)
-                .map_err(|e| GpuFusedError::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let d_output: CudaSlice<half::f16> =
+                self.device
+                    .alloc_zeros(num_values)
+                    .map_err(|e| GpuFusedError::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
             // Launch kernel
             let func = self
@@ -275,63 +272,61 @@ pub mod cuda {
                 .unwrap_or_else(|| vec![0i8; num_blocks]);
 
             // Copy to GPU
-            let d_compressed = self
-                .device
-                .htod_copy(all_compressed)
-                .map_err(|e| GpuFusedError::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let d_compressed =
+                self.device
+                    .htod_copy(all_compressed)
+                    .map_err(|e| GpuFusedError::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
-            let d_output: CudaSlice<half::f16> = self
-                .device
-                .alloc_zeros(total_output)
-                .map_err(|e| GpuFusedError::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let d_output: CudaSlice<half::f16> =
+                self.device
+                    .alloc_zeros(total_output)
+                    .map_err(|e| GpuFusedError::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
-            let d_comp_offsets = self
-                .device
-                .htod_copy(compressed_offsets)
-                .map_err(|e| GpuFusedError::MemoryAlloc {
+            let d_comp_offsets = self.device.htod_copy(compressed_offsets).map_err(|e| {
+                GpuFusedError::MemoryAlloc {
                     message: e.to_string(),
-                })?;
+                }
+            })?;
 
-            let d_out_offsets = self
-                .device
-                .htod_copy(output_offsets)
-                .map_err(|e| GpuFusedError::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let d_out_offsets =
+                self.device
+                    .htod_copy(output_offsets)
+                    .map_err(|e| GpuFusedError::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
-            let d_comp_sizes = self
-                .device
-                .htod_copy(compressed_sizes)
-                .map_err(|e| GpuFusedError::MemoryAlloc {
+            let d_comp_sizes = self.device.htod_copy(compressed_sizes).map_err(|e| {
+                GpuFusedError::MemoryAlloc {
                     message: e.to_string(),
-                })?;
+                }
+            })?;
 
-            let d_out_sizes = self
-                .device
-                .htod_copy(output_sizes)
-                .map_err(|e| GpuFusedError::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let d_out_sizes =
+                self.device
+                    .htod_copy(output_sizes)
+                    .map_err(|e| GpuFusedError::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
             // Convert scales to bytes
             let scales_bytes: Vec<u8> = scales.iter().flat_map(|s| s.to_le_bytes()).collect();
-            let d_scales = self
-                .device
-                .htod_copy(scales_bytes)
-                .map_err(|e| GpuFusedError::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let d_scales =
+                self.device
+                    .htod_copy(scales_bytes)
+                    .map_err(|e| GpuFusedError::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
-            let d_zero_points = self
-                .device
-                .htod_copy(zp_vec)
-                .map_err(|e| GpuFusedError::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let d_zero_points =
+                self.device
+                    .htod_copy(zp_vec)
+                    .map_err(|e| GpuFusedError::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
             // Launch parallel kernel
             let func = self
@@ -414,19 +409,18 @@ pub mod cuda {
                 });
             }
 
-            let d_compressed = self
-                .device
-                .htod_copy(compressed.to_vec())
-                .map_err(|e| GpuFusedError::MemoryAlloc {
+            let d_compressed = self.device.htod_copy(compressed.to_vec()).map_err(|e| {
+                GpuFusedError::MemoryAlloc {
                     message: e.to_string(),
-                })?;
+                }
+            })?;
 
-            let d_output: CudaSlice<half::f16> = self
-                .device
-                .alloc_zeros(num_values)
-                .map_err(|e| GpuFusedError::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let d_output: CudaSlice<half::f16> =
+                self.device
+                    .alloc_zeros(num_values)
+                    .map_err(|e| GpuFusedError::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
             let func = self
                 .device
@@ -1250,10 +1244,10 @@ INT8_DONE:
                     assert_eq!(ctx.device_id(), 0);
                     assert!(!ctx.lz4_int4_kernel_loaded);
                     assert!(!ctx.lz4_int8_kernel_loaded);
-                }
+                },
                 Err(GpuFusedError::DeviceInit { .. }) => {
                     eprintln!("Skipping: no CUDA device");
-                }
+                },
                 Err(e) => panic!("Unexpected error: {:?}", e),
             }
         }
@@ -1473,7 +1467,7 @@ INT8_DONE:
             match result {
                 Err(GpuFusedError::InvalidInput { message }) => {
                     assert!(message.contains("No blocks"));
-                }
+                },
                 _ => panic!("Expected InvalidInput error"),
             }
         }
@@ -1495,7 +1489,7 @@ INT8_DONE:
             match result {
                 Err(GpuFusedError::KernelNotLoaded { kernel }) => {
                     assert!(kernel.contains("fused_lz4_int4"));
-                }
+                },
                 _ => panic!("Expected KernelNotLoaded error"),
             }
         }
@@ -1539,12 +1533,13 @@ INT8_DONE:
             // === Fused path ===
             // zero_point=8 because pack_int4_signed adds 8 to convert [-8,7] → [0,15],
             // and the fused kernel does (nibble - zero_point) * scale.
-            let fused_result = fused_ctx.fused_lz4_int4_block(
-                &compressed, scale, 8, num_values
-            ).expect("fused kernel");
+            let fused_result = fused_ctx
+                .fused_lz4_int4_block(&compressed, scale, 8, num_values)
+                .expect("fused kernel");
 
             let mut fused_host = vec![half::f16::ZERO; num_values];
-            fused_ctx.device
+            fused_ctx
+                .device
                 .dtoh_sync_copy_into(&fused_result, &mut fused_host)
                 .expect("copy fused");
 
@@ -1576,9 +1571,13 @@ INT8_DONE:
             assert_eq!(fused_host.len(), sequential_host.len(), "length mismatch");
             for (i, (f, s)) in fused_host.iter().zip(sequential_host.iter()).enumerate() {
                 assert_eq!(
-                    f.to_f32(), s.to_f32(),
+                    f.to_f32(),
+                    s.to_f32(),
                     "Element {}: fused={} vs sequential={} (nibble={})",
-                    i, f.to_f32(), s.to_f32(), nibbles[i]
+                    i,
+                    f.to_f32(),
+                    s.to_f32(),
+                    nibbles[i]
                 );
             }
         }
@@ -1600,9 +1599,9 @@ INT8_DONE:
             let scale = half::f16::from_f32(0.1);
 
             // Fused path
-            let fused_result = ctx.fused_lz4_int8_block(
-                &compressed, scale, num_values
-            ).expect("fused INT8 kernel");
+            let fused_result = ctx
+                .fused_lz4_int8_block(&compressed, scale, num_values)
+                .expect("fused INT8 kernel");
 
             let mut fused_host = vec![half::f16::ZERO; num_values];
             ctx.device
@@ -1610,7 +1609,8 @@ INT8_DONE:
                 .expect("copy fused");
 
             // Sequential CPU reference
-            let sequential: Vec<half::f16> = int8_values.iter()
+            let sequential: Vec<half::f16> = int8_values
+                .iter()
                 .map(|&v| {
                     let val = (v as f32) * scale.to_f32();
                     half::f16::from_f32(val)
@@ -1622,7 +1622,10 @@ INT8_DONE:
                 assert!(
                     diff < 0.01,
                     "INT8 element {}: fused={} vs sequential={} (input={})",
-                    i, f.to_f32(), s.to_f32(), int8_values[i]
+                    i,
+                    f.to_f32(),
+                    s.to_f32(),
+                    int8_values[i]
                 );
             }
         }
@@ -1645,9 +1648,7 @@ INT8_DONE:
             use candle_core::{Device, Tensor};
 
             // 1. Create realistic tensor data and quantize
-            let original: Vec<f32> = (0..512)
-                .map(|i| ((i as f32) / 512.0 - 0.5) * 2.0)
-                .collect();
+            let original: Vec<f32> = (0..512).map(|i| ((i as f32) / 512.0 - 0.5) * 2.0).collect();
             let tensor = Tensor::from_vec(original.clone(), &[512], &Device::Cpu).unwrap();
             let quantizer = Quantizer::int4_symmetric();
             let quantized = quantizer.quantize_tensor(&tensor).unwrap();
@@ -1664,7 +1665,10 @@ INT8_DONE:
                 .decompress_block(lz4_data, quantized.data.len())
                 .unwrap();
             let mut decompressed_host = vec![0u8; quantized.data.len()];
-            lz4_ctx.cuda_device().dtoh_sync_copy_into(&d_decompressed, &mut decompressed_host).unwrap();
+            lz4_ctx
+                .cuda_device()
+                .dtoh_sync_copy_into(&d_decompressed, &mut decompressed_host)
+                .unwrap();
 
             // INT4 dequant (sequential path via CPU, since Pipeline A reference is CPU)
             let num_blocks = (quantized.num_values + DEFAULT_BLOCK_SIZE - 1) / DEFAULT_BLOCK_SIZE;
@@ -1747,8 +1751,8 @@ INT8_DONE:
                 return;
             }
 
-            use crate::gpu_lrdf::cuda::GpuLrdfEncoder;
             use crate::gpu_holo::GpuHoloContext;
+            use crate::gpu_lrdf::cuda::GpuLrdfEncoder;
 
             // 1. Create a known matrix
             let rows = 16;
@@ -1763,9 +1767,7 @@ INT8_DONE:
 
             // 2. Encode with GPU LRDF encoder
             let device = cudarc::driver::CudaDevice::new(0).unwrap();
-            let encoder = GpuLrdfEncoder::new(device, 4, 42)
-                .unwrap()
-                .with_max_rank(8);
+            let encoder = GpuLrdfEncoder::new(device, 4, 42).unwrap().with_max_rank(8);
             let gpu_fragments = encoder.encode_2d(&data, rows, cols).unwrap();
             let holo_fragments: Vec<_> = gpu_fragments.iter().map(|f| f.to_haagenti()).collect();
 
@@ -1868,23 +1870,22 @@ INT8_DONE:
                 Err(_) => {
                     eprintln!("Skipping: no CUDA device");
                     return;
-                }
+                },
             };
 
-            let converter =
-                crate::gpu_dtype::cuda::GpuDtypeConverter::new(Arc::clone(&device))
-                    .expect("FP8 converter creation");
+            let converter = crate::gpu_dtype::cuda::GpuDtypeConverter::new(Arc::clone(&device))
+                .expect("FP8 converter creation");
 
             // Representative FP8 E4M3 values spanning the encoding range:
             // (byte, expected_f32)
             let test_cases: Vec<(u8, f32)> = vec![
-                (0x00, 0.0),     // +0
-                (0x38, 1.0),     // 2^(7-7) * (1+0/8) = 1.0
-                (0xB8, -1.0),    // -1.0
-                (0x3C, 1.5),     // 2^(7-7) * (1+4/8) = 1.5
-                (0x40, 2.0),     // 2^(8-7) * (1+0/8) = 2.0
+                (0x00, 0.0),         // +0
+                (0x38, 1.0),         // 2^(7-7) * (1+0/8) = 1.0
+                (0xB8, -1.0),        // -1.0
+                (0x3C, 1.5),         // 2^(7-7) * (1+4/8) = 1.5
+                (0x40, 2.0),         // 2^(8-7) * (1+0/8) = 2.0
                 (0x01, 0.001953125), // subnormal: 2^(-6) * (1/8) = 1/512
-                (0x77, 240.0),   // max normal: 2^(14-7) * (1+7/8) = 128 * 1.875 = 240
+                (0x77, 240.0),       // max normal: 2^(14-7) * (1+7/8) = 128 * 1.875 = 240
             ];
 
             let fp8_bytes: Vec<u8> = test_cases.iter().map(|(b, _)| *b).collect();
@@ -1919,20 +1920,37 @@ INT8_DONE:
 
                 let cpu_val = if exp == 0 {
                     if man == 0 {
-                        if sign == 1 { -0.0 } else { 0.0 }
+                        if sign == 1 {
+                            -0.0
+                        } else {
+                            0.0
+                        }
                     } else {
                         let v = (man as f32 / 8.0) * 2.0f32.powi(-6);
-                        if sign == 1 { -v } else { v }
+                        if sign == 1 {
+                            -v
+                        } else {
+                            v
+                        }
                     }
                 } else if exp == 15 && man == 7 {
                     f32::NAN
                 } else {
                     let v = (1.0 + man as f32 / 8.0) * 2.0f32.powi(exp as i32 - 7);
-                    if sign == 1 { -v } else { v }
+                    if sign == 1 {
+                        -v
+                    } else {
+                        v
+                    }
                 };
 
                 if cpu_val.is_nan() {
-                    assert!(gpu_val.is_nan(), "0x{:02X}: expected NaN, got {}", byte, gpu_val);
+                    assert!(
+                        gpu_val.is_nan(),
+                        "0x{:02X}: expected NaN, got {}",
+                        byte,
+                        gpu_val
+                    );
                 } else {
                     assert_eq!(
                         gpu_val.to_bits(),
@@ -1977,7 +1995,7 @@ pub mod cuda {
         #[test]
         fn test_stub_returns_error() {
             match GpuFusedContext::new(0) {
-                Err(GpuFusedError::CudaNotEnabled) => {}
+                Err(GpuFusedError::CudaNotEnabled) => {},
                 Ok(_) => panic!("Stub should error"),
             }
         }

@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "abaddon"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "anyhow",
  "arbiter",
@@ -263,7 +263,7 @@ dependencies = [
 
 [[package]]
 name = "arbiter"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -791,7 +791,7 @@ checksum = "39e9c3835d686b0a6084ab4234fcd1b07dbf6e4767dce60874b12356a25ecd4a"
 
 [[package]]
 name = "asmodeus"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "abaddon",
  "anyhow",
@@ -1527,7 +1527,7 @@ checksum = "32637268377fc7b10a8c6d51de3e7fba1ce5dd371a96e342b34e6078db558e7f"
 
 [[package]]
 name = "beleth"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "abaddon",
  "anyhow",
@@ -2784,7 +2784,7 @@ dependencies = [
 
 [[package]]
 name = "dantalion"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5116,7 +5116,7 @@ dependencies = [
 
 [[package]]
 name = "grimoire-loader"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5910,7 +5910,7 @@ dependencies = [
 
 [[package]]
 name = "infernum"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "abaddon",
  "anyhow",
@@ -5951,7 +5951,7 @@ dependencies = [
 
 [[package]]
 name = "infernum-core"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -5969,7 +5969,7 @@ dependencies = [
 
 [[package]]
 name = "infernum-server"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "abaddon",
  "anyhow",
@@ -6924,7 +6924,7 @@ checksum = "830d08ce1d1d941e6b30645f1a0eb5643013d835ce3779a5fc208261dbe10f55"
 
 [[package]]
 name = "legion"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "async-trait",
  "crossbeam",
@@ -7225,7 +7225,7 @@ dependencies = [
 
 [[package]]
 name = "malphas"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "abaddon",
  "anyhow",
@@ -8317,7 +8317,7 @@ dependencies = [
 
 [[package]]
 name = "paimon"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "abaddon",
  "anyhow",
@@ -10505,7 +10505,7 @@ checksum = "e51f1e89f093f99e7432c491c382b88a6860a5adbe6bf02574bf0a08efff1978"
 
 [[package]]
 name = "stolas"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "abaddon",
  "anyhow",
@@ -10863,7 +10863,7 @@ checksum = "8f50febec83f5ee1df3015341d8bd429f2d1cc62bcba7ea2076759d315084683"
 
 [[package]]
 name = "test-utils"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "anyhow",
  "axum",

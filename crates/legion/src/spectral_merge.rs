@@ -348,7 +348,8 @@ impl LayerDecomposition {
     fn extract_essential(coefficients: &[f32]) -> EssentialCoefficients {
         let dc = coefficients.first().copied().unwrap_or(0.0);
         let low_freq_count = ((coefficients.len() as f32 * 0.15) as usize).max(1);
-        let low_freq: Vec<f32> = coefficients.iter()
+        let low_freq: Vec<f32> = coefficients
+            .iter()
             .skip(1)
             .take(low_freq_count)
             .copied()
@@ -360,10 +361,7 @@ impl LayerDecomposition {
     /// Extracts detail coefficients (mid/high frequency).
     fn extract_detail(coefficients: &[f32]) -> DetailCoefficients {
         let essential_count = 1 + ((coefficients.len() as f32 * 0.15) as usize).max(1);
-        let detail: Vec<f32> = coefficients.iter()
-            .skip(essential_count)
-            .copied()
-            .collect();
+        let detail: Vec<f32> = coefficients.iter().skip(essential_count).copied().collect();
 
         DetailCoefficients {
             coefficients: detail,
@@ -391,7 +389,13 @@ impl LayerDecomposition {
 
         // Add essential low-freq based on quality
         let essential_to_use = (coeffs_to_use - 1).min(self.essential.low_freq.len());
-        for (i, &val) in self.essential.low_freq.iter().take(essential_to_use).enumerate() {
+        for (i, &val) in self
+            .essential
+            .low_freq
+            .iter()
+            .take(essential_to_use)
+            .enumerate()
+        {
             coefficients[i + 1] = val;
         }
 
@@ -399,7 +403,13 @@ impl LayerDecomposition {
         let detail_start = 1 + self.essential.low_freq.len();
         let remaining = coeffs_to_use.saturating_sub(detail_start);
         let detail_to_use = remaining.min(self.detail.coefficients.len());
-        for (i, &val) in self.detail.coefficients.iter().take(detail_to_use).enumerate() {
+        for (i, &val) in self
+            .detail
+            .coefficients
+            .iter()
+            .take(detail_to_use)
+            .enumerate()
+        {
             coefficients[detail_start + i] = val;
         }
 
@@ -423,7 +433,12 @@ impl LayerDecomposition {
 
     /// Computes energy (L2 norm) of detail coefficients.
     pub fn detail_energy(&self) -> f32 {
-        self.detail.coefficients.iter().map(|c| c * c).sum::<f32>().sqrt()
+        self.detail
+            .coefficients
+            .iter()
+            .map(|c| c * c)
+            .sum::<f32>()
+            .sqrt()
     }
 }
 
@@ -484,12 +499,15 @@ impl SpectralDecomposition {
         layer_names.sort();
 
         for (idx, layer_name) in layer_names.iter().enumerate() {
-            let (weight_data, shape) = weights.get(layer_name)
-                .ok_or_else(|| SpectralMergeError::ModelNotFound {
-                    name: layer_name.clone(),
-                })?;
+            let (weight_data, shape) =
+                weights
+                    .get(layer_name)
+                    .ok_or_else(|| SpectralMergeError::ModelNotFound {
+                        name: layer_name.clone(),
+                    })?;
 
-            let layer_type = layer_types.get(layer_name)
+            let layer_type = layer_types
+                .get(layer_name)
                 .copied()
                 .unwrap_or(LayerType::Other);
 
@@ -528,7 +546,8 @@ impl SpectralDecomposition {
 
     /// Gets a layer by name.
     pub fn get_layer_by_name(&self, name: &str) -> Option<&LayerDecomposition> {
-        self.name_to_index.get(name)
+        self.name_to_index
+            .get(name)
             .and_then(|&idx| self.layers.get(idx))
     }
 
@@ -539,7 +558,8 @@ impl SpectralDecomposition {
 
     /// Reconstructs all weights at given quality level.
     pub fn reconstruct(&self, quality: f32) -> Vec<Vec<f32>> {
-        self.layers.iter()
+        self.layers
+            .iter()
             .map(|layer| layer.reconstruct(quality))
             .collect()
     }
@@ -645,10 +665,14 @@ impl SpectralBlend {
         // Normalize base weights
         let total_weight: f32 = self.components.iter().map(|c| c.weight).sum();
         if total_weight <= 0.0 {
-            return Err(SpectralMergeError::InvalidWeight { weight: total_weight });
+            return Err(SpectralMergeError::InvalidWeight {
+                weight: total_weight,
+            });
         }
 
-        let normalized_components: Vec<BlendComponent> = self.components.into_iter()
+        let normalized_components: Vec<BlendComponent> = self
+            .components
+            .into_iter()
             .map(|mut c| {
                 c.weight /= total_weight;
                 c
@@ -689,7 +713,8 @@ impl BlendedModel {
 
     /// Returns the number of layers in the blended model.
     pub fn layer_count(&self) -> usize {
-        self.components.first()
+        self.components
+            .first()
             .map(|c| c.model.layer_count())
             .unwrap_or(0)
     }
@@ -702,7 +727,8 @@ impl BlendedModel {
     /// Returns the normalized weight for a model.
     pub fn weight(&self, model_name: &str) -> Option<f32> {
         let adjustments = self.adjustments.read();
-        self.components.iter()
+        self.components
+            .iter()
             .find(|c| c.model.name == model_name)
             .map(|c| {
                 let adjustment = adjustments.get(model_name).copied().unwrap_or(1.0);
@@ -728,12 +754,17 @@ impl BlendedModel {
         for component in &self.components {
             let base = component.weight;
             let layer_mult = component.layer_weights.weight_for(layer_type);
-            let adjustment = adjustments.get(&component.model.name).copied().unwrap_or(1.0);
+            let adjustment = adjustments
+                .get(&component.model.name)
+                .copied()
+                .unwrap_or(1.0);
             total_weight += base * layer_mult * adjustment;
         }
 
         // Normalize
-        let total_base: f32 = self.components.iter()
+        let total_base: f32 = self
+            .components
+            .iter()
             .map(|c| {
                 let adj = adjustments.get(&c.model.name).copied().unwrap_or(1.0);
                 c.weight * c.layer_weights.weight_for(layer_type) * adj
@@ -759,7 +790,9 @@ impl BlendedModel {
         let adjustments = self.adjustments.read();
 
         // Get layer type from first component
-        let layer_type = self.components.first()
+        let layer_type = self
+            .components
+            .first()
             .and_then(|c| c.model.get_layer(layer_index))
             .map(|l| l.layer_type)
             .unwrap_or(LayerType::Other);
@@ -769,18 +802,22 @@ impl BlendedModel {
         let mut total_weight = 0.0f32;
 
         for component in &self.components {
-            let layer = component.model.get_layer(layer_index)
-                .ok_or(SpectralMergeError::LayerNotFound {
+            let layer = component.model.get_layer(layer_index).ok_or(
+                SpectralMergeError::LayerNotFound {
                     index: layer_index,
                     count: component.model.layer_count(),
-                })?;
+                },
+            )?;
 
             let reconstructed = layer.reconstruct(quality);
 
             // Calculate effective weight
             let base = component.weight;
             let layer_mult = component.layer_weights.weight_for(layer_type);
-            let adjustment = adjustments.get(&component.model.name).copied().unwrap_or(1.0);
+            let adjustment = adjustments
+                .get(&component.model.name)
+                .copied()
+                .unwrap_or(1.0);
             let effective_weight = base * layer_mult * adjustment;
             total_weight += effective_weight;
 
@@ -792,15 +829,16 @@ impl BlendedModel {
                             blend[i] += val * effective_weight;
                         }
                     }
-                }
+                },
                 None => {
                     // First component
                     blended = Some(
-                        reconstructed.iter()
+                        reconstructed
+                            .iter()
                             .map(|&v| v * effective_weight)
-                            .collect()
+                            .collect(),
                     );
-                }
+                },
             }
         }
 
@@ -946,10 +984,12 @@ impl DynamicBlendController {
         let targets = self.targets.read();
 
         for (model_name, &target) in targets.iter() {
-            let current = self.model.weight(model_name)
-                .ok_or_else(|| SpectralMergeError::ModelNotFound {
-                    name: model_name.clone(),
-                })?;
+            let current =
+                self.model
+                    .weight(model_name)
+                    .ok_or_else(|| SpectralMergeError::ModelNotFound {
+                        name: model_name.clone(),
+                    })?;
 
             // Move toward target
             let delta = target - current;
@@ -1034,20 +1074,23 @@ mod tests {
     }
 
     fn create_test_decomposition(name: &str, layer_count: usize) -> SpectralDecomposition {
-        let mut decomp = SpectralDecomposition::new(
-            name.to_string(),
-            format!("Test model: {}", name),
-        );
+        let mut decomp =
+            SpectralDecomposition::new(name.to_string(), format!("Test model: {}", name));
 
         for i in 0..layer_count {
             let weights = create_test_weights(64, i as f32);
             let layer = LayerDecomposition::from_weights(
                 i,
-                if i % 2 == 0 { LayerType::Attention } else { LayerType::Mlp },
+                if i % 2 == 0 {
+                    LayerType::Attention
+                } else {
+                    LayerType::Mlp
+                },
                 format!("layer.{}", i),
                 &weights,
                 vec![8, 8],
-            ).expect("Failed to create layer");
+            )
+            .expect("Failed to create layer");
             decomp.add_layer(layer);
         }
 
@@ -1063,17 +1106,20 @@ mod tests {
             "test".to_string(),
             &weights,
             vec![8, 8],
-        ).expect("Decomposition failed");
+        )
+        .expect("Decomposition failed");
 
         // Full quality reconstruction should be close to original
         let reconstructed = layer.reconstruct(1.0);
         assert_eq!(reconstructed.len(), weights.len());
 
         // Check reconstruction error
-        let mse: f32 = weights.iter()
+        let mse: f32 = weights
+            .iter()
             .zip(reconstructed.iter())
             .map(|(a, b)| (a - b).powi(2))
-            .sum::<f32>() / weights.len() as f32;
+            .sum::<f32>()
+            / weights.len() as f32;
 
         // DCT roundtrip should be exact (within floating point)
         assert!(mse < 0.01, "MSE too high: {}", mse);
@@ -1088,21 +1134,26 @@ mod tests {
             "test".to_string(),
             &weights,
             vec![8, 8],
-        ).expect("Decomposition failed");
+        )
+        .expect("Decomposition failed");
 
         // Low quality should have more error
         let low_q = layer.reconstruct(0.1);
         let high_q = layer.reconstruct(1.0);
 
-        let low_mse: f32 = weights.iter()
+        let low_mse: f32 = weights
+            .iter()
             .zip(low_q.iter())
             .map(|(a, b)| (a - b).powi(2))
-            .sum::<f32>() / weights.len() as f32;
+            .sum::<f32>()
+            / weights.len() as f32;
 
-        let high_mse: f32 = weights.iter()
+        let high_mse: f32 = weights
+            .iter()
             .zip(high_q.iter())
             .map(|(a, b)| (a - b).powi(2))
-            .sum::<f32>() / weights.len() as f32;
+            .sum::<f32>()
+            / weights.len() as f32;
 
         assert!(low_mse >= high_mse, "Low quality should have more error");
     }
@@ -1116,7 +1167,8 @@ mod tests {
             "test".to_string(),
             &weights,
             vec![8, 8],
-        ).expect("Decomposition failed");
+        )
+        .expect("Decomposition failed");
 
         let essential_energy = layer.essential_energy();
         let detail_energy = layer.detail_energy();
@@ -1124,7 +1176,11 @@ mod tests {
 
         // Essential should carry significant portion of energy
         let essential_ratio = essential_energy / total_energy;
-        assert!(essential_ratio > 0.3, "Essential ratio too low: {}", essential_ratio);
+        assert!(
+            essential_ratio > 0.3,
+            "Essential ratio too low: {}",
+            essential_ratio
+        );
     }
 
     #[test]
@@ -1182,11 +1238,7 @@ mod tests {
         let creative = Arc::new(create_test_decomposition("creative", 4));
 
         let blended = SpectralBlend::new()
-            .add_with_layer_weights(
-                coder.clone(),
-                1.0,
-                LayerWeights::attention_heavy(0.9, 0.5),
-            )
+            .add_with_layer_weights(coder.clone(), 1.0, LayerWeights::attention_heavy(0.9, 0.5))
             .add_with_layer_weights(
                 creative.clone(),
                 1.0,
@@ -1243,12 +1295,17 @@ mod tests {
             .build()
             .expect("Blend failed");
 
-        let weights = blended.get_layer_weights(0, 1.0).expect("Get weights failed");
+        let weights = blended
+            .get_layer_weights(0, 1.0)
+            .expect("Get weights failed");
         assert!(!weights.is_empty());
 
         // Weights should be a blend of the two models
         let coder_weights = coder.get_layer(0).expect("Coder layer").reconstruct(1.0);
-        let creative_weights = creative.get_layer(0).expect("Creative layer").reconstruct(1.0);
+        let creative_weights = creative
+            .get_layer(0)
+            .expect("Creative layer")
+            .reconstruct(1.0);
 
         // Blended should be between the two
         for i in 0..weights.len().min(10) {
@@ -1258,7 +1315,10 @@ mod tests {
             assert!(
                 blend >= min - 0.1 && blend <= max + 0.1,
                 "Blend {} not between {} and {} at index {}",
-                blend, min, max, i
+                blend,
+                min,
+                max,
+                i
             );
         }
     }
@@ -1288,11 +1348,10 @@ mod tests {
                 .add(coder.clone(), 0.5)
                 .add(creative.clone(), 0.5)
                 .build()
-                .expect("Blend failed")
+                .expect("Blend failed"),
         );
 
-        let controller = DynamicBlendController::new(blended.clone())
-            .with_adjustment_rate(0.5);
+        let controller = DynamicBlendController::new(blended.clone()).with_adjustment_rate(0.5);
 
         // Set target to favor coder
         controller.set_target("coder", 0.8);
@@ -1353,7 +1412,10 @@ mod tests {
             .expect("Blend failed");
 
         let result = blended.adjust_weight("nonexistent", 1.0);
-        assert!(matches!(result, Err(SpectralMergeError::ModelNotFound { .. })));
+        assert!(matches!(
+            result,
+            Err(SpectralMergeError::ModelNotFound { .. })
+        ));
     }
 
     #[test]
@@ -1380,7 +1442,8 @@ mod tests {
             "test".to_string(),
             &weights,
             vec![8, 8],
-        ).expect("Decomposition failed");
+        )
+        .expect("Decomposition failed");
 
         // Check quality curve values
         let q0 = layer.expected_quality(0.0);

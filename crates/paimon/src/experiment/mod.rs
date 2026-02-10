@@ -66,7 +66,11 @@ pub struct ExperimentConfig {
 
 impl ExperimentConfig {
     /// Creates a new experiment configuration.
-    pub fn new(name: impl Into<String>, base_model: impl Into<String>, dataset_id: impl Into<String>) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        base_model: impl Into<String>,
+        dataset_id: impl Into<String>,
+    ) -> Self {
         Self {
             name: name.into(),
             description: None,
@@ -149,11 +153,11 @@ impl Experiment {
     /// Updates the best run based on primary metric.
     fn update_best_run(&mut self) {
         if let Some(ref metric) = self.primary_metric {
-            let best = self.runs.iter()
+            let best = self
+                .runs
+                .iter()
                 .filter(|r| r.status == RunStatus::Completed)
-                .filter_map(|r| {
-                    r.final_metrics.get(metric).map(|v| (r.id.clone(), *v))
-                })
+                .filter_map(|r| r.final_metrics.get(metric).map(|v| (r.id.clone(), *v)))
                 .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
             self.best_run_id = best.map(|(id, _)| id);
@@ -162,7 +166,9 @@ impl Experiment {
 
     /// Gets completed runs sorted by a metric.
     pub fn runs_sorted_by(&self, metric: &str, descending: bool) -> Vec<&Run> {
-        let mut runs: Vec<_> = self.runs.iter()
+        let mut runs: Vec<_> = self
+            .runs
+            .iter()
             .filter(|r| r.status == RunStatus::Completed)
             .filter(|r| r.final_metrics.contains_key(metric))
             .collect();
@@ -260,7 +266,8 @@ impl Run {
 
     /// Gets the latest value for a metric.
     pub fn latest_metric(&self, name: &str) -> Option<f64> {
-        self.metrics_history.get(name)
+        self.metrics_history
+            .get(name)
             .and_then(|h| h.last())
             .map(|(_, v)| *v)
     }
@@ -420,7 +427,11 @@ pub struct Artifact {
 
 impl Artifact {
     /// Creates a new artifact.
-    pub fn new(name: impl Into<String>, artifact_type: ArtifactType, path: impl Into<PathBuf>) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        artifact_type: ArtifactType,
+        path: impl Into<PathBuf>,
+    ) -> Self {
         Self {
             name: name.into(),
             artifact_type,
@@ -491,7 +502,10 @@ impl ExperimentTracker {
     }
 
     /// Creates an experiment tracker with SQLite persistence.
-    pub fn with_database(storage_dir: impl Into<PathBuf>, db: Arc<crate::persistence::StudioDatabase>) -> Self {
+    pub fn with_database(
+        storage_dir: impl Into<PathBuf>,
+        db: Arc<crate::persistence::StudioDatabase>,
+    ) -> Self {
         Self {
             experiments: Arc::new(RwLock::new(HashMap::new())),
             storage_dir: storage_dir.into(),
@@ -606,7 +620,8 @@ impl ExperimentTracker {
         let _span = info_span!("tracker.start_run", experiment_id = %experiment_id).entered();
 
         let mut experiments = self.experiments.write();
-        let experiment = experiments.get_mut(experiment_id)
+        let experiment = experiments
+            .get_mut(experiment_id)
             .ok_or_else(|| ExperimentError::NotFound(experiment_id.to_string()))?;
 
         let mut run = Run::new(name);
@@ -634,19 +649,20 @@ impl ExperimentTracker {
         metrics: HashMap<String, f64>,
     ) -> Result<()> {
         let mut experiments = self.experiments.write();
-        let experiment = experiments.get_mut(experiment_id)
+        let experiment = experiments
+            .get_mut(experiment_id)
             .ok_or_else(|| ExperimentError::NotFound(experiment_id.to_string()))?;
 
-        let run = experiment.get_run_mut(run_id)
+        let run = experiment
+            .get_run_mut(run_id)
             .ok_or_else(|| ExperimentError::RunNotFound(run_id.to_string()))?;
 
         run.log_metrics(step, metrics.clone());
 
         // Log to database if available
         if let Some(ref db) = self.db {
-            let metric_pairs: Vec<(&str, f64)> = metrics.iter()
-                .map(|(k, v)| (k.as_str(), *v))
-                .collect();
+            let metric_pairs: Vec<(&str, f64)> =
+                metrics.iter().map(|(k, v)| (k.as_str(), *v)).collect();
             if let Err(e) = db.log_run_metrics(run_id, &metric_pairs) {
                 warn!(error = %e, "Failed to persist metrics to database");
             }
@@ -662,13 +678,17 @@ impl ExperimentTracker {
         run_id: &str,
         final_metrics: HashMap<String, f64>,
     ) -> Result<()> {
-        let _span = info_span!("tracker.complete_run", experiment_id = %experiment_id, run_id = %run_id).entered();
+        let _span =
+            info_span!("tracker.complete_run", experiment_id = %experiment_id, run_id = %run_id)
+                .entered();
 
         let mut experiments = self.experiments.write();
-        let experiment = experiments.get_mut(experiment_id)
+        let experiment = experiments
+            .get_mut(experiment_id)
             .ok_or_else(|| ExperimentError::NotFound(experiment_id.to_string()))?;
 
-        let run = experiment.get_run_mut(run_id)
+        let run = experiment
+            .get_run_mut(run_id)
             .ok_or_else(|| ExperimentError::RunNotFound(run_id.to_string()))?;
 
         run.complete(final_metrics);
@@ -686,17 +706,26 @@ impl ExperimentTracker {
     }
 
     /// Fails a run.
-    pub fn fail_run(&self, experiment_id: &str, run_id: &str, error: impl Into<String>) -> Result<()> {
-        let _span = info_span!("tracker.fail_run", experiment_id = %experiment_id, run_id = %run_id).entered();
+    pub fn fail_run(
+        &self,
+        experiment_id: &str,
+        run_id: &str,
+        error: impl Into<String>,
+    ) -> Result<()> {
+        let _span =
+            info_span!("tracker.fail_run", experiment_id = %experiment_id, run_id = %run_id)
+                .entered();
 
         let error_msg = error.into();
         warn!(error = %error_msg, "Run failed");
 
         let mut experiments = self.experiments.write();
-        let experiment = experiments.get_mut(experiment_id)
+        let experiment = experiments
+            .get_mut(experiment_id)
             .ok_or_else(|| ExperimentError::NotFound(experiment_id.to_string()))?;
 
-        let run = experiment.get_run_mut(run_id)
+        let run = experiment
+            .get_run_mut(run_id)
             .ok_or_else(|| ExperimentError::RunNotFound(run_id.to_string()))?;
 
         run.fail(error_msg.clone());
@@ -723,13 +752,16 @@ impl ExperimentTracker {
             experiment_id = %experiment_id,
             run_id = %run_id,
             artifact = %artifact.name
-        ).entered();
+        )
+        .entered();
 
         let mut experiments = self.experiments.write();
-        let experiment = experiments.get_mut(experiment_id)
+        let experiment = experiments
+            .get_mut(experiment_id)
             .ok_or_else(|| ExperimentError::NotFound(experiment_id.to_string()))?;
 
-        let run = experiment.get_run_mut(run_id)
+        let run = experiment
+            .get_run_mut(run_id)
             .ok_or_else(|| ExperimentError::RunNotFound(run_id.to_string()))?;
 
         info!(artifact_type = ?artifact.artifact_type, "Added artifact");
@@ -756,7 +788,8 @@ impl ExperimentTracker {
         let common_metrics: Vec<String> = if runs.is_empty() {
             Vec::new()
         } else {
-            let first_metrics: std::collections::HashSet<_> = runs[0].1.final_metrics.keys().cloned().collect();
+            let first_metrics: std::collections::HashSet<_> =
+                runs[0].1.final_metrics.keys().cloned().collect();
             runs.iter()
                 .skip(1)
                 .fold(first_metrics, |acc, (_, r)| {
@@ -771,10 +804,9 @@ impl ExperimentTracker {
         // Build comparison table
         let mut metric_values: HashMap<String, Vec<(String, f64)>> = HashMap::new();
         for metric in &common_metrics {
-            let values: Vec<_> = runs.iter()
-                .filter_map(|(name, run)| {
-                    run.final_metrics.get(metric).map(|v| (name.clone(), *v))
-                })
+            let values: Vec<_> = runs
+                .iter()
+                .filter_map(|(name, run)| run.final_metrics.get(metric).map(|v| (name.clone(), *v)))
                 .collect();
             metric_values.insert(metric.clone(), values);
         }
@@ -845,9 +877,13 @@ impl RunComparison {
     pub fn best_for_metric(&self, metric: &str, higher_is_better: bool) -> Option<&(String, Run)> {
         if let Some(values) = self.metric_values.get(metric) {
             let best_name = if higher_is_better {
-                values.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                values
+                    .iter()
+                    .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
             } else {
-                values.iter().min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                values
+                    .iter()
+                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
             };
 
             best_name.and_then(|(name, _)| self.runs.iter().find(|(n, _)| n == name))
@@ -883,7 +919,8 @@ impl RunComparison {
             table.push_str(&format!("| {} |", metric));
             if let Some(values) = self.metric_values.get(metric) {
                 for (name, _) in &self.runs {
-                    let value = values.iter()
+                    let value = values
+                        .iter()
                         .find(|(n, _)| n == name)
                         .map(|(_, v)| format!("{:.4}", v))
                         .unwrap_or_else(|| "-".to_string());
@@ -915,8 +952,8 @@ mod tests {
 
     #[test]
     fn test_experiment_config_with_description() {
-        let config = ExperimentConfig::new("exp", "llama", "ds-1")
-            .with_description("My experiment");
+        let config =
+            ExperimentConfig::new("exp", "llama", "ds-1").with_description("My experiment");
         assert_eq!(config.description, Some("My experiment".to_string()));
     }
 
@@ -994,15 +1031,13 @@ mod tests {
 
     #[test]
     fn test_artifact_with_step() {
-        let artifact = Artifact::new("ckpt", ArtifactType::Checkpoint, "/path")
-            .with_step(500);
+        let artifact = Artifact::new("ckpt", ArtifactType::Checkpoint, "/path").with_step(500);
         assert_eq!(artifact.step, Some(500));
     }
 
     #[test]
     fn test_artifact_with_size() {
-        let artifact = Artifact::new("log", ArtifactType::Logs, "/path")
-            .with_size(1024);
+        let artifact = Artifact::new("log", ArtifactType::Logs, "/path").with_size(1024);
         assert_eq!(artifact.size_bytes, Some(1024));
     }
 
@@ -1199,11 +1234,14 @@ mod tests {
             runs.push((name.to_string(), run));
         }
 
-        metric_values.insert("accuracy".to_string(), vec![
-            ("run1".to_string(), 0.7),
-            ("run2".to_string(), 0.9),
-            ("run3".to_string(), 0.8),
-        ]);
+        metric_values.insert(
+            "accuracy".to_string(),
+            vec![
+                ("run1".to_string(), 0.7),
+                ("run2".to_string(), 0.9),
+                ("run3".to_string(), 0.8),
+            ],
+        );
 
         let comparison = RunComparison {
             runs,
@@ -1230,11 +1268,14 @@ mod tests {
             runs.push((name.to_string(), run));
         }
 
-        metric_values.insert("loss".to_string(), vec![
-            ("run1".to_string(), 0.5),
-            ("run2".to_string(), 0.3),
-            ("run3".to_string(), 0.8),
-        ]);
+        metric_values.insert(
+            "loss".to_string(),
+            vec![
+                ("run1".to_string(), 0.5),
+                ("run2".to_string(), 0.3),
+                ("run3".to_string(), 0.8),
+            ],
+        );
 
         let comparison = RunComparison {
             runs,
@@ -1370,14 +1411,21 @@ mod tests {
 
     #[test]
     fn test_artifacts() {
-        let artifact = Artifact::new("checkpoint-100", ArtifactType::Checkpoint, "/path/to/checkpoint")
-            .with_step(100)
-            .with_size(1024 * 1024)
-            .with_metadata("format", "safetensors");
+        let artifact = Artifact::new(
+            "checkpoint-100",
+            ArtifactType::Checkpoint,
+            "/path/to/checkpoint",
+        )
+        .with_step(100)
+        .with_size(1024 * 1024)
+        .with_metadata("format", "safetensors");
 
         assert_eq!(artifact.step, Some(100));
         assert_eq!(artifact.size_bytes, Some(1024 * 1024));
-        assert_eq!(artifact.metadata.get("format"), Some(&"safetensors".to_string()));
+        assert_eq!(
+            artifact.metadata.get("format"),
+            Some(&"safetensors".to_string())
+        );
     }
 
     #[tokio::test]
@@ -1385,19 +1433,31 @@ mod tests {
         let tracker = ExperimentTracker::new("/tmp/test-experiments");
 
         let config = ExperimentConfig::new("test", "llama", "dataset");
-        let exp = tracker.create_experiment(config).await.expect("create experiment");
+        let exp = tracker
+            .create_experiment(config)
+            .await
+            .expect("create experiment");
 
-        let run = tracker.start_run(&exp.id, Some("test-run".to_string())).expect("start run");
+        let run = tracker
+            .start_run(&exp.id, Some("test-run".to_string()))
+            .expect("start run");
 
         let mut metrics = HashMap::new();
         metrics.insert("loss".to_string(), 0.5);
-        tracker.log_metrics(&exp.id, &run.id, 1, metrics).expect("log");
+        tracker
+            .log_metrics(&exp.id, &run.id, 1, metrics)
+            .expect("log");
 
         let mut final_metrics = HashMap::new();
         final_metrics.insert("loss".to_string(), 0.3);
-        tracker.complete_run(&exp.id, &run.id, final_metrics).expect("complete");
+        tracker
+            .complete_run(&exp.id, &run.id, final_metrics)
+            .expect("complete");
 
-        let exp = tracker.get_experiment(&exp.id).await.expect("get experiment");
+        let exp = tracker
+            .get_experiment(&exp.id)
+            .await
+            .expect("get experiment");
         let run = exp.get_run(&run.id).expect("get run");
 
         assert_eq!(run.status, RunStatus::Completed);

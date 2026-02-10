@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use infernum_core::Result;
 use serde_json::Value;
 
-use crate::tool::{RiskLevel, Tool, ToolContext, ToolResult};
 use super::{optional_str_param, validate_path};
+use crate::tool::{RiskLevel, Tool, ToolContext, ToolResult};
 
 /// Maximum number of entries to return.
 const MAX_ENTRIES: usize = 1000;
@@ -63,7 +63,7 @@ impl Tool for ListFilesTool {
                         "Invalid glob pattern '{}': {}",
                         glob_pattern, e
                     )));
-                }
+                },
             };
 
             let mut results = Vec::new();
@@ -112,7 +112,7 @@ impl Tool for ListFilesTool {
                         "Failed to read directory '{}': {}",
                         path_str, e
                     )));
-                }
+                },
             };
 
             while let Ok(Some(entry)) = read_dir.next_entry().await {

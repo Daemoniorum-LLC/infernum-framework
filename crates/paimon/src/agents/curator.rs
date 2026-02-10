@@ -9,8 +9,8 @@
 use serde::{Deserialize, Serialize};
 use tracing::{info, info_span};
 
-use crate::dataset::Example;
 use super::{AgentError, AugmentationStrategy, Difficulty, Result};
+use crate::dataset::Example;
 
 /// System prompt for the data curator agent.
 const CURATOR_SYSTEM_PROMPT: &str = r#"You are an expert Data Curator AI assistant specializing in training data for large language models.
@@ -55,18 +55,25 @@ impl DataCuratorAgent {
     ///
     /// Uses the LLM to create new examples that match the style
     /// and domain of the provided seed examples.
-    pub async fn generate_examples(
-        &self,
-        seeds: &[Example],
-        count: usize,
-    ) -> Result<Vec<Example>> {
-        let _span = info_span!("curator.generate", seed_count = seeds.len(), target_count = count).entered();
+    pub async fn generate_examples(&self, seeds: &[Example], count: usize) -> Result<Vec<Example>> {
+        let _span = info_span!(
+            "curator.generate",
+            seed_count = seeds.len(),
+            target_count = count
+        )
+        .entered();
 
         if seeds.is_empty() {
-            return Err(AgentError::Generation("No seed examples provided".to_string()));
+            return Err(AgentError::Generation(
+                "No seed examples provided".to_string(),
+            ));
         }
 
-        info!("Generating {} synthetic examples from {} seeds", count, seeds.len());
+        info!(
+            "Generating {} synthetic examples from {} seeds",
+            count,
+            seeds.len()
+        );
 
         // Build the generation prompt (will be used when LLM is integrated)
         let _prompt = self.build_generation_prompt(seeds, count);
@@ -165,8 +172,8 @@ impl DataCuratorAgent {
         let avg_input_len = examples.iter().map(|e| e.input.len()).sum::<usize>() as f32
             / examples.len().max(1) as f32;
         let has_system_prompts = examples.iter().any(|e| e.system.is_some());
-        let synthetic_ratio = examples.iter().filter(|e| e.synthetic).count() as f32
-            / examples.len().max(1) as f32;
+        let synthetic_ratio =
+            examples.iter().filter(|e| e.synthetic).count() as f32 / examples.len().max(1) as f32;
 
         // Suggest based on analysis
         if examples.len() < 100 {
@@ -218,7 +225,10 @@ impl DataCuratorAgent {
             recommended_count: 0, // Analysis, not generation
         });
 
-        info!(strategies = strategies.len(), "Generated augmentation suggestions");
+        info!(
+            strategies = strategies.len(),
+            "Generated augmentation suggestions"
+        );
         Ok(strategies)
     }
 
@@ -260,13 +270,16 @@ impl DataCuratorAgent {
 
     /// Builds the prompt for generating synthetic examples.
     fn build_generation_prompt(&self, seeds: &[Example], count: usize) -> String {
-        let seed_examples: String = seeds.iter()
+        let seed_examples: String = seeds
+            .iter()
             .take(5) // Use up to 5 seeds as examples
             .enumerate()
             .map(|(i, e)| {
                 format!(
                     "Example {}:\nInput: {}\nOutput: {}",
-                    i + 1, e.input, e.output
+                    i + 1,
+                    e.input,
+                    e.output
                 )
             })
             .collect::<Vec<_>>()
@@ -307,8 +320,14 @@ Requirements:
         }
 
         // Penalize if input/output are too similar
-        if example.input.to_lowercase().contains(&example.output.to_lowercase())
-            || example.output.to_lowercase().contains(&example.input.to_lowercase())
+        if example
+            .input
+            .to_lowercase()
+            .contains(&example.output.to_lowercase())
+            || example
+                .output
+                .to_lowercase()
+                .contains(&example.input.to_lowercase())
         {
             score -= 0.3;
         }
@@ -396,11 +415,17 @@ mod tests {
         let curator = DataCuratorAgent::new(None);
 
         let seeds = vec![
-            Example::new("What is the capital of France?", "The capital of France is Paris."),
+            Example::new(
+                "What is the capital of France?",
+                "The capital of France is Paris.",
+            ),
             Example::new("What is 2 + 2?", "2 + 2 equals 4."),
         ];
 
-        let generated = curator.generate_examples(&seeds, 5).await.expect("generate");
+        let generated = curator
+            .generate_examples(&seeds, 5)
+            .await
+            .expect("generate");
 
         assert_eq!(generated.len(), 5);
         assert!(generated.iter().all(|e| e.synthetic));
@@ -411,12 +436,18 @@ mod tests {
         let curator = DataCuratorAgent::new(None);
 
         let examples = vec![
-            Example::new("Good input with enough content", "Good output with helpful information"),
-            Example::new("Hi", "Hi"), // Short and similar
+            Example::new(
+                "Good input with enough content",
+                "Good output with helpful information",
+            ),
+            Example::new("Hi", "Hi"),                  // Short and similar
             Example::new("Normal question here", "x"), // Short output
         ];
 
-        let report = curator.quality_check(&examples).await.expect("quality check");
+        let report = curator
+            .quality_check(&examples)
+            .await
+            .expect("quality check");
 
         assert_eq!(report.total_examples, 3);
         assert!(!report.issues.is_empty());
@@ -430,7 +461,10 @@ mod tests {
             .map(|i| Example::new(format!("Q{}", i), format!("A{}", i)))
             .collect();
 
-        let strategies = curator.suggest_augmentations(&examples).await.expect("suggest");
+        let strategies = curator
+            .suggest_augmentations(&examples)
+            .await
+            .expect("suggest");
 
         assert!(!strategies.is_empty());
         // Should suggest synthetic generation for small dataset

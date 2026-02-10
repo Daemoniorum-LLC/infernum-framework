@@ -10,14 +10,14 @@ description = "HTTP API server for local LLM inference"
 readme = "README.md"
 
 [dependencies]
-infernum-core = { path = "../infernum-core", version = "0.1.0" }
-abaddon = { path = "../abaddon", version = "0.1.0" }
+infernum-core = { path = "../infernum-core", version = "0.2.0-rc.1" }
+abaddon = { path = "../abaddon", version = "0.2.0-rc.1" }
 candle-core = { workspace = true }
 candle-nn = { workspace = true }
-malphas = { path = "../malphas", version = "0.1.0" }
-stolas = { path = "../stolas", version = "0.1.0", default-features = false }
-beleth = { path = "../beleth", version = "0.1.0" }
-dantalion = { path = "../dantalion", version = "0.1.0" }
+malphas = { path = "../malphas", version = "0.2.0-rc.1" }
+stolas = { path = "../stolas", version = "0.2.0-rc.1", default-features = false }
+beleth = { path = "../beleth", version = "0.2.0-rc.1" }
+dantalion = { path = "../dantalion", version = "0.2.0-rc.1" }
 
 # Async
 tokio = { workspace = true }
@@ -112,6 +112,7 @@ harness = false
 [features]
 default = []
 holotensor = ["dep:haagenti", "dep:haagenti-hct"]
+integration-tests = []
 
 # GPU acceleration (opt-in, requires hardware)
 cuda = ["abaddon/cuda"]
@@ -128,3 +129,6 @@ lance = ["stolas/lance"]
 
 # Full GPU stack (CUDA + Flash Attention)
 cuda-full = ["cuda", "flash-attn"]
+
+[lints]
+workspace = true

@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{RwLock, Notify};
+use tokio::sync::{Notify, RwLock};
 use tracing::{debug, info, warn};
 
 /// Wellbeing state levels (mirrors beleth::WellbeingState).
@@ -70,9 +70,15 @@ pub struct InterventionConfig {
     pub wait_timeout_secs: u64,
 }
 
-fn default_true() -> bool { true }
-fn default_max_pause() -> u64 { 300 } // 5 minutes
-fn default_wait_timeout() -> u64 { 60 } // 1 minute
+fn default_true() -> bool {
+    true
+}
+fn default_max_pause() -> u64 {
+    300
+} // 5 minutes
+fn default_wait_timeout() -> u64 {
+    60
+} // 1 minute
 
 impl Default for InterventionConfig {
     fn default() -> Self {
@@ -327,7 +333,9 @@ impl InterventionController {
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum InterventionError {
     /// Inference is paused due to wellbeing intervention.
-    #[error("inference paused due to wellbeing intervention: {reason} (timeout after {timeout_secs}s)")]
+    #[error(
+        "inference paused due to wellbeing intervention: {reason} (timeout after {timeout_secs}s)"
+    )]
     Paused {
         /// Reason for the pause.
         reason: String,
@@ -377,7 +385,9 @@ mod tests {
         let controller = InterventionController::new(config);
 
         // Update to distressed should pause
-        controller.update_state(WellbeingState::Distressed, None).await;
+        controller
+            .update_state(WellbeingState::Distressed, None)
+            .await;
         assert!(controller.is_paused());
 
         // Update to healthy should resume
@@ -394,7 +404,9 @@ mod tests {
         };
         let controller = InterventionController::new(config);
 
-        controller.update_state(WellbeingState::Distressed, None).await;
+        controller
+            .update_state(WellbeingState::Distressed, None)
+            .await;
         controller.update_state(WellbeingState::Healthy, None).await;
 
         let metrics = controller.metrics().await;

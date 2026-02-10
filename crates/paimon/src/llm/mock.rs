@@ -11,8 +11,8 @@ use futures::stream;
 use parking_lot::Mutex;
 
 use super::client::{
-    LlmClient, GenerateRequest, GenerateResponse, GenerateStream,
-    StreamChunk, Result, LlmError, Usage, FinishReason,
+    FinishReason, GenerateRequest, GenerateResponse, GenerateStream, LlmClient, LlmError, Result,
+    StreamChunk, Usage,
 };
 
 /// A mock LLM client for testing.
@@ -98,19 +98,25 @@ impl MockLlmClient {
 
     /// Adds a text response to the queue.
     pub fn with_response(self, text: impl Into<String>) -> Self {
-        self.responses.lock().push_back(MockResponse::Text(text.into()));
+        self.responses
+            .lock()
+            .push_back(MockResponse::Text(text.into()));
         self
     }
 
     /// Adds a full response to the queue.
     pub fn with_full_response(self, response: GenerateResponse) -> Self {
-        self.responses.lock().push_back(MockResponse::Full(response));
+        self.responses
+            .lock()
+            .push_back(MockResponse::Full(response));
         self
     }
 
     /// Adds an error response to the queue.
     pub fn with_error(self, error: impl Into<String>) -> Self {
-        self.responses.lock().push_back(MockResponse::Error(error.into()));
+        self.responses
+            .lock()
+            .push_back(MockResponse::Error(error.into()));
         self
     }
 
@@ -150,17 +156,19 @@ impl MockLlmClient {
 
     /// Gets the next response, or generates a default.
     fn next_response(&self, request: &GenerateRequest) -> MockResponse {
-        self.responses
-            .lock()
-            .pop_front()
-            .unwrap_or_else(|| {
-                // Default: echo the last user message
-                if let Some(last) = request.messages.iter().rev().find(|m| m.role == super::client::MessageRole::User) {
-                    MockResponse::Text(format!("Mock response to: {}", last.content))
-                } else {
-                    MockResponse::Text("Mock response".to_string())
-                }
-            })
+        self.responses.lock().pop_front().unwrap_or_else(|| {
+            // Default: echo the last user message
+            if let Some(last) = request
+                .messages
+                .iter()
+                .rev()
+                .find(|m| m.role == super::client::MessageRole::User)
+            {
+                MockResponse::Text(format!("Mock response to: {}", last.content))
+            } else {
+                MockResponse::Text("Mock response".to_string())
+            }
+        })
     }
 }
 
@@ -224,7 +232,7 @@ impl LlmClient for MockLlmClient {
                     usage: None,
                     finish_reason: Some(FinishReason::Stop),
                 })
-            }
+            },
 
             MockResponse::Json(value) => Ok(GenerateResponse {
                 content: serde_json::to_string(&value).unwrap_or_default(),
@@ -249,7 +257,8 @@ impl LlmClient for MockLlmClient {
         let response = self.generate(request).await?;
 
         // Split into chunks (word by word)
-        let words: Vec<String> = response.content
+        let words: Vec<String> = response
+            .content
             .split_whitespace()
             .map(|w| format!("{} ", w))
             .collect();
@@ -262,7 +271,11 @@ impl LlmClient for MockLlmClient {
                 Ok(StreamChunk {
                     delta: word,
                     is_final: is_last,
-                    finish_reason: if is_last { Some(FinishReason::Stop) } else { None },
+                    finish_reason: if is_last {
+                        Some(FinishReason::Stop)
+                    } else {
+                        None
+                    },
                 })
             })
             .collect();
@@ -290,10 +303,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_client_basic() {
-        let client = MockLlmClient::new()
-            .with_response("Hello, world!");
+        let client = MockLlmClient::new().with_response("Hello, world!");
 
-        let response = client.generate(GenerateRequest::simple("Hi")).await.expect("generate");
+        let response = client
+            .generate(GenerateRequest::simple("Hi"))
+            .await
+            .expect("generate");
 
         assert_eq!(response.content, "Hello, world!");
         assert_eq!(response.model, "mock-model");
@@ -309,18 +324,30 @@ mod tests {
 
         assert_eq!(client.remaining_responses(), 3);
 
-        let r1 = client.generate(GenerateRequest::simple("1")).await.expect("1");
+        let r1 = client
+            .generate(GenerateRequest::simple("1"))
+            .await
+            .expect("1");
         assert_eq!(r1.content, "First");
         assert_eq!(client.remaining_responses(), 2);
 
-        let r2 = client.generate(GenerateRequest::simple("2")).await.expect("2");
+        let r2 = client
+            .generate(GenerateRequest::simple("2"))
+            .await
+            .expect("2");
         assert_eq!(r2.content, "Second");
 
-        let r3 = client.generate(GenerateRequest::simple("3")).await.expect("3");
+        let r3 = client
+            .generate(GenerateRequest::simple("3"))
+            .await
+            .expect("3");
         assert_eq!(r3.content, "Third");
 
         // Queue is empty, should generate default response
-        let r4 = client.generate(GenerateRequest::simple("Hello")).await.expect("4");
+        let r4 = client
+            .generate(GenerateRequest::simple("Hello"))
+            .await
+            .expect("4");
         assert!(r4.content.contains("Hello"));
     }
 
@@ -328,15 +355,17 @@ mod tests {
     async fn test_mock_client_echo() {
         let client = MockLlmClient::new().with_echo();
 
-        let response = client.generate(GenerateRequest::simple("Test message")).await.expect("generate");
+        let response = client
+            .generate(GenerateRequest::simple("Test message"))
+            .await
+            .expect("generate");
 
         assert_eq!(response.content, "Test message");
     }
 
     #[tokio::test]
     async fn test_mock_client_error() {
-        let client = MockLlmClient::new()
-            .with_error("Simulated error");
+        let client = MockLlmClient::new().with_error("Simulated error");
 
         let result = client.generate(GenerateRequest::simple("Hi")).await;
 
@@ -360,24 +389,29 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_client_json() {
-        let client = MockLlmClient::new()
-            .with_json(serde_json::json!({
-                "action": "execute_tool",
-                "tool": "calculator"
-            }));
+        let client = MockLlmClient::new().with_json(serde_json::json!({
+            "action": "execute_tool",
+            "tool": "calculator"
+        }));
 
-        let response = client.generate(GenerateRequest::simple("Calculate")).await.expect("generate");
+        let response = client
+            .generate(GenerateRequest::simple("Calculate"))
+            .await
+            .expect("generate");
 
-        let parsed: serde_json::Value = serde_json::from_str(&response.content).expect("parse json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&response.content).expect("parse json");
         assert_eq!(parsed["action"], "execute_tool");
     }
 
     #[tokio::test]
     async fn test_mock_client_streaming() {
-        let client = MockLlmClient::new()
-            .with_response("Hello world test");
+        let client = MockLlmClient::new().with_response("Hello world test");
 
-        let mut stream = client.stream(GenerateRequest::simple("Hi")).await.expect("stream");
+        let mut stream = client
+            .stream(GenerateRequest::simple("Hi"))
+            .await
+            .expect("stream");
 
         let mut collected = String::new();
         while let Some(chunk) = stream.next().await {
@@ -396,6 +430,8 @@ mod tests {
 
         assert_eq!(client.provider_name(), "test-provider");
         assert_eq!(client.default_model(), "test-model-v1");
-        assert!(client.supported_models().contains(&"test-model-v1".to_string()));
+        assert!(client
+            .supported_models()
+            .contains(&"test-model-v1".to_string()));
     }
 }

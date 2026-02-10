@@ -445,19 +445,31 @@ impl FlashAttentionKernel {
 
         // Load PTX into device with both kernels
         self.device
-            .load_ptx(ptx, "flash_attention", &["flash_attention_f16", "flash_attention_cached_f16"])
-            .map_err(|e| InferenceError::Kernel(format!("Failed to load Flash Attention: {}", e)))?;
+            .load_ptx(
+                ptx,
+                "flash_attention",
+                &["flash_attention_f16", "flash_attention_cached_f16"],
+            )
+            .map_err(|e| {
+                InferenceError::Kernel(format!("Failed to load Flash Attention: {}", e))
+            })?;
 
         self.func = Some(
             self.device
                 .get_func("flash_attention", "flash_attention_f16")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get flash_attention_f16 function".to_string()))?,
+                .ok_or_else(|| {
+                    InferenceError::Kernel("Failed to get flash_attention_f16 function".to_string())
+                })?,
         );
 
         self.cached_func = Some(
             self.device
                 .get_func("flash_attention", "flash_attention_cached_f16")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get flash_attention_cached_f16 function".to_string()))?,
+                .ok_or_else(|| {
+                    InferenceError::Kernel(
+                        "Failed to get flash_attention_cached_f16 function".to_string(),
+                    )
+                })?,
         );
 
         Ok(())
@@ -487,7 +499,9 @@ impl FlashAttentionKernel {
         output: &mut GpuTensor,
         causal: bool,
     ) -> Result<(), InferenceError> {
-        let func = self.func.as_ref()
+        let func = self
+            .func
+            .as_ref()
             .ok_or_else(|| InferenceError::Kernel("Flash Attention not loaded".to_string()))?;
 
         let q_shape = q.shape();
@@ -535,8 +549,17 @@ impl FlashAttentionKernel {
         tracing::debug!(
             "Flash Attention launch: grid=({}, {}, {}), block=({}, 1, 1), shared_mem={} bytes, \
              batch={}, heads={}, kv_heads={}, seq_len={}, head_dim={}, scale={}",
-            heads, batch, seq_blocks, THREADS_PER_BLOCK, shared_mem,
-            batch, heads, kv_heads, seq_len, head_dim, scale
+            heads,
+            batch,
+            seq_blocks,
+            THREADS_PER_BLOCK,
+            shared_mem,
+            batch,
+            heads,
+            kv_heads,
+            seq_len,
+            head_dim,
+            scale
         );
 
         unsafe {
@@ -579,8 +602,9 @@ impl FlashAttentionKernel {
         v_cache: &GpuTensor,
         output: &mut GpuTensor,
     ) -> Result<(), InferenceError> {
-        let func = self.cached_func.as_ref()
-            .ok_or_else(|| InferenceError::Kernel("Flash Attention cached kernel not loaded".to_string()))?;
+        let func = self.cached_func.as_ref().ok_or_else(|| {
+            InferenceError::Kernel("Flash Attention cached kernel not loaded".to_string())
+        })?;
 
         let q_shape = q.shape();
         let k_shape = k_cache.shape();
@@ -634,7 +658,9 @@ impl FlashAttentionKernel {
                 ),
             )
         }
-        .map_err(|e| InferenceError::Kernel(format!("Flash Attention cached launch failed: {}", e)))?;
+        .map_err(|e| {
+            InferenceError::Kernel(format!("Flash Attention cached launch failed: {}", e))
+        })?;
 
         Ok(())
     }

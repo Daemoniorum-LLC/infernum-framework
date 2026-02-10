@@ -348,10 +348,7 @@ impl AgenticLoop {
 
     /// Returns a summary of the loop's progress and termination state.
     pub fn summary(&self) -> LoopSummary {
-        let wall_time = self
-            .started_at
-            .map(|s| s.elapsed())
-            .unwrap_or_default();
+        let wall_time = self.started_at.map(|s| s.elapsed()).unwrap_or_default();
 
         let partial_answer = self.last_generation_output.clone();
 
@@ -392,11 +389,7 @@ impl AgenticLoop {
     // Internal helpers
     // -----------------------------------------------------------------------
 
-    fn require_state(
-        &self,
-        expected: LoopState,
-        operation: &str,
-    ) -> Result<(), TransitionError> {
+    fn require_state(&self, expected: LoopState, operation: &str) -> Result<(), TransitionError> {
         if self.is_terminated() && self.state != expected {
             return Err(TransitionError::AlreadyTerminated);
         }

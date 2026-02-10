@@ -35,7 +35,12 @@ fn main() -> Result<()> {
     // Count HCT files
     let hct_count = std::fs::read_dir(hct_dir)?
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map(|ext| ext == "hct").unwrap_or(false))
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map(|ext| ext == "hct")
+                .unwrap_or(false)
+        })
         .count();
     println!("HCT files found: {}", hct_count);
 
@@ -67,7 +72,11 @@ fn main() -> Result<()> {
     let tensors = load_hct_directory_sequential(hct_dir, &device, dtype)?;
 
     let load_time = start.elapsed();
-    println!("  Loaded {} tensors in {:.2}s", tensors.len(), load_time.as_secs_f64());
+    println!(
+        "  Loaded {} tensors in {:.2}s",
+        tensors.len(),
+        load_time.as_secs_f64()
+    );
 
     // Show some tensor shapes
     println!("\n  Sample tensor shapes:");
@@ -124,7 +133,11 @@ fn main() -> Result<()> {
     println!("  Finite values: {} ({:.1}%)", finite_count, finite_ratio);
 
     if finite_ratio > 99.0 {
-        let valid: Vec<f32> = logits_data.iter().copied().filter(|x| x.is_finite()).collect();
+        let valid: Vec<f32> = logits_data
+            .iter()
+            .copied()
+            .filter(|x| x.is_finite())
+            .collect();
         let mean: f32 = valid.iter().sum::<f32>() / valid.len() as f32;
         let min = valid.iter().cloned().fold(f32::INFINITY, f32::min);
         let max = valid.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
@@ -140,7 +153,11 @@ fn main() -> Result<()> {
         // Get top 5 tokens
         println!("\n  Top 5 predicted tokens:");
         let logits_vec: Vec<f32> = last_logits.to_vec1()?;
-        let mut indexed: Vec<(usize, f32)> = logits_vec.iter().enumerate().map(|(i, &v)| (i, v)).collect();
+        let mut indexed: Vec<(usize, f32)> = logits_vec
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| (i, v))
+            .collect();
         indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
         for (i, (token, score)) in indexed.iter().take(5).enumerate() {
             println!("    {}. Token {} (score: {:.4})", i + 1, token, score);
@@ -151,13 +168,19 @@ fn main() -> Result<()> {
     println!("\n=== Summary ===");
     println!("  HCT weights loaded successfully");
     println!("  Model built without errors");
-    println!("  Forward pass completed in {:.3}s", inference_time.as_secs_f64());
+    println!(
+        "  Forward pass completed in {:.3}s",
+        inference_time.as_secs_f64()
+    );
 
     if finite_ratio > 99.0 {
         println!("  Logits are valid (>99% finite)");
         println!("\n  HCT inference test PASSED!");
     } else {
-        println!("  Logits contain too many NaN/Inf values ({:.1}% finite)", finite_ratio);
+        println!(
+            "  Logits contain too many NaN/Inf values ({:.1}% finite)",
+            finite_ratio
+        );
         println!("\n  HCT inference test FAILED");
     }
 

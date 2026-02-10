@@ -29,10 +29,10 @@ impl EdgeTarget {
     /// Returns recommended maximum model size in bytes.
     pub fn max_model_size(&self) -> u64 {
         match self {
-            Self::Wasm => 500 * 1024 * 1024,           // 500MB
-            Self::Ios => 2 * 1024 * 1024 * 1024,       // 2GB
-            Self::Android => 1024 * 1024 * 1024,      // 1GB
-            Self::EmbeddedLinux => 4 * 1024 * 1024 * 1024, // 4GB
+            Self::Wasm => 500 * 1024 * 1024,                    // 500MB
+            Self::Ios => 2 * 1024 * 1024 * 1024,                // 2GB
+            Self::Android => 1024 * 1024 * 1024,                // 1GB
+            Self::EmbeddedLinux => 4 * 1024 * 1024 * 1024,      // 4GB
             Self::LightweightDesktop => 8 * 1024 * 1024 * 1024, // 8GB
         }
     }
@@ -51,9 +51,9 @@ impl EdgeTarget {
     /// Returns whether GPU acceleration is typically available.
     pub fn has_gpu(&self) -> bool {
         match self {
-            Self::Wasm => false,    // WebGPU is emerging but not reliable
-            Self::Ios => true,      // Metal
-            Self::Android => true,  // Vulkan/OpenCL
+            Self::Wasm => false,          // WebGPU is emerging but not reliable
+            Self::Ios => true,            // Metal
+            Self::Android => true,        // Vulkan/OpenCL
             Self::EmbeddedLinux => false, // Usually CPU only
             Self::LightweightDesktop => true,
         }
@@ -339,7 +339,12 @@ impl ModelCache {
     }
 
     /// Adds a model to the cache.
-    pub fn add(&self, model_id: &str, source_path: &std::path::Path, quantization: QuantizationLevel) -> std::io::Result<PathBuf> {
+    pub fn add(
+        &self,
+        model_id: &str,
+        source_path: &std::path::Path,
+        quantization: QuantizationLevel,
+    ) -> std::io::Result<PathBuf> {
         let metadata = std::fs::metadata(source_path)?;
         let size = metadata.len();
 
@@ -548,7 +553,11 @@ impl LightweightContext {
         source_path: &std::path::Path,
     ) -> std::io::Result<Option<PathBuf>> {
         if let Some(cache) = &self.cache {
-            Ok(Some(cache.add(model_id, source_path, self.config.quantization)?))
+            Ok(Some(cache.add(
+                model_id,
+                source_path,
+                self.config.quantization,
+            )?))
         } else {
             Ok(None)
         }

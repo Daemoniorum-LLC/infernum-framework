@@ -98,19 +98,27 @@ impl EmbeddingKernel {
             .map_err(|e| InferenceError::Kernel(format!("NVRTC compilation failed: {}", e)))?;
 
         self.device
-            .load_ptx(ptx, "embedding", &["embedding_gather_f16", "embedding_gather_f16_vec2"])
+            .load_ptx(
+                ptx,
+                "embedding",
+                &["embedding_gather_f16", "embedding_gather_f16_vec2"],
+            )
             .map_err(|e| InferenceError::Kernel(format!("Failed to load PTX: {}", e)))?;
 
         self.gather_func = Some(
             self.device
                 .get_func("embedding", "embedding_gather_f16")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get embedding_gather_f16".to_string()))?,
+                .ok_or_else(|| {
+                    InferenceError::Kernel("Failed to get embedding_gather_f16".to_string())
+                })?,
         );
 
         self.gather_vec2_func = Some(
             self.device
                 .get_func("embedding", "embedding_gather_f16_vec2")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get embedding_gather_f16_vec2".to_string()))?,
+                .ok_or_else(|| {
+                    InferenceError::Kernel("Failed to get embedding_gather_f16_vec2".to_string())
+                })?,
         );
 
         Ok(())
@@ -166,7 +174,9 @@ impl EmbeddingKernel {
         seq_len: usize,
         hidden_size: usize,
     ) -> Result<(), InferenceError> {
-        let func = self.gather_func.as_ref()
+        let func = self
+            .gather_func
+            .as_ref()
             .ok_or_else(|| InferenceError::Kernel("Embedding kernel not loaded".to_string()))?;
 
         let total = seq_len * hidden_size;
@@ -204,8 +214,9 @@ impl EmbeddingKernel {
         seq_len: usize,
         hidden_size: usize,
     ) -> Result<(), InferenceError> {
-        let func = self.gather_vec2_func.as_ref()
-            .ok_or_else(|| InferenceError::Kernel("Embedding vec2 kernel not loaded".to_string()))?;
+        let func = self.gather_vec2_func.as_ref().ok_or_else(|| {
+            InferenceError::Kernel("Embedding vec2 kernel not loaded".to_string())
+        })?;
 
         let total = seq_len * (hidden_size / 2);
         let threads = 256;

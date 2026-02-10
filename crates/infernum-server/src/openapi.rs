@@ -20,7 +20,10 @@
 use utoipa::openapi::security::{ApiKey, ApiKeyValue, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 
-use crate::api::{ErrorBody, ErrorCode as ApiErrorCode, ErrorResponse, ModelListEntry, ModelsResponse as ApiModelsResponse};
+use crate::api::{
+    ErrorBody, ErrorCode as ApiErrorCode, ErrorResponse, ModelListEntry,
+    ModelsResponse as ApiModelsResponse,
+};
 use crate::error_response::{ApiError, ErrorDetail};
 use crate::responses::{HealthResponse, ModelInfo, ReadyResponse};
 use crate::tokenize::TokenizeResponse;

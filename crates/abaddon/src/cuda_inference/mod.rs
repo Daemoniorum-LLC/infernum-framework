@@ -111,18 +111,18 @@ pub use batch::{BatchScheduler, BatchStats, Request, RequestState};
 pub use speculative::{SpeculativeConfig, SpeculativeDecoder, VerificationResult};
 
 #[cfg(feature = "cuda")]
-pub use lazy_layers::{LazyLayerStore, LazyLayerStats, LayerLoader, HoloLayerLoader};
+pub use lazy_layers::{HoloLayerLoader, LayerLoader, LazyLayerStats, LazyLayerStore};
 
 #[cfg(feature = "cuda")]
-pub use lazy_weight_store::{LazyWeightStore, LazyWeightConfig};
+pub use lazy_weight_store::{LazyWeightConfig, LazyWeightStore};
 
 #[cfg(feature = "cuda")]
 pub use lazy_generate::LazyGenerator;
 
 #[cfg(feature = "cuda")]
 pub use tiered::{
-    create_loader, EagerLoader, LoadingStrategy, ProgressiveLoader, TieredConfig,
-    TieredError, TieredStats, TieredWeightStore, WeightLoader,
+    create_loader, EagerLoader, LoadingStrategy, ProgressiveLoader, TieredConfig, TieredError,
+    TieredStats, TieredWeightStore, WeightLoader,
 };
 
 #[cfg(feature = "cuda")]

@@ -25,10 +25,14 @@ fn main() -> Result<()> {
     println!("  Direct Test: LazyQwen2 14B HoloTensor (No Speculative Decoding)");
     println!("========================================================================\n");
 
-    let hct_dir = PathBuf::from("/home/crook/.cache/infernum/models/hct/Qwen--Qwen2.5-14B-HoloTensor");
+    let hct_dir =
+        PathBuf::from("/home/crook/.cache/infernum/models/hct/Qwen--Qwen2.5-14B-HoloTensor");
 
     if !hct_dir.exists() {
-        println!("ERROR: 14B HoloTensor model not found at: {}", hct_dir.display());
+        println!(
+            "ERROR: 14B HoloTensor model not found at: {}",
+            hct_dir.display()
+        );
         return Ok(());
     }
 
@@ -56,8 +60,8 @@ fn main() -> Result<()> {
     let loader_start = Instant::now();
 
     let config = TieredConfig {
-        vram_budget: 22 * 1024 * 1024 * 1024,  // 22GB for 14B
-        ram_budget: 32 * 1024 * 1024 * 1024,   // 32GB RAM cache
+        vram_budget: 22 * 1024 * 1024 * 1024, // 22GB for 14B
+        ram_budget: 32 * 1024 * 1024 * 1024,  // 32GB RAM cache
         min_quality: 1.0,
         target_quality: 1.0,
         enable_background_streaming: false,
@@ -67,7 +71,14 @@ fn main() -> Result<()> {
     let loader = TieredHoloLoader::new(&hct_dir, config, device.clone(), dtype)?;
     let loader = Arc::new(loader);
     println!("TieredHoloLoader created in {:?}", loader_start.elapsed());
-    println!("GPU acceleration: {}\n", if loader.is_gpu_enabled() { "enabled" } else { "disabled" });
+    println!(
+        "GPU acceleration: {}\n",
+        if loader.is_gpu_enabled() {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
 
     let provider: Arc<dyn TensorProvider> = Arc::clone(&loader) as Arc<dyn TensorProvider>;
     let lazy_vb = LazyVarBuilder::new(Arc::clone(&provider), device.clone(), dtype);
@@ -99,7 +110,11 @@ fn main() -> Result<()> {
     println!("\nWarming up model...");
     let warmup_start = Instant::now();
     let layers_loaded = model.warmup();
-    println!("Warmed up {} layers in {:?}", layers_loaded, warmup_start.elapsed());
+    println!(
+        "Warmed up {} layers in {:?}",
+        layers_loaded,
+        warmup_start.elapsed()
+    );
 
     // Test generation
     println!("\n=== Starting Generation ===");
@@ -108,12 +123,17 @@ fn main() -> Result<()> {
     let max_tokens = 30;
     let eos_token = model_config.eos_token_id.unwrap_or(151645) as u32;
 
-    let encoding = tokenizer.encode(prompt, false)
+    let encoding = tokenizer
+        .encode(prompt, false)
         .map_err(|e| anyhow::anyhow!("Tokenization failed: {}", e))?;
     let prompt_tokens: Vec<u32> = encoding.get_ids().to_vec();
 
     println!("Prompt: \"{}\"", prompt);
-    println!("Prompt tokens: {:?} ({} tokens)", prompt_tokens, prompt_tokens.len());
+    println!(
+        "Prompt tokens: {:?} ({} tokens)",
+        prompt_tokens,
+        prompt_tokens.len()
+    );
     println!("Max new tokens: {}", max_tokens);
     println!();
 
@@ -129,7 +149,9 @@ fn main() -> Result<()> {
     println!("Output logits shape: {:?}", logits.dims());
 
     // Check logits for NaN/Inf
-    let last_logits = logits.i((0, logits.dims()[1] - 1, ..))?.to_dtype(DType::F32)?;
+    let last_logits = logits
+        .i((0, logits.dims()[1] - 1, ..))?
+        .to_dtype(DType::F32)?;
     let logits_vec: Vec<f32> = last_logits.to_vec1()?;
     let nan_count = logits_vec.iter().filter(|v| v.is_nan()).count();
     let inf_count = logits_vec.iter().filter(|v| v.is_infinite()).count();
@@ -138,14 +160,24 @@ fn main() -> Result<()> {
     println!("  NaN count: {}", nan_count);
     println!("  Inf count: {}", inf_count);
     println!("  Mean: {:.4}", last_logits.mean_all()?.to_scalar::<f32>()?);
-    println!("  Max: {:.4}", logits_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max));
-    println!("  Min: {:.4}", logits_vec.iter().cloned().fold(f32::INFINITY, f32::min));
+    println!(
+        "  Max: {:.4}",
+        logits_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
+    );
+    println!(
+        "  Min: {:.4}",
+        logits_vec.iter().cloned().fold(f32::INFINITY, f32::min)
+    );
 
     // Sample first token
     let first_token = last_logits.argmax(0)?.to_scalar::<u32>()?;
-    let first_decoded = tokenizer.decode(&[first_token], false)
+    let first_decoded = tokenizer
+        .decode(&[first_token], false)
         .unwrap_or_else(|_| "[decode error]".to_string());
-    println!("\nFirst generated token: {} \"{}\"", first_token, first_decoded);
+    println!(
+        "\nFirst generated token: {} \"{}\"",
+        first_token, first_decoded
+    );
 
     // Generate more tokens
     println!("\nGenerating {} tokens...\n", max_tokens);
@@ -177,7 +209,8 @@ fn main() -> Result<()> {
 
         // Print progress every 5 tokens
         if (i + 1) % 5 == 0 {
-            let decoded = tokenizer.decode(&generated_tokens, false)
+            let decoded = tokenizer
+                .decode(&generated_tokens, false)
                 .unwrap_or_else(|_| "[decode error]".to_string());
             println!("  [{}] {}", i + 1, decoded);
         }
@@ -187,7 +220,8 @@ fn main() -> Result<()> {
     let tokens_per_sec = generated_tokens.len() as f64 / gen_elapsed.as_secs_f64();
 
     // Decode final output
-    let generated_text = tokenizer.decode(&generated_tokens, false)
+    let generated_text = tokenizer
+        .decode(&generated_tokens, false)
         .map_err(|e| anyhow::anyhow!("Decode failed: {}", e))?;
 
     // Print results
@@ -196,12 +230,19 @@ fn main() -> Result<()> {
     println!("========================================================================");
 
     println!("\nPerformance:");
-    println!("  Generated: {} tokens in {:.2}s", generated_tokens.len(), gen_elapsed.as_secs_f64());
+    println!(
+        "  Generated: {} tokens in {:.2}s",
+        generated_tokens.len(),
+        gen_elapsed.as_secs_f64()
+    );
     println!("  Speed: {:.1} tokens/sec", tokens_per_sec);
 
     let stats = model.stats();
     println!("\nModel Stats:");
-    println!("  Loaded layers: {}/{}", stats.loaded_layers, stats.total_layers);
+    println!(
+        "  Loaded layers: {}/{}",
+        stats.loaded_layers, stats.total_layers
+    );
     println!("  Layer loads: {}", stats.layer_loads);
     println!("  Layer evictions: {}", stats.layer_evictions);
 
@@ -214,8 +255,14 @@ fn main() -> Result<()> {
     let loader_stats = loader.stats();
     println!("\nTiered Loader Stats:");
     println!("  Tensors loaded: {}", loader_stats.tensors_loaded);
-    println!("  GPU reconstructions: {} ({} ms)", loader_stats.gpu_reconstructions, loader_stats.gpu_time_ms);
-    println!("  CPU fallbacks: {} ({} ms)", loader_stats.cpu_reconstructions, loader_stats.cpu_time_ms);
+    println!(
+        "  GPU reconstructions: {} ({} ms)",
+        loader_stats.gpu_reconstructions, loader_stats.gpu_time_ms
+    );
+    println!(
+        "  CPU fallbacks: {} ({} ms)",
+        loader_stats.cpu_reconstructions, loader_stats.cpu_time_ms
+    );
 
     println!("\n=== Complete ===");
     Ok(())

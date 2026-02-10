@@ -318,10 +318,7 @@ mod tests {
     #[test]
     fn test_estimating_tokenizer_format_chat() {
         let tokenizer = EstimatingTokenizer;
-        let messages = vec![
-            Message::system("You are helpful."),
-            Message::user("Hi!"),
-        ];
+        let messages = vec![Message::system("You are helpful."), Message::user("Hi!")];
 
         let formatted = tokenizer.format_chat(&messages);
         assert!(formatted.contains("<|system|>You are helpful."));

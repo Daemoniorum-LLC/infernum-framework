@@ -160,7 +160,12 @@ impl TieredWeightStore {
             LayerState::Vram
         } else if self.ram.contains(layer_idx) {
             LayerState::Ram
-        } else if self.nvme.as_ref().map(|n| n.contains(layer_idx)).unwrap_or(false) {
+        } else if self
+            .nvme
+            .as_ref()
+            .map(|n| n.contains(layer_idx))
+            .unwrap_or(false)
+        {
             LayerState::Nvme
         } else {
             LayerState::Unloaded
@@ -177,26 +182,29 @@ impl TieredWeightStore {
     pub fn get_layer(&mut self, layer_idx: usize) -> Result<&LayerWeights, TieredError> {
         // Fast path: already in VRAM
         if self.vram.contains(layer_idx) {
-            return self.vram.get(layer_idx).ok_or_else(|| {
-                TieredError::LayerNotFound(layer_idx, self.num_layers)
-            });
+            return self
+                .vram
+                .get(layer_idx)
+                .ok_or_else(|| TieredError::LayerNotFound(layer_idx, self.num_layers));
         }
 
         // Promote from RAM
         if self.ram.contains(layer_idx) {
             self.promote_from_ram(layer_idx)?;
-            return self.vram.get(layer_idx).ok_or_else(|| {
-                TieredError::LayerNotFound(layer_idx, self.num_layers)
-            });
+            return self
+                .vram
+                .get(layer_idx)
+                .ok_or_else(|| TieredError::LayerNotFound(layer_idx, self.num_layers));
         }
 
         // Load from NVMe
         if let Some(ref nvme) = self.nvme {
             if nvme.contains(layer_idx) {
                 self.promote_from_nvme(layer_idx)?;
-                return self.vram.get(layer_idx).ok_or_else(|| {
-                    TieredError::LayerNotFound(layer_idx, self.num_layers)
-                });
+                return self
+                    .vram
+                    .get(layer_idx)
+                    .ok_or_else(|| TieredError::LayerNotFound(layer_idx, self.num_layers));
             }
         }
 
@@ -210,9 +218,10 @@ impl TieredWeightStore {
 
     /// Promote a layer from RAM to VRAM.
     fn promote_from_ram(&mut self, layer_idx: usize) -> Result<(), TieredError> {
-        let cpu_weights = self.ram.remove(layer_idx).ok_or_else(|| {
-            TieredError::LayerNotFound(layer_idx, self.num_layers)
-        })?;
+        let cpu_weights = self
+            .ram
+            .remove(layer_idx)
+            .ok_or_else(|| TieredError::LayerNotFound(layer_idx, self.num_layers))?;
 
         // Ensure VRAM has room
         let size = cpu_weights.size_bytes;
@@ -227,16 +236,21 @@ impl TieredWeightStore {
 
         self.stats.record_layer_loaded();
 
-        tracing::debug!(layer_idx, size_mb = size / (1024 * 1024), "Promoted layer RAM→VRAM");
+        tracing::debug!(
+            layer_idx,
+            size_mb = size / (1024 * 1024),
+            "Promoted layer RAM→VRAM"
+        );
 
         Ok(())
     }
 
     /// Promote a layer from NVMe to VRAM (via RAM).
     fn promote_from_nvme(&mut self, layer_idx: usize) -> Result<(), TieredError> {
-        let nvme = self.nvme.as_ref().ok_or_else(|| {
-            TieredError::nvme("NVMe cache not configured")
-        })?;
+        let nvme = self
+            .nvme
+            .as_ref()
+            .ok_or_else(|| TieredError::nvme("NVMe cache not configured"))?;
 
         // Read from NVMe
         let data = nvme.read_layer(layer_idx)?;
@@ -261,7 +275,11 @@ impl TieredWeightStore {
 
         self.stats.record_layer_loaded();
 
-        tracing::debug!(layer_idx, size_mb = size / (1024 * 1024), "Promoted layer NVMe→VRAM");
+        tracing::debug!(
+            layer_idx,
+            size_mb = size / (1024 * 1024),
+            "Promoted layer NVMe→VRAM"
+        );
 
         Ok(())
     }
@@ -302,7 +320,8 @@ impl TieredWeightStore {
         let layer = self.create_gpu_layer_from_cpu(cpu_weights)?;
 
         let elapsed_ns = start.elapsed().as_nanos() as u64;
-        self.stats.record_vram_upload(cpu_weights.size_bytes as u64, elapsed_ns);
+        self.stats
+            .record_vram_upload(cpu_weights.size_bytes as u64, elapsed_ns);
 
         Ok(layer)
     }
@@ -314,7 +333,10 @@ impl TieredWeightStore {
     }
 
     /// Create GPU layer from CPU weights.
-    fn create_gpu_layer_from_cpu(&self, _cpu: &CpuLayerWeights) -> Result<LayerWeights, TieredError> {
+    fn create_gpu_layer_from_cpu(
+        &self,
+        _cpu: &CpuLayerWeights,
+    ) -> Result<LayerWeights, TieredError> {
         // Placeholder - actual implementation will create GPU tensors
         todo!("create_gpu_layer_from_cpu not yet implemented")
     }
@@ -326,13 +348,21 @@ impl TieredWeightStore {
     }
 
     /// Deserialize layer from NVMe storage.
-    fn deserialize_layer(&self, _layer_idx: usize, _data: &[u8]) -> Result<CpuLayerWeights, TieredError> {
+    fn deserialize_layer(
+        &self,
+        _layer_idx: usize,
+        _data: &[u8],
+    ) -> Result<CpuLayerWeights, TieredError> {
         // Placeholder - actual implementation will deserialize bytes
         todo!("deserialize_layer not yet implemented")
     }
 
     /// Decompress HCT-compressed layer.
-    fn decompress_layer(&self, layer_idx: usize, _data: &[u8]) -> Result<CpuLayerWeights, TieredError> {
+    fn decompress_layer(
+        &self,
+        layer_idx: usize,
+        _data: &[u8],
+    ) -> Result<CpuLayerWeights, TieredError> {
         // Placeholder - actual implementation will use HCT decompression
         Err(TieredError::decompress(
             format!("layer_{}", layer_idx),

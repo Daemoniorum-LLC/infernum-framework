@@ -40,22 +40,24 @@
 //! )?;
 //! ```
 
-mod standard;
-mod quantized;
 mod attention;
 #[cfg(feature = "cuda")]
 mod cuda_quantized;
+mod quantized;
+mod standard;
 
-pub use standard::StandardCache;
-pub use quantized::{QuantizedCache, QuantizationGranularity};
-pub use attention::{attention_with_cache, attention_with_cache_mode, repeat_kv, create_causal_mask, AttentionConfig};
+pub use attention::{
+    attention_with_cache, attention_with_cache_mode, create_causal_mask, repeat_kv, AttentionConfig,
+};
 #[cfg(feature = "cuda")]
 pub use cuda_quantized::CudaQuantizedCache;
+pub use quantized::{QuantizationGranularity, QuantizedCache};
+pub use standard::StandardCache;
 
 // Re-export attention variants for explicit mode selection
 pub use crate::flash_attention::AttentionVariant;
 
-use candle_core::{Device, DType, Result as CandleResult, Tensor};
+use candle_core::{DType, Device, Result as CandleResult, Tensor};
 
 /// Trait for KV cache implementations.
 ///
@@ -187,13 +189,13 @@ impl CacheType {
             ))),
             #[cfg(feature = "cuda")]
             Self::CudaQuantized { device_id } => {
-                let cache = CudaQuantizedCache::new(
-                    config.num_kv_heads,
-                    config.head_dim,
-                    *device_id,
-                ).map_err(|e| candle_core::Error::Msg(format!("CUDA cache init failed: {e}")))?;
+                let cache =
+                    CudaQuantizedCache::new(config.num_kv_heads, config.head_dim, *device_id)
+                        .map_err(|e| {
+                            candle_core::Error::Msg(format!("CUDA cache init failed: {e}"))
+                        })?;
                 Ok(Box::new(cache))
-            }
+            },
         }
     }
 }

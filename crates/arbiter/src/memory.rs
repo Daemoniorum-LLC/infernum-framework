@@ -2,8 +2,8 @@
 //!
 //! Tracks VRAM usage across all workloads and signals pressure levels.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Memory pressure levels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -146,12 +146,10 @@ impl GpuMemoryTracker {
             if new > self.capacity {
                 return false;
             }
-            match self.used.compare_exchange_weak(
-                current,
-                new,
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            ) {
+            match self
+                .used
+                .compare_exchange_weak(current, new, Ordering::AcqRel, Ordering::Relaxed)
+            {
                 Ok(_) => {
                     self.total_allocations.fetch_add(1, Ordering::Relaxed);
                     self.current_allocations.fetch_add(1, Ordering::Relaxed);
@@ -179,7 +177,7 @@ impl GpuMemoryTracker {
                     }
 
                     return true;
-                }
+                },
                 Err(c) => current = c,
             }
         }
@@ -196,12 +194,10 @@ impl GpuMemoryTracker {
         let new = self.used.load(Ordering::Relaxed);
         let mut peak = self.peak.load(Ordering::Relaxed);
         while new > peak {
-            match self.peak.compare_exchange_weak(
-                peak,
-                new,
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            ) {
+            match self
+                .peak
+                .compare_exchange_weak(peak, new, Ordering::AcqRel, Ordering::Relaxed)
+            {
                 Ok(_) => break,
                 Err(p) => peak = p,
             }
@@ -210,7 +206,8 @@ impl GpuMemoryTracker {
 
     /// Deallocates memory.
     pub fn deallocate(&self, bytes: u64) {
-        self.used.fetch_sub(bytes.min(self.used()), Ordering::Relaxed);
+        self.used
+            .fetch_sub(bytes.min(self.used()), Ordering::Relaxed);
         self.current_allocations.fetch_sub(1, Ordering::Relaxed);
         self.total_deallocated.fetch_add(bytes, Ordering::Relaxed);
     }
@@ -247,9 +244,15 @@ mod tests {
     #[test]
     fn test_pressure_levels() {
         assert_eq!(MemoryPressure::from_utilization(0.3), MemoryPressure::Low);
-        assert_eq!(MemoryPressure::from_utilization(0.6), MemoryPressure::Moderate);
+        assert_eq!(
+            MemoryPressure::from_utilization(0.6),
+            MemoryPressure::Moderate
+        );
         assert_eq!(MemoryPressure::from_utilization(0.8), MemoryPressure::High);
-        assert_eq!(MemoryPressure::from_utilization(0.95), MemoryPressure::Critical);
+        assert_eq!(
+            MemoryPressure::from_utilization(0.95),
+            MemoryPressure::Critical
+        );
     }
 
     #[test]

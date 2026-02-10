@@ -71,9 +71,6 @@
 //! ```
 
 #![warn(missing_docs)]
-#![warn(clippy::all)]
-#![warn(clippy::pedantic)]
-#![deny(clippy::unwrap_used)]
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::must_use_candidate)]
 
@@ -86,8 +83,8 @@ pub mod fault;
 pub mod field;
 pub mod orchestrator;
 pub mod quality;
-pub mod speculative;
 pub mod spectral_merge;
+pub mod speculative;
 
 #[cfg(test)]
 mod tests;
@@ -97,35 +94,35 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 use thiserror::Error;
 
-pub use agent::{LegionAgent, AgentConfig, AgentState};
-pub use consensus::{
-    ConsensusStrategy, ConsensusResult, InterferenceConsensus, InterferenceConfig,
-    InterferenceResult, AgentContribution as ConsensusContribution,
-};
-pub use context::{SharedContext, ContextFragment, FragmentId};
-pub use fault::{
-    FaultConfig, AgentHealth, FailureReason, HealthMonitor, RecoveryManager,
-    DegradationManager, HealthCheckResult, HealthStatusChange, RespawnRequest,
-    RecoveryOperation, RecoveryType, DegradationEvent, DegradationCause,
-    HealthStats, RecoveryStats,
-};
-pub use field::{LegionField, FieldConfig, LegionPattern, Resonance, EssentialCoefficients, DetailCoefficients};
-pub use orchestrator::{Orchestrator, TaskRouting};
-pub use quality::{QualityTarget, QualityMetrics, FrequencyBand, QualityCurve, SpectralFilter};
+pub use agent::{AgentConfig, AgentState, LegionAgent};
 #[cfg(feature = "beleth")]
 pub use beleth_integration::{
     AgentContribution, AgentProposal, LegionBackend, LegionBackendError, LegionReactBackend,
-    MultiPerspectiveThought, Perspective, PerspectiveConfig, ResolvedAction, ResolutionMethod,
+    MultiPerspectiveThought, Perspective, PerspectiveConfig, ResolutionMethod, ResolvedAction,
+};
+pub use consensus::{
+    AgentContribution as ConsensusContribution, ConsensusResult, ConsensusStrategy,
+    InterferenceConfig, InterferenceConsensus, InterferenceResult,
+};
+pub use context::{ContextFragment, FragmentId, SharedContext};
+pub use fault::{
+    AgentHealth, DegradationCause, DegradationEvent, DegradationManager, FailureReason,
+    FaultConfig, HealthCheckResult, HealthMonitor, HealthStats, HealthStatusChange,
+    RecoveryManager, RecoveryOperation, RecoveryStats, RecoveryType, RespawnRequest,
+};
+pub use field::{
+    DetailCoefficients, EssentialCoefficients, FieldConfig, LegionField, LegionPattern, Resonance,
+};
+pub use orchestrator::{Orchestrator, TaskRouting};
+pub use quality::{FrequencyBand, QualityCurve, QualityMetrics, QualityTarget, SpectralFilter};
+pub use spectral_merge::{
+    BlendComponent, BlendStats, BlendedModel, DynamicBlendController, LayerDecomposition,
+    LayerType, LayerWeights, SpectralBlend, SpectralDecomposition, SpectralMergeError,
 };
 pub use speculative::{
-    SpeculativeLegion, SpeculativeLegionConfig, DraftSequence, DraftGenerator,
-    DraftGeneratorConfig, DraftPool, RankedPath, VerificationResult, VerificationStats,
-    SpeculativeStats, QualityCurve as SpeculativeQualityCurve, TokenId,
-};
-pub use spectral_merge::{
-    SpectralDecomposition, LayerDecomposition, LayerType, LayerWeights,
-    SpectralBlend, BlendedModel, BlendComponent, DynamicBlendController, BlendStats,
-    SpectralMergeError,
+    DraftGenerator, DraftGeneratorConfig, DraftPool, DraftSequence,
+    QualityCurve as SpeculativeQualityCurve, RankedPath, SpeculativeLegion,
+    SpeculativeLegionConfig, SpeculativeStats, TokenId, VerificationResult, VerificationStats,
 };
 
 // ==================== Error Types ====================
@@ -242,7 +239,9 @@ impl LegionConfigBuilder {
             agent_count: self.agent_count.unwrap_or(4),
             default_quality: self.default_quality.unwrap_or(0.8),
             progressive_refinement: self.progressive_refinement.unwrap_or(true),
-            consensus_strategy: self.consensus_strategy.unwrap_or(ConsensusStrategy::WeightedMajority),
+            consensus_strategy: self
+                .consensus_strategy
+                .unwrap_or(ConsensusStrategy::WeightedMajority),
             timeout: self.timeout.unwrap_or(std::time::Duration::from_secs(30)),
         }
     }

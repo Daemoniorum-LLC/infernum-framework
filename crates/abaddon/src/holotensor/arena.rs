@@ -38,7 +38,7 @@ pub struct ArenaConfig {
 impl Default for ArenaConfig {
     fn default() -> Self {
         Self {
-            initial_capacity: 256 * 1024, // 256KB
+            initial_capacity: 256 * 1024,   // 256KB
             max_capacity: 64 * 1024 * 1024, // 64MB
             alignment: 8,
             grow_factor: 2.0,
@@ -122,8 +122,8 @@ impl FragmentArena {
     /// Create a new arena with the specified configuration.
     pub fn with_config(config: ArenaConfig) -> Self {
         let capacity = config.initial_capacity;
-        let layout = Layout::from_size_align(capacity, config.alignment)
-            .expect("Invalid arena layout");
+        let layout =
+            Layout::from_size_align(capacity, config.alignment).expect("Invalid arena layout");
 
         // Allocate the backing buffer
         let ptr = unsafe { alloc(layout) };
@@ -183,11 +183,11 @@ impl FragmentArena {
 
                     // Return pointer at aligned offset
                     return unsafe { self.buffer.as_ptr().add(aligned) };
-                }
+                },
                 Err(_) => {
                     // Another thread beat us, retry
                     continue;
-                }
+                },
             }
         }
     }

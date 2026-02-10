@@ -47,6 +47,6 @@ mod database;
 mod error;
 mod schema;
 
-pub use database::{StudioDatabase, DatabaseConfig, Transaction};
+pub use database::{DatabaseConfig, StudioDatabase, Transaction};
 pub use error::{PersistenceError, Result};
 pub use schema::{CURRENT_SCHEMA_VERSION, SCHEMA_SQL};

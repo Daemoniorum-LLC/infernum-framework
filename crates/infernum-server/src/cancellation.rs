@@ -269,16 +269,16 @@ impl CancellationMetrics {
         match reason {
             CancellationReason::ClientDisconnected => {
                 self.client_disconnected.fetch_add(1, Ordering::Relaxed);
-            }
+            },
             CancellationReason::Timeout => {
                 self.timeout.fetch_add(1, Ordering::Relaxed);
-            }
+            },
             CancellationReason::ServerShutdown => {
                 self.server_shutdown.fetch_add(1, Ordering::Relaxed);
-            }
+            },
             CancellationReason::Manual => {
                 self.manual.fetch_add(1, Ordering::Relaxed);
-            }
+            },
         }
     }
 
@@ -309,10 +309,7 @@ impl CancellationMetrics {
     /// Returns total cancellations.
     #[must_use]
     pub fn total(&self) -> u64 {
-        self.client_disconnected()
-            + self.timeout()
-            + self.server_shutdown()
-            + self.manual()
+        self.client_disconnected() + self.timeout() + self.server_shutdown() + self.manual()
     }
 
     /// Renders Prometheus-format metrics.
@@ -406,7 +403,10 @@ mod tests {
             CancellationReason::ServerShutdown.to_string(),
             "server shutdown"
         );
-        assert_eq!(CancellationReason::Manual.to_string(), "manual cancellation");
+        assert_eq!(
+            CancellationReason::Manual.to_string(),
+            "manual cancellation"
+        );
     }
 
     #[test]

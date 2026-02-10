@@ -38,33 +38,25 @@ fn cpu_encoding_benchmark(c: &mut Criterion) {
             BenchmarkId::new("spectral_8frags", label),
             &data,
             |b, data| {
-                let encoder = HoloTensorEncoder::new(HolographicEncoding::Spectral)
-                    .with_fragments(8);
+                let encoder =
+                    HoloTensorEncoder::new(HolographicEncoding::Spectral).with_fragments(8);
                 b.iter(|| encoder.encode_2d(black_box(data), width, height))
             },
         );
 
         // RPH encoding
-        group.bench_with_input(
-            BenchmarkId::new("rph_8frags", label),
-            &data,
-            |b, data| {
-                let encoder = HoloTensorEncoder::new(HolographicEncoding::RandomProjection)
-                    .with_fragments(8);
-                b.iter(|| encoder.encode_2d(black_box(data), width, height))
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("rph_8frags", label), &data, |b, data| {
+            let encoder =
+                HoloTensorEncoder::new(HolographicEncoding::RandomProjection).with_fragments(8);
+            b.iter(|| encoder.encode_2d(black_box(data), width, height))
+        });
 
         // LRDF encoding
-        group.bench_with_input(
-            BenchmarkId::new("lrdf_8frags", label),
-            &data,
-            |b, data| {
-                let encoder = HoloTensorEncoder::new(HolographicEncoding::LowRankDistributed)
-                    .with_fragments(8);
-                b.iter(|| encoder.encode_2d(black_box(data), width, height))
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("lrdf_8frags", label), &data, |b, data| {
+            let encoder =
+                HoloTensorEncoder::new(HolographicEncoding::LowRankDistributed).with_fragments(8);
+            b.iter(|| encoder.encode_2d(black_box(data), width, height))
+        });
     }
 
     group.finish();
@@ -143,7 +135,7 @@ fn gpu_reconstruction_benchmark(c: &mut Criterion) {
         Err(_) => {
             eprintln!("CUDA not available, skipping GPU benchmarks");
             return;
-        }
+        },
     };
 
     if ctx.load_all_kernels().is_err() {
@@ -181,7 +173,8 @@ fn gpu_reconstruction_benchmark(c: &mut Criterion) {
         );
 
         // RPH reconstruction
-        let encoder = HoloTensorEncoder::new(HolographicEncoding::RandomProjection).with_fragments(8);
+        let encoder =
+            HoloTensorEncoder::new(HolographicEncoding::RandomProjection).with_fragments(8);
         let (header, fragments) = encoder.encode_2d(&data, width, height).unwrap();
 
         group.bench_with_input(
@@ -193,7 +186,8 @@ fn gpu_reconstruction_benchmark(c: &mut Criterion) {
         );
 
         // LRDF reconstruction
-        let encoder = HoloTensorEncoder::new(HolographicEncoding::LowRankDistributed).with_fragments(8);
+        let encoder =
+            HoloTensorEncoder::new(HolographicEncoding::LowRankDistributed).with_fragments(8);
         let (header, fragments) = encoder.encode_2d(&data, width, height).unwrap();
 
         group.bench_with_input(
@@ -228,7 +222,7 @@ fn streaming_pipeline_benchmark(c: &mut Criterion) {
         Err(_) => {
             eprintln!("CUDA not available, skipping streaming benchmarks");
             return;
-        }
+        },
     };
 
     let mut group = c.benchmark_group("holo_streaming");
@@ -236,9 +230,7 @@ fn streaming_pipeline_benchmark(c: &mut Criterion) {
     // Test streaming with different quality targets
     let quality_targets = [0.5, 0.75, 0.9, 0.95, 0.99];
     let size = 1024;
-    let data: Vec<f32> = (0..size * size)
-        .map(|i| (i as f32 * 0.001).sin())
-        .collect();
+    let data: Vec<f32> = (0..size * size).map(|i| (i as f32 * 0.001).sin()).collect();
 
     let encoder = HoloTensorEncoder::new(HolographicEncoding::Spectral).with_fragments(16);
     let (header, fragments) = encoder.encode_2d(&data, size, size).unwrap();
@@ -249,9 +241,7 @@ fn streaming_pipeline_benchmark(c: &mut Criterion) {
             BenchmarkId::new("streaming_spectral", &label),
             &(&header, &fragments, target),
             |b, (header, fragments, target)| {
-                b.iter(|| {
-                    ctx.reconstruct_streaming(*header, fragments.iter(), **target)
-                })
+                b.iter(|| ctx.reconstruct_streaming(*header, fragments.iter(), **target))
             },
         );
     }
@@ -287,7 +277,7 @@ fn coalesced_memory_benchmark(c: &mut Criterion) {
         Err(_) => {
             eprintln!("CUDA not available, skipping coalescing benchmarks");
             return;
-        }
+        },
     };
 
     if ctx.load_coalesced_kernels().is_err() {
@@ -303,10 +293,10 @@ fn coalesced_memory_benchmark(c: &mut Criterion) {
 
     // Test F32 to F16 conversion (common operation)
     let sizes = [
-        (1 << 18, "256K"),   // 256K elements
-        (1 << 20, "1M"),     // 1M elements
-        (1 << 22, "4M"),     // 4M elements
-        (1 << 24, "16M"),    // 16M elements
+        (1 << 18, "256K"), // 256K elements
+        (1 << 20, "1M"),   // 1M elements
+        (1 << 22, "4M"),   // 4M elements
+        (1 << 24, "16M"),  // 16M elements
     ];
 
     for (size, label) in sizes {
@@ -321,18 +311,14 @@ fn coalesced_memory_benchmark(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("f32_to_f16_standard", label),
             &d_input,
-            |b, input| {
-                b.iter(|| ctx.convert_f32_to_f16(black_box(input)))
-            },
+            |b, input| b.iter(|| ctx.convert_f32_to_f16(black_box(input))),
         );
 
         // Coalesced F32 to F16
         group.bench_with_input(
             BenchmarkId::new("f32_to_f16_coalesced", label),
             &d_input,
-            |b, input| {
-                b.iter(|| ctx.convert_f32_to_f16_coalesced(black_box(input)))
-            },
+            |b, input| b.iter(|| ctx.convert_f32_to_f16_coalesced(black_box(input))),
         );
     }
 
@@ -444,8 +430,7 @@ fn file_io_benchmark(c: &mut Criterion) {
             |b, data| {
                 b.iter(|| {
                     let cursor = Cursor::new(black_box(data.as_slice()));
-                    haagenti::holotensor::HoloTensorReader::open(cursor)
-                        .and_then(|r| r.read_all())
+                    haagenti::holotensor::HoloTensorReader::open(cursor).and_then(|r| r.read_all())
                 })
             },
         );
@@ -465,9 +450,7 @@ fn fragment_scaling_benchmark(c: &mut Criterion) {
 
     // Fixed size, varying fragment counts
     let size = 512;
-    let data: Vec<f32> = (0..size * size)
-        .map(|i| (i as f32 * 0.001).sin())
-        .collect();
+    let data: Vec<f32> = (0..size * size).map(|i| (i as f32 * 0.001).sin()).collect();
 
     let fragment_counts = [4, 8, 16, 32, 64];
 
@@ -479,8 +462,8 @@ fn fragment_scaling_benchmark(c: &mut Criterion) {
             BenchmarkId::new("encode_spectral", &label),
             &num_frags,
             |b, &frags| {
-                let encoder = HoloTensorEncoder::new(HolographicEncoding::Spectral)
-                    .with_fragments(frags);
+                let encoder =
+                    HoloTensorEncoder::new(HolographicEncoding::Spectral).with_fragments(frags);
                 b.iter(|| encoder.encode_2d(black_box(&data), size, size))
             },
         );

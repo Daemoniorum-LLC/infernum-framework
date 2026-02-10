@@ -225,7 +225,7 @@ impl Observation {
             ValidationResult::Valid => vec![],
             ValidationResult::Invalid(issues) => {
                 issues.iter().map(|i| format!("{:?}", i)).collect()
-            }
+            },
         };
 
         let key_facts = extract_key_facts(&sanitized.output);
@@ -281,7 +281,10 @@ fn extract_key_facts(output: &str) -> Vec<String> {
     let output_lower = output.to_lowercase();
 
     // Extract lines or sentences containing numbers with units
-    let units = ["%", "°", "result", "item", "file", "byte", "kb", "mb", "gb", "ms", "second", "minute", "hour"];
+    let units = [
+        "%", "°", "result", "item", "file", "byte", "kb", "mb", "gb", "ms", "second", "minute",
+        "hour",
+    ];
     for line in output.lines() {
         let line_lower = line.to_lowercase();
         // Check if line contains a number followed by a unit
@@ -293,7 +296,16 @@ fn extract_key_facts(output: &str) -> Vec<String> {
     }
 
     // Extract status indicators with context
-    let status_words = ["success", "failed", "error", "complete", "found", "not found", "exists", "missing"];
+    let status_words = [
+        "success",
+        "failed",
+        "error",
+        "complete",
+        "found",
+        "not found",
+        "exists",
+        "missing",
+    ];
     for word in status_words {
         if output_lower.contains(word) {
             if let Some(idx) = output_lower.find(word) {
@@ -341,10 +353,7 @@ pub fn generate_observation_reasoning(
     let mut reasoning = vec![];
 
     if observation.success {
-        reasoning.push(format!(
-            "The {} action succeeded.",
-            action
-        ));
+        reasoning.push(format!("The {} action succeeded.", action));
 
         if !observation.key_facts.is_empty() {
             reasoning.push(format!(
@@ -354,16 +363,24 @@ pub fn generate_observation_reasoning(
         }
 
         if observation.structured_data.is_some() {
-            reasoning.push("Structured data was returned and can be used for further analysis.".to_string());
+            reasoning.push(
+                "Structured data was returned and can be used for further analysis.".to_string(),
+            );
         }
     } else {
         reasoning.push(format!(
             "The {} action failed: {}",
             action,
-            observation.error_message.as_deref().unwrap_or("unknown error")
+            observation
+                .error_message
+                .as_deref()
+                .unwrap_or("unknown error")
         ));
 
-        reasoning.push("May need to retry with different parameters or try an alternative approach.".to_string());
+        reasoning.push(
+            "May need to retry with different parameters or try an alternative approach."
+                .to_string(),
+        );
     }
 
     reasoning.join(" ")
@@ -580,17 +597,15 @@ Action Input: The current weather in Tokyo is 22°C (72°F) with partly cloudy s
                     step.duration_ms = step_start.elapsed().as_millis() as u64;
                     trace.push(step);
                     break;
-                }
+                },
                 ActionType::ToolCall => {
                     let tool_name = parsed.tool_name.clone().unwrap_or_default();
                     let params = parsed.params.clone();
 
                     // Execute tool with retries
-                    let result = self.execute_tool_with_retry(
-                        &tool_name,
-                        params.clone(),
-                        &ctx,
-                    ).await;
+                    let result = self
+                        .execute_tool_with_retry(&tool_name, params.clone(), &ctx)
+                        .await;
 
                     // Parse and validate observation (Phase 4 fix)
                     let (success, observation_msg) = match result {
@@ -605,24 +620,16 @@ Action Input: The current weather in Tokyo is 22°C (72°F) with partly cloudy s
 
                             // Generate reasoning about the observation
                             let thought = parsed.thought.as_deref().unwrap_or("");
-                            let reasoning = generate_observation_reasoning(
-                                thought,
-                                &tool_name,
-                                &observation,
-                            );
+                            let reasoning =
+                                generate_observation_reasoning(thought, &tool_name, &observation);
 
                             // Format structured observation message
-                            let obs_msg = format!(
-                                "{}\n\nAnalysis: {}",
-                                observation.to_message(),
-                                reasoning
-                            );
+                            let obs_msg =
+                                format!("{}\n\nAnalysis: {}", observation.to_message(), reasoning);
 
                             (observation.success, obs_msg)
-                        }
-                        Err(e) => {
-                            (false, format!("Tool execution error: {}", e))
-                        }
+                        },
+                        Err(e) => (false, format!("Tool execution error: {}", e)),
                     };
 
                     step.action = Some(ReactAction {
@@ -630,7 +637,11 @@ Action Input: The current weather in Tokyo is 22°C (72°F) with partly cloudy s
                         tool_name: Some(tool_name),
                         params,
                         success,
-                        error: if success { None } else { Some(observation_msg.clone()) },
+                        error: if success {
+                            None
+                        } else {
+                            Some(observation_msg.clone())
+                        },
                     });
                     step.observation = Some(observation_msg.clone());
 
@@ -642,7 +653,7 @@ Action Input: The current weather in Tokyo is 22°C (72°F) with partly cloudy s
                         tool_calls: None,
                         tool_call_id: None,
                     });
-                }
+                },
                 ActionType::Clarify => {
                     step.action = Some(ReactAction {
                         action_type: ActionType::Clarify,
@@ -651,17 +662,20 @@ Action Input: The current weather in Tokyo is 22°C (72°F) with partly cloudy s
                         success: true,
                         error: None,
                     });
-                    step.observation = Some(format!("Clarification needed: {}", parsed.action_input));
+                    step.observation =
+                        Some(format!("Clarification needed: {}", parsed.action_input));
 
                     // For now, we can't actually get user input, so continue
                     messages.push(Message {
                         role: Role::User,
-                        content: "Please proceed with the best approach based on available information.".to_string(),
+                        content:
+                            "Please proceed with the best approach based on available information."
+                                .to_string(),
                         name: Some("system".to_string()),
                         tool_calls: None,
                         tool_call_id: None,
                     });
-                }
+                },
                 ActionType::Reason => {
                     step.action = Some(ReactAction {
                         action_type: ActionType::Reason,
@@ -670,7 +684,7 @@ Action Input: The current weather in Tokyo is 22°C (72°F) with partly cloudy s
                         success: true,
                         error: None,
                     });
-                }
+                },
             }
 
             // Self-reflection step
@@ -739,19 +753,21 @@ Action Input: The current weather in Tokyo is 22°C (72°F) with partly cloudy s
             match tokio::time::timeout(
                 self.config.tool_timeout,
                 self.tools.execute(&tool_call, ctx),
-            ).await {
+            )
+            .await
+            {
                 Ok(Ok(result)) => {
                     if result.success {
                         return Ok(result);
                     }
                     last_error = result.error.clone();
-                }
+                },
                 Ok(Err(e)) => {
                     last_error = Some(e.to_string());
-                }
+                },
                 Err(_) => {
                     last_error = Some("Tool execution timed out".to_string());
-                }
+                },
             }
         }
 
@@ -878,9 +894,7 @@ Respond with only a number between 0.0 and 1.0."#
     /// Summarizes the conversation context if it's too long.
     async fn maybe_summarize_context(&self, mut messages: Vec<Message>) -> Result<Vec<Message>> {
         // Rough token estimate
-        let estimated_tokens: usize = messages.iter()
-            .map(|m| m.content.len() / 4)
-            .sum();
+        let estimated_tokens: usize = messages.iter().map(|m| m.content.len() / 4).sum();
 
         if estimated_tokens < self.config.max_conversation_tokens as usize {
             return Ok(messages);
@@ -911,7 +925,8 @@ Respond with only a number between 0.0 and 1.0."#
         let summary_messages = vec![
             Message {
                 role: Role::System,
-                content: "You summarize conversations concisely, preserving important information.".to_string(),
+                content: "You summarize conversations concisely, preserving important information."
+                    .to_string(),
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
@@ -1309,7 +1324,10 @@ Action Input: What specific topic would you like me to focus on?"#;
         let json = serde_json::to_string(&config).expect("serialize");
         let deserialized: ReactConfig = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(deserialized.max_iterations, config.max_iterations);
-        assert_eq!(deserialized.reasoning_temperature, config.reasoning_temperature);
+        assert_eq!(
+            deserialized.reasoning_temperature,
+            config.reasoning_temperature
+        );
     }
 
     #[test]
@@ -1534,7 +1552,10 @@ Action Input: What specific topic would you like me to focus on?"#;
         };
         let obs = Observation::from_tool_result("api", &result);
         assert!(!obs.success);
-        assert_eq!(obs.error_message, Some("API rate limit exceeded".to_string()));
+        assert_eq!(
+            obs.error_message,
+            Some("API rate limit exceeded".to_string())
+        );
     }
 
     #[test]
@@ -1639,7 +1660,10 @@ Action Input: What specific topic would you like me to focus on?"#;
         };
         assert!(result.success);
         assert_eq!(result.confidence, 0.95);
-        assert!(matches!(result.completion_reason, CompletionReason::FinalAnswer));
+        assert!(matches!(
+            result.completion_reason,
+            CompletionReason::FinalAnswer
+        ));
     }
 
     #[test]
@@ -1654,7 +1678,10 @@ Action Input: What specific topic would you like me to focus on?"#;
             completion_reason: CompletionReason::MaxIterations,
         };
         assert!(!result.success);
-        assert!(matches!(result.completion_reason, CompletionReason::MaxIterations));
+        assert!(matches!(
+            result.completion_reason,
+            CompletionReason::MaxIterations
+        ));
     }
 
     #[test]
@@ -1829,7 +1856,9 @@ Action Input: {"nested": {"key": "value"}, "array": [1, 2, 3]}"#;
     fn test_extract_key_facts_with_bytes() {
         let output = "Downloaded 1024 bytes in 50ms";
         let facts = extract_key_facts(output);
-        assert!(facts.iter().any(|f| f.contains("bytes") || f.contains("ms")));
+        assert!(facts
+            .iter()
+            .any(|f| f.contains("bytes") || f.contains("ms")));
     }
 
     // ==========================================================================

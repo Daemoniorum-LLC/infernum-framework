@@ -282,9 +282,7 @@ impl RateLimiter {
         // Check if limit exceeded
         if entry.count >= self.config.max_requests {
             let reset = self.config.window - now.duration_since(entry.window_start);
-            return RateLimitResult::Exceeded {
-                retry_after: reset,
-            };
+            return RateLimitResult::Exceeded { retry_after: reset };
         }
 
         // Increment counter
@@ -300,9 +298,7 @@ impl RateLimiter {
         let mut entries = self.entries.write().await;
         let now = Instant::now();
 
-        entries.retain(|_, entry| {
-            now.duration_since(entry.window_start) < self.config.window * 2
-        });
+        entries.retain(|_, entry| now.duration_since(entry.window_start) < self.config.window * 2);
     }
 }
 
@@ -389,15 +385,17 @@ pub async fn rate_limit_middleware(
             let headers = response.headers_mut();
             headers.insert(
                 "x-ratelimit-remaining",
-                HeaderValue::from_str(&remaining.to_string()).unwrap_or_else(|_| HeaderValue::from_static("0")),
+                HeaderValue::from_str(&remaining.to_string())
+                    .unwrap_or_else(|_| HeaderValue::from_static("0")),
             );
             headers.insert(
                 "x-ratelimit-reset",
-                HeaderValue::from_str(&reset.as_secs().to_string()).unwrap_or_else(|_| HeaderValue::from_static("0")),
+                HeaderValue::from_str(&reset.as_secs().to_string())
+                    .unwrap_or_else(|_| HeaderValue::from_static("0")),
             );
 
             response
-        }
+        },
         RateLimitResult::Exceeded { retry_after } => {
             // Record rate limit hit in metrics
             rate_limiter.metrics().record_hit(is_api_key);
@@ -413,10 +411,11 @@ pub async fn rate_limit_middleware(
             let mut response = (StatusCode::TOO_MANY_REQUESTS, Json(error)).into_response();
             response.headers_mut().insert(
                 "retry-after",
-                HeaderValue::from_str(&retry_after.as_secs().to_string()).unwrap_or_else(|_| HeaderValue::from_static("60")),
+                HeaderValue::from_str(&retry_after.as_secs().to_string())
+                    .unwrap_or_else(|_| HeaderValue::from_static("60")),
             );
             response
-        }
+        },
     }
 }
 
@@ -496,11 +495,17 @@ pub async fn security_headers_middleware(
     }
 
     if config.x_content_type_options {
-        headers.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+        headers.insert(
+            "x-content-type-options",
+            HeaderValue::from_static("nosniff"),
+        );
     }
 
     if config.x_xss_protection {
-        headers.insert("x-xss-protection", HeaderValue::from_static("1; mode=block"));
+        headers.insert(
+            "x-xss-protection",
+            HeaderValue::from_static("1; mode=block"),
+        );
     }
 
     if let Some(hsts) = &config.strict_transport_security {
@@ -667,7 +672,7 @@ mod tests {
 
         for _ in 0..5 {
             match limiter.check("test-key").await {
-                RateLimitResult::Allowed { .. } => {}
+                RateLimitResult::Allowed { .. } => {},
                 RateLimitResult::Exceeded { .. } => panic!("Should not exceed limit"),
             }
         }
@@ -678,11 +683,20 @@ mod tests {
         let limiter = RateLimiter::new(RateLimitConfig::new(2, Duration::from_secs(60)));
 
         // First two should succeed
-        assert!(matches!(limiter.check("test-key").await, RateLimitResult::Allowed { .. }));
-        assert!(matches!(limiter.check("test-key").await, RateLimitResult::Allowed { .. }));
+        assert!(matches!(
+            limiter.check("test-key").await,
+            RateLimitResult::Allowed { .. }
+        ));
+        assert!(matches!(
+            limiter.check("test-key").await,
+            RateLimitResult::Allowed { .. }
+        ));
 
         // Third should be blocked
-        assert!(matches!(limiter.check("test-key").await, RateLimitResult::Exceeded { .. }));
+        assert!(matches!(
+            limiter.check("test-key").await,
+            RateLimitResult::Exceeded { .. }
+        ));
     }
 
     #[tokio::test]
@@ -694,7 +708,7 @@ mod tests {
             match limiter.check("test-key").await {
                 RateLimitResult::Allowed { remaining, .. } => {
                     assert_eq!(remaining, u32::MAX);
-                }
+                },
                 RateLimitResult::Exceeded { .. } => panic!("Should not exceed when disabled"),
             }
         }
@@ -773,7 +787,7 @@ mod tests {
 
         metrics.record_hit(false); // IP-based
         metrics.record_hit(false); // IP-based
-        metrics.record_hit(true);  // API key-based
+        metrics.record_hit(true); // API key-based
 
         assert_eq!(metrics.total_hits(), 3);
         assert_eq!(metrics.hits_by_ip.load(Ordering::Relaxed), 2);

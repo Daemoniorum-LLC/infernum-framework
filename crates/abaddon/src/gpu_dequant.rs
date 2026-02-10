@@ -167,43 +167,39 @@ pub mod cuda {
             }
 
             // Copy inputs to GPU
-            let d_packed = self
-                .device
-                .htod_copy(packed.to_vec())
-                .map_err(|e| GpuDequantError::MemoryAlloc {
+            let d_packed = self.device.htod_copy(packed.to_vec()).map_err(|e| {
+                GpuDequantError::MemoryAlloc {
                     message: e.to_string(),
-                })?;
+                }
+            })?;
 
             // Convert scales to raw bytes for transfer
-            let scales_bytes: Vec<u8> = scales
-                .iter()
-                .flat_map(|s| s.to_le_bytes())
-                .collect();
-            let d_scales = self
-                .device
-                .htod_copy(scales_bytes)
-                .map_err(|e| GpuDequantError::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let scales_bytes: Vec<u8> = scales.iter().flat_map(|s| s.to_le_bytes()).collect();
+            let d_scales =
+                self.device
+                    .htod_copy(scales_bytes)
+                    .map_err(|e| GpuDequantError::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
             // Handle zero points (use zeros if not provided)
             let zp_vec: Vec<i8> = zero_points
                 .map(|zp| zp.to_vec())
                 .unwrap_or_else(|| vec![0i8; num_blocks]);
-            let d_zero_points = self
-                .device
-                .htod_copy(zp_vec)
-                .map_err(|e| GpuDequantError::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let d_zero_points =
+                self.device
+                    .htod_copy(zp_vec)
+                    .map_err(|e| GpuDequantError::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
             // Allocate output buffer
-            let d_output: CudaSlice<half::f16> = self
-                .device
-                .alloc_zeros(num_values)
-                .map_err(|e| GpuDequantError::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let d_output: CudaSlice<half::f16> =
+                self.device
+                    .alloc_zeros(num_values)
+                    .map_err(|e| GpuDequantError::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
             // Launch kernel
             let func = self
@@ -215,7 +211,8 @@ pub mod cuda {
 
             // One thread per output value, organized in blocks of 256
             let threads_per_block = 256u32;
-            let num_thread_blocks = ((num_values as u32) + threads_per_block - 1) / threads_per_block;
+            let num_thread_blocks =
+                ((num_values as u32) + threads_per_block - 1) / threads_per_block;
 
             let cfg = LaunchConfig {
                 grid_dim: (num_thread_blocks, 1, 1),
@@ -268,10 +265,11 @@ pub mod cuda {
                     message: e.to_string(),
                 })?;
 
-            Tensor::from_vec(host_data, shape, &Device::Cpu)
-                .map_err(|e| GpuDequantError::TensorCreate {
+            Tensor::from_vec(host_data, shape, &Device::Cpu).map_err(|e| {
+                GpuDequantError::TensorCreate {
                     message: e.to_string(),
-                })
+                }
+            })
         }
 
         /// Dequantizes INT8 data to F16.
@@ -298,20 +296,20 @@ pub mod cuda {
             let num_values = data.len();
 
             // Copy input to GPU
-            let d_input = self
-                .device
-                .htod_copy(data.to_vec())
-                .map_err(|e| GpuDequantError::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let d_input =
+                self.device
+                    .htod_copy(data.to_vec())
+                    .map_err(|e| GpuDequantError::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
             // Allocate output
-            let d_output: CudaSlice<half::f16> = self
-                .device
-                .alloc_zeros(num_values)
-                .map_err(|e| GpuDequantError::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let d_output: CudaSlice<half::f16> =
+                self.device
+                    .alloc_zeros(num_values)
+                    .map_err(|e| GpuDequantError::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
             // Launch kernel
             let func = self
@@ -333,15 +331,10 @@ pub mod cuda {
             // Pass scale as raw bits
             let scale_bits = scale.to_bits();
 
-            unsafe {
-                func.launch(
-                    cfg,
-                    (&d_input, &d_output, scale_bits, num_values as u32),
-                )
-            }
-            .map_err(|e| GpuDequantError::KernelExec {
-                message: e.to_string(),
-            })?;
+            unsafe { func.launch(cfg, (&d_input, &d_output, scale_bits, num_values as u32)) }
+                .map_err(|e| GpuDequantError::KernelExec {
+                    message: e.to_string(),
+                })?;
 
             self.device
                 .synchronize()
@@ -369,10 +362,11 @@ pub mod cuda {
                     message: e.to_string(),
                 })?;
 
-            Tensor::from_vec(host_data, shape, &Device::Cpu)
-                .map_err(|e| GpuDequantError::TensorCreate {
+            Tensor::from_vec(host_data, shape, &Device::Cpu).map_err(|e| {
+                GpuDequantError::TensorCreate {
                     message: e.to_string(),
-                })
+                }
+            })
         }
     }
 
@@ -697,10 +691,10 @@ INT8_DONE:
                     assert_eq!(ctx.device_id(), 0);
                     assert!(!ctx.int4_kernel_loaded);
                     assert!(!ctx.int8_kernel_loaded);
-                }
+                },
                 Err(GpuDequantError::DeviceInit { .. }) => {
                     eprintln!("Skipping: no CUDA device");
-                }
+                },
                 Err(e) => panic!("Unexpected error: {:?}", e),
             }
         }
@@ -746,7 +740,9 @@ INT8_DONE:
             let result = ctx.dequant_int4(&packed, &scales, None, 8).unwrap();
 
             let mut host_result = vec![half::f16::ZERO; 8];
-            ctx.device.dtoh_sync_copy_into(&result, &mut host_result).unwrap();
+            ctx.device
+                .dtoh_sync_copy_into(&result, &mut host_result)
+                .unwrap();
 
             let expected: Vec<f32> = vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5];
             for (i, (got, exp)) in host_result.iter().zip(expected.iter()).enumerate() {
@@ -780,10 +776,14 @@ INT8_DONE:
             let scales = vec![scale];
             let zero_points = vec![4i8];
 
-            let result = ctx.dequant_int4(&packed, &scales, Some(&zero_points), 8).unwrap();
+            let result = ctx
+                .dequant_int4(&packed, &scales, Some(&zero_points), 8)
+                .unwrap();
 
             let mut host_result = vec![half::f16::ZERO; 8];
-            ctx.device.dtoh_sync_copy_into(&result, &mut host_result).unwrap();
+            ctx.device
+                .dtoh_sync_copy_into(&result, &mut host_result)
+                .unwrap();
 
             let expected: Vec<f32> = vec![-4.0, -3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0];
             for (i, (got, exp)) in host_result.iter().zip(expected.iter()).enumerate() {
@@ -813,14 +813,16 @@ INT8_DONE:
 
             // Different scales for each block
             let scales = vec![
-                half::f16::from_f32(0.1),  // Block 0
-                half::f16::from_f32(0.2),  // Block 1
+                half::f16::from_f32(0.1), // Block 0
+                half::f16::from_f32(0.2), // Block 1
             ];
 
             let result = ctx.dequant_int4(&packed, &scales, None, 256).unwrap();
 
             let mut host_result = vec![half::f16::ZERO; 256];
-            ctx.device.dtoh_sync_copy_into(&result, &mut host_result).unwrap();
+            ctx.device
+                .dtoh_sync_copy_into(&result, &mut host_result)
+                .unwrap();
 
             // Verify first value of each block
             // Block 0, value 0: 0 * 0.1 = 0.0
@@ -875,7 +877,7 @@ INT8_DONE:
             match result {
                 Err(GpuDequantError::KernelNotLoaded { kernel }) => {
                     assert!(kernel.contains("int4"));
-                }
+                },
                 _ => panic!("Expected KernelNotLoaded error"),
             }
         }
@@ -898,7 +900,7 @@ INT8_DONE:
             match result {
                 Err(GpuDequantError::InvalidInput { message }) => {
                     assert!(message.contains("too small"));
-                }
+                },
                 _ => panic!("Expected InvalidInput error"),
             }
         }
@@ -921,7 +923,7 @@ INT8_DONE:
             match result {
                 Err(GpuDequantError::InvalidInput { message }) => {
                     assert!(message.contains("scales"));
-                }
+                },
                 _ => panic!("Expected InvalidInput error"),
             }
         }
@@ -956,7 +958,9 @@ INT8_DONE:
             let result = ctx.dequant_int8(&data, scale).unwrap();
 
             let mut host_result = vec![half::f16::ZERO; 8];
-            ctx.device.dtoh_sync_copy_into(&result, &mut host_result).unwrap();
+            ctx.device
+                .dtoh_sync_copy_into(&result, &mut host_result)
+                .unwrap();
 
             // Expected: values * 0.01
             let expected: Vec<f32> = vec![-1.28, -0.64, 0.0, 0.32, 0.64, 0.96, 1.27, 1.0];
@@ -1009,13 +1013,17 @@ INT8_DONE:
 
             // 1M values
             let size = 1024 * 1024;
-            let data: Vec<i8> = (0..size).map(|i| (((i % 256) as u8).wrapping_sub(128)) as i8).collect();
+            let data: Vec<i8> = (0..size)
+                .map(|i| (((i % 256) as u8).wrapping_sub(128)) as i8)
+                .collect();
             let scale = half::f16::from_f32(0.001);
 
             let result = ctx.dequant_int8(&data, scale).unwrap();
 
             let mut host_result = vec![half::f16::ZERO; size];
-            ctx.device.dtoh_sync_copy_into(&result, &mut host_result).unwrap();
+            ctx.device
+                .dtoh_sync_copy_into(&result, &mut host_result)
+                .unwrap();
 
             // Spot check a few values
             assert!((host_result[0].to_f32() - (-0.128)).abs() < 0.01);
@@ -1038,7 +1046,7 @@ INT8_DONE:
             match result {
                 Err(GpuDequantError::KernelNotLoaded { kernel }) => {
                     assert!(kernel.contains("int8"));
-                }
+                },
                 _ => panic!("Expected KernelNotLoaded error"),
             }
         }
@@ -1061,7 +1069,9 @@ INT8_DONE:
             let result = ctx.dequant_int4(&packed, &scales, None, 128).unwrap();
 
             let mut host_result = vec![half::f16::ONE; 128];
-            ctx.device.dtoh_sync_copy_into(&result, &mut host_result).unwrap();
+            ctx.device
+                .dtoh_sync_copy_into(&result, &mut host_result)
+                .unwrap();
 
             for val in host_result {
                 assert_eq!(val.to_f32(), 0.0);
@@ -1085,7 +1095,9 @@ INT8_DONE:
             let result = ctx.dequant_int4(&packed, &scales, None, 8).unwrap();
 
             let mut host_result = vec![half::f16::ZERO; 8];
-            ctx.device.dtoh_sync_copy_into(&result, &mut host_result).unwrap();
+            ctx.device
+                .dtoh_sync_copy_into(&result, &mut host_result)
+                .unwrap();
 
             // All should be 15 * 0.1 = 1.5
             for val in host_result {
@@ -1114,9 +1126,7 @@ INT8_DONE:
             use candle_core::{Device, Tensor};
 
             // Create known input: 2 blocks (256 elements) with mixed values
-            let input: Vec<f32> = (0..256)
-                .map(|i| ((i as f32) - 128.0) * 0.05)
-                .collect();
+            let input: Vec<f32> = (0..256).map(|i| ((i as f32) - 128.0) * 0.05).collect();
             let tensor = Tensor::from_vec(input.clone(), &[256], &Device::Cpu).unwrap();
 
             // Quantize with quantize.rs
@@ -1250,10 +1260,7 @@ INT8_DONE:
             let scale = half::f16::from_f32(0.05);
 
             // CPU reference: value * scale
-            let cpu_values: Vec<f32> = data
-                .iter()
-                .map(|&v| (v as f32) * scale.to_f32())
-                .collect();
+            let cpu_values: Vec<f32> = data.iter().map(|&v| (v as f32) * scale.to_f32()).collect();
 
             // GPU dequantize: takes &[i8] and a single f16 scale
             let mut ctx = GpuDequantContext::new(0).unwrap();
@@ -1368,7 +1375,7 @@ pub mod cuda {
         #[test]
         fn test_stub_returns_error() {
             match GpuDequantContext::new(0) {
-                Err(GpuDequantError::CudaNotEnabled) => {}
+                Err(GpuDequantError::CudaNotEnabled) => {},
                 Ok(_) => panic!("Stub should error"),
             }
         }

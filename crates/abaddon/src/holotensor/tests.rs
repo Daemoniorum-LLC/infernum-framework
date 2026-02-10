@@ -144,11 +144,19 @@ fn test_progressive_weight_provider_quality_curve() {
 
     // Fragment 0 should give ~60% quality for Spectral
     let q0 = curve.predict(1, 8);
-    assert!(q0 >= 0.5 && q0 <= 0.7, "Expected ~60% from fragment 0, got {}", q0);
+    assert!(
+        q0 >= 0.5 && q0 <= 0.7,
+        "Expected ~60% from fragment 0, got {}",
+        q0
+    );
 
     // All fragments should give ~100%
     let q_all = curve.predict(8, 8);
-    assert!(q_all >= 0.95, "Expected ~100% from all fragments, got {}", q_all);
+    assert!(
+        q_all >= 0.95,
+        "Expected ~100% from all fragments, got {}",
+        q_all
+    );
 }
 
 // ==================== HoloModelMetadata Tests ====================
@@ -182,7 +190,10 @@ fn test_conversion_config_defaults() {
 
     // Default is optimized for 405B models with progressive loading
     assert_eq!(config.num_fragments, 32);
-    assert!(matches!(config.encoding, haagenti::holotensor::HolographicEncoding::LowRankDistributed));
+    assert!(matches!(
+        config.encoding,
+        haagenti::holotensor::HolographicEncoding::LowRankDistributed
+    ));
 }
 
 #[test]

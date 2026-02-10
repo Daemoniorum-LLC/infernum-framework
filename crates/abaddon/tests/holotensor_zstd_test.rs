@@ -7,11 +7,10 @@ use std::time::Instant;
 use tempfile::TempDir;
 
 use haagenti::{
-    Compressor, Decompressor,
-    Lz4Codec, ZstdCodec, ZstdCompressor, ZstdDecompressor,
-    CompressionLevel,
-    tensor::{CompressionAlgorithm, DType, HctWriter},
     holotensor::{HoloTensorHeader, HolographicEncoding},
+    tensor::{CompressionAlgorithm, DType, HctWriter},
+    CompressionLevel, Compressor, Decompressor, Lz4Codec, ZstdCodec, ZstdCompressor,
+    ZstdDecompressor,
 };
 
 /// Generate test tensor data (simulating weight data patterns).
@@ -22,7 +21,9 @@ fn generate_tensor_data(size: usize) -> Vec<f32> {
     let mut seed = 42u64;
     for _ in 0..size {
         // Simple LCG for reproducibility
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let u = (seed >> 33) as f32 / (1u64 << 31) as f32;
         // Transform to approximate Gaussian
         let val = (u - 0.5) * 0.1;
@@ -49,7 +50,9 @@ fn test_zstd_compression_roundtrip() {
     let bytes = f32_to_bytes(&data);
 
     let compressed = codec.compress(&bytes).expect("compression should succeed");
-    let decompressed = codec.decompress(&compressed).expect("decompression should succeed");
+    let decompressed = codec
+        .decompress(&compressed)
+        .expect("decompression should succeed");
 
     assert_eq!(bytes, decompressed, "Zstd roundtrip should be lossless");
 }
@@ -63,10 +66,19 @@ fn test_zstd_compression_large_tensor() {
     let bytes = f32_to_bytes(&data);
 
     let compressed = codec.compress(&bytes).expect("compression should succeed");
-    let decompressed = codec.decompress(&compressed).expect("decompression should succeed");
+    let decompressed = codec
+        .decompress(&compressed)
+        .expect("decompression should succeed");
 
-    assert_eq!(bytes.len(), decompressed.len(), "decompressed size should match");
-    assert_eq!(bytes, decompressed, "Zstd roundtrip should be lossless for large tensors");
+    assert_eq!(
+        bytes.len(),
+        decompressed.len(),
+        "decompressed size should match"
+    );
+    assert_eq!(
+        bytes, decompressed,
+        "Zstd roundtrip should be lossless for large tensors"
+    );
 }
 
 #[test]
@@ -77,10 +89,17 @@ fn test_zstd_compressor_decompressor_pair() {
     let data = generate_tensor_data(4096);
     let bytes = f32_to_bytes(&data);
 
-    let compressed = compressor.compress(&bytes).expect("compression should succeed");
-    let decompressed = decompressor.decompress(&compressed).expect("decompression should succeed");
+    let compressed = compressor
+        .compress(&bytes)
+        .expect("compression should succeed");
+    let decompressed = decompressor
+        .decompress(&compressed)
+        .expect("decompression should succeed");
 
-    assert_eq!(bytes, decompressed, "compressor/decompressor pair should roundtrip");
+    assert_eq!(
+        bytes, decompressed,
+        "compressor/decompressor pair should roundtrip"
+    );
 }
 
 // =============================================================================
@@ -110,21 +129,31 @@ fn test_zstd_decompression_faster_than_lz4() {
     // Benchmark LZ4 decompression (needs size hint)
     let start = Instant::now();
     for _ in 0..iterations {
-        let _ = lz4_codec.decompress_with_size(&lz4_compressed, original_size).expect("LZ4 decompress");
+        let _ = lz4_codec
+            .decompress_with_size(&lz4_compressed, original_size)
+            .expect("LZ4 decompress");
     }
     let lz4_time = start.elapsed();
 
     // Benchmark Zstd decompression (self-describing format)
     let start = Instant::now();
     for _ in 0..iterations {
-        let _ = zstd_codec.decompress(&zstd_compressed).expect("Zstd decompress");
+        let _ = zstd_codec
+            .decompress(&zstd_compressed)
+            .expect("Zstd decompress");
     }
     let zstd_time = start.elapsed();
 
     let speedup = lz4_time.as_nanos() as f64 / zstd_time.as_nanos() as f64;
 
-    println!("LZ4 decompress: {:?} for {} iterations", lz4_time, iterations);
-    println!("Zstd decompress: {:?} for {} iterations", zstd_time, iterations);
+    println!(
+        "LZ4 decompress: {:?} for {} iterations",
+        lz4_time, iterations
+    );
+    println!(
+        "Zstd decompress: {:?} for {} iterations",
+        zstd_time, iterations
+    );
     println!("Zstd speedup vs LZ4: {:.2}x", speedup);
 
     // Haagenti Zstd decompression is highly optimized
@@ -157,8 +186,16 @@ fn test_zstd_compression_ratio_acceptable() {
     let zstd_ratio = bytes.len() as f64 / zstd_compressed.len() as f64;
 
     println!("Original size: {} bytes", bytes.len());
-    println!("LZ4 compressed: {} bytes (ratio: {:.2}x)", lz4_compressed.len(), lz4_ratio);
-    println!("Zstd compressed: {} bytes (ratio: {:.2}x)", zstd_compressed.len(), zstd_ratio);
+    println!(
+        "LZ4 compressed: {} bytes (ratio: {:.2}x)",
+        lz4_compressed.len(),
+        lz4_ratio
+    );
+    println!(
+        "Zstd compressed: {} bytes (ratio: {:.2}x)",
+        zstd_compressed.len(),
+        zstd_ratio
+    );
 
     // Zstd should have equal or better compression ratio than LZ4
     // Allow 10% tolerance for cases where LZ4 might edge out
@@ -166,7 +203,8 @@ fn test_zstd_compression_ratio_acceptable() {
     assert!(
         ratio_comparison >= 0.9,
         "Zstd compression ratio should be within 10% of LZ4 (got {:.2}x vs {:.2}x)",
-        zstd_ratio, lz4_ratio
+        zstd_ratio,
+        lz4_ratio
     );
 }
 
@@ -195,7 +233,8 @@ fn test_zstd_comparable_ratio_for_repetitive_data() {
     assert!(
         ratio_comparison >= 0.8,
         "Zstd ratio ({:.2}x) should be within 20% of LZ4 ({:.2}x)",
-        zstd_ratio, lz4_ratio
+        zstd_ratio,
+        lz4_ratio
     );
 }
 
@@ -244,9 +283,9 @@ fn test_holotensor_header_compression_configurable() {
 
 #[test]
 fn test_hct_file_with_zstd_compression() {
-    use std::fs::File;
-    use std::io::{BufWriter, BufReader};
     use haagenti::tensor::HctReader;
+    use std::fs::File;
+    use std::io::{BufReader, BufWriter};
 
     let temp_dir = TempDir::new().expect("create temp dir");
     let file_path = temp_dir.path().join("test_tensor.hct");
@@ -270,7 +309,9 @@ fn test_hct_file_with_zstd_compression() {
 
         // Use ZstdCompressor for compression
         let compressor = ZstdCompressor::new();
-        hct_writer.compress_data(&bytes, &compressor).expect("write data");
+        hct_writer
+            .compress_data(&bytes, &compressor)
+            .expect("write data");
         hct_writer.finish().expect("finish");
     }
 
@@ -288,7 +329,9 @@ fn test_hct_file_with_zstd_compression() {
 
         // Decompress and verify data
         let decompressor = ZstdDecompressor::new();
-        let decompressed = hct_reader.decompress_all(&decompressor).expect("decompress");
+        let decompressed = hct_reader
+            .decompress_all(&decompressor)
+            .expect("decompress");
 
         assert_eq!(bytes.len(), decompressed.len());
         assert_eq!(bytes, decompressed);
@@ -321,7 +364,11 @@ fn test_zstd_compression_levels() {
 
         println!("{:?}: {} bytes", level, compressed.len());
 
-        assert_eq!(bytes, decompressed, "roundtrip should be lossless at {:?}", level);
+        assert_eq!(
+            bytes, decompressed,
+            "roundtrip should be lossless at {:?}",
+            level
+        );
 
         // Higher compression levels should generally produce smaller output
         // (not strictly guaranteed, but should trend that way)
@@ -376,7 +423,10 @@ fn test_zstd_incompressible_data() {
     let compressed = codec.compress(&random).expect("compress random");
     let decompressed = codec.decompress(&compressed).expect("decompress random");
 
-    assert_eq!(random, decompressed, "roundtrip should work for random data");
+    assert_eq!(
+        random, decompressed,
+        "roundtrip should work for random data"
+    );
 
     // For truly random data, compressed size may be larger than original
     // (due to framing overhead), but should not be dramatically larger

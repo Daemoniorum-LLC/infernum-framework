@@ -200,7 +200,10 @@ mod tests {
         let server = TestServer::start(router).await;
 
         assert!(!server.url().is_empty());
-        assert_eq!(server.url_for("/health"), format!("{}/health", server.url()));
+        assert_eq!(
+            server.url_for("/health"),
+            format!("{}/health", server.url())
+        );
 
         server.shutdown();
     }
@@ -212,7 +215,10 @@ mod tests {
             .json(serde_json::json!({"model": "test"}));
 
         assert_eq!(request.method(), "POST");
-        assert!(request.headers().iter().any(|(k, v)| k == "Authorization" && v.contains("sk-test")));
+        assert!(request
+            .headers()
+            .iter()
+            .any(|(k, v)| k == "Authorization" && v.contains("sk-test")));
         assert!(request.body().is_some());
     }
 }

@@ -38,15 +38,13 @@ static TOOL_CALL_EXTRACT_REGEX: OnceLock<Regex> = OnceLock::new();
 
 fn get_tool_call_regex() -> &'static Regex {
     TOOL_CALL_REGEX.get_or_init(|| {
-        Regex::new(r"(?s)<tool_call>\s*(.*?)\s*</tool_call>")
-            .expect("invalid tool_call regex")
+        Regex::new(r"(?s)<tool_call>\s*(.*?)\s*</tool_call>").expect("invalid tool_call regex")
     })
 }
 
 fn get_tool_call_extract_regex() -> &'static Regex {
     TOOL_CALL_EXTRACT_REGEX.get_or_init(|| {
-        Regex::new(r"(?s)<tool_call>.*?</tool_call>")
-            .expect("invalid tool_call_extract regex")
+        Regex::new(r"(?s)<tool_call>.*?</tool_call>").expect("invalid tool_call_extract regex")
     })
 }
 
@@ -173,7 +171,9 @@ fn format_tools_llama(tools: &[Tool]) -> String {
     }
 
     result.push_str("To call a function, respond with a JSON object in the following format:\n");
-    result.push_str("<|python_tag|>{\"name\": \"function_name\", \"arguments\": {\"arg1\": \"value1\"}}\n");
+    result.push_str(
+        "<|python_tag|>{\"name\": \"function_name\", \"arguments\": {\"arg1\": \"value1\"}}\n",
+    );
     result.push_str("\nOnly call functions when necessary to answer the user's request.\n");
 
     result
@@ -203,7 +203,9 @@ fn format_tools_mistral(tools: &[Tool]) -> String {
     result.push_str(&serde_json::to_string(&tools_json).unwrap_or_default());
     result.push_str("\n[/AVAILABLE_TOOLS]\n\n");
     result.push_str("When you need to call a tool, respond with:\n");
-    result.push_str("[TOOL_CALLS] [{\"name\": \"function_name\", \"arguments\": {\"arg1\": \"value1\"}}]\n");
+    result.push_str(
+        "[TOOL_CALLS] [{\"name\": \"function_name\", \"arguments\": {\"arg1\": \"value1\"}}]\n",
+    );
 
     result
 }
@@ -298,8 +300,7 @@ static MISTRAL_TOOL_CALL_REGEX: OnceLock<Regex> = OnceLock::new();
 
 fn get_mistral_tool_call_regex() -> &'static Regex {
     MISTRAL_TOOL_CALL_REGEX.get_or_init(|| {
-        Regex::new(r#"\[TOOL_CALLS\]\s*\[([^\]]+)\]"#)
-            .expect("invalid mistral tool_call regex")
+        Regex::new(r#"\[TOOL_CALLS\]\s*\[([^\]]+)\]"#).expect("invalid mistral tool_call regex")
     })
 }
 
@@ -395,8 +396,7 @@ static MISTRAL_EXTRACT_REGEX: OnceLock<Regex> = OnceLock::new();
 
 fn get_mistral_extract_regex() -> &'static Regex {
     MISTRAL_EXTRACT_REGEX.get_or_init(|| {
-        Regex::new(r#"\[TOOL_CALLS\]\s*\[[^\]]+\]"#)
-            .expect("invalid mistral extract regex")
+        Regex::new(r#"\[TOOL_CALLS\]\s*\[[^\]]+\]"#).expect("invalid mistral extract regex")
     })
 }
 
@@ -432,7 +432,10 @@ pub fn process_model_output(output: &str, model_family: ModelFamily) -> ToolProc
     let detected = detect_tool_calls(output, model_family);
     let content = extract_text_content(output, model_family);
 
-    let tool_calls: Vec<ToolCall> = detected.iter().map(DetectedToolCall::to_tool_call).collect();
+    let tool_calls: Vec<ToolCall> = detected
+        .iter()
+        .map(DetectedToolCall::to_tool_call)
+        .collect();
 
     let finish_reason = if tool_calls.is_empty() {
         "stop".to_string()
@@ -497,7 +500,13 @@ pub fn get_forced_tool(tool_choice: Option<&ToolChoice>) -> Option<&str> {
 
 /// Tool call start markers by model family.
 const QWEN_START_MARKERS: &[&str] = &["<tool_call>", "<tool_call", "<tool_", "<tool"];
-const LLAMA_START_MARKERS: &[&str] = &["<|python_tag|>", "<|python_tag", "<|python_", "<|python", "<|"];
+const LLAMA_START_MARKERS: &[&str] = &[
+    "<|python_tag|>",
+    "<|python_tag",
+    "<|python_",
+    "<|python",
+    "<|",
+];
 const MISTRAL_START_MARKERS: &[&str] = &["[TOOL_CALLS]", "[TOOL_CALLS", "[TOOL_", "[TOOL"];
 
 /// Check if a buffer might contain the start of a tool call marker.
@@ -594,7 +603,10 @@ pub struct StreamingExtractResult {
 /// # Returns
 /// Extraction result with tool call and remaining content
 #[must_use]
-pub fn try_extract_complete_tool_call(buffer: &str, model_family: ModelFamily) -> StreamingExtractResult {
+pub fn try_extract_complete_tool_call(
+    buffer: &str,
+    model_family: ModelFamily,
+) -> StreamingExtractResult {
     match model_family {
         ModelFamily::Qwen | ModelFamily::Unknown => try_extract_qwen(buffer),
         ModelFamily::Llama => try_extract_llama(buffer),
@@ -831,11 +843,15 @@ pub struct ProcessingOptions {
 /// # Returns
 /// Filtered list of tool calls
 #[must_use]
-pub fn enforce_parallel_tool_calls(calls: Vec<DetectedToolCall>, parallel: bool) -> Vec<DetectedToolCall> {
-    if parallel || calls.is_empty() {
+pub fn enforce_parallel_tool_calls(
+    calls: Vec<DetectedToolCall>,
+    parallel: bool,
+) -> Vec<DetectedToolCall> {
+    if parallel {
         calls
     } else {
-        vec![calls.into_iter().next().unwrap()]
+        // Take only the first call when parallel is disabled
+        calls.into_iter().take(1).collect()
     }
 }
 
@@ -861,7 +877,10 @@ pub fn process_model_output_with_options(
     let detected = enforce_parallel_tool_calls(detected, options.parallel_tool_calls);
     let content = extract_text_content(output, model_family);
 
-    let tool_calls: Vec<ToolCall> = detected.iter().map(DetectedToolCall::to_tool_call).collect();
+    let tool_calls: Vec<ToolCall> = detected
+        .iter()
+        .map(DetectedToolCall::to_tool_call)
+        .collect();
 
     let finish_reason = if tool_calls.is_empty() {
         "stop".to_string()
@@ -894,8 +913,8 @@ pub fn process_model_output_with_options(
 /// # Returns
 /// Ok(()) if valid, Err(message) if invalid
 pub fn validate_tool_arguments(arguments: &str, schema: &serde_json::Value) -> Result<(), String> {
-    let args: serde_json::Value = serde_json::from_str(arguments)
-        .map_err(|e| format!("Invalid JSON: {e}"))?;
+    let args: serde_json::Value =
+        serde_json::from_str(arguments).map_err(|e| format!("Invalid JSON: {e}"))?;
 
     validate_value_against_schema(&args, schema, "")
 }
@@ -916,15 +935,15 @@ fn validate_value_against_schema(
                 } else {
                     "number"
                 }
-            }
+            },
             serde_json::Value::String(_) => "string",
             serde_json::Value::Array(_) => "array",
             serde_json::Value::Object(_) => "object",
         };
 
         // Allow integer for number type
-        let type_matches = actual_type == expected_type
-            || (expected_type == "number" && actual_type == "integer");
+        let type_matches =
+            actual_type == expected_type || (expected_type == "number" && actual_type == "integer");
 
         if !type_matches {
             return Err(format!(
@@ -1029,7 +1048,10 @@ pub fn process_model_output_with_validation(
         }
     }
 
-    let tool_calls: Vec<ToolCall> = detected.iter().map(DetectedToolCall::to_tool_call).collect();
+    let tool_calls: Vec<ToolCall> = detected
+        .iter()
+        .map(DetectedToolCall::to_tool_call)
+        .collect();
 
     let finish_reason = if tool_calls.is_empty() {
         "stop".to_string()
@@ -1072,7 +1094,10 @@ pub struct DetectedCallsValidation {
 /// # Returns
 /// Validation result with valid calls and unknown tool names
 #[must_use]
-pub fn validate_detected_calls(detected: &[DetectedToolCall], tools: &[Tool]) -> DetectedCallsValidation {
+pub fn validate_detected_calls(
+    detected: &[DetectedToolCall],
+    tools: &[Tool],
+) -> DetectedCallsValidation {
     let mut valid_calls = Vec::new();
     let mut unknown_tools = Vec::new();
 
@@ -1220,7 +1245,9 @@ impl StreamingToolDetector {
             }
 
             // Definitely not a tool call - emit buffered text
-            if definitely_not_tool_call(&self.buffer, self.model_family) || !self.in_potential_tool_call {
+            if definitely_not_tool_call(&self.buffer, self.model_family)
+                || !self.in_potential_tool_call
+            {
                 if !self.buffer.is_empty() {
                     let text = std::mem::take(&mut self.buffer);
                     events.push(ToolDetectionEvent::Text(text));
@@ -1539,8 +1566,16 @@ mod tests {
     #[test]
     fn test_format_multiple_tools_qwen_native() {
         let tools = vec![
-            make_tool("tool_a", "First tool", json!({"type": "object", "properties": {}})),
-            make_tool("tool_b", "Second tool", json!({"type": "object", "properties": {}})),
+            make_tool(
+                "tool_a",
+                "First tool",
+                json!({"type": "object", "properties": {}}),
+            ),
+            make_tool(
+                "tool_b",
+                "Second tool",
+                json!({"type": "object", "properties": {}}),
+            ),
         ];
 
         let result = format_tools_for_prompt(&tools, ModelFamily::Qwen);
@@ -1923,25 +1958,52 @@ More text after."#;
             // "<tool" could be start of "<tool_call>"
             assert!(buffer_might_contain_tool_start("<tool", ModelFamily::Qwen));
             assert!(buffer_might_contain_tool_start("<tool_", ModelFamily::Qwen));
-            assert!(buffer_might_contain_tool_start("<tool_call", ModelFamily::Qwen));
+            assert!(buffer_might_contain_tool_start(
+                "<tool_call",
+                ModelFamily::Qwen
+            ));
 
             // Regular text should not trigger buffering
-            assert!(!buffer_might_contain_tool_start("hello world", ModelFamily::Qwen));
-            assert!(!buffer_might_contain_tool_start("the tool is ready", ModelFamily::Qwen));
+            assert!(!buffer_might_contain_tool_start(
+                "hello world",
+                ModelFamily::Qwen
+            ));
+            assert!(!buffer_might_contain_tool_start(
+                "the tool is ready",
+                ModelFamily::Qwen
+            ));
         }
 
         #[test]
         fn test_buffer_detects_potential_tool_start_llama() {
-            assert!(buffer_might_contain_tool_start("<|python", ModelFamily::Llama));
-            assert!(buffer_might_contain_tool_start("<|python_tag", ModelFamily::Llama));
-            assert!(!buffer_might_contain_tool_start("hello", ModelFamily::Llama));
+            assert!(buffer_might_contain_tool_start(
+                "<|python",
+                ModelFamily::Llama
+            ));
+            assert!(buffer_might_contain_tool_start(
+                "<|python_tag",
+                ModelFamily::Llama
+            ));
+            assert!(!buffer_might_contain_tool_start(
+                "hello",
+                ModelFamily::Llama
+            ));
         }
 
         #[test]
         fn test_buffer_detects_potential_tool_start_mistral() {
-            assert!(buffer_might_contain_tool_start("[TOOL", ModelFamily::Mistral));
-            assert!(buffer_might_contain_tool_start("[TOOL_CALLS", ModelFamily::Mistral));
-            assert!(!buffer_might_contain_tool_start("hello", ModelFamily::Mistral));
+            assert!(buffer_might_contain_tool_start(
+                "[TOOL",
+                ModelFamily::Mistral
+            ));
+            assert!(buffer_might_contain_tool_start(
+                "[TOOL_CALLS",
+                ModelFamily::Mistral
+            ));
+            assert!(!buffer_might_contain_tool_start(
+                "hello",
+                ModelFamily::Mistral
+            ));
         }
 
         /// Should extract a complete tool call from a buffer, returning remaining content.
@@ -1974,7 +2036,10 @@ More text after."#;
         #[test]
         fn test_definitely_not_tool_call() {
             // If we've buffered enough and it's clearly not a tool marker
-            assert!(definitely_not_tool_call("<tooltip>hover</tooltip>", ModelFamily::Qwen));
+            assert!(definitely_not_tool_call(
+                "<tooltip>hover</tooltip>",
+                ModelFamily::Qwen
+            ));
             assert!(!definitely_not_tool_call("<tool_call>", ModelFamily::Qwen));
         }
     }
@@ -2022,7 +2087,10 @@ More text after."#;
             let result = process_model_output_with_options(
                 output,
                 ModelFamily::Qwen,
-                ProcessingOptions { parallel_tool_calls: false, ..Default::default() }
+                ProcessingOptions {
+                    parallel_tool_calls: false,
+                    ..Default::default()
+                },
             );
             assert_eq!(result.tool_calls.len(), 1);
             assert_eq!(result.tool_calls[0].function.name, "tool_a");
@@ -2060,7 +2128,7 @@ More text after."#;
                 "required": ["location"]
             });
 
-            let arguments = r#"{}"#;  // Missing required "location"
+            let arguments = r#"{}"#; // Missing required "location"
             let result = validate_tool_arguments(arguments, &schema);
 
             assert!(result.is_err());
@@ -2112,19 +2180,15 @@ More text after."#;
                         },
                         "required": ["location"]
                     })),
-                    strict: Some(true),  // Strict mode enabled
+                    strict: Some(true), // Strict mode enabled
                 },
             };
 
             let output = r#"<tool_call>
 {"name": "get_weather", "arguments": {}}
-</tool_call>"#;  // Missing required location
+</tool_call>"#; // Missing required location
 
-            let result = process_model_output_with_validation(
-                output,
-                ModelFamily::Qwen,
-                &[tool],
-            );
+            let result = process_model_output_with_validation(output, ModelFamily::Qwen, &[tool]);
 
             // Should report validation errors
             assert!(!result.validation_errors.is_empty());
@@ -2138,7 +2202,8 @@ More text after."#;
         #[test]
         fn test_extract_deeply_nested_json() {
             // 3 levels of nesting - current regex fails
-            let json_str = r#"{"name": "test", "arguments": {"outer": {"middle": {"inner": "value"}}}}"#;
+            let json_str =
+                r#"{"name": "test", "arguments": {"outer": {"middle": {"inner": "value"}}}}"#;
 
             let result = extract_json_object(json_str, 0);
 
@@ -2264,11 +2329,7 @@ More text after."#;
 </tool_call>"#;
 
             // Use the validation function (not ProcessingOptions) for tool checking
-            let result = process_model_output_with_validation(
-                output,
-                ModelFamily::Qwen,
-                &[tool],
-            );
+            let result = process_model_output_with_validation(output, ModelFamily::Qwen, &[tool]);
 
             // Tool calls are still returned, but validation errors are reported
             assert_eq!(result.result.tool_calls.len(), 1);
@@ -2443,13 +2504,11 @@ More text after."#;
                 make_tool("tool_b", "B", json!({})),
             ];
 
-            let detected = vec![
-                DetectedToolCall {
-                    id: "call_1".to_string(),
-                    name: "tool_a".to_string(),
-                    arguments: "{}".to_string(),
-                },
-            ];
+            let detected = vec![DetectedToolCall {
+                id: "call_1".to_string(),
+                name: "tool_a".to_string(),
+                arguments: "{}".to_string(),
+            }];
 
             let result = validate_detected_calls(&detected, &tools);
 
@@ -2461,13 +2520,11 @@ More text after."#;
         fn test_validate_detected_calls_unknown_tools() {
             let tools = vec![make_tool("tool_a", "A", json!({}))];
 
-            let detected = vec![
-                DetectedToolCall {
-                    id: "call_1".to_string(),
-                    name: "unknown_tool".to_string(),
-                    arguments: "{}".to_string(),
-                },
-            ];
+            let detected = vec![DetectedToolCall {
+                id: "call_1".to_string(),
+                name: "unknown_tool".to_string(),
+                arguments: "{}".to_string(),
+            }];
 
             let result = validate_detected_calls(&detected, &tools);
 
@@ -2541,7 +2598,7 @@ More text after."#;
                 ToolDetectionEvent::ToolCall(call) => {
                     assert_eq!(call.name, "get_weather");
                     assert!(call.arguments.contains("NYC"));
-                }
+                },
                 other => panic!("Expected ToolCall, got {:?}", other),
             }
         }
@@ -2561,8 +2618,10 @@ More text after."#;
             assert!(detector.is_buffering());
 
             // Third chunk: JSON content
-            let events3 = detector.process_chunk(r#"
-{"name": "test", "arguments": {}}"#);
+            let events3 = detector.process_chunk(
+                r#"
+{"name": "test", "arguments": {}}"#,
+            );
             assert!(detector.is_buffering());
 
             // Fourth chunk: closing tag
@@ -2574,7 +2633,7 @@ More text after."#;
             match &events4[0] {
                 ToolDetectionEvent::ToolCall(call) => {
                     assert_eq!(call.name, "test");
-                }
+                },
                 other => panic!("Expected ToolCall, got {:?}", other),
             }
         }
@@ -2656,7 +2715,7 @@ More text after."#;
                 ToolDetectionEvent::Text(text) => {
                     assert!(text.contains("<tool_call>"));
                     assert!(text.contains("incomplete"));
-                }
+                },
                 other => panic!("Expected Text, got {:?}", other),
             }
         }
@@ -2685,7 +2744,9 @@ More text after."#;
 
             // Should emit the whole thing as text
             assert!(!detector.is_buffering());
-            let has_text = events2.iter().any(|e| matches!(e, ToolDetectionEvent::Text(_)));
+            let has_text = events2
+                .iter()
+                .any(|e| matches!(e, ToolDetectionEvent::Text(_)));
             assert!(has_text);
         }
 
@@ -2762,7 +2823,7 @@ More text after."#;
                     assert_eq!(call.name, "nested");
                     let args: serde_json::Value = serde_json::from_str(&call.arguments).unwrap();
                     assert_eq!(args["a"]["b"]["c"]["d"], "deep");
-                }
+                },
                 other => panic!("Expected ToolCall, got {:?}", other),
             }
         }
@@ -2884,11 +2945,15 @@ More text after."#;
             let event: SseEvent = serde_json::from_str(json).unwrap();
 
             match event {
-                SseEvent::ToolCall { id, name, arguments } => {
+                SseEvent::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                } => {
                     assert_eq!(id, "call_123");
                     assert_eq!(name, "test");
                     assert_eq!(arguments["x"], 1);
-                }
+                },
                 other => panic!("Expected ToolCall, got {:?}", other),
             }
         }
@@ -2899,10 +2964,13 @@ More text after."#;
             let event: SseEvent = serde_json::from_str(json).unwrap();
 
             match event {
-                SseEvent::Done { finish_reason, usage } => {
+                SseEvent::Done {
+                    finish_reason,
+                    usage,
+                } => {
                     assert_eq!(finish_reason, "stop");
                     assert!(usage.is_none());
-                }
+                },
                 other => panic!("Expected Done, got {:?}", other),
             }
         }
@@ -2935,11 +3003,15 @@ More text after."#;
 
             assert!(sse.is_some());
             match sse.unwrap() {
-                SseEvent::ToolCall { id, name, arguments } => {
+                SseEvent::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                } => {
                     assert_eq!(id, "call_xyz");
                     assert_eq!(name, "my_tool");
                     assert_eq!(arguments["a"], 1);
-                }
+                },
                 other => panic!("Expected ToolCall, got {:?}", other),
             }
         }
@@ -2962,10 +3034,7 @@ More text after."#;
             let mut detector = StreamingToolDetector::new(ModelFamily::Qwen);
             let events = detector.process_chunk("Hello world");
 
-            let sse_events: Vec<SseEvent> = events
-                .into_iter()
-                .filter_map(|e| e.into())
-                .collect();
+            let sse_events: Vec<SseEvent> = events.into_iter().filter_map(|e| e.into()).collect();
 
             assert_eq!(sse_events.len(), 1);
             let json = sse_events[0].to_json();
@@ -2981,10 +3050,7 @@ More text after."#;
 </tool_call>"#;
 
             let events = detector.process_chunk(chunk);
-            let sse_events: Vec<SseEvent> = events
-                .into_iter()
-                .filter_map(|e| e.into())
-                .collect();
+            let sse_events: Vec<SseEvent> = events.into_iter().filter_map(|e| e.into()).collect();
 
             assert_eq!(sse_events.len(), 2);
 
@@ -2996,10 +3062,12 @@ More text after."#;
 
             // Second: tool call
             match &sse_events[1] {
-                SseEvent::ToolCall { name, arguments, .. } => {
+                SseEvent::ToolCall {
+                    name, arguments, ..
+                } => {
                     assert_eq!(name, "search");
                     assert_eq!(arguments["query"], "rust");
-                }
+                },
                 other => panic!("Expected ToolCall, got {:?}", other),
             }
         }
@@ -3026,19 +3094,30 @@ More text after."#;
             all_sse.extend(detector.finish().into_iter().filter_map(|e| e.into()));
 
             // Should have text events and a tool call
-            let text_count = all_sse.iter().filter(|e| matches!(e, SseEvent::Text { .. })).count();
-            let tool_count = all_sse.iter().filter(|e| matches!(e, SseEvent::ToolCall { .. })).count();
+            let text_count = all_sse
+                .iter()
+                .filter(|e| matches!(e, SseEvent::Text { .. }))
+                .count();
+            let tool_count = all_sse
+                .iter()
+                .filter(|e| matches!(e, SseEvent::ToolCall { .. }))
+                .count();
 
             assert!(text_count >= 1, "Should have text events");
             assert_eq!(tool_count, 1, "Should have exactly one tool call");
 
             // Verify the tool call is correct
-            let tool_event = all_sse.iter().find(|e| matches!(e, SseEvent::ToolCall { .. })).unwrap();
+            let tool_event = all_sse
+                .iter()
+                .find(|e| matches!(e, SseEvent::ToolCall { .. }))
+                .unwrap();
             match tool_event {
-                SseEvent::ToolCall { name, arguments, .. } => {
+                SseEvent::ToolCall {
+                    name, arguments, ..
+                } => {
                     assert_eq!(name, "get_weather");
                     assert_eq!(arguments["location"], "NYC");
-                }
+                },
                 _ => unreachable!(),
             }
         }

@@ -2,15 +2,18 @@ name: CI
 
 on:
   push:
-    branches: [main, development]
+    branches: [main, develop]
   pull_request:
-    branches: [main, development]
+    branches: [main, develop]
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   # Workaround for aws-lc-sys compiler bug check
   AWS_LC_SYS_PREBUILT_NASM: 1
+  # Platform-independent features (excludes cuda, metal which require hardware)
+  # Note: lance temporarily excluded due to arrow version incompatibility (tracked in #33)
+  SAFE_FEATURES: "--features llama-cpp,holotensor,integration-tests"
 
 jobs:
   check:
@@ -21,7 +24,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run cargo check
-        run: cargo check --workspace --all-features
+        run: cargo check --workspace ${{ env.SAFE_FEATURES }}
 
   fmt:
     name: Format
@@ -44,7 +47,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Run cargo clippy
-        run: cargo clippy --workspace --all-features -- -D warnings
+        run: cargo clippy --workspace ${{ env.SAFE_FEATURES }} -- -D warnings
 
   test:
     name: Test (${{ matrix.os }})
@@ -53,12 +56,19 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            features: "--features llama-cpp,holotensor,integration-tests"
+          - os: macos-latest
+            features: "--features llama-cpp,holotensor,metal,integration-tests"
+          - os: windows-latest
+            features: "--features llama-cpp,holotensor,integration-tests"
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
-        run: cargo test --workspace --all-features
+        run: cargo test --workspace ${{ matrix.features }}
 
   docs:
     name: Documentation
@@ -68,7 +78,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build documentation
-        run: cargo doc --workspace --no-deps --all-features
+        run: cargo doc --workspace --no-deps ${{ env.SAFE_FEATURES }}
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -82,7 +92,7 @@ jobs:
           toolchain: "1.91"
       - uses: Swatinem/rust-cache@v2
       - name: Check MSRV
-        run: cargo check --workspace --all-features
+        run: cargo check --workspace ${{ env.SAFE_FEATURES }}
 
   security:
     name: Security Audit

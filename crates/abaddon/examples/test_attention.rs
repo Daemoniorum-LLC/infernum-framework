@@ -1,7 +1,7 @@
 //! Test attention mechanism specifically to find where quality degrades
 
-use std::path::Path;
 use std::collections::HashMap;
+use std::path::Path;
 
 use candle_core::{DType, Device, Tensor, D};
 use safetensors::SafeTensors;
@@ -10,11 +10,17 @@ use abaddon::hct_sequential::load_hct_directory_sequential;
 use anyhow::Result;
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() { return 0.0; }
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
     let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
     let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
     let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a > 0.0 && norm_b > 0.0 { dot / (norm_a * norm_b) } else { 0.0 }
+    if norm_a > 0.0 && norm_b > 0.0 {
+        dot / (norm_a * norm_b)
+    } else {
+        0.0
+    }
 }
 
 fn load_safetensors(path: &Path, device: &Device) -> Result<HashMap<String, Tensor>> {
@@ -30,18 +36,20 @@ fn load_safetensors(path: &Path, device: &Device) -> Result<HashMap<String, Tens
 
         let tensor = match st_tensor.dtype() {
             safetensors::Dtype::BF16 => {
-                let halfs: Vec<half::bf16> = data.chunks_exact(2)
+                let halfs: Vec<half::bf16> = data
+                    .chunks_exact(2)
                     .map(|chunk| half::bf16::from_le_bytes([chunk[0], chunk[1]]))
                     .collect();
                 let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
                 Tensor::from_vec(floats, shape.as_slice(), device)?
-            }
+            },
             safetensors::Dtype::F32 => {
-                let floats: Vec<f32> = data.chunks_exact(4)
+                let floats: Vec<f32> = data
+                    .chunks_exact(4)
                     .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                     .collect();
                 Tensor::from_vec(floats, shape.as_slice(), device)?
-            }
+            },
             _ => continue,
         };
 
@@ -51,7 +59,12 @@ fn load_safetensors(path: &Path, device: &Device) -> Result<HashMap<String, Tens
     Ok(tensors)
 }
 
-fn load_hybrid(hct_dir: &Path, safetensors_path: &Path, device: &Device, dtype: DType) -> Result<HashMap<String, Tensor>> {
+fn load_hybrid(
+    hct_dir: &Path,
+    safetensors_path: &Path,
+    device: &Device,
+    dtype: DType,
+) -> Result<HashMap<String, Tensor>> {
     let mut tensors = load_hct_directory_sequential(hct_dir, device, dtype)?;
     let file_content = std::fs::read(safetensors_path)?;
     let st = SafeTensors::deserialize(&file_content)?;
@@ -65,18 +78,20 @@ fn load_hybrid(hct_dir: &Path, safetensors_path: &Path, device: &Device, dtype: 
 
             let tensor = match st_tensor.dtype() {
                 safetensors::Dtype::BF16 => {
-                    let halfs: Vec<half::bf16> = data.chunks_exact(2)
+                    let halfs: Vec<half::bf16> = data
+                        .chunks_exact(2)
                         .map(|chunk| half::bf16::from_le_bytes([chunk[0], chunk[1]]))
                         .collect();
                     let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
                     Tensor::from_vec(floats, shape.as_slice(), device)?
-                }
+                },
                 safetensors::Dtype::F32 => {
-                    let floats: Vec<f32> = data.chunks_exact(4)
+                    let floats: Vec<f32> = data
+                        .chunks_exact(4)
                         .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                         .collect();
                     Tensor::from_vec(floats, shape.as_slice(), device)?
-                }
+                },
                 _ => continue,
             };
 
@@ -96,11 +111,11 @@ fn apply_rope(x: &Tensor, seq_len: usize, head_dim: usize) -> Result<Tensor> {
 
 /// Simple attention forward pass (no KV cache, single head for testing)
 fn attention_forward(
-    hidden: &Tensor,  // [batch, seq, hidden]
-    q_proj: &Tensor,  // [hidden, hidden]
-    k_proj: &Tensor,  // [kv_dim, hidden]
-    v_proj: &Tensor,  // [kv_dim, hidden]
-    o_proj: &Tensor,  // [hidden, hidden]
+    hidden: &Tensor, // [batch, seq, hidden]
+    q_proj: &Tensor, // [hidden, hidden]
+    k_proj: &Tensor, // [kv_dim, hidden]
+    v_proj: &Tensor, // [kv_dim, hidden]
+    o_proj: &Tensor, // [hidden, hidden]
     num_heads: usize,
     num_kv_heads: usize,
 ) -> Result<Tensor> {
@@ -108,9 +123,9 @@ fn attention_forward(
     let head_dim = hidden_size / num_heads;
 
     // Q, K, V projections (use broadcast_matmul for batched input)
-    let q = hidden.broadcast_matmul(&q_proj.t()?)?;  // [batch, seq, hidden]
-    let k = hidden.broadcast_matmul(&k_proj.t()?)?;  // [batch, seq, kv_dim]
-    let v = hidden.broadcast_matmul(&v_proj.t()?)?;  // [batch, seq, kv_dim]
+    let q = hidden.broadcast_matmul(&q_proj.t()?)?; // [batch, seq, hidden]
+    let k = hidden.broadcast_matmul(&k_proj.t()?)?; // [batch, seq, kv_dim]
+    let v = hidden.broadcast_matmul(&v_proj.t()?)?; // [batch, seq, kv_dim]
 
     // Reshape for multi-head attention
     let q = q.reshape((batch, seq_len, num_heads, head_dim))?;
@@ -129,7 +144,7 @@ fn attention_forward(
 
     // Scaled dot-product attention
     let scale = (head_dim as f64).sqrt();
-    let scores = q.matmul(&k.transpose(2, 3)?.contiguous()?)?;  // [batch, heads, seq, seq]
+    let scores = q.matmul(&k.transpose(2, 3)?.contiguous()?)?; // [batch, heads, seq, seq]
     let scores = (scores / scale)?;
 
     // Causal mask (lower triangular) - add large negative to positions to mask
@@ -150,10 +165,10 @@ fn attention_forward(
     let attn_weights = candle_nn::ops::softmax(&scores, D::Minus1)?;
 
     // Apply attention to values
-    let attn_output = attn_weights.matmul(&v)?;  // [batch, heads, seq, head_dim]
+    let attn_output = attn_weights.matmul(&v)?; // [batch, heads, seq, head_dim]
 
     // Reshape back
-    let attn_output = attn_output.transpose(1, 2)?.contiguous()?;  // [batch, seq, heads, head_dim]
+    let attn_output = attn_output.transpose(1, 2)?.contiguous()?; // [batch, seq, heads, head_dim]
     let attn_output = attn_output.reshape((batch, seq_len, hidden_size))?;
 
     // Output projection
@@ -181,10 +196,10 @@ fn main() -> Result<()> {
 
     // Get initial hidden state from embedding
     let embed_orig = orig_tensors.get("model.embed_tokens.weight").unwrap();
-    let test_tokens = Tensor::new(&[128000u32, 9906u32, 11u32, 358u32], &device)?;  // BOS + "Hello, I"
+    let test_tokens = Tensor::new(&[128000u32, 9906u32, 11u32, 358u32], &device)?; // BOS + "Hello, I"
 
-    let hidden_orig = embed_orig.index_select(&test_tokens, 0)?;  // [4, 2048]
-    let hidden_orig = hidden_orig.unsqueeze(0)?;  // [1, 4, 2048]
+    let hidden_orig = embed_orig.index_select(&test_tokens, 0)?; // [4, 2048]
+    let hidden_orig = hidden_orig.unsqueeze(0)?; // [1, 4, 2048]
 
     let embed_hct = hct_tensors.get("model.embed_tokens.weight").unwrap();
     let hidden_hct = embed_hct.index_select(&test_tokens, 0)?.unsqueeze(0)?;
@@ -195,32 +210,84 @@ fn main() -> Result<()> {
     for layer_idx in [0, 7, 15] {
         println!("\n--- Layer {} ---", layer_idx);
 
-        let q_orig = orig_tensors.get(&format!("model.layers.{}.self_attn.q_proj.weight", layer_idx)).unwrap();
-        let k_orig = orig_tensors.get(&format!("model.layers.{}.self_attn.k_proj.weight", layer_idx)).unwrap();
-        let v_orig = orig_tensors.get(&format!("model.layers.{}.self_attn.v_proj.weight", layer_idx)).unwrap();
-        let o_orig = orig_tensors.get(&format!("model.layers.{}.self_attn.o_proj.weight", layer_idx)).unwrap();
+        let q_orig = orig_tensors
+            .get(&format!(
+                "model.layers.{}.self_attn.q_proj.weight",
+                layer_idx
+            ))
+            .unwrap();
+        let k_orig = orig_tensors
+            .get(&format!(
+                "model.layers.{}.self_attn.k_proj.weight",
+                layer_idx
+            ))
+            .unwrap();
+        let v_orig = orig_tensors
+            .get(&format!(
+                "model.layers.{}.self_attn.v_proj.weight",
+                layer_idx
+            ))
+            .unwrap();
+        let o_orig = orig_tensors
+            .get(&format!(
+                "model.layers.{}.self_attn.o_proj.weight",
+                layer_idx
+            ))
+            .unwrap();
 
-        let q_hct = hct_tensors.get(&format!("model.layers.{}.self_attn.q_proj.weight", layer_idx)).unwrap();
-        let k_hct = hct_tensors.get(&format!("model.layers.{}.self_attn.k_proj.weight", layer_idx)).unwrap();
-        let v_hct = hct_tensors.get(&format!("model.layers.{}.self_attn.v_proj.weight", layer_idx)).unwrap();
-        let o_hct = hct_tensors.get(&format!("model.layers.{}.self_attn.o_proj.weight", layer_idx)).unwrap();
+        let q_hct = hct_tensors
+            .get(&format!(
+                "model.layers.{}.self_attn.q_proj.weight",
+                layer_idx
+            ))
+            .unwrap();
+        let k_hct = hct_tensors
+            .get(&format!(
+                "model.layers.{}.self_attn.k_proj.weight",
+                layer_idx
+            ))
+            .unwrap();
+        let v_hct = hct_tensors
+            .get(&format!(
+                "model.layers.{}.self_attn.v_proj.weight",
+                layer_idx
+            ))
+            .unwrap();
+        let o_hct = hct_tensors
+            .get(&format!(
+                "model.layers.{}.self_attn.o_proj.weight",
+                layer_idx
+            ))
+            .unwrap();
 
         // Check weight similarities
         let q_o_flat: Vec<f32> = q_orig.flatten_all()?.to_vec1()?;
         let q_h_flat: Vec<f32> = q_hct.flatten_all()?.to_vec1()?;
-        println!("Q weight cosine: {:.6}", cosine_similarity(&q_o_flat, &q_h_flat));
+        println!(
+            "Q weight cosine: {:.6}",
+            cosine_similarity(&q_o_flat, &q_h_flat)
+        );
 
         let k_o_flat: Vec<f32> = k_orig.flatten_all()?.to_vec1()?;
         let k_h_flat: Vec<f32> = k_hct.flatten_all()?.to_vec1()?;
-        println!("K weight cosine: {:.6}", cosine_similarity(&k_o_flat, &k_h_flat));
+        println!(
+            "K weight cosine: {:.6}",
+            cosine_similarity(&k_o_flat, &k_h_flat)
+        );
 
         let v_o_flat: Vec<f32> = v_orig.flatten_all()?.to_vec1()?;
         let v_h_flat: Vec<f32> = v_hct.flatten_all()?.to_vec1()?;
-        println!("V weight cosine: {:.6}", cosine_similarity(&v_o_flat, &v_h_flat));
+        println!(
+            "V weight cosine: {:.6}",
+            cosine_similarity(&v_o_flat, &v_h_flat)
+        );
 
         let o_o_flat: Vec<f32> = o_orig.flatten_all()?.to_vec1()?;
         let o_h_flat: Vec<f32> = o_hct.flatten_all()?.to_vec1()?;
-        println!("O weight cosine: {:.6}", cosine_similarity(&o_o_flat, &o_h_flat));
+        println!(
+            "O weight cosine: {:.6}",
+            cosine_similarity(&o_o_flat, &o_h_flat)
+        );
 
         // Test Q projection output (using original hidden)
         // For batched matmul with [batch, seq, hidden] @ [hidden, out]
@@ -228,15 +295,37 @@ fn main() -> Result<()> {
         let q_out_hct = hidden_orig.broadcast_matmul(&q_hct.t()?)?;
         let q_out_o_flat: Vec<f32> = q_out_orig.flatten_all()?.to_vec1()?;
         let q_out_h_flat: Vec<f32> = q_out_hct.flatten_all()?.to_vec1()?;
-        println!("Q projection output cosine: {:.6}", cosine_similarity(&q_out_o_flat, &q_out_h_flat));
+        println!(
+            "Q projection output cosine: {:.6}",
+            cosine_similarity(&q_out_o_flat, &q_out_h_flat)
+        );
 
         // Test full attention output (using original hidden)
-        let attn_out_orig = attention_forward(&hidden_orig, q_orig, k_orig, v_orig, o_orig, num_heads, num_kv_heads)?;
-        let attn_out_hct = attention_forward(&hidden_orig, q_hct, k_hct, v_hct, o_hct, num_heads, num_kv_heads)?;
+        let attn_out_orig = attention_forward(
+            &hidden_orig,
+            q_orig,
+            k_orig,
+            v_orig,
+            o_orig,
+            num_heads,
+            num_kv_heads,
+        )?;
+        let attn_out_hct = attention_forward(
+            &hidden_orig,
+            q_hct,
+            k_hct,
+            v_hct,
+            o_hct,
+            num_heads,
+            num_kv_heads,
+        )?;
 
         let attn_o_flat: Vec<f32> = attn_out_orig.flatten_all()?.to_vec1()?;
         let attn_h_flat: Vec<f32> = attn_out_hct.flatten_all()?.to_vec1()?;
-        println!("Full attention output cosine: {:.6}", cosine_similarity(&attn_o_flat, &attn_h_flat));
+        println!(
+            "Full attention output cosine: {:.6}",
+            cosine_similarity(&attn_o_flat, &attn_h_flat)
+        );
     }
 
     // Test cumulative attention through layers
@@ -246,15 +335,55 @@ fn main() -> Result<()> {
     let mut hidden_h = hidden_hct.clone();
 
     for layer_idx in 0..16 {
-        let q_o = orig_tensors.get(&format!("model.layers.{}.self_attn.q_proj.weight", layer_idx)).unwrap();
-        let k_o = orig_tensors.get(&format!("model.layers.{}.self_attn.k_proj.weight", layer_idx)).unwrap();
-        let v_o = orig_tensors.get(&format!("model.layers.{}.self_attn.v_proj.weight", layer_idx)).unwrap();
-        let o_o = orig_tensors.get(&format!("model.layers.{}.self_attn.o_proj.weight", layer_idx)).unwrap();
+        let q_o = orig_tensors
+            .get(&format!(
+                "model.layers.{}.self_attn.q_proj.weight",
+                layer_idx
+            ))
+            .unwrap();
+        let k_o = orig_tensors
+            .get(&format!(
+                "model.layers.{}.self_attn.k_proj.weight",
+                layer_idx
+            ))
+            .unwrap();
+        let v_o = orig_tensors
+            .get(&format!(
+                "model.layers.{}.self_attn.v_proj.weight",
+                layer_idx
+            ))
+            .unwrap();
+        let o_o = orig_tensors
+            .get(&format!(
+                "model.layers.{}.self_attn.o_proj.weight",
+                layer_idx
+            ))
+            .unwrap();
 
-        let q_h = hct_tensors.get(&format!("model.layers.{}.self_attn.q_proj.weight", layer_idx)).unwrap();
-        let k_h = hct_tensors.get(&format!("model.layers.{}.self_attn.k_proj.weight", layer_idx)).unwrap();
-        let v_h = hct_tensors.get(&format!("model.layers.{}.self_attn.v_proj.weight", layer_idx)).unwrap();
-        let o_h = hct_tensors.get(&format!("model.layers.{}.self_attn.o_proj.weight", layer_idx)).unwrap();
+        let q_h = hct_tensors
+            .get(&format!(
+                "model.layers.{}.self_attn.q_proj.weight",
+                layer_idx
+            ))
+            .unwrap();
+        let k_h = hct_tensors
+            .get(&format!(
+                "model.layers.{}.self_attn.k_proj.weight",
+                layer_idx
+            ))
+            .unwrap();
+        let v_h = hct_tensors
+            .get(&format!(
+                "model.layers.{}.self_attn.v_proj.weight",
+                layer_idx
+            ))
+            .unwrap();
+        let o_h = hct_tensors
+            .get(&format!(
+                "model.layers.{}.self_attn.o_proj.weight",
+                layer_idx
+            ))
+            .unwrap();
 
         // Attention forward
         let attn_out_o = attention_forward(&hidden_o, q_o, k_o, v_o, o_o, num_heads, num_kv_heads)?;
@@ -279,15 +408,55 @@ fn main() -> Result<()> {
 
     for layer_idx in 0..16 {
         // Attention
-        let q_o = orig_tensors.get(&format!("model.layers.{}.self_attn.q_proj.weight", layer_idx)).unwrap();
-        let k_o = orig_tensors.get(&format!("model.layers.{}.self_attn.k_proj.weight", layer_idx)).unwrap();
-        let v_o = orig_tensors.get(&format!("model.layers.{}.self_attn.v_proj.weight", layer_idx)).unwrap();
-        let o_o = orig_tensors.get(&format!("model.layers.{}.self_attn.o_proj.weight", layer_idx)).unwrap();
+        let q_o = orig_tensors
+            .get(&format!(
+                "model.layers.{}.self_attn.q_proj.weight",
+                layer_idx
+            ))
+            .unwrap();
+        let k_o = orig_tensors
+            .get(&format!(
+                "model.layers.{}.self_attn.k_proj.weight",
+                layer_idx
+            ))
+            .unwrap();
+        let v_o = orig_tensors
+            .get(&format!(
+                "model.layers.{}.self_attn.v_proj.weight",
+                layer_idx
+            ))
+            .unwrap();
+        let o_o = orig_tensors
+            .get(&format!(
+                "model.layers.{}.self_attn.o_proj.weight",
+                layer_idx
+            ))
+            .unwrap();
 
-        let q_h = hct_tensors.get(&format!("model.layers.{}.self_attn.q_proj.weight", layer_idx)).unwrap();
-        let k_h = hct_tensors.get(&format!("model.layers.{}.self_attn.k_proj.weight", layer_idx)).unwrap();
-        let v_h = hct_tensors.get(&format!("model.layers.{}.self_attn.v_proj.weight", layer_idx)).unwrap();
-        let o_h = hct_tensors.get(&format!("model.layers.{}.self_attn.o_proj.weight", layer_idx)).unwrap();
+        let q_h = hct_tensors
+            .get(&format!(
+                "model.layers.{}.self_attn.q_proj.weight",
+                layer_idx
+            ))
+            .unwrap();
+        let k_h = hct_tensors
+            .get(&format!(
+                "model.layers.{}.self_attn.k_proj.weight",
+                layer_idx
+            ))
+            .unwrap();
+        let v_h = hct_tensors
+            .get(&format!(
+                "model.layers.{}.self_attn.v_proj.weight",
+                layer_idx
+            ))
+            .unwrap();
+        let o_h = hct_tensors
+            .get(&format!(
+                "model.layers.{}.self_attn.o_proj.weight",
+                layer_idx
+            ))
+            .unwrap();
 
         let attn_out_o = attention_forward(&hidden_o, q_o, k_o, v_o, o_o, num_heads, num_kv_heads)?;
         let attn_out_h = attention_forward(&hidden_h, q_h, k_h, v_h, o_h, num_heads, num_kv_heads)?;
@@ -296,13 +465,25 @@ fn main() -> Result<()> {
         hidden_h = (&hidden_h + &attn_out_h)?;
 
         // MLP
-        let gate_o = orig_tensors.get(&format!("model.layers.{}.mlp.gate_proj.weight", layer_idx)).unwrap();
-        let up_o = orig_tensors.get(&format!("model.layers.{}.mlp.up_proj.weight", layer_idx)).unwrap();
-        let down_o = orig_tensors.get(&format!("model.layers.{}.mlp.down_proj.weight", layer_idx)).unwrap();
+        let gate_o = orig_tensors
+            .get(&format!("model.layers.{}.mlp.gate_proj.weight", layer_idx))
+            .unwrap();
+        let up_o = orig_tensors
+            .get(&format!("model.layers.{}.mlp.up_proj.weight", layer_idx))
+            .unwrap();
+        let down_o = orig_tensors
+            .get(&format!("model.layers.{}.mlp.down_proj.weight", layer_idx))
+            .unwrap();
 
-        let gate_h = hct_tensors.get(&format!("model.layers.{}.mlp.gate_proj.weight", layer_idx)).unwrap();
-        let up_h = hct_tensors.get(&format!("model.layers.{}.mlp.up_proj.weight", layer_idx)).unwrap();
-        let down_h = hct_tensors.get(&format!("model.layers.{}.mlp.down_proj.weight", layer_idx)).unwrap();
+        let gate_h = hct_tensors
+            .get(&format!("model.layers.{}.mlp.gate_proj.weight", layer_idx))
+            .unwrap();
+        let up_h = hct_tensors
+            .get(&format!("model.layers.{}.mlp.up_proj.weight", layer_idx))
+            .unwrap();
+        let down_h = hct_tensors
+            .get(&format!("model.layers.{}.mlp.down_proj.weight", layer_idx))
+            .unwrap();
 
         let gate_out_o = hidden_o.broadcast_matmul(&gate_o.t()?)?;
         let gate_out_o = candle_nn::ops::silu(&gate_out_o)?;

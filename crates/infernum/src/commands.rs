@@ -26,8 +26,12 @@ pub async fn serve(
     holo_target_quality: f32,
 ) -> Result<()> {
     // Parse backend type
-    let _backend_type = abaddon::BackendType::from_str(&backend)
-        .ok_or_else(|| color_eyre::eyre::eyre!("Invalid backend: {}. Use auto, llama-cpp, or candle", backend))?;
+    let _backend_type = abaddon::BackendType::from_str(&backend).ok_or_else(|| {
+        color_eyre::eyre::eyre!(
+            "Invalid backend: {}. Use auto, llama-cpp, or candle",
+            backend
+        )
+    })?;
 
     // Log backend configuration
     tracing::info!(
@@ -39,7 +43,6 @@ pub async fn serve(
 
     // TODO(#TBD): Pass backend config to server when engine selection is implemented
     use infernum_server::{Server, ServerConfig};
-    
 
     // Require a model - from args, env var, or prompt interactively
     let model = match model {
@@ -55,7 +58,7 @@ pub async fn serve(
             } else {
                 prompt_for_model()?
             }
-        }
+        },
     };
 
     // Auto-detect HCT models and enable HoloTensor mode
@@ -109,7 +112,9 @@ pub async fn serve(
     };
 
     // Get speculative decoding config from env vars
-    let draft_model = std::env::var("INFERNUM_DRAFT_MODEL").ok().filter(|s| !s.is_empty());
+    let draft_model = std::env::var("INFERNUM_DRAFT_MODEL")
+        .ok()
+        .filter(|s| !s.is_empty());
     let speculative_tokens = std::env::var("INFERNUM_SPECULATIVE_TOKENS")
         .ok()
         .and_then(|v| v.parse::<u32>().ok())
@@ -257,8 +262,12 @@ pub async fn generate(
     context_size: usize,
 ) -> Result<()> {
     // Parse backend type
-    let backend_type = abaddon::BackendType::from_str(&backend)
-        .ok_or_else(|| eyre!("Invalid backend: {}. Use auto, llama-cpp, or candle", backend))?;
+    let backend_type = abaddon::BackendType::from_str(&backend).ok_or_else(|| {
+        eyre!(
+            "Invalid backend: {}. Use auto, llama-cpp, or candle",
+            backend
+        )
+    })?;
 
     tracing::debug!(
         backend = %backend,
@@ -309,14 +318,17 @@ pub async fn generate(
                 .build()
                 .map_err(|e| eyre!("Failed to configure llama.cpp engine: {}", e))?;
 
-            let engine = abaddon::LlamaCppEngine::load(config).await
+            let engine = abaddon::LlamaCppEngine::load(config)
+                .await
                 .map_err(|e| eyre!("Failed to load llama.cpp model: {}", e))?;
             Arc::new(engine)
-        }
+        },
         #[cfg(not(feature = "llama-cpp"))]
         abaddon::BackendType::LlamaCpp => {
-            return Err(eyre!("llama-cpp backend not enabled. Rebuild with --features llama-cpp"));
-        }
+            return Err(eyre!(
+                "llama-cpp backend not enabled. Rebuild with --features llama-cpp"
+            ));
+        },
         abaddon::BackendType::Candle | abaddon::BackendType::Auto => {
             tracing::info!("Using Candle backend for inference");
             let config = EngineConfig::builder()
@@ -326,7 +338,7 @@ pub async fn generate(
 
             let engine = Engine::new(config).await?;
             Arc::new(engine)
-        }
+        },
     };
 
     spinner.finish_and_clear();
@@ -912,7 +924,7 @@ pub async fn model_convert(
     max_rank: u32,
     min_quality: f32,
     verify: bool,
-    cpu_only: bool,
+    _cpu_only: bool,
     encoding: String,
 ) -> Result<()> {
     use abaddon::holotensor::HolographicEncoding;
@@ -926,14 +938,16 @@ pub async fn model_convert(
         // Check if CUDA is available
         match probe_cuda_runtime() {
             Ok(info) if info.device_count > 0 => {
-                println!("\x1b[32m✓ GPU detected:\x1b[0m {} ({:.1} GB VRAM)",
-                    info.devices[0].name, info.devices[0].memory_gb);
+                println!(
+                    "\x1b[32m✓ GPU detected:\x1b[0m {} ({:.1} GB VRAM)",
+                    info.devices[0].name, info.devices[0].memory_gb
+                );
                 true
-            }
+            },
             _ => {
                 println!("\x1b[33m○ No GPU detected, using CPU\x1b[0m");
                 false
-            }
+            },
         }
     };
     #[cfg(not(feature = "cuda"))]
@@ -949,7 +963,7 @@ pub async fn model_convert(
                 "Invalid encoding '{}'. Valid options: lrdf, spectral, rph",
                 encoding
             ));
-        }
+        },
     };
 
     let encoding_name = match holo_encoding {
@@ -967,7 +981,14 @@ pub async fn model_convert(
     println!("   Max Rank: {} (higher = better approximation)", max_rank);
     println!("   Min Quality: {:.0}%", min_quality * 100.0);
     println!("   Verify: {}", if verify { "yes" } else { "no" });
-    println!("   Compute: {}", if use_gpu { "\x1b[32mGPU (CUDA)\x1b[0m" } else { "CPU" });
+    println!(
+        "   Compute: {}",
+        if use_gpu {
+            "\x1b[32mGPU (CUDA)\x1b[0m"
+        } else {
+            "CPU"
+        }
+    );
     println!();
 
     // Create output directory
@@ -993,9 +1014,9 @@ pub async fn model_convert(
         max_rank: max_rank as usize,
         verify_quality: verify,
         min_quality,
-        parallel: true,  // Enable parallel tensor processing
-        num_threads: 0,  // Use all available cores
-        use_gpu,         // Use GPU if available
+        parallel: true, // Enable parallel tensor processing
+        num_threads: 0, // Use all available cores
+        use_gpu,        // Use GPU if available
         ..ConversionConfig::default()
     };
 
@@ -1042,15 +1063,12 @@ pub async fn model_convert(
 
             println!();
             println!("To use this model:");
-            println!(
-                "  infernum serve --holo --model {}",
-                output_path.display()
-            );
-        }
+            println!("  infernum serve --holo --model {}", output_path.display());
+        },
         Err(e) => {
             spinner.finish_and_clear();
             return Err(eyre!("Conversion failed: {}", e));
-        }
+        },
     }
 
     Ok(())
@@ -1064,10 +1082,10 @@ pub async fn model_quantize(
     block_size: usize,
     verify: bool,
 ) -> Result<()> {
-    use std::path::PathBuf;
-    use abaddon::quantize::{Quantizer, QuantizeConfig, QuantizeFormat};
-    use candle_core::{Device, DType};
+    use abaddon::quantize::{QuantizeConfig, QuantizeFormat, Quantizer};
+    use candle_core::{DType, Device};
     use safetensors::SafeTensors;
+    use std::path::PathBuf;
 
     // Parse format
     let quant_format = match format.as_str() {
@@ -1075,10 +1093,12 @@ pub async fn model_quantize(
         "int4-asym" => QuantizeFormat::Int4Asymmetric,
         "int8-sym" | "int8" => QuantizeFormat::Int8Symmetric,
         "int8-asym" => QuantizeFormat::Int8Asymmetric,
-        _ => return Err(eyre!(
-            "Unknown format: {}. Valid formats: int4-sym, int4-asym, int8-sym, int8-asym",
-            format
-        )),
+        _ => {
+            return Err(eyre!(
+                "Unknown format: {}. Valid formats: int4-sym, int4-asym, int8-sym, int8-asym",
+                format
+            ))
+        },
     };
 
     println!();
@@ -1112,7 +1132,8 @@ pub async fn model_quantize(
         let repo = api.repo(Repo::new(model.clone(), RepoType::Model));
 
         // Find safetensors files
-        let files: Vec<_> = repo.info()?
+        let files: Vec<_> = repo
+            .info()?
             .siblings
             .iter()
             .filter(|s| s.rfilename.ends_with(".safetensors"))
@@ -1166,7 +1187,8 @@ pub async fn model_quantize(
 
     // Process each safetensors file
     for (file_idx, source_path) in model_path.iter().enumerate() {
-        let file_name = source_path.file_name()
+        let file_name = source_path
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("model.safetensors");
 
@@ -1183,14 +1205,18 @@ pub async fn model_quantize(
 
         // Prepare quantized tensors
         let mut quantized_data: Vec<(String, Vec<u8>, Vec<usize>)> = Vec::new();
-        let mut metadata: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut metadata: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
 
         for (name, tensor_view) in tensors.tensors() {
             let shape = tensor_view.shape().to_vec();
             let dtype = tensor_view.dtype();
 
             // Skip non-float tensors
-            if !matches!(dtype, safetensors::Dtype::F32 | safetensors::Dtype::F16 | safetensors::Dtype::BF16) {
+            if !matches!(
+                dtype,
+                safetensors::Dtype::F32 | safetensors::Dtype::F16 | safetensors::Dtype::BF16
+            ) {
                 // Copy as-is
                 let tensor_data = tensor_view.data().to_vec();
                 quantized_data.push((name.to_string(), tensor_data, shape));
@@ -1217,7 +1243,8 @@ pub async fn model_quantize(
             total_original += original_size as u64;
 
             // Quantize
-            let result = quantizer.quantize_tensor(&tensor)
+            let result = quantizer
+                .quantize_tensor(&tensor)
                 .map_err(|e| eyre!("Failed to quantize {}: {}", name, e))?;
 
             total_quantized += (result.data.len() + result.scales.len() * 2) as u64;
@@ -1229,9 +1256,8 @@ pub async fn model_quantize(
 
             // Store scales separately
             let scales_name = format!("{}.scales", name);
-            let scales_bytes: Vec<u8> = result.scales.iter()
-                .flat_map(|s| s.to_le_bytes())
-                .collect();
+            let scales_bytes: Vec<u8> =
+                result.scales.iter().flat_map(|s| s.to_le_bytes()).collect();
             quantized_data.push((scales_name, scales_bytes, vec![result.scales.len()]));
 
             // Store zero points if asymmetric
@@ -1251,13 +1277,15 @@ pub async fn model_quantize(
 
         // Build tensors for safetensors
         use safetensors::tensor::TensorView;
-        let tensors_for_save: Vec<(&str, TensorView)> = quantized_data.iter()
+        let tensors_for_save: Vec<(&str, TensorView)> = quantized_data
+            .iter()
             .map(|(name, data, shape)| {
                 TensorView::new(
-                    safetensors::Dtype::U8,  // Store as bytes
+                    safetensors::Dtype::U8, // Store as bytes
                     shape.clone(),
                     data,
-                ).map(|view| (name.as_str(), view))
+                )
+                .map(|view| (name.as_str(), view))
                 .map_err(|e| eyre!("failed to create tensor view for '{}': {}", name, e))
             })
             .collect::<Result<Vec<_>>>()?;
@@ -1268,7 +1296,11 @@ pub async fn model_quantize(
     spinner.finish_and_clear();
 
     let compression = total_original as f64 / total_quantized as f64;
-    let avg_snr = if tensor_count > 0 { total_snr / tensor_count as f64 } else { 0.0 };
+    let avg_snr = if tensor_count > 0 {
+        total_snr / tensor_count as f64
+    } else {
+        0.0
+    };
 
     println!("\x1b[32m✓ Quantization complete!\x1b[0m");
     println!();
@@ -1313,8 +1345,12 @@ pub async fn chat(
     context_size: usize,
 ) -> Result<()> {
     // Parse backend type
-    let _backend_type = abaddon::BackendType::from_str(&backend)
-        .ok_or_else(|| eyre!("Invalid backend: {}. Use auto, llama-cpp, or candle", backend))?;
+    let _backend_type = abaddon::BackendType::from_str(&backend).ok_or_else(|| {
+        eyre!(
+            "Invalid backend: {}. Use auto, llama-cpp, or candle",
+            backend
+        )
+    })?;
 
     tracing::debug!(
         backend = %backend,
@@ -1586,8 +1622,12 @@ pub async fn agent(
     context_size: usize,
 ) -> Result<()> {
     // Parse backend type
-    let _backend_type = abaddon::BackendType::from_str(&backend)
-        .ok_or_else(|| eyre!("Invalid backend: {}. Use auto, llama-cpp, or candle", backend))?;
+    let _backend_type = abaddon::BackendType::from_str(&backend).ok_or_else(|| {
+        eyre!(
+            "Invalid backend: {}. Use auto, llama-cpp, or candle",
+            backend
+        )
+    })?;
 
     tracing::debug!(
         backend = %backend,
@@ -1618,8 +1658,7 @@ pub async fn agent(
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!();
     // Resolve working directory (default to cwd) early so we can display it
-    let wd = working_dir
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+    let wd = working_dir.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
 
     println!("\x1b[1mObjective:\x1b[0m {}", objective);
     println!("\x1b[1mModel:\x1b[0m {}", model_id);
@@ -1802,11 +1841,11 @@ pub fn doctor() {
                         i, device.name, device.memory_gb
                     );
                 }
-            }
+            },
             Err(e) => {
                 println!("               Runtime: \x1b[31m✗ unavailable\x1b[0m");
                 warnings.push(format!("CUDA runtime not available: {}", e));
-            }
+            },
         }
     }
     #[cfg(not(feature = "cuda"))]
@@ -1989,7 +2028,12 @@ pub fn doctor() {
 /// 5. Configuration save
 ///
 /// Use `--yes` flag for non-interactive mode (accepts all defaults).
-pub async fn setup(skip_detect: bool, skip_download: bool, skip_test: bool, auto_yes: bool) -> Result<()> {
+pub async fn setup(
+    skip_detect: bool,
+    skip_download: bool,
+    skip_test: bool,
+    auto_yes: bool,
+) -> Result<()> {
     use dialoguer::{theme::ColorfulTheme, Confirm, Select};
 
     println!();
@@ -2013,13 +2057,12 @@ pub async fn setup(skip_detect: bool, skip_download: bool, skip_test: bool, auto
     println!("  Based on your hardware ({}):", backend);
     println!();
     for (i, (model, desc, size, vram)) in recommended.iter().enumerate() {
-        let marker = if i == 0 { " \x1b[32m← Recommended\x1b[0m" } else { "" };
-        println!(
-            "  {}. \x1b[1m{}\x1b[0m{}",
-            i + 1,
-            model,
-            marker
-        );
+        let marker = if i == 0 {
+            " \x1b[32m← Recommended\x1b[0m"
+        } else {
+            ""
+        };
+        println!("  {}. \x1b[1m{}\x1b[0m{}", i + 1, model, marker);
         println!("     {} | ~{} download | {} VRAM", desc, size, vram);
         println!();
     }
@@ -2090,11 +2133,11 @@ pub async fn setup(skip_detect: bool, skip_download: bool, skip_test: bool, auto
             match test_inference(&selected_model).await {
                 Ok(response) => {
                     println!("  \x1b[32m✓ Model response:\x1b[0m {}\n", response.trim());
-                }
+                },
                 Err(e) => {
                     println!("  \x1b[31m✗ Test failed:\x1b[0m {}\n", e);
                     println!("  \x1b[33mThe model may still work - this could be a temporary issue.\x1b[0m\n");
-                }
+                },
             }
         }
     }
@@ -2106,10 +2149,7 @@ pub async fn setup(skip_detect: bool, skip_download: bool, skip_test: bool, auto
         true
     } else {
         Confirm::with_theme(&ColorfulTheme::default())
-            .with_prompt(format!(
-                "Set {} as your default model?",
-                selected_model
-            ))
+            .with_prompt(format!("Set {} as your default model?", selected_model))
             .default(true)
             .interact()
             .map_err(|e| eyre!("Confirmation cancelled: {}", e))?
@@ -2124,10 +2164,10 @@ pub async fn setup(skip_detect: bool, skip_download: bool, skip_test: bool, auto
                     "  Config file: {}",
                     crate::config::Config::config_path().display()
                 );
-            }
+            },
             Err(e) => {
                 println!("\n  \x1b[31m✗ Failed to save config:\x1b[0m {}", e);
-            }
+            },
         }
     }
 
@@ -2148,7 +2188,7 @@ pub async fn setup(skip_detect: bool, skip_download: bool, skip_test: bool, auto
 
 /// Detect hardware and return (backend name, VRAM in GB).
 fn detect_hardware() -> (String, f64) {
-    let mut backend = "CPU".to_string();
+    let backend = "CPU".to_string();
     let mut vram_gb = 0.0;
 
     #[cfg(feature = "cuda")]
@@ -2161,10 +2201,10 @@ fn detect_hardware() -> (String, f64) {
                     println!("  \x1b[32m✓ Found NVIDIA GPU:\x1b[0m {}", device.name);
                     println!("    VRAM: {:.1} GB", device.memory_gb);
                 }
-            }
+            },
             Err(_) => {
                 println!("  \x1b[33m○ No CUDA GPU detected\x1b[0m");
-            }
+            },
         }
     }
 
@@ -2285,7 +2325,11 @@ fn print_model_recommendations(vram_gb: f64) {
     }
 
     for (i, (model, desc, size, vram)) in recommendations.iter().take(2).enumerate() {
-        let marker = if i == 0 { " \x1b[32m← Best fit\x1b[0m" } else { "" };
+        let marker = if i == 0 {
+            " \x1b[32m← Best fit\x1b[0m"
+        } else {
+            ""
+        };
         println!("  • \x1b[1m{}\x1b[0m{}", model, marker);
         println!("    {} | {} | {}", desc, size, vram);
     }
@@ -2315,8 +2359,8 @@ async fn test_inference(model_id: &str) -> Result<String> {
 
     // Simple test prompt
     let sampling = SamplingParams::greedy().with_max_tokens(10);
-    let request = GenerateRequest::new("What is 2+2? Answer with just the number.")
-        .with_sampling(sampling);
+    let request =
+        GenerateRequest::new("What is 2+2? Answer with just the number.").with_sampling(sampling);
 
     let response = engine.generate(request).await?;
 
@@ -2694,10 +2738,7 @@ pub async fn dataset_list() -> Result<()> {
             "  {:<30}  {:>10}  {:>12}  {}",
             "Name", "Examples", "Created", "Description"
         );
-        println!(
-            "  {:-<30}  {:-<10}  {:-<12}  {:-<30}",
-            "", "", "", ""
-        );
+        println!("  {:-<30}  {:-<10}  {:-<12}  {:-<30}", "", "", "", "");
 
         for dataset in &datasets {
             let desc = dataset
@@ -2733,16 +2774,24 @@ pub async fn dataset_create(name: String, description: Option<String>) -> Result
         config = config.with_description(desc);
     }
 
-    let dataset = manager.create(config, Vec::new()).await
+    let dataset = manager
+        .create(config, Vec::new())
+        .await
         .map_err(|e| eyre!("Failed to create dataset: {}", e))?;
 
-    println!("\x1b[32m✓\x1b[0m Dataset '{}' created (ID: {})", name, dataset.id);
+    println!(
+        "\x1b[32m✓\x1b[0m Dataset '{}' created (ID: {})",
+        name, dataset.id
+    );
     if let Some(desc) = description {
         println!("  Description: {}", desc);
     }
     println!();
     println!("Next steps:");
-    println!("  infernum studio dataset import {} <file.jsonl>", dataset.id);
+    println!(
+        "  infernum studio dataset import {} <file.jsonl>",
+        dataset.id
+    );
 
     Ok(())
 }
@@ -2776,11 +2825,7 @@ pub async fn dataset_import(name: String, file: String) -> Result<()> {
                 examples.push(example);
             },
             Err(e) => {
-                eprintln!(
-                    "  \x1b[33mWarning:\x1b[0m Line {}: {}",
-                    line_num + 1,
-                    e
-                );
+                eprintln!("  \x1b[33mWarning:\x1b[0m Line {}: {}", line_num + 1, e);
                 errors += 1;
             },
         }
@@ -2790,11 +2835,16 @@ pub async fn dataset_import(name: String, file: String) -> Result<()> {
 
     // Create dataset with examples
     let config = DatasetConfig::new(&name);
-    let _dataset = manager.create(config, examples).await
+    let _dataset = manager
+        .create(config, examples)
+        .await
         .map_err(|e| eyre!("Failed to create dataset: {}", e))?;
 
     println!();
-    println!("\x1b[32m✓\x1b[0m Created dataset '{}' with {} examples", name, imported);
+    println!(
+        "\x1b[32m✓\x1b[0m Created dataset '{}' with {} examples",
+        name, imported
+    );
     if errors > 0 {
         println!("  \x1b[33m{} lines skipped due to errors\x1b[0m", errors);
     }
@@ -2810,7 +2860,8 @@ pub async fn dataset_info(name: String) -> Result<()> {
     let datasets = manager.list().await;
 
     // Find by name or ID
-    let dataset = datasets.iter()
+    let dataset = datasets
+        .iter()
         .find(|d| d.name == name || d.id == name)
         .ok_or_else(|| eyre!("Dataset '{}' not found", name))?;
 
@@ -2823,7 +2874,10 @@ pub async fn dataset_info(name: String) -> Result<()> {
     }
 
     println!("Examples:    {}", dataset.examples.len());
-    println!("Created:     {}", dataset.created_at.format("%Y-%m-%d %H:%M:%S"));
+    println!(
+        "Created:     {}",
+        dataset.created_at.format("%Y-%m-%d %H:%M:%S")
+    );
 
     if !dataset.examples.is_empty() {
         println!();
@@ -2847,14 +2901,17 @@ pub async fn dataset_validate(name: String) -> Result<()> {
     let datasets = manager.list().await;
 
     // Find by name or ID
-    let dataset = datasets.iter()
+    let dataset = datasets
+        .iter()
         .find(|d| d.name == name || d.id == name)
         .ok_or_else(|| eyre!("Dataset '{}' not found", name))?;
 
     println!("Validating dataset '{}'...", dataset.name);
     println!();
 
-    let report = manager.validate(&dataset.id).await
+    let report = manager
+        .validate(&dataset.id)
+        .await
         .map_err(|e| eyre!("Validation failed: {}", e))?;
 
     println!("\x1b[1mValidation Report:\x1b[0m");
@@ -2890,7 +2947,8 @@ pub async fn dataset_analyze(name: String) -> Result<()> {
     let datasets = manager.list().await;
 
     // Find by name or ID
-    let dataset = datasets.iter()
+    let dataset = datasets
+        .iter()
         .find(|d| d.name == name || d.id == name)
         .ok_or_else(|| eyre!("Dataset '{}' not found", name))?;
 
@@ -2898,23 +2956,29 @@ pub async fn dataset_analyze(name: String) -> Result<()> {
     println!();
 
     // Load full dataset with examples
-    let full_dataset = manager.get(&dataset.id).await
+    let full_dataset = manager
+        .get(&dataset.id)
+        .await
         .map_err(|e| eyre!("Failed to load dataset: {}", e))?;
     let examples = &full_dataset.examples;
 
     let curator = DataCuratorAgent::new(None);
 
     // Run quality check
-    let quality_report = curator.quality_check(&examples).await
+    let quality_report = curator
+        .quality_check(&examples)
+        .await
         .map_err(|e| eyre!("Quality check failed: {}", e))?;
 
     // Get augmentation suggestions
-    let suggestions = curator.suggest_augmentations(&examples).await
+    let suggestions = curator
+        .suggest_augmentations(&examples)
+        .await
         .map_err(|e| eyre!("Augmentation analysis failed: {}", e))?;
 
     // Calculate stats
-    let avg_input_len: f32 = examples.iter().map(|e| e.input.len()).sum::<usize>() as f32
-        / examples.len().max(1) as f32;
+    let avg_input_len: f32 =
+        examples.iter().map(|e| e.input.len()).sum::<usize>() as f32 / examples.len().max(1) as f32;
     let avg_output_len: f32 = examples.iter().map(|e| e.output.len()).sum::<usize>() as f32
         / examples.len().max(1) as f32;
 
@@ -2923,7 +2987,10 @@ pub async fn dataset_analyze(name: String) -> Result<()> {
     println!("  Total examples:    {}", quality_report.total_examples);
     println!("  Average input len: {:.0} chars", avg_input_len);
     println!("  Average output len: {:.0} chars", avg_output_len);
-    println!("  Quality score:     {:.1}%", quality_report.average_score * 100.0);
+    println!(
+        "  Quality score:     {:.1}%",
+        quality_report.average_score * 100.0
+    );
     println!("  High quality:      {}", quality_report.high_quality_count);
     println!("  Low quality:       {}", quality_report.low_quality_count);
     println!();
@@ -2931,7 +2998,11 @@ pub async fn dataset_analyze(name: String) -> Result<()> {
     if !quality_report.issues.is_empty() {
         println!("\x1b[33mIssues Detected:\x1b[0m");
         for issue in quality_report.issues.iter().take(10) {
-            println!("  • [{}] {}", issue.example_id.chars().take(8).collect::<String>(), issue.description);
+            println!(
+                "  • [{}] {}",
+                issue.example_id.chars().take(8).collect::<String>(),
+                issue.description
+            );
         }
         if quality_report.issues.len() > 10 {
             println!("  ... and {} more issues", quality_report.issues.len() - 10);
@@ -2944,7 +3015,10 @@ pub async fn dataset_analyze(name: String) -> Result<()> {
         for suggestion in &suggestions {
             println!("  → {} - {}", suggestion.name, suggestion.description);
             if suggestion.recommended_count > 0 {
-                println!("    (recommended: {} examples)", suggestion.recommended_count);
+                println!(
+                    "    (recommended: {} examples)",
+                    suggestion.recommended_count
+                );
             }
         }
     }
@@ -2974,10 +3048,7 @@ pub async fn experiment_list() -> Result<()> {
             "  {:<30}  {:>6}  {:>12}  {}",
             "Name", "Runs", "Created", "Description"
         );
-        println!(
-            "  {:-<30}  {:-<6}  {:-<12}  {:-<30}",
-            "", "", "", ""
-        );
+        println!("  {:-<30}  {:-<6}  {:-<12}  {:-<30}", "", "", "", "");
 
         for exp in &experiments {
             let desc = exp
@@ -3015,10 +3086,15 @@ pub async fn experiment_create(name: String, description: Option<String>) -> Res
         config = config.with_description(desc);
     }
 
-    let experiment = tracker.create_experiment(config).await
+    let experiment = tracker
+        .create_experiment(config)
+        .await
         .map_err(|e| eyre!("Failed to create experiment: {}", e))?;
 
-    println!("\x1b[32m✓\x1b[0m Experiment '{}' created (ID: {})", name, experiment.id);
+    println!(
+        "\x1b[32m✓\x1b[0m Experiment '{}' created (ID: {})",
+        name, experiment.id
+    );
 
     Ok(())
 }
@@ -3031,7 +3107,8 @@ pub async fn experiment_info(name: String) -> Result<()> {
     let experiments = tracker.list_experiments().await;
 
     // Find by name or ID
-    let experiment = experiments.iter()
+    let experiment = experiments
+        .iter()
         .find(|e| e.config.name == name || e.id == name)
         .ok_or_else(|| eyre!("Experiment '{}' not found", name))?;
 
@@ -3044,7 +3121,10 @@ pub async fn experiment_info(name: String) -> Result<()> {
     }
 
     println!("Runs:        {}", experiment.runs.len());
-    println!("Created:     {}", experiment.created_at.format("%Y-%m-%d %H:%M:%S"));
+    println!(
+        "Created:     {}",
+        experiment.created_at.format("%Y-%m-%d %H:%M:%S")
+    );
     println!("Base model:  {}", experiment.config.base_model);
     println!("Dataset:     {}", experiment.config.dataset_id);
 
@@ -3063,7 +3143,8 @@ pub async fn experiment_runs(name: String) -> Result<()> {
     let experiments = tracker.list_experiments().await;
 
     // Find by name or ID
-    let experiment = experiments.iter()
+    let experiment = experiments
+        .iter()
         .find(|e| e.config.name == name || e.id == name)
         .ok_or_else(|| eyre!("Experiment '{}' not found", name))?;
 
@@ -3077,14 +3158,15 @@ pub async fn experiment_runs(name: String) -> Result<()> {
             "  {:<20}  {:>10}  {:>8}  {:>12}",
             "Run ID", "Status", "Metrics", "Started"
         );
-        println!(
-            "  {:-<20}  {:-<10}  {:-<8}  {:-<12}",
-            "", "", "", ""
-        );
+        println!("  {:-<20}  {:-<10}  {:-<8}  {:-<12}", "", "", "", "");
 
         for run in &experiment.runs {
             let status = format!("{:?}", run.status);
-            let id_short = if run.id.len() > 20 { &run.id[..20] } else { &run.id };
+            let id_short = if run.id.len() > 20 {
+                &run.id[..20]
+            } else {
+                &run.id
+            };
             println!(
                 "  {:<20}  {:>10}  {:>8}  {:>12}",
                 id_short,
@@ -3106,7 +3188,8 @@ pub async fn experiment_analyze(name: String) -> Result<()> {
     let experiments = tracker.list_experiments().await;
 
     // Find by name or ID
-    let experiment = experiments.iter()
+    let experiment = experiments
+        .iter()
         .find(|e| e.config.name == name || e.id == name)
         .ok_or_else(|| eyre!("Experiment '{}' not found", name))?;
 
@@ -3114,7 +3197,10 @@ pub async fn experiment_analyze(name: String) -> Result<()> {
         return Err(eyre!("No runs to analyze in experiment '{}'", name));
     }
 
-    println!("🏋️  Training Coach analyzing '{}'...", experiment.config.name);
+    println!(
+        "🏋️  Training Coach analyzing '{}'...",
+        experiment.config.name
+    );
     println!();
 
     let coach = TrainingCoachAgent::new(None);
@@ -3152,7 +3238,9 @@ pub async fn experiment_analyze(name: String) -> Result<()> {
             gpu_memory_used: None,
         };
 
-        let analysis = coach.analyze_run(&metrics).await
+        let analysis = coach
+            .analyze_run(&metrics)
+            .await
             .map_err(|e| eyre!("Analysis failed: {}", e))?;
 
         println!("\x1b[1mTraining Analysis:\x1b[0m");
@@ -3216,10 +3304,7 @@ pub async fn prompt_list() -> Result<()> {
             "  {:<30}  {:>8}  {:>12}  {}",
             "Name", "Versions", "Created", "Description"
         );
-        println!(
-            "  {:-<30}  {:-<8}  {:-<12}  {:-<30}",
-            "", "", "", ""
-        );
+        println!("  {:-<30}  {:-<8}  {:-<12}  {:-<30}", "", "", "", "");
 
         for template in &templates {
             let desc = template
@@ -3265,17 +3350,24 @@ pub async fn prompt_create(
     };
 
     // Create template
-    let mut template = studio.create_template(&name).await
+    let mut template = studio
+        .create_template(&name)
+        .await
         .map_err(|e| eyre!("Failed to create template: {}", e))?;
     if let Some(desc) = &description {
         template = template.with_description(desc);
     }
 
     // Add initial version with content
-    studio.add_version(&template.id, &content, "Initial version").await
+    studio
+        .add_version(&template.id, &content, "Initial version")
+        .await
         .map_err(|e| eyre!("Failed to add version: {}", e))?;
 
-    println!("\x1b[32m✓\x1b[0m Prompt template '{}' created (ID: {})", name, template.id);
+    println!(
+        "\x1b[32m✓\x1b[0m Prompt template '{}' created (ID: {})",
+        name, template.id
+    );
 
     // Show detected variables
     let vars = template.variables();
@@ -3293,20 +3385,27 @@ pub async fn prompt_show(name: String, version: Option<u32>) -> Result<()> {
     let studio = PromptStudio::new(studio_dir().join("prompts"));
 
     let template = studio
-        .get_template_by_name(&name).await
+        .get_template_by_name(&name)
+        .await
         .ok_or_else(|| eyre!("Template '{}' not found", name))?;
 
     // Get the requested version or active version
     let version_to_show = if let Some(v) = version {
-        template.versions.iter()
+        template
+            .versions
+            .iter()
             .find(|pv| pv.version_number == v)
             .ok_or_else(|| eyre!("Version {} not found", v))?
     } else {
-        template.active_version()
+        template
+            .active_version()
             .ok_or_else(|| eyre!("No active version found"))?
     };
 
-    println!("\x1b[1mTemplate: {} (v{})\x1b[0m", template.name, version_to_show.version_number);
+    println!(
+        "\x1b[1mTemplate: {} (v{})\x1b[0m",
+        template.name, version_to_show.version_number
+    );
     println!("ID: {}", template.id);
     println!();
 
@@ -3335,13 +3434,18 @@ pub async fn prompt_test(name: String, input: Option<String>) -> Result<()> {
     let studio = PromptStudio::new(studio_dir().join("prompts"));
 
     let template = studio
-        .get_template_by_name(&name).await
+        .get_template_by_name(&name)
+        .await
         .ok_or_else(|| eyre!("Template '{}' not found", name))?;
 
-    let current = template.active_version()
+    let current = template
+        .active_version()
         .ok_or_else(|| eyre!("No active version found"))?;
 
-    println!("\x1b[1mTesting template: {} (v{})\x1b[0m", template.name, current.version_number);
+    println!(
+        "\x1b[1mTesting template: {} (v{})\x1b[0m",
+        template.name, current.version_number
+    );
     println!();
 
     // Parse input variables
@@ -3352,7 +3456,8 @@ pub async fn prompt_test(name: String, input: Option<String>) -> Result<()> {
     };
 
     // Render template
-    let rendered = current.render(&variables)
+    let rendered = current
+        .render(&variables)
         .map_err(|e| eyre!("Render failed: {}", e))?;
 
     println!("\x1b[1mRendered:\x1b[0m");
@@ -3383,14 +3488,13 @@ pub async fn registry_list() -> Result<()> {
             "  {:<30}  {:>8}  {:>12}  {}",
             "Name", "Version", "Stage", "Description"
         );
-        println!(
-            "  {:-<30}  {:-<8}  {:-<12}  {:-<30}",
-            "", "", "", ""
-        );
+        println!("  {:-<30}  {:-<8}  {:-<12}  {:-<30}", "", "", "", "");
 
         for model in &models {
             let latest = model.latest_version();
-            let version = latest.map(|v| format!("v{}", v.version)).unwrap_or_else(|| "-".to_string());
+            let version = latest
+                .map(|v| format!("v{}", v.version))
+                .unwrap_or_else(|| "-".to_string());
             let stage = latest
                 .map(|v| v.stage.as_str().to_string())
                 .unwrap_or_else(|| "-".to_string());
@@ -3436,10 +3540,14 @@ pub async fn registry_register(
     let version_id = version.id.clone();
 
     // Register the model
-    let model_id = registry.register_model(model)
+    let model_id = registry
+        .register_model(model)
         .map_err(|e| eyre!("Failed to register model: {}", e))?;
 
-    println!("\x1b[32m✓\x1b[0m Model '{}' registered (ID: {})", name, model_id);
+    println!(
+        "\x1b[32m✓\x1b[0m Model '{}' registered (ID: {})",
+        name, model_id
+    );
     println!("  Path: {}", path);
     println!("  Version: {}", version_id);
 
@@ -3467,7 +3575,10 @@ pub async fn registry_info(name: String) -> Result<()> {
     println!("Base model:  {}", model.base_model);
     println!("Task type:   {}", model.task_type);
     println!("Versions:    {}", model.versions.len());
-    println!("Created:     {}", model.created_at.format("%Y-%m-%d %H:%M:%S"));
+    println!(
+        "Created:     {}",
+        model.created_at.format("%Y-%m-%d %H:%M:%S")
+    );
 
     if !model.versions.is_empty() {
         println!();
@@ -3496,7 +3607,12 @@ pub async fn registry_promote(name: String, stage: String) -> Result<()> {
         "production" => ModelStage::Production,
         "archived" => ModelStage::Archived,
         "development" => ModelStage::Development,
-        _ => return Err(eyre!("Invalid stage: {}. Use: staging, production, archived", stage)),
+        _ => {
+            return Err(eyre!(
+                "Invalid stage: {}. Use: staging, production, archived",
+                stage
+            ))
+        },
     };
 
     let model = registry
@@ -3508,12 +3624,20 @@ pub async fn registry_promote(name: String, stage: String) -> Result<()> {
         .ok_or_else(|| eyre!("Model has no versions"))?
         .version;
 
-    registry.transition_stage(&model.id, latest_version, target_stage, Some("CLI promotion".to_string()))
+    registry
+        .transition_stage(
+            &model.id,
+            latest_version,
+            target_stage,
+            Some("CLI promotion".to_string()),
+        )
         .map_err(|e| eyre!("Transition failed: {}", e))?;
 
     println!(
         "\x1b[32m✓\x1b[0m Model '{}' v{} promoted to {}",
-        name, latest_version, target_stage.as_str()
+        name,
+        latest_version,
+        target_stage.as_str()
     );
 
     Ok(())
@@ -3560,7 +3684,9 @@ pub async fn registry_roadmap(name: String) -> Result<()> {
         evaluated_at: chrono::Utc::now(),
     };
 
-    let plan = analyst.improvement_roadmap(&results).await
+    let plan = analyst
+        .improvement_roadmap(&results)
+        .await
         .map_err(|e| eyre!("Roadmap generation failed: {}", e))?;
 
     println!("\x1b[1m{}\x1b[0m", plan.title);
@@ -3865,7 +3991,11 @@ mod tests {
 
         let result = load_chat_history(filename.to_str().unwrap());
         assert!(result.is_err());
-        assert!(result.err().unwrap().to_string().contains("Invalid chat history"));
+        assert!(result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("Invalid chat history"));
     }
 
     #[test]

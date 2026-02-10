@@ -68,7 +68,11 @@ impl TensorLayout {
     pub fn new(offset: usize, shape: [usize; 2]) -> Self {
         // Assuming f16 (2 bytes per element)
         let size = shape[0] * shape[1] * 2;
-        Self { offset, size, shape }
+        Self {
+            offset,
+            size,
+            shape,
+        }
     }
 
     /// Create layout for a 1D tensor (e.g., layernorm).

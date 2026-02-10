@@ -8,7 +8,7 @@
 use std::time::{Duration, Instant};
 
 use haagenti::holotensor::{
-    HolographicEncoding, HoloFragment, HoloTensorHeader, LrdfEncoder, QualityCurve,
+    HoloFragment, HoloTensorHeader, HolographicEncoding, LrdfEncoder, QualityCurve,
 };
 use haagenti::tensor::DType;
 
@@ -33,7 +33,7 @@ fn main() {
 
     #[cfg(feature = "cuda")]
     {
-        use abaddon::{GpuHoloContext, StreamingHoloContext, ProgressiveHoloLoader};
+        use abaddon::{GpuHoloContext, ProgressiveHoloLoader, StreamingHoloContext};
 
         // Check CUDA availability
         println!("🔍 Checking CUDA availability...");
@@ -53,12 +53,12 @@ fn main() {
 
                 // Run GPU benchmarks
                 run_gpu_benchmark(ctx);
-            }
+            },
             Err(e) => {
                 println!("   ❌ Failed to initialize CUDA: {}", e);
                 println!("   Running CPU benchmark instead...");
                 run_cpu_benchmark();
-            }
+            },
         }
     }
 
@@ -73,7 +73,7 @@ fn main() {
 
 #[cfg(feature = "cuda")]
 fn run_gpu_benchmark(mut ctx: abaddon::GpuHoloContext) {
-    use abaddon::{StreamingHoloContext, ProgressiveHoloLoader};
+    use abaddon::{ProgressiveHoloLoader, StreamingHoloContext};
 
     println!();
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -86,8 +86,12 @@ fn run_gpu_benchmark(mut ctx: abaddon::GpuHoloContext) {
     let cols = HIDDEN_SIZE;
 
     println!("📊 Test Configuration:");
-    println!("   Tensor shape: {}x{} ({:.2} MB)", rows, cols,
-             (rows * cols * 4) as f64 / 1024.0 / 1024.0);
+    println!(
+        "   Tensor shape: {}x{} ({:.2} MB)",
+        rows,
+        cols,
+        (rows * cols * 4) as f64 / 1024.0 / 1024.0
+    );
     println!("   Fragments:    {}", NUM_FRAGMENTS);
     println!("   Encoding:     LRDF (Low-Rank Distributed Factorization)");
     println!();
@@ -100,7 +104,9 @@ fn run_gpu_benchmark(mut ctx: abaddon::GpuHoloContext) {
     println!("🔄 Encoding to holotensor format (CPU)...");
     let encode_start = Instant::now();
     let encoder = LrdfEncoder::new(NUM_FRAGMENTS).with_max_rank(MAX_RANK);
-    let fragments = encoder.encode_2d(&original, rows, cols).expect("Encoding failed");
+    let fragments = encoder
+        .encode_2d(&original, rows, cols)
+        .expect("Encoding failed");
     let encode_time = encode_start.elapsed();
     println!("   Encoding time: {:?}", encode_time);
     println!();
@@ -134,21 +140,28 @@ fn run_gpu_benchmark(mut ctx: abaddon::GpuHoloContext) {
                         cumulative += elapsed;
 
                         if (i + 1) % 4 == 0 || i == 0 {
-                            println!("   {:>9} │ {:>10.2?} │ {:>10.2?} │ {:>5.1}%",
-                                     i + 1, elapsed, cumulative, quality * 100.0);
+                            println!(
+                                "   {:>9} │ {:>10.2?} │ {:>10.2?} │ {:>5.1}%",
+                                i + 1,
+                                elapsed,
+                                cumulative,
+                                quality * 100.0
+                            );
                         }
-                    }
+                    },
                     Err(e) => {
                         println!("   Error feeding fragment {}: {}", i, e);
                         break;
-                    }
+                    },
                 }
             }
 
             println!();
             println!("   Total GPU reconstruction time: {:?}", cumulative);
-            println!("   Throughput: {:.1} MB/s",
-                     (rows * cols * 4) as f64 / 1024.0 / 1024.0 / cumulative.as_secs_f64());
+            println!(
+                "   Throughput: {:.1} MB/s",
+                (rows * cols * 4) as f64 / 1024.0 / 1024.0 / cumulative.as_secs_f64()
+            );
 
             // Finalize and verify
             match loader.finalize() {
@@ -157,15 +170,15 @@ fn run_gpu_benchmark(mut ctx: abaddon::GpuHoloContext) {
 
                     // Note: Would need to copy back to CPU to verify quality
                     // For now we trust the GPU result
-                }
+                },
                 Err(e) => {
                     println!("   ❌ Finalization failed: {}", e);
-                }
+                },
             }
-        }
+        },
         Err(e) => {
             println!("   ❌ Failed to create progressive loader: {}", e);
-        }
+        },
     }
 
     println!();
@@ -188,22 +201,32 @@ fn run_gpu_benchmark(mut ctx: abaddon::GpuHoloContext) {
                     };
 
                     let start = Instant::now();
-                    match streaming_ctx.reconstruct_streaming(&header, fragments.iter(), quality_target) {
+                    match streaming_ctx.reconstruct_streaming(
+                        &header,
+                        fragments.iter(),
+                        quality_target,
+                    ) {
                         Ok(_result) => {
                             let elapsed = start.elapsed();
-                            let throughput = (rows * cols * 4) as f64 / 1024.0 / 1024.0 / elapsed.as_secs_f64();
-                            println!("   Pipeline {} │ Target {:>4} │ {:>10.2?} │ {:>6.1} MB/s",
-                                     pipeline_depth, target_str, elapsed, throughput);
-                        }
+                            let throughput =
+                                (rows * cols * 4) as f64 / 1024.0 / 1024.0 / elapsed.as_secs_f64();
+                            println!(
+                                "   Pipeline {} │ Target {:>4} │ {:>10.2?} │ {:>6.1} MB/s",
+                                pipeline_depth, target_str, elapsed, throughput
+                            );
+                        },
                         Err(e) => {
-                            println!("   Pipeline {} │ Target {:>4} │ Error: {}", pipeline_depth, target_str, e);
-                        }
+                            println!(
+                                "   Pipeline {} │ Target {:>4} │ Error: {}",
+                                pipeline_depth, target_str, e
+                            );
+                        },
                     }
                 }
-            }
+            },
             Err(e) => {
                 println!("   ❌ Failed to create streaming context: {}", e);
-            }
+            },
         }
         println!();
     }
@@ -219,7 +242,10 @@ fn run_gpu_benchmark(mut ctx: abaddon::GpuHoloContext) {
 
     match StreamingHoloContext::new(0, 4) {
         Ok(streaming_ctx) => {
-            println!("   Simulating {} layer forward pass with progressive loading...", num_test_layers);
+            println!(
+                "   Simulating {} layer forward pass with progressive loading...",
+                num_test_layers
+            );
             println!();
 
             let mut total_recon_time = Duration::ZERO;
@@ -236,28 +262,37 @@ fn run_gpu_benchmark(mut ctx: abaddon::GpuHoloContext) {
                         // Simulate compute (would actually run attention/MLP here)
                         std::thread::sleep(layer_compute_time);
 
-                        println!("   Layer {} │ Recon: {:>8.2?} │ Compute: {:>8.2?} │ Total: {:>8.2?}",
-                                 layer,
-                                 recon_time,
-                                 layer_compute_time,
-                                 recon_time + layer_compute_time);
-                    }
+                        println!(
+                            "   Layer {} │ Recon: {:>8.2?} │ Compute: {:>8.2?} │ Total: {:>8.2?}",
+                            layer,
+                            recon_time,
+                            layer_compute_time,
+                            recon_time + layer_compute_time
+                        );
+                    },
                     Err(e) => {
                         println!("   Layer {} │ Error: {}", layer, e);
-                    }
+                    },
                 }
             }
 
             println!();
             println!("   ────────────────────────────────────────────────────────────");
             println!("   Total reconstruction: {:?}", total_recon_time);
-            println!("   Total compute:        {:?}", layer_compute_time * num_test_layers as u32);
-            println!("   Total time:           {:?}", total_recon_time + layer_compute_time * num_test_layers as u32);
+            println!(
+                "   Total compute:        {:?}",
+                layer_compute_time * num_test_layers as u32
+            );
+            println!(
+                "   Total time:           {:?}",
+                total_recon_time + layer_compute_time * num_test_layers as u32
+            );
             println!();
 
             // Calculate overhead
             let compute_only = layer_compute_time.as_secs_f64() * num_test_layers as f64;
-            let with_recon = (total_recon_time + layer_compute_time * num_test_layers as u32).as_secs_f64();
+            let with_recon =
+                (total_recon_time + layer_compute_time * num_test_layers as u32).as_secs_f64();
             let overhead = (with_recon / compute_only - 1.0) * 100.0;
 
             println!("   Reconstruction overhead: {:.1}%", overhead);
@@ -269,10 +304,10 @@ fn run_gpu_benchmark(mut ctx: abaddon::GpuHoloContext) {
             } else {
                 println!("   ❌ High overhead, bottleneck in reconstruction.");
             }
-        }
+        },
         Err(e) => {
             println!("   ❌ Failed to create streaming context: {}", e);
-        }
+        },
     }
 
     println!();
@@ -291,8 +326,12 @@ fn run_cpu_benchmark() {
     let cols = HIDDEN_SIZE;
 
     println!("📊 Test Configuration:");
-    println!("   Tensor shape: {}x{} ({:.2} MB)", rows, cols,
-             (rows * cols * 4) as f64 / 1024.0 / 1024.0);
+    println!(
+        "   Tensor shape: {}x{} ({:.2} MB)",
+        rows,
+        cols,
+        (rows * cols * 4) as f64 / 1024.0 / 1024.0
+    );
     println!("   Fragments:    {}", NUM_FRAGMENTS);
     println!();
 
@@ -304,7 +343,9 @@ fn run_cpu_benchmark() {
     println!("🔄 Encoding...");
     let encode_start = Instant::now();
     let encoder = LrdfEncoder::new(NUM_FRAGMENTS).with_max_rank(MAX_RANK);
-    let fragments = encoder.encode_2d(&original, rows, cols).expect("Encoding failed");
+    let fragments = encoder
+        .encode_2d(&original, rows, cols)
+        .expect("Encoding failed");
     println!("   Encoding time: {:?}", encode_start.elapsed());
     println!();
 
@@ -325,7 +366,12 @@ fn run_cpu_benchmark() {
         let elapsed = start.elapsed();
         let quality = cosine_similarity(&original, &reconstructed);
 
-        println!("   {:>9} │ {:>11.2?} │ {:>5.1}%", count, elapsed, quality * 100.0);
+        println!(
+            "   {:>9} │ {:>11.2?} │ {:>5.1}%",
+            count,
+            elapsed,
+            quality * 100.0
+        );
     }
 
     println!();

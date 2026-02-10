@@ -225,12 +225,7 @@ impl SequentialHctLoader {
                 message: e.to_string(),
             })?
             .filter_map(|entry| entry.ok())
-            .filter(|entry| {
-                entry
-                    .path()
-                    .extension()
-                    .is_some_and(|ext| ext == "hct")
-            })
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "hct"))
             .map(|entry| entry.path())
             .collect();
 
@@ -285,39 +280,35 @@ impl SequentialHctLoader {
                     // File was skipped
                     self.skipped_count += 1;
                     continue;
-                }
-                Err(e) => {
-                    match self.config.fallback_strategy {
-                        FallbackStrategy::Fail => return Some(Err(e)),
-                        FallbackStrategy::Skip => {
+                },
+                Err(e) => match self.config.fallback_strategy {
+                    FallbackStrategy::Fail => return Some(Err(e)),
+                    FallbackStrategy::Skip => {
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %e,
+                            "Skipping corrupted file"
+                        );
+                        self.skipped_count += 1;
+                        continue;
+                    },
+                    FallbackStrategy::InitializeDefault => match self.recover_tensor(path, &e) {
+                        Ok(tensor) => {
+                            self.recovered_count += 1;
+                            return Some(Ok(tensor));
+                        },
+                        Err(recover_err) => {
                             tracing::warn!(
                                 path = %path.display(),
-                                error = %e,
-                                "Skipping corrupted file"
+                                original_error = %e,
+                                recover_error = %recover_err,
+                                "Failed to recover tensor, skipping"
                             );
                             self.skipped_count += 1;
                             continue;
-                        }
-                        FallbackStrategy::InitializeDefault => {
-                            match self.recover_tensor(path, &e) {
-                                Ok(tensor) => {
-                                    self.recovered_count += 1;
-                                    return Some(Ok(tensor));
-                                }
-                                Err(recover_err) => {
-                                    tracing::warn!(
-                                        path = %path.display(),
-                                        original_error = %e,
-                                        recover_error = %recover_err,
-                                        "Failed to recover tensor, skipping"
-                                    );
-                                    self.skipped_count += 1;
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-                }
+                        },
+                    },
+                },
             }
         }
         None
@@ -382,7 +373,11 @@ impl SequentialHctLoader {
     }
 
     /// Attempts to recover a tensor by initializing with defaults.
-    fn recover_tensor(&self, path: &Path, _original_error: &HctError) -> Result<LoadedTensor, HctError> {
+    fn recover_tensor(
+        &self,
+        path: &Path,
+        _original_error: &HctError,
+    ) -> Result<LoadedTensor, HctError> {
         // Try to at least parse the header to get shape/dtype info
         let loader_result = HctLoader::from_file(path);
 
@@ -392,7 +387,7 @@ impl SequentialHctLoader {
                 let name = crate::hct::filename_to_tensor_name(&metadata.name);
                 let shape: Vec<usize> = metadata.shape.iter().map(|&d| d as usize).collect();
                 (name, shape, self.config.dtype)
-            }
+            },
             Err(_) => {
                 // Can't even read the header - infer from filename
                 let filename = path
@@ -404,7 +399,7 @@ impl SequentialHctLoader {
                 // Use default shape based on tensor type
                 let shape = self.infer_default_shape(&name);
                 (name, shape, self.config.dtype)
-            }
+            },
         };
 
         // Create default tensor based on tensor type
@@ -482,19 +477,20 @@ impl SequentialHctLoader {
         dtype: DType,
     ) -> Result<Tensor, HctError> {
         // Determine default value based on tensor type
-        let tensor = if name.contains("layernorm") || name.contains("norm") || name.contains("scale") {
-            // LayerNorm weights and scales should be ones
-            Tensor::ones(shape, dtype, &self.config.device)
-        } else if name.contains("bias") {
-            // Biases should be zeros
-            Tensor::zeros(shape, dtype, &self.config.device)
-        } else {
-            // Generic: use zeros as safe default
-            Tensor::zeros(shape, dtype, &self.config.device)
-        }
-        .map_err(|e| HctError::Tensor {
-            message: format!("Failed to create default tensor: {}", e),
-        })?;
+        let tensor =
+            if name.contains("layernorm") || name.contains("norm") || name.contains("scale") {
+                // LayerNorm weights and scales should be ones
+                Tensor::ones(shape, dtype, &self.config.device)
+            } else if name.contains("bias") {
+                // Biases should be zeros
+                Tensor::zeros(shape, dtype, &self.config.device)
+            } else {
+                // Generic: use zeros as safe default
+                Tensor::zeros(shape, dtype, &self.config.device)
+            }
+            .map_err(|e| HctError::Tensor {
+                message: format!("Failed to create default tensor: {}", e),
+            })?;
 
         Ok(tensor)
     }
@@ -573,12 +569,7 @@ pub fn load_hct_directory_parallel(
             message: e.to_string(),
         })?
         .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry
-                .path()
-                .extension()
-                .is_some_and(|ext| ext == "hct")
-        })
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "hct"))
         .map(|entry| entry.path())
         .collect();
 
@@ -607,10 +598,7 @@ pub fn load_hct_directory_parallel(
         tensors.insert(name, tensor);
     }
 
-    tracing::info!(
-        loaded = tensors.len(),
-        "Parallel loading complete"
-    );
+    tracing::info!(loaded = tensors.len(), "Parallel loading complete");
 
     Ok(tensors)
 }
@@ -664,12 +652,7 @@ pub fn load_hct_directory_gpu(
             message: e.to_string(),
         })?
         .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry
-                .path()
-                .extension()
-                .is_some_and(|ext| ext == "hct")
-        })
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "hct"))
         .map(|entry| entry.path())
         .collect();
 
@@ -688,10 +671,9 @@ pub fn load_hct_directory_gpu(
         output_f16: dtype == DType::F16,
     };
 
-    let mut decompressor = GpuDecompressor::with_config(config)
-        .map_err(|e| HctError::Format {
-            message: format!("Failed to create GPU decompressor: {}", e),
-        })?;
+    let mut decompressor = GpuDecompressor::with_config(config).map_err(|e| HctError::Format {
+        message: format!("Failed to create GPU decompressor: {}", e),
+    })?;
 
     let mut tensors = HashMap::with_capacity(total);
     let mut total_input_bytes = 0usize;
@@ -712,16 +694,20 @@ pub fn load_hct_directory_gpu(
         let shape: Vec<usize> = metadata.shape.iter().map(|&d| d as usize).collect();
 
         // GPU decompress (returns f32 data after IDCT)
-        let decompressed = decompressor.decompress(&compressed, &shape)
-            .map_err(|e| HctError::Format {
-                message: format!("GPU decompression failed for {}: {}", name, e),
-            })?;
+        let decompressed =
+            decompressor
+                .decompress(&compressed, &shape)
+                .map_err(|e| HctError::Format {
+                    message: format!("GPU decompression failed for {}: {}", name, e),
+                })?;
         total_output_bytes += decompressed.len() * 4;
 
         // Create tensor from decompressed data
-        let tensor = Tensor::from_vec(decompressed, shape.as_slice(), &Device::Cpu)
-            .map_err(|e| HctError::Tensor {
-                message: format!("Failed to create tensor from GPU output: {}", e),
+        let tensor =
+            Tensor::from_vec(decompressed, shape.as_slice(), &Device::Cpu).map_err(|e| {
+                HctError::Tensor {
+                    message: format!("Failed to create tensor from GPU output: {}", e),
+                }
             })?;
 
         // Convert dtype and move to target device
@@ -776,12 +762,7 @@ pub fn load_hct_directory_gpu_with_stats(
             message: e.to_string(),
         })?
         .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry
-                .path()
-                .extension()
-                .is_some_and(|ext| ext == "hct")
-        })
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "hct"))
         .map(|entry| entry.path())
         .collect();
 
@@ -793,10 +774,9 @@ pub fn load_hct_directory_gpu_with_stats(
         output_f16: dtype == DType::F16,
     };
 
-    let mut decompressor = GpuDecompressor::with_config(config)
-        .map_err(|e| HctError::Format {
-            message: format!("Failed to create GPU decompressor: {}", e),
-        })?;
+    let mut decompressor = GpuDecompressor::with_config(config).map_err(|e| HctError::Format {
+        message: format!("Failed to create GPU decompressor: {}", e),
+    })?;
 
     let mut tensors = HashMap::with_capacity(total);
     let mut stats = GpuDecompressStats::default();
@@ -814,10 +794,12 @@ pub fn load_hct_directory_gpu_with_stats(
         let shape: Vec<usize> = metadata.shape.iter().map(|&d| d as usize).collect();
 
         let decompress_start = Instant::now();
-        let decompressed = decompressor.decompress(&compressed, &shape)
-            .map_err(|e| HctError::Format {
-                message: format!("GPU decompression failed for {}: {}", name, e),
-            })?;
+        let decompressed =
+            decompressor
+                .decompress(&compressed, &shape)
+                .map_err(|e| HctError::Format {
+                    message: format!("GPU decompression failed for {}: {}", name, e),
+                })?;
         stats.decompress_time_ms += decompress_start.elapsed().as_secs_f64() * 1000.0;
         stats.total_output_bytes += decompressed.len() * 4;
 
@@ -892,8 +874,8 @@ impl GpuDecompressStats {
 mod tests {
     use super::*;
     use std::fs;
-    use tempfile::TempDir;
     use std::io::Write;
+    use tempfile::TempDir;
 
     /// Helper to create a minimal valid standard HCT file for testing.
     /// Uses the simpler HCT format (not HoloTensor) for easier testing.
@@ -915,10 +897,13 @@ mod tests {
             CompressionAlgorithm::Lz4,
             HctDType::F32,
             shape.to_vec(),
-        ).with_block_size(64 * 1024);
+        )
+        .with_block_size(64 * 1024);
 
         let compressor = Lz4Compressor::new();
-        writer.compress_data(&bytes, &compressor).expect("write data");
+        writer
+            .compress_data(&bytes, &compressor)
+            .expect("write data");
         writer.finish().expect("finish");
 
         path
@@ -929,7 +914,8 @@ mod tests {
         let path = dir.join(format!("{}.hct", name));
         // Write just the magic bytes and some garbage - will fail to parse
         let mut file = fs::File::create(&path).expect("create file");
-        file.write_all(b"HCTN\x00\x00\x00\x00").expect("write truncated file");
+        file.write_all(b"HCTN\x00\x00\x00\x00")
+            .expect("write truncated file");
         path
     }
 
@@ -983,8 +969,7 @@ mod tests {
             min_quality: 0.7,
         };
 
-        let mut loader = SequentialHctLoader::new(temp_dir.path(), config)
-            .expect("create loader");
+        let mut loader = SequentialHctLoader::new(temp_dir.path(), config).expect("create loader");
 
         // First tensor should fail due to budget
         let result = loader.next_tensor();
@@ -1010,8 +995,7 @@ mod tests {
             min_quality: 0.7,
         };
 
-        let mut loader = SequentialHctLoader::new(temp_dir.path(), config)
-            .expect("create loader");
+        let mut loader = SequentialHctLoader::new(temp_dir.path(), config).expect("create loader");
 
         assert_eq!(loader.total_files(), 3);
 
@@ -1044,8 +1028,7 @@ mod tests {
             min_quality: 0.7,
         };
 
-        let mut loader = SequentialHctLoader::new(temp_dir.path(), config)
-            .expect("create loader");
+        let mut loader = SequentialHctLoader::new(temp_dir.path(), config).expect("create loader");
 
         assert_eq!(loader.total_files(), 2);
 
@@ -1078,8 +1061,7 @@ mod tests {
             min_quality: 0.7,
         };
 
-        let mut loader = SequentialHctLoader::new(temp_dir.path(), config)
-            .expect("create loader");
+        let mut loader = SequentialHctLoader::new(temp_dir.path(), config).expect("create loader");
 
         let result = loader.next_tensor();
         assert!(result.is_some());
@@ -1089,9 +1071,19 @@ mod tests {
         assert!(loaded.name.contains("layernorm"));
 
         // Layernorm should be initialized to ones
-        let sum = loaded.tensor.sum_all().expect("sum").to_scalar::<f32>().expect("scalar");
+        let sum = loaded
+            .tensor
+            .sum_all()
+            .expect("sum")
+            .to_scalar::<f32>()
+            .expect("scalar");
         let count = loaded.tensor.elem_count() as f32;
-        assert!((sum - count).abs() < 0.01, "Layernorm should be ones, sum={}, count={}", sum, count);
+        assert!(
+            (sum - count).abs() < 0.01,
+            "Layernorm should be ones, sum={}, count={}",
+            sum,
+            count
+        );
     }
 
     #[test]
@@ -1109,8 +1101,7 @@ mod tests {
             min_quality: 0.7,
         };
 
-        let mut loader = SequentialHctLoader::new(temp_dir.path(), config)
-            .expect("create loader");
+        let mut loader = SequentialHctLoader::new(temp_dir.path(), config).expect("create loader");
 
         let result = loader.next_tensor();
         assert!(result.is_some());
@@ -1120,7 +1111,12 @@ mod tests {
         assert!(loaded.name.contains("bias"));
 
         // Bias should be initialized to zeros
-        let sum = loaded.tensor.sum_all().expect("sum").to_scalar::<f32>().expect("scalar");
+        let sum = loaded
+            .tensor
+            .sum_all()
+            .expect("sum")
+            .to_scalar::<f32>()
+            .expect("scalar");
         assert!((sum).abs() < 0.01, "Bias should be zeros, sum={}", sum);
     }
 
@@ -1139,8 +1135,7 @@ mod tests {
             min_quality: 0.7,
         };
 
-        let loader = SequentialHctLoader::new(temp_dir.path(), config)
-            .expect("create loader");
+        let loader = SequentialHctLoader::new(temp_dir.path(), config).expect("create loader");
 
         let tensors = loader.load_all().expect("load all");
 
@@ -1164,8 +1159,7 @@ mod tests {
             min_quality: 0.7,
         };
 
-        let mut loader = SequentialHctLoader::new(temp_dir.path(), config)
-            .expect("create loader");
+        let mut loader = SequentialHctLoader::new(temp_dir.path(), config).expect("create loader");
 
         let initial = loader.progress();
         assert_eq!(initial.total_files, 3);

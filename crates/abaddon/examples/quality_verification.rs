@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::time::Instant;
 
-use abaddon::{TieredConfig, TieredHoloLoader, TensorProvider, load_hct_directory_sequential};
+use abaddon::{load_hct_directory_sequential, TensorProvider, TieredConfig, TieredHoloLoader};
 use candle_core::{DType, Device};
 
 fn main() -> anyhow::Result<()> {
@@ -39,7 +39,11 @@ fn main() -> anyhow::Result<()> {
     // Calculate total size
     let total_elements: usize = tensors.values().map(|t| t.elem_count()).sum();
     let total_bytes = total_elements * 4; // F32
-    println!("Total elements: {} ({:.2} GB)", total_elements, total_bytes as f64 / 1e9);
+    println!(
+        "Total elements: {} ({:.2} GB)",
+        total_elements,
+        total_bytes as f64 / 1e9
+    );
 
     // Sample some tensor stats
     println!("\nSample tensor statistics:");
@@ -85,11 +89,14 @@ fn main() -> anyhow::Result<()> {
                 let load_time = start.elapsed();
                 let dims = tensor.dims();
                 let mean = tensor.mean_all()?.to_scalar::<f32>()?;
-                println!("  {} {:?} loaded in {:?} (mean={:.4})", name, dims, load_time, mean);
-            }
+                println!(
+                    "  {} {:?} loaded in {:?} (mean={:.4})",
+                    name, dims, load_time, mean
+                );
+            },
             Err(e) => {
                 println!("  {} FAILED: {}", name, e);
-            }
+            },
         }
     }
 

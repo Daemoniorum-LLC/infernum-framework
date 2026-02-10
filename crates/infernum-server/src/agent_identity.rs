@@ -34,10 +34,9 @@
 //! assert!(event.validate().is_ok());
 //! ```
 
-use moloch_core::crypto::{PublicKey, SecretKey, Hash};
+use moloch_core::crypto::{Hash, PublicKey, SecretKey};
 use moloch_core::event::{
-    ActorId, ActorKind, AuditEvent, EventType, Outcome,
-    ResourceId, ResourceKind,
+    ActorId, ActorKind, AuditEvent, EventType, Outcome, ResourceId, ResourceKind,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -162,8 +161,7 @@ impl AgentIdentity {
     /// Create an ActorId for Moloch events.
     #[must_use]
     pub fn actor_id(&self) -> ActorId {
-        ActorId::new(self.public_key(), ActorKind::Agent)
-            .with_name(&self.name)
+        ActorId::new(self.public_key(), ActorKind::Agent).with_name(&self.name)
     }
 
     /// Sign a tool execution event.
@@ -502,8 +500,10 @@ impl EncryptedIdentityStore {
 
         // Derive encryption key from passphrase using Argon2id
         // Using OWASP recommended parameters for security
-        let key_bytes = Argon2::derive_key(passphrase, &salt, &Argon2Params::owasp(), 32)
-            .map_err(|e| AgentIdentityError::Serialization(format!("key derivation failed: {e}")))?;
+        let key_bytes =
+            Argon2::derive_key(passphrase, &salt, &Argon2Params::owasp(), 32).map_err(|e| {
+                AgentIdentityError::Serialization(format!("key derivation failed: {e}"))
+            })?;
 
         let mut key = [0u8; 32];
         key.copy_from_slice(&key_bytes);
@@ -541,14 +541,21 @@ impl EncryptedIdentityStore {
 
         // Derive encryption key from passphrase
         let key_bytes = Argon2::derive_key(passphrase, &encrypted.salt, &Argon2Params::owasp(), 32)
-            .map_err(|e| AgentIdentityError::Serialization(format!("key derivation failed: {e}")))?;
+            .map_err(|e| {
+                AgentIdentityError::Serialization(format!("key derivation failed: {e}"))
+            })?;
 
         let mut key = [0u8; 32];
         key.copy_from_slice(&key_bytes);
 
         // Decrypt
-        let plaintext = XChaCha20Poly1305Cipher::decrypt(&key, &encrypted.nonce, &encrypted.ciphertext, None)
-            .map_err(|_| AgentIdentityError::InvalidKey("decryption failed: wrong passphrase or tampered data".to_string()))?;
+        let plaintext =
+            XChaCha20Poly1305Cipher::decrypt(&key, &encrypted.nonce, &encrypted.ciphertext, None)
+                .map_err(|_| {
+                AgentIdentityError::InvalidKey(
+                    "decryption failed: wrong passphrase or tampered data".to_string(),
+                )
+            })?;
 
         // Deserialize
         let export: AgentIdentityExport = serde_json::from_slice(&plaintext)
@@ -560,7 +567,10 @@ impl EncryptedIdentityStore {
     /// Save encrypted identity to a file.
     ///
     /// The file format is JSON for interoperability.
-    pub fn save_to_file(encrypted: &EncryptedIdentity, path: impl AsRef<std::path::Path>) -> Result<()> {
+    pub fn save_to_file(
+        encrypted: &EncryptedIdentity,
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<()> {
         let json = serde_json::to_string_pretty(encrypted)
             .map_err(|e| AgentIdentityError::Serialization(e.to_string()))?;
 
@@ -575,8 +585,7 @@ impl EncryptedIdentityStore {
         let json = std::fs::read_to_string(path)
             .map_err(|e| AgentIdentityError::Serialization(format!("failed to read file: {e}")))?;
 
-        serde_json::from_str(&json)
-            .map_err(|e| AgentIdentityError::Serialization(e.to_string()))
+        serde_json::from_str(&json).map_err(|e| AgentIdentityError::Serialization(e.to_string()))
     }
 }
 
@@ -606,7 +615,9 @@ mod hex_serde {
     }
 
     /// Deserialize hex string to fixed-size array.
-    pub fn deserialize<'de, D, const N: usize>(deserializer: D) -> std::result::Result<[u8; N], D::Error>
+    pub fn deserialize<'de, D, const N: usize>(
+        deserializer: D,
+    ) -> std::result::Result<[u8; N], D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -642,6 +653,7 @@ mod hex_serde_vec {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
 
     // ════════════════════════════════════════════════════════════════════════════
     // TDD RED PHASE: Tests for AgentIdentity
@@ -681,14 +693,17 @@ mod tests {
 
         // Restored identity should have same ID
         assert_eq!(original.id(), restored.id());
-        assert_eq!(original.public_key().as_bytes(), restored.public_key().as_bytes());
+        assert_eq!(
+            original.public_key().as_bytes(),
+            restored.public_key().as_bytes()
+        );
     }
 
     #[test]
     fn test_from_bytes_rejects_invalid_key() {
         let invalid_bytes = [0u8; 32]; // All zeros is not a valid key
-        // This may or may not fail depending on Ed25519 implementation
-        // The important thing is it doesn't panic
+                                       // This may or may not fail depending on Ed25519 implementation
+                                       // The important thing is it doesn't panic
         let _ = AgentIdentity::from_bytes("invalid", &invalid_bytes);
     }
 
@@ -706,7 +721,8 @@ mod tests {
         let identity = AgentIdentity::generate("tool-caller");
         let args = serde_json::json!({"location": "Seattle"});
 
-        let event = identity.sign_tool_execution("get_weather", &args)
+        let event = identity
+            .sign_tool_execution("get_weather", &args)
             .expect("should sign event");
 
         // Event should be valid (signature verifies)
@@ -721,7 +737,7 @@ mod tests {
             EventType::AgentAction { action, reasoning } => {
                 assert_eq!(action, "tool_call:get_weather");
                 assert!(reasoning.is_none());
-            }
+            },
             _ => panic!("expected AgentAction event type"),
         }
     }
@@ -731,18 +747,22 @@ mod tests {
         let identity = AgentIdentity::generate("tool-caller");
         let args = serde_json::json!({"file": "nonexistent.txt"});
 
-        let event = identity.sign_tool_execution_with_outcome(
-            "read_file",
-            &args,
-            Outcome::Failure { reason: "file not found".to_string() },
-        ).expect("should sign event");
+        let event = identity
+            .sign_tool_execution_with_outcome(
+                "read_file",
+                &args,
+                Outcome::Failure {
+                    reason: "file not found".to_string(),
+                },
+            )
+            .expect("should sign event");
 
         assert!(event.validate().is_ok());
 
         match &event.outcome {
             Outcome::Failure { reason } => {
                 assert_eq!(reason, "file not found");
-            }
+            },
             _ => panic!("expected Failure outcome"),
         }
     }
@@ -752,12 +772,14 @@ mod tests {
         let identity = AgentIdentity::generate("reasoning-agent");
         let args = serde_json::json!({"query": "weather"});
 
-        let event = identity.sign_tool_execution_with_reasoning(
-            "web_search",
-            &args,
-            "User asked about weather, need to search for current conditions",
-            Outcome::Success,
-        ).expect("should sign event");
+        let event = identity
+            .sign_tool_execution_with_reasoning(
+                "web_search",
+                &args,
+                "User asked about weather, need to search for current conditions",
+                Outcome::Success,
+            )
+            .expect("should sign event");
 
         assert!(event.validate().is_ok());
 
@@ -768,7 +790,7 @@ mod tests {
                     reasoning.as_deref(),
                     Some("User asked about weather, need to search for current conditions")
                 );
-            }
+            },
             _ => panic!("expected AgentAction event type"),
         }
 
@@ -782,12 +804,16 @@ mod tests {
         let identity = AgentIdentity::generate("reasoning-agent");
         let args = serde_json::json!({"path": "/etc/shadow"});
 
-        let event = identity.sign_tool_execution_with_reasoning(
-            "read_file",
-            &args,
-            "Need to check system configuration for debugging",
-            Outcome::Denied { reason: "access denied: privileged file".to_string() },
-        ).expect("should sign event");
+        let event = identity
+            .sign_tool_execution_with_reasoning(
+                "read_file",
+                &args,
+                "Need to check system configuration for debugging",
+                Outcome::Denied {
+                    reason: "access denied: privileged file".to_string(),
+                },
+            )
+            .expect("should sign event");
 
         assert!(event.validate().is_ok());
 
@@ -795,14 +821,14 @@ mod tests {
             EventType::AgentAction { action, reasoning } => {
                 assert_eq!(action, "tool_call:read_file");
                 assert!(reasoning.is_some());
-            }
+            },
             _ => panic!("expected AgentAction event type"),
         }
 
         match &event.outcome {
             Outcome::Denied { reason } => {
                 assert!(reason.contains("access denied"));
-            }
+            },
             _ => panic!("expected Denied outcome"),
         }
     }
@@ -816,7 +842,8 @@ mod tests {
             "nested": {"key": "value"}
         });
 
-        let event = identity.sign_tool_execution("complex_tool", &args)
+        let event = identity
+            .sign_tool_execution("complex_tool", &args)
             .expect("should sign event");
 
         let metadata = event.metadata_json().expect("should have metadata");
@@ -831,11 +858,14 @@ mod tests {
         let identity = AgentIdentity::generate("tamper-test");
         let args = serde_json::json!({"action": "safe"});
 
-        let mut event = identity.sign_tool_execution("safe_tool", &args)
+        let mut event = identity
+            .sign_tool_execution("safe_tool", &args)
             .expect("should sign event");
 
         // Tamper with the event
-        event.outcome = Outcome::Failure { reason: "tampered".to_string() };
+        event.outcome = Outcome::Failure {
+            reason: "tampered".to_string(),
+        };
 
         // Validation should fail because signature doesn't match
         assert!(event.validate().is_err());
@@ -846,15 +876,15 @@ mod tests {
         let original = AgentIdentity::generate("export-test");
         let export = original.export();
 
-        let restored = AgentIdentity::import(&export)
-            .expect("should import successfully");
+        let restored = AgentIdentity::import(&export).expect("should import successfully");
 
         // Should have same identity
         assert_eq!(original.id(), restored.id());
         assert_eq!(original.name(), restored.name());
 
         // Should be able to sign events
-        let event = restored.sign_tool_execution("test", &serde_json::json!({}))
+        let event = restored
+            .sign_tool_execution("test", &serde_json::json!({}))
             .expect("should sign");
         assert!(event.validate().is_ok());
     }
@@ -865,15 +895,13 @@ mod tests {
         let export = identity.export();
 
         // Should serialize to JSON
-        let json = serde_json::to_string(&export)
-            .expect("should serialize");
+        let json = serde_json::to_string(&export).expect("should serialize");
 
         // Should deserialize back
-        let restored_export: AgentIdentityExport = serde_json::from_str(&json)
-            .expect("should deserialize");
+        let restored_export: AgentIdentityExport =
+            serde_json::from_str(&json).expect("should deserialize");
 
-        let restored = AgentIdentity::import(&restored_export)
-            .expect("should import");
+        let restored = AgentIdentity::import(&restored_export).expect("should import");
 
         assert_eq!(identity.id(), restored.id());
     }
@@ -911,7 +939,8 @@ mod tests {
         let identity = AgentIdentity::generate("time-test");
         let before = Utc::now();
 
-        let event = identity.sign_tool_execution("test", &serde_json::json!({}))
+        let event = identity
+            .sign_tool_execution("test", &serde_json::json!({}))
             .expect("should sign");
 
         let after = Utc::now();
@@ -927,12 +956,14 @@ mod tests {
 
         // Two events with same content (but signed at different times)
         // should have different IDs due to timestamp
-        let event1 = identity.sign_tool_execution("test", &serde_json::json!({}))
+        let event1 = identity
+            .sign_tool_execution("test", &serde_json::json!({}))
             .expect("should sign");
 
         std::thread::sleep(std::time::Duration::from_millis(1));
 
-        let event2 = identity.sign_tool_execution("test", &serde_json::json!({}))
+        let event2 = identity
+            .sign_tool_execution("test", &serde_json::json!({}))
             .expect("should sign");
 
         // Different times = different canonical bytes = different IDs
@@ -945,12 +976,16 @@ mod tests {
 
         let tools = vec![
             ("read_file", serde_json::json!({"path": "/tmp/a"})),
-            ("write_file", serde_json::json!({"path": "/tmp/b", "content": "hello"})),
+            (
+                "write_file",
+                serde_json::json!({"path": "/tmp/b", "content": "hello"}),
+            ),
             ("execute", serde_json::json!({"command": "ls"})),
         ];
 
         for (tool, args) in tools {
-            let event = identity.sign_tool_execution(tool, &args)
+            let event = identity
+                .sign_tool_execution(tool, &args)
                 .expect("should sign");
 
             assert!(event.validate().is_ok());
@@ -981,7 +1016,7 @@ mod tests {
         match &event.event_type {
             EventType::Custom { name } => {
                 assert_eq!(name, "AgentKeyRotated");
-            }
+            },
             _ => panic!("expected Custom event type"),
         }
     }
@@ -1060,7 +1095,7 @@ mod tests {
         match &event.event_type {
             EventType::Custom { name } => {
                 assert_eq!(name, "AgentKeyRevoked");
-            }
+            },
             _ => panic!("expected Custom event type"),
         }
     }
@@ -1171,18 +1206,19 @@ mod tests {
         let identity = AgentIdentity::generate("encrypt-test");
         let passphrase = b"correct horse battery staple";
 
-        let encrypted = EncryptedIdentityStore::encrypt(&identity, passphrase)
-            .expect("should encrypt");
+        let encrypted =
+            EncryptedIdentityStore::encrypt(&identity, passphrase).expect("should encrypt");
 
-        let decrypted = EncryptedIdentityStore::decrypt(&encrypted, passphrase)
-            .expect("should decrypt");
+        let decrypted =
+            EncryptedIdentityStore::decrypt(&encrypted, passphrase).expect("should decrypt");
 
         // Should have same identity
         assert_eq!(identity.id(), decrypted.id());
         assert_eq!(identity.name(), decrypted.name());
 
         // Should be able to sign events
-        let event = decrypted.sign_tool_execution("test", &serde_json::json!({}))
+        let event = decrypted
+            .sign_tool_execution("test", &serde_json::json!({}))
             .expect("should sign");
         assert!(event.validate().is_ok());
     }
@@ -1203,10 +1239,10 @@ mod tests {
         let identity = AgentIdentity::generate("unique-test");
         let passphrase = b"same passphrase";
 
-        let encrypted1 = EncryptedIdentityStore::encrypt(&identity, passphrase)
-            .expect("should encrypt");
-        let encrypted2 = EncryptedIdentityStore::encrypt(&identity, passphrase)
-            .expect("should encrypt");
+        let encrypted1 =
+            EncryptedIdentityStore::encrypt(&identity, passphrase).expect("should encrypt");
+        let encrypted2 =
+            EncryptedIdentityStore::encrypt(&identity, passphrase).expect("should encrypt");
 
         // Different salt and nonce means different ciphertext
         assert_ne!(encrypted1.salt, encrypted2.salt);
@@ -1222,20 +1258,18 @@ mod tests {
     #[test]
     fn test_encrypted_serializes_to_json() {
         let identity = AgentIdentity::generate("json-serialize-test");
-        let encrypted = EncryptedIdentityStore::encrypt(&identity, b"passphrase")
-            .expect("should encrypt");
+        let encrypted =
+            EncryptedIdentityStore::encrypt(&identity, b"passphrase").expect("should encrypt");
 
         // Should serialize to JSON
-        let json = serde_json::to_string(&encrypted)
-            .expect("should serialize");
+        let json = serde_json::to_string(&encrypted).expect("should serialize");
 
         // Should deserialize back
-        let restored: EncryptedIdentity = serde_json::from_str(&json)
-            .expect("should deserialize");
+        let restored: EncryptedIdentity = serde_json::from_str(&json).expect("should deserialize");
 
         // Should still decrypt correctly
-        let decrypted = EncryptedIdentityStore::decrypt(&restored, b"passphrase")
-            .expect("should decrypt");
+        let decrypted =
+            EncryptedIdentityStore::decrypt(&restored, b"passphrase").expect("should decrypt");
         assert_eq!(identity.id(), decrypted.id());
     }
 
@@ -1244,8 +1278,8 @@ mod tests {
         let identity = AgentIdentity::generate("tamper-test");
         let passphrase = b"passphrase";
 
-        let mut encrypted = EncryptedIdentityStore::encrypt(&identity, passphrase)
-            .expect("should encrypt");
+        let mut encrypted =
+            EncryptedIdentityStore::encrypt(&identity, passphrase).expect("should encrypt");
 
         // Tamper with ciphertext
         if !encrypted.ciphertext.is_empty() {
@@ -1260,8 +1294,8 @@ mod tests {
     #[test]
     fn test_encrypted_debug_redacts_data() {
         let identity = AgentIdentity::generate("debug-redact-test");
-        let encrypted = EncryptedIdentityStore::encrypt(&identity, b"passphrase")
-            .expect("should encrypt");
+        let encrypted =
+            EncryptedIdentityStore::encrypt(&identity, b"passphrase").expect("should encrypt");
 
         let debug_str = format!("{:?}", encrypted);
 

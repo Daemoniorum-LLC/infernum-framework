@@ -152,7 +152,7 @@ impl ConfigError {
                     .into_iter()
                     .next()
                     .expect("vector has exactly one element")
-            }
+            },
             _ => Self::Multiple(errors),
         }
     }

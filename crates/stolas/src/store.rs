@@ -335,9 +335,10 @@ impl LanceStore {
         }
 
         // Try to open existing table
-        let table_names = self.db.table_names().execute().await.map_err(|e| {
-            infernum_core::Error::internal(format!("Failed to list tables: {}", e))
-        })?;
+        let table_names =
+            self.db.table_names().execute().await.map_err(|e| {
+                infernum_core::Error::internal(format!("Failed to list tables: {}", e))
+            })?;
 
         let table = if table_names.contains(&self.config.table_name) {
             self.db
@@ -388,10 +389,7 @@ impl LanceStore {
     }
 
     /// Converts vector records to an Arrow RecordBatch.
-    fn records_to_batch(
-        &self,
-        records: &[VectorRecord],
-    ) -> Result<arrow_array::RecordBatch> {
+    fn records_to_batch(&self, records: &[VectorRecord]) -> Result<arrow_array::RecordBatch> {
         use arrow_array::{
             builder::{FixedSizeListBuilder, Float32Builder, StringBuilder},
             ArrayRef, RecordBatch,
@@ -431,8 +429,8 @@ impl LanceStore {
 
             content_builder.append_value(&record.content);
 
-            let metadata_json = serde_json::to_string(&record.metadata)
-                .unwrap_or_else(|_| "{}".to_string());
+            let metadata_json =
+                serde_json::to_string(&record.metadata).unwrap_or_else(|_| "{}".to_string());
             metadata_builder.append_value(&metadata_json);
         }
 
@@ -507,10 +505,8 @@ impl VectorStore for LanceStore {
 
         // Insert new records
         let batch = self.records_to_batch(&records)?;
-        let batches = arrow_array::RecordBatchIterator::new(
-            vec![Ok(batch.clone())],
-            batch.schema(),
-        );
+        let batches =
+            arrow_array::RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema());
 
         table.add(Box::new(batches)).execute().await.map_err(|e| {
             infernum_core::Error::internal(format!("Failed to insert records: {}", e))
@@ -543,25 +539,29 @@ impl VectorStore for LanceStore {
         })?;
 
         let mut search_results = Vec::new();
-        let batches: Vec<arrow_array::RecordBatch> = results
-            .try_collect::<Vec<_>>()
-            .await
-            .map_err(|e| infernum_core::Error::internal(format!("Failed to collect results: {}", e)))?;
+        let batches: Vec<arrow_array::RecordBatch> =
+            results.try_collect::<Vec<_>>().await.map_err(|e| {
+                infernum_core::Error::internal(format!("Failed to collect results: {}", e))
+            })?;
 
         for batch in batches {
             use arrow_array::cast::AsArray;
 
-            let id_col: &dyn arrow_array::Array = batch.column_by_name("id").ok_or_else(|| {
-                infernum_core::Error::internal("Missing id column".to_string())
-            })?;
-            let content_col: &dyn arrow_array::Array = batch.column_by_name("content").ok_or_else(|| {
-                infernum_core::Error::internal("Missing content column".to_string())
-            })?;
-            let vector_col: &dyn arrow_array::Array = batch.column_by_name("vector").ok_or_else(|| {
-                infernum_core::Error::internal("Missing vector column".to_string())
-            })?;
-            let metadata_col: Option<&dyn arrow_array::Array> = batch.column_by_name("metadata").map(|c| c.as_ref());
-            let distance_col: Option<&dyn arrow_array::Array> = batch.column_by_name("_distance").map(|c| c.as_ref());
+            let id_col: &dyn arrow_array::Array = batch
+                .column_by_name("id")
+                .ok_or_else(|| infernum_core::Error::internal("Missing id column".to_string()))?;
+            let content_col: &dyn arrow_array::Array =
+                batch.column_by_name("content").ok_or_else(|| {
+                    infernum_core::Error::internal("Missing content column".to_string())
+                })?;
+            let vector_col: &dyn arrow_array::Array =
+                batch.column_by_name("vector").ok_or_else(|| {
+                    infernum_core::Error::internal("Missing vector column".to_string())
+                })?;
+            let metadata_col: Option<&dyn arrow_array::Array> =
+                batch.column_by_name("metadata").map(|c| c.as_ref());
+            let distance_col: Option<&dyn arrow_array::Array> =
+                batch.column_by_name("_distance").map(|c| c.as_ref());
 
             let ids = id_col.as_string::<i32>();
             let contents = content_col.as_string::<i32>();
@@ -665,10 +665,10 @@ impl VectorStore for LanceStore {
             })?;
 
         let mut records = Vec::new();
-        let batches: Vec<arrow_array::RecordBatch> = results
-            .try_collect::<Vec<_>>()
-            .await
-            .map_err(|e| infernum_core::Error::internal(format!("Failed to collect results: {}", e)))?;
+        let batches: Vec<arrow_array::RecordBatch> =
+            results.try_collect::<Vec<_>>().await.map_err(|e| {
+                infernum_core::Error::internal(format!("Failed to collect results: {}", e))
+            })?;
 
         for batch in batches {
             use arrow_array::cast::AsArray;
@@ -676,13 +676,16 @@ impl VectorStore for LanceStore {
             let id_col: &dyn arrow_array::Array = batch
                 .column_by_name("id")
                 .ok_or_else(|| infernum_core::Error::internal("Missing 'id' column in result"))?;
-            let content_col: &dyn arrow_array::Array = batch
-                .column_by_name("content")
-                .ok_or_else(|| infernum_core::Error::internal("Missing 'content' column in result"))?;
-            let vector_col: &dyn arrow_array::Array = batch
-                .column_by_name("vector")
-                .ok_or_else(|| infernum_core::Error::internal("Missing 'vector' column in result"))?;
-            let metadata_col: Option<&dyn arrow_array::Array> = batch.column_by_name("metadata").map(|c| c.as_ref());
+            let content_col: &dyn arrow_array::Array =
+                batch.column_by_name("content").ok_or_else(|| {
+                    infernum_core::Error::internal("Missing 'content' column in result")
+                })?;
+            let vector_col: &dyn arrow_array::Array =
+                batch.column_by_name("vector").ok_or_else(|| {
+                    infernum_core::Error::internal("Missing 'vector' column in result")
+                })?;
+            let metadata_col: Option<&dyn arrow_array::Array> =
+                batch.column_by_name("metadata").map(|c| c.as_ref());
 
             let id_array = id_col.as_string::<i32>();
             let content_array = content_col.as_string::<i32>();
@@ -726,9 +729,10 @@ impl VectorStore for LanceStore {
 
     async fn count(&self) -> Result<usize> {
         let table = self.get_or_create_table().await?;
-        let count = table.count_rows(None).await.map_err(|e| {
-            infernum_core::Error::internal(format!("Failed to count rows: {}", e))
-        })?;
+        let count = table
+            .count_rows(None)
+            .await
+            .map_err(|e| infernum_core::Error::internal(format!("Failed to count rows: {}", e)))?;
         Ok(count)
     }
 }
@@ -774,7 +778,10 @@ mod tests {
             .with_metadata("num", serde_json::json!(42));
 
         assert_eq!(record.metadata.len(), 2);
-        assert_eq!(record.metadata.get("key").unwrap(), &serde_json::json!("value"));
+        assert_eq!(
+            record.metadata.get("key").unwrap(),
+            &serde_json::json!("value")
+        );
         assert_eq!(record.metadata.get("num").unwrap(), &serde_json::json!(42));
     }
 

@@ -120,7 +120,9 @@ impl RMSNormKernel {
         self.func = Some(
             self.device
                 .get_func("rmsnorm", "rmsnorm_f16")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get rmsnorm_f16 function".to_string()))?,
+                .ok_or_else(|| {
+                    InferenceError::Kernel("Failed to get rmsnorm_f16 function".to_string())
+                })?,
         );
 
         Ok(())
@@ -141,7 +143,9 @@ impl RMSNormKernel {
         output: &mut GpuTensor,
         eps: f32,
     ) -> Result<(), InferenceError> {
-        let func = self.func.as_ref()
+        let func = self
+            .func
+            .as_ref()
             .ok_or_else(|| InferenceError::Kernel("RMSNorm kernel not loaded".to_string()))?;
 
         let shape = input.shape();
@@ -167,17 +171,18 @@ impl RMSNormKernel {
         };
 
         unsafe {
-            func.clone().launch(
-                cfg,
-                (
-                    input.device_ptr(),
-                    weight.device_ptr(),
-                    output.device_ptr(),
-                    hidden_size as i32,
-                    eps,
-                ),
-            )
-            .map_err(|e| InferenceError::Kernel(e.to_string()))?;
+            func.clone()
+                .launch(
+                    cfg,
+                    (
+                        input.device_ptr(),
+                        weight.device_ptr(),
+                        output.device_ptr(),
+                        hidden_size as i32,
+                        eps,
+                    ),
+                )
+                .map_err(|e| InferenceError::Kernel(e.to_string()))?;
         }
 
         Ok(())

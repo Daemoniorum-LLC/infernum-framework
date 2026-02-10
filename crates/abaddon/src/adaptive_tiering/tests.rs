@@ -13,9 +13,9 @@ mod property_tests {
     // Strategy for generating random tensor info
     fn tensor_info_strategy() -> impl Strategy<Value = TensorInfo> {
         (
-            "[a-z]{5,15}",                    // name suffix
-            0usize..100,                      // layer index
-            1_000_000u64..1_000_000_000u64,   // size (1MB - 1GB)
+            "[a-z]{5,15}",                  // name suffix
+            0usize..100,                    // layer index
+            1_000_000u64..1_000_000_000u64, // size (1MB - 1GB)
         )
             .prop_map(|(suffix, layer, size)| {
                 let name = if layer < 50 {
@@ -35,17 +35,15 @@ mod property_tests {
     // Strategy for generating config
     fn config_strategy() -> impl Strategy<Value = AdaptiveTieringConfig> {
         (
-            1u64..100u64,  // vram_gb
-            10u64..200u64, // ram_gb
+            1u64..100u64,   // vram_gb
+            10u64..200u64,  // ram_gb
             0.5f32..1.0f32, // quality_target
         )
-            .prop_map(|(vram_gb, ram_gb, quality_target)| {
-                AdaptiveTieringConfig {
-                    vram_budget: vram_gb * 1024 * 1024 * 1024,
-                    ram_budget: ram_gb * 1024 * 1024 * 1024,
-                    quality_target,
-                    ..AdaptiveTieringConfig::default()
-                }
+            .prop_map(|(vram_gb, ram_gb, quality_target)| AdaptiveTieringConfig {
+                vram_budget: vram_gb * 1024 * 1024 * 1024,
+                ram_budget: ram_gb * 1024 * 1024 * 1024,
+                quality_target,
+                ..AdaptiveTieringConfig::default()
             })
     }
 
@@ -207,7 +205,10 @@ mod integration_tests {
         let mut tensors = Vec::new();
 
         // Embeddings and lm_head (~1GB total)
-        tensors.push(TensorInfo::from_name("model.embed_tokens.weight", 524_288_000)); // 500MB
+        tensors.push(TensorInfo::from_name(
+            "model.embed_tokens.weight",
+            524_288_000,
+        )); // 500MB
         tensors.push(TensorInfo::from_name("lm_head.weight", 524_288_000)); // 500MB
 
         // 48 layers, each ~600MB
@@ -281,18 +282,42 @@ mod integration_tests {
         println!("Quality score: {:.3}", plan.quality_score);
 
         // Count tensors by tier
-        let vram_count = plan.allocations.values().filter(|a| a.tier == MemoryTier::Vram).count();
-        let ram_count = plan.allocations.values().filter(|a| a.tier == MemoryTier::Ram).count();
-        let nvme_count = plan.allocations.values().filter(|a| a.tier == MemoryTier::Nvme).count();
+        let vram_count = plan
+            .allocations
+            .values()
+            .filter(|a| a.tier == MemoryTier::Vram)
+            .count();
+        let ram_count = plan
+            .allocations
+            .values()
+            .filter(|a| a.tier == MemoryTier::Ram)
+            .count();
+        let nvme_count = plan
+            .allocations
+            .values()
+            .filter(|a| a.tier == MemoryTier::Nvme)
+            .count();
 
         println!("VRAM tensors: {}", vram_count);
         println!("RAM tensors: {}", ram_count);
         println!("NVMe tensors: {}", nvme_count);
 
         // Count by precision
-        let bf16_count = plan.allocations.values().filter(|a| a.precision == TensorPrecision::BF16).count();
-        let int8_count = plan.allocations.values().filter(|a| a.precision == TensorPrecision::INT8).count();
-        let int4_count = plan.allocations.values().filter(|a| a.precision == TensorPrecision::INT4).count();
+        let bf16_count = plan
+            .allocations
+            .values()
+            .filter(|a| a.precision == TensorPrecision::BF16)
+            .count();
+        let int8_count = plan
+            .allocations
+            .values()
+            .filter(|a| a.precision == TensorPrecision::INT8)
+            .count();
+        let int4_count = plan
+            .allocations
+            .values()
+            .filter(|a| a.precision == TensorPrecision::INT4)
+            .count();
 
         println!("BF16 tensors: {}", bf16_count);
         println!("INT8 tensors: {}", int8_count);
@@ -317,8 +342,16 @@ mod integration_tests {
         // 3. Critical tensors (embeddings, lm_head) should be in VRAM
         let embed_alloc = plan.allocations.get("model.embed_tokens.weight").unwrap();
         let lm_head_alloc = plan.allocations.get("lm_head.weight").unwrap();
-        assert_eq!(embed_alloc.tier, MemoryTier::Vram, "embeddings must be in VRAM");
-        assert_eq!(lm_head_alloc.tier, MemoryTier::Vram, "lm_head must be in VRAM");
+        assert_eq!(
+            embed_alloc.tier,
+            MemoryTier::Vram,
+            "embeddings must be in VRAM"
+        );
+        assert_eq!(
+            lm_head_alloc.tier,
+            MemoryTier::Vram,
+            "lm_head must be in VRAM"
+        );
 
         // 4. VRAM budget respected
         assert!(
@@ -337,7 +370,9 @@ mod integration_tests {
         let config = AdaptiveTieringConfig::with_budgets(2.0, 60.0);
         let planner = AllocationPlanner::new(config);
 
-        let plan = planner.plan(&profile).expect("planning should succeed even with tiny VRAM");
+        let plan = planner
+            .plan(&profile)
+            .expect("planning should succeed even with tiny VRAM");
 
         // Critical tensors should still be allocated (possibly in RAM)
         assert!(plan.allocations.contains_key("model.embed_tokens.weight"));
@@ -347,7 +382,11 @@ mod integration_tests {
         assert!(plan.vram_usage <= 2 * 1024 * 1024 * 1024);
 
         // Most tensors will be in RAM
-        let ram_count = plan.allocations.values().filter(|a| a.tier == MemoryTier::Ram).count();
+        let ram_count = plan
+            .allocations
+            .values()
+            .filter(|a| a.tier == MemoryTier::Ram)
+            .count();
         assert!(
             ram_count > profile.tensors.len() / 2,
             "with 2GB VRAM, most tensors should be in RAM"
@@ -366,7 +405,11 @@ mod integration_tests {
         let plan = planner.plan(&profile).expect("planning should succeed");
 
         // Everything should be in VRAM
-        let vram_count = plan.allocations.values().filter(|a| a.tier == MemoryTier::Vram).count();
+        let vram_count = plan
+            .allocations
+            .values()
+            .filter(|a| a.tier == MemoryTier::Vram)
+            .count();
         assert_eq!(
             vram_count,
             profile.tensors.len(),

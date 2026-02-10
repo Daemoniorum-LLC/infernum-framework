@@ -282,10 +282,7 @@ impl CublasHandle {
         if a_shape.len() != 2 || b_shape.len() != 2 || c_shape.len() != 2 {
             return Err(InferenceError::Shape {
                 expected: "2D matrices".to_string(),
-                got: format!(
-                    "A: {:?}, B: {:?}, C: {:?}",
-                    a_shape, b_shape, c_shape
-                ),
+                got: format!("A: {:?}, B: {:?}, C: {:?}", a_shape, b_shape, c_shape),
             });
         }
 
@@ -433,10 +430,7 @@ impl CublasHandle {
         if a_shape.len() != 3 || b_shape.len() != 3 || c_shape.len() != 3 {
             return Err(InferenceError::Shape {
                 expected: "3D batched matrices".to_string(),
-                got: format!(
-                    "A: {:?}, B: {:?}, C: {:?}",
-                    a_shape, b_shape, c_shape
-                ),
+                got: format!("A: {:?}, B: {:?}, C: {:?}", a_shape, b_shape, c_shape),
             });
         }
 
@@ -469,10 +463,15 @@ impl CublasHandle {
                 a.device_ptr(),
                 b.device_ptr(),
                 c.device_ptr(),
-                m, n, k,
-                stride_a, stride_b, stride_c,
+                m,
+                n,
+                k,
+                stride_a,
+                stride_b,
+                stride_c,
                 batch,
-                alpha, beta,
+                alpha,
+                beta,
             )
         }
     }
@@ -503,7 +502,7 @@ impl CublasHandle {
                 self.handle,
                 CublasOperation::N as i32,
                 CublasOperation::N as i32,
-                n as i32,  // Swapped for row-major
+                n as i32, // Swapped for row-major
                 m as i32,
                 k as i32,
                 &alpha as *const f32 as *const c_void,
@@ -579,12 +578,7 @@ impl CublasHandle {
     /// * `alpha` - Scalar multiplier
     /// * `x` - Source vector
     /// * `y` - Destination vector (modified in-place)
-    pub fn axpy(
-        &self,
-        alpha: f32,
-        x: &GpuTensor,
-        y: &mut GpuTensor,
-    ) -> Result<(), InferenceError> {
+    pub fn axpy(&self, alpha: f32, x: &GpuTensor, y: &mut GpuTensor) -> Result<(), InferenceError> {
         let n = x.numel();
         if y.numel() != n {
             return Err(InferenceError::Shape {
@@ -596,11 +590,7 @@ impl CublasHandle {
         // cuBLAS axpy: y = alpha * x + y
         // For F16, we'd use cublasHaxpy or implement via kernel
 
-        tracing::debug!(
-            n = n,
-            alpha = alpha,
-            "cuBLAS AXPY called"
-        );
+        tracing::debug!(n = n, alpha = alpha, "cuBLAS AXPY called");
 
         // AXPY is less critical for inference - we use custom kernels for element-wise ops
         // Keep as placeholder for now

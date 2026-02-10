@@ -7,8 +7,8 @@ use infernum_core::Result;
 use regex::Regex;
 use serde_json::Value;
 
-use crate::tool::{RiskLevel, Tool, ToolContext, ToolResult};
 use super::{optional_str_param, optional_u64_param, require_str_param, validate_path};
+use crate::tool::{RiskLevel, Tool, ToolContext, ToolResult};
 
 /// Default maximum number of matching lines to return.
 const DEFAULT_MAX_RESULTS: u64 = 100;
@@ -60,8 +60,8 @@ impl Tool for SearchFilesTool {
         let pattern_str = require_str_param(&params, "pattern")?;
         let path_str = optional_str_param(&params, "path").unwrap_or(".");
         let file_glob = optional_str_param(&params, "file_glob");
-        let max_results = optional_u64_param(&params, "max_results")
-            .unwrap_or(DEFAULT_MAX_RESULTS) as usize;
+        let max_results =
+            optional_u64_param(&params, "max_results").unwrap_or(DEFAULT_MAX_RESULTS) as usize;
 
         let regex = match Regex::new(pattern_str) {
             Ok(r) => r,
@@ -70,7 +70,7 @@ impl Tool for SearchFilesTool {
                     "Invalid regex pattern '{}': {}",
                     pattern_str, e
                 )));
-            }
+            },
         };
 
         let resolved = validate_path(path_str, ctx)?;
@@ -89,7 +89,7 @@ impl Tool for SearchFilesTool {
                         "Invalid file_glob '{}': {}",
                         glob_pat, e
                     )));
-                }
+                },
             }
         } else {
             collect_files_recursive(&resolved, 10)

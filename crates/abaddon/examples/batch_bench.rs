@@ -5,9 +5,7 @@ use std::time::Instant;
 
 #[cfg(feature = "cuda")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use abaddon::cuda_inference::{
-        BatchScheduler, WeightStore, ModelArch,
-    };
+    use abaddon::cuda_inference::{BatchScheduler, ModelArch, WeightStore};
     use cudarc::driver::CudaDevice;
 
     println!("=== Continuous Batching Benchmark ===\n");
@@ -16,10 +14,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let device = Arc::new(device);
     println!("GPU: {:?}", device.name());
 
-    let model_dir = "/home/crook/dev2/workspace/nyx/infernum/infernum-complete/test_models/smollm2-135m-int4";
+    let model_dir =
+        "/home/crook/dev2/workspace/nyx/infernum/infernum-complete/test_models/smollm2-135m-int4";
 
     let weights = WeightStore::load_hct(model_dir, Some(ModelArch::Llama), 0)?;
-    println!("Model loaded: {} layers, {} hidden\n", weights.config.num_layers, weights.config.hidden_size);
+    println!(
+        "Model loaded: {} layers, {} hidden\n",
+        weights.config.num_layers, weights.config.hidden_size
+    );
 
     // Test different batch sizes
     let batch_sizes = [1, 2, 4, 8, 16];
@@ -27,11 +29,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tokens_per_request = 32;
 
     println!("--- Batch Scheduler Performance ---\n");
-    println!("{:>10} | {:>12} | {:>12} | {:>12}", "Batch Size", "Schedule (µs)", "Prefill (µs)", "Free (µs)");
+    println!(
+        "{:>10} | {:>12} | {:>12} | {:>12}",
+        "Batch Size", "Schedule (µs)", "Prefill (µs)", "Free (µs)"
+    );
     println!("{:-<10}-+-{:-<12}-+-{:-<12}-+-{:-<12}", "", "", "", "");
 
     for &batch_size in &batch_sizes {
-        let mut scheduler = BatchScheduler::new(&weights.config, batch_size, max_seq_len, Arc::clone(&device))?;
+        let mut scheduler = BatchScheduler::new(
+            &weights.config,
+            batch_size,
+            max_seq_len,
+            Arc::clone(&device),
+        )?;
 
         // Measure scheduling time
         let start = Instant::now();
@@ -65,7 +75,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _completed = scheduler.get_completed();
         let free_time = start.elapsed();
 
-        println!("{:>10} | {:>12} | {:>12} | {:>12}",
+        println!(
+            "{:>10} | {:>12} | {:>12} | {:>12}",
             batch_size,
             schedule_time.as_micros(),
             prefill_time.as_micros(),
@@ -77,7 +88,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n--- Batched Inference Simulation ---\n");
 
     let batch_size = 8;
-    let mut scheduler = BatchScheduler::new(&weights.config, batch_size, max_seq_len, Arc::clone(&device))?;
+    let mut scheduler = BatchScheduler::new(
+        &weights.config,
+        batch_size,
+        max_seq_len,
+        Arc::clone(&device),
+    )?;
 
     // Add 100 requests
     let num_requests = 100;
@@ -129,8 +145,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Total tokens: {}", total_tokens);
     println!("Iterations: {}", iterations);
     println!("Time: {:?}", elapsed);
-    println!("Throughput: {:.0} tok/s (scheduler overhead only)",
-        total_tokens as f64 / elapsed.as_secs_f64());
+    println!(
+        "Throughput: {:.0} tok/s (scheduler overhead only)",
+        total_tokens as f64 / elapsed.as_secs_f64()
+    );
     println!("\nFinal stats: {:?}", stats);
 
     let completed = scheduler.get_completed();

@@ -10,10 +10,7 @@ use candle_core::{DType, Device, Module, Result as CandleResult, Tensor, D};
 use candle_nn::{embedding, linear_no_bias, Embedding, Linear, VarBuilder};
 use serde::Deserialize;
 
-use crate::attention_cache::{
-    KvCache, KvCacheConfig, CacheType,
-    attention_with_cache,
-};
+use crate::attention_cache::{attention_with_cache, CacheType, KvCache, KvCacheConfig};
 
 /// RoPE scaling configuration for extended context models.
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -274,12 +271,8 @@ impl Attention {
         let v_proj = linear_no_bias(hidden_size, num_kv_heads * head_dim, vb.pp("v_proj"))?;
         let o_proj = linear_no_bias(num_heads * head_dim, hidden_size, vb.pp("o_proj"))?;
 
-        let cache_config = KvCacheConfig::new(
-            num_kv_heads,
-            head_dim,
-            vb.device().clone(),
-            vb.dtype(),
-        );
+        let cache_config =
+            KvCacheConfig::new(num_kv_heads, head_dim, vb.device().clone(), vb.dtype());
         let kv_cache = cache_type.create(&cache_config)?;
 
         Ok(Self {
@@ -620,7 +613,10 @@ impl Llama {
 
     /// Returns the total cache memory usage across all layers in bytes.
     pub fn cache_memory_bytes(&self) -> usize {
-        self.layers.iter().map(|l| l.self_attn.cache_memory_bytes()).sum()
+        self.layers
+            .iter()
+            .map(|l| l.self_attn.cache_memory_bytes())
+            .sum()
     }
 
     /// Returns the current cache sequence length.

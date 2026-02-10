@@ -3,8 +3,8 @@
 //! This cache stores K/V tensors in their original precision (BF16/FP16/FP32).
 //! It's the simplest and most accurate cache, but uses the most memory.
 
-use candle_core::{Result as CandleResult, Tensor};
 use super::KvCache;
+use candle_core::{Result as CandleResult, Tensor};
 
 /// Standard full-precision KV cache.
 ///
@@ -48,7 +48,7 @@ impl KvCache for StandardCache {
                 let k_cat = Tensor::cat(&[prev_k, k], 2)?;
                 let v_cat = Tensor::cat(&[prev_v, v], 2)?;
                 (k_cat, v_cat)
-            }
+            },
             _ => (k.clone(), v.clone()),
         };
 
@@ -70,8 +70,16 @@ impl KvCache for StandardCache {
     }
 
     fn memory_bytes(&self) -> usize {
-        let k_bytes = self.k.as_ref().map(|t| t.elem_count() * t.dtype().size_in_bytes()).unwrap_or(0);
-        let v_bytes = self.v.as_ref().map(|t| t.elem_count() * t.dtype().size_in_bytes()).unwrap_or(0);
+        let k_bytes = self
+            .k
+            .as_ref()
+            .map(|t| t.elem_count() * t.dtype().size_in_bytes())
+            .unwrap_or(0);
+        let v_bytes = self
+            .v
+            .as_ref()
+            .map(|t| t.elem_count() * t.dtype().size_in_bytes())
+            .unwrap_or(0);
         k_bytes + v_bytes
     }
 
@@ -90,7 +98,7 @@ impl KvCache for StandardCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use candle_core::{Device, DType};
+    use candle_core::{DType, Device};
 
     #[test]
     fn test_standard_cache_empty() {

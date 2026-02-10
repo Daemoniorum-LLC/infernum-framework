@@ -49,7 +49,9 @@ fn run_test(hct_dir: &Path, retention: &str) -> Result<(Vec<u32>, f32)> {
     let logits_vec: Vec<f32> = last_logits.to_vec1()?;
 
     // Get top 5 predictions
-    let mut indexed: Vec<(u32, f32)> = logits_vec.iter().enumerate()
+    let mut indexed: Vec<(u32, f32)> = logits_vec
+        .iter()
+        .enumerate()
         .map(|(i, &v)| (i as u32, v))
         .collect();
     indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
@@ -74,9 +76,18 @@ fn main() -> Result<()> {
 
     println!("\n=== Summary ===");
     println!("Top-1 predictions:");
-    println!("  20% retention: Token {} (score: {:.4})", results_20.0[0], results_20.1);
-    println!("  50% retention: Token {} (score: {:.4})", results_50.0[0], results_50.1);
-    println!("  80% retention: Token {} (score: {:.4})", results_80.0[0], results_80.1);
+    println!(
+        "  20% retention: Token {} (score: {:.4})",
+        results_20.0[0], results_20.1
+    );
+    println!(
+        "  50% retention: Token {} (score: {:.4})",
+        results_50.0[0], results_50.1
+    );
+    println!(
+        "  80% retention: Token {} (score: {:.4})",
+        results_80.0[0], results_80.1
+    );
 
     // Check agreement
     let agree_20_50 = results_20.0[0] == results_50.0[0];

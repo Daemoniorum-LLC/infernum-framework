@@ -216,7 +216,7 @@ mod tests {
             ChunkingStrategy::FixedTokens { size, overlap } => {
                 assert_eq!(size, 512);
                 assert_eq!(overlap, 50);
-            }
+            },
             _ => panic!("Default should be FixedTokens"),
         }
     }

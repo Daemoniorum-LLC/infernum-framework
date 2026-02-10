@@ -425,8 +425,7 @@ mod tests {
 
     #[test]
     fn test_embed_request_serialization() {
-        let req = EmbedRequest::new("embed this")
-            .with_encoding_format(EncodingFormat::Base64);
+        let req = EmbedRequest::new("embed this").with_encoding_format(EncodingFormat::Base64);
 
         let json = serde_json::to_string(&req).unwrap();
         let deserialized: EmbedRequest = serde_json::from_str(&json).unwrap();
@@ -448,8 +447,7 @@ mod tests {
                     "properties": { "path": { "type": "string" } },
                     "required": ["path"]
                 })),
-            ToolDefinition::new("bash")
-                .with_description("Run a command"),
+            ToolDefinition::new("bash").with_description("Run a command"),
         ];
 
         let req = GenerateRequest::new("prompt").with_tools(tools);

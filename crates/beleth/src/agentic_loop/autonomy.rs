@@ -90,7 +90,12 @@ impl AutonomyGrant {
         &self.auto_approve
     }
 
-    fn matches_any(&self, patterns: &[ToolPattern], tool_name: &str, argument: Option<&str>) -> bool {
+    fn matches_any(
+        &self,
+        patterns: &[ToolPattern],
+        tool_name: &str,
+        argument: Option<&str>,
+    ) -> bool {
         patterns.iter().any(|p| p.matches(tool_name, argument))
     }
 }
@@ -100,15 +105,17 @@ impl ToolPattern {
     pub fn matches(&self, tool_name: &str, argument: Option<&str>) -> bool {
         match self {
             Self::Read(glob) => {
-                matches!(tool_name, "read_file" | "read") && argument.map_or(false, |a| glob_matches(glob, a))
-            }
+                matches!(tool_name, "read_file" | "read")
+                    && argument.map_or(false, |a| glob_matches(glob, a))
+            },
             Self::Write(glob) => {
                 matches!(tool_name, "write_file" | "edit_file" | "write" | "edit")
                     && argument.map_or(false, |a| glob_matches(glob, a))
-            }
+            },
             Self::Bash(glob) => {
-                matches!(tool_name, "bash" | "shell") && argument.map_or(false, |a| glob_matches(glob, a))
-            }
+                matches!(tool_name, "bash" | "shell")
+                    && argument.map_or(false, |a| glob_matches(glob, a))
+            },
             Self::Tool(name) => glob_matches(name, tool_name),
         }
     }

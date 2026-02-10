@@ -1,7 +1,7 @@
 //! Debug tensor names and shapes between HCT and safetensors
 
-use std::path::Path;
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use candle_core::{DType, Device, Tensor};
 use safetensors::SafeTensors;
@@ -27,7 +27,7 @@ fn main() -> Result<()> {
     st_names_sorted.sort();
     for (i, name) in st_names_sorted.iter().take(10).enumerate() {
         let tensor = st.tensor(name)?;
-        println!("  {:3}. {} {:?}", i+1, name, tensor.shape());
+        println!("  {:3}. {} {:?}", i + 1, name, tensor.shape());
     }
     println!("  ... and {} more", st_names.len().saturating_sub(10));
 
@@ -42,7 +42,7 @@ fn main() -> Result<()> {
     hct_names_sorted.sort();
     for (i, name) in hct_names_sorted.iter().take(10).enumerate() {
         let tensor = hct_tensors.get(*name).unwrap();
-        println!("  {:3}. {} {:?}", i+1, name, tensor.dims());
+        println!("  {:3}. {} {:?}", i + 1, name, tensor.dims());
     }
     println!("  ... and {} more", hct_names.len().saturating_sub(10));
 
@@ -83,8 +83,15 @@ fn main() -> Result<()> {
         let st_shape: Vec<usize> = st_tensor.shape().to_vec();
         let hct_shape: Vec<usize> = hct_tensor.dims().to_vec();
 
-        let match_status = if st_shape == hct_shape { "OK" } else { "MISMATCH" };
-        println!("  {} {} {:?} vs {:?}", match_status, name, st_shape, hct_shape);
+        let match_status = if st_shape == hct_shape {
+            "OK"
+        } else {
+            "MISMATCH"
+        };
+        println!(
+            "  {} {} {:?} vs {:?}",
+            match_status, name, st_shape, hct_shape
+        );
     }
 
     // Test hybrid loading
@@ -100,25 +107,28 @@ fn main() -> Result<()> {
 
             let tensor = match st_tensor.dtype() {
                 safetensors::Dtype::BF16 => {
-                    let halfs: Vec<half::bf16> = data.chunks_exact(2)
+                    let halfs: Vec<half::bf16> = data
+                        .chunks_exact(2)
                         .map(|chunk| half::bf16::from_le_bytes([chunk[0], chunk[1]]))
                         .collect();
                     let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
                     Tensor::from_vec(floats, shape.as_slice(), &device)?
-                }
+                },
                 safetensors::Dtype::F32 => {
-                    let floats: Vec<f32> = data.chunks_exact(4)
+                    let floats: Vec<f32> = data
+                        .chunks_exact(4)
                         .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                         .collect();
                     Tensor::from_vec(floats, shape.as_slice(), &device)?
-                }
+                },
                 safetensors::Dtype::F16 => {
-                    let halfs: Vec<half::f16> = data.chunks_exact(2)
+                    let halfs: Vec<half::f16> = data
+                        .chunks_exact(2)
                         .map(|chunk| half::f16::from_le_bytes([chunk[0], chunk[1]]))
                         .collect();
                     let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
                     Tensor::from_vec(floats, shape.as_slice(), &device)?
-                }
+                },
                 _ => continue,
             };
 

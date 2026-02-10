@@ -86,7 +86,11 @@ pub struct Model {
 
 impl Model {
     /// Creates a new model.
-    pub fn new(name: impl Into<String>, base_model: impl Into<String>, task_type: impl Into<String>) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        base_model: impl Into<String>,
+        task_type: impl Into<String>,
+    ) -> Self {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4().to_string(),
@@ -148,14 +152,14 @@ impl Model {
 
     /// Gets versions in a specific stage.
     pub fn versions_in_stage(&self, stage: ModelStage) -> Vec<&ModelVersion> {
-        self.versions.iter()
-            .filter(|v| v.stage == stage)
-            .collect()
+        self.versions.iter().filter(|v| v.stage == stage).collect()
     }
 
     /// Gets the production version.
     pub fn production_version(&self) -> Option<&ModelVersion> {
-        self.versions_in_stage(ModelStage::Production).into_iter().last()
+        self.versions_in_stage(ModelStage::Production)
+            .into_iter()
+            .last()
     }
 }
 
@@ -239,7 +243,7 @@ impl ModelVersion {
             (ModelStage::Staging, ModelStage::Development) => true, // Reject
             (ModelStage::Production, ModelStage::Archived) => true,
             (ModelStage::Production, ModelStage::Staging) => true, // Rollback
-            (_, ModelStage::Archived) => true, // Can always archive
+            (_, ModelStage::Archived) => true,                     // Can always archive
             _ => false,
         };
 
@@ -592,8 +596,12 @@ impl ModelRegistry {
         info!(model_id = %id, "Registered model");
 
         if let Some(ref db) = self.db {
-            db.save_model(&model)
-                .map_err(|e| RegistryError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            db.save_model(&model).map_err(|e| {
+                RegistryError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))
+            })?;
         } else {
             self.models.write().insert(id.clone(), model);
         }
@@ -606,8 +614,12 @@ impl ModelRegistry {
         let _span = info_span!("registry.delete_model", id = %id).entered();
 
         if let Some(ref db) = self.db {
-            db.delete_model(id)
-                .map_err(|e| RegistryError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            db.delete_model(id).map_err(|e| {
+                RegistryError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))
+            })?;
         } else {
             self.models.write().remove(id);
         }
@@ -631,7 +643,9 @@ impl ModelRegistry {
             let models = self.list_models();
             models.into_iter().find(|m| m.name == name)
         } else {
-            self.models.read().values()
+            self.models
+                .read()
+                .values()
                 .find(|m| m.name == name)
                 .cloned()
         }
@@ -656,34 +670,42 @@ impl ModelRegistry {
     /// Lists models by tag.
     pub fn list_models_by_tag(&self, tag: &str) -> Vec<Model> {
         let models = self.list_models();
-        models.into_iter()
+        models
+            .into_iter()
             .filter(|m| m.tags.contains(&tag.to_string()))
             .collect()
     }
 
     /// Creates a new version for a model.
-    pub fn create_version(
-        &self,
-        model_id: &str,
-        metadata: ModelMetadata,
-    ) -> Result<ModelVersion> {
+    pub fn create_version(&self, model_id: &str, metadata: ModelMetadata) -> Result<ModelVersion> {
         let _span = info_span!("registry.create_version", model_id = %model_id).entered();
 
         if let Some(ref db) = self.db {
-            let mut model = db.load_model(model_id)
-                .map_err(|e| RegistryError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
+            let mut model = db
+                .load_model(model_id)
+                .map_err(|e| {
+                    RegistryError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e.to_string(),
+                    ))
+                })?
                 .ok_or_else(|| RegistryError::NotFound(model_id.to_string()))?;
 
             let version = model.create_version(metadata).clone();
 
-            db.save_model(&model)
-                .map_err(|e| RegistryError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            db.save_model(&model).map_err(|e| {
+                RegistryError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))
+            })?;
 
             info!(version = version.version, "Created model version");
             Ok(version)
         } else {
             let mut models = self.models.write();
-            let model = models.get_mut(model_id)
+            let model = models
+                .get_mut(model_id)
                 .ok_or_else(|| RegistryError::NotFound(model_id.to_string()))?;
 
             let version = model.create_version(metadata).clone();
@@ -706,26 +728,40 @@ impl ModelRegistry {
             model_id = %model_id,
             version = version_num,
             stage = ?stage
-        ).entered();
+        )
+        .entered();
 
         if let Some(ref db) = self.db {
-            let mut model = db.load_model(model_id)
-                .map_err(|e| RegistryError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
+            let mut model = db
+                .load_model(model_id)
+                .map_err(|e| {
+                    RegistryError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e.to_string(),
+                    ))
+                })?
                 .ok_or_else(|| RegistryError::NotFound(model_id.to_string()))?;
 
-            let version = model.get_version_mut(version_num)
+            let version = model
+                .get_version_mut(version_num)
                 .ok_or_else(|| RegistryError::VersionNotFound(format!("v{}", version_num)))?;
 
             version.transition_to(stage, reason)?;
 
-            db.save_model(&model)
-                .map_err(|e| RegistryError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            db.save_model(&model).map_err(|e| {
+                RegistryError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))
+            })?;
         } else {
             let mut models = self.models.write();
-            let model = models.get_mut(model_id)
+            let model = models
+                .get_mut(model_id)
                 .ok_or_else(|| RegistryError::NotFound(model_id.to_string()))?;
 
-            let version = model.get_version_mut(version_num)
+            let version = model
+                .get_version_mut(version_num)
                 .ok_or_else(|| RegistryError::VersionNotFound(format!("v{}", version_num)))?;
 
             version.transition_to(stage, reason)?;
@@ -743,23 +779,36 @@ impl ModelRegistry {
         metrics: HashMap<String, f64>,
     ) -> Result<()> {
         if let Some(ref db) = self.db {
-            let mut model = db.load_model(model_id)
-                .map_err(|e| RegistryError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
+            let mut model = db
+                .load_model(model_id)
+                .map_err(|e| {
+                    RegistryError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e.to_string(),
+                    ))
+                })?
                 .ok_or_else(|| RegistryError::NotFound(model_id.to_string()))?;
 
-            let version = model.get_version_mut(version_num)
+            let version = model
+                .get_version_mut(version_num)
                 .ok_or_else(|| RegistryError::VersionNotFound(format!("v{}", version_num)))?;
 
             version.metrics = metrics;
 
-            db.save_model(&model)
-                .map_err(|e| RegistryError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            db.save_model(&model).map_err(|e| {
+                RegistryError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))
+            })?;
         } else {
             let mut models = self.models.write();
-            let model = models.get_mut(model_id)
+            let model = models
+                .get_mut(model_id)
                 .ok_or_else(|| RegistryError::NotFound(model_id.to_string()))?;
 
-            let version = model.get_version_mut(version_num)
+            let version = model
+                .get_version_mut(version_num)
                 .ok_or_else(|| RegistryError::VersionNotFound(format!("v{}", version_num)))?;
 
             version.metrics = metrics;
@@ -780,10 +829,12 @@ impl ModelRegistry {
             model_id = %model_id,
             version = version_num,
             environment = ?environment
-        ).entered();
+        )
+        .entered();
 
         // Verify model and version exist
-        let model = self.get_model(model_id)
+        let model = self
+            .get_model(model_id)
             .ok_or_else(|| RegistryError::NotFound(model_id.to_string()))?;
 
         if model.get_version(version_num).is_none() {
@@ -796,8 +847,12 @@ impl ModelRegistry {
         info!(deployment_id = %id, "Created deployment");
 
         if let Some(ref db) = self.db {
-            db.save_deployment(&deployment)
-                .map_err(|e| RegistryError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            db.save_deployment(&deployment).map_err(|e| {
+                RegistryError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))
+            })?;
         } else {
             self.deployments.write().insert(id, deployment.clone());
         }
@@ -839,7 +894,8 @@ impl ModelRegistry {
     /// Lists deployments for a model.
     pub fn list_deployments_for_model(&self, model_id: &str) -> Vec<Deployment> {
         let deployments = self.list_deployments();
-        deployments.into_iter()
+        deployments
+            .into_iter()
             .filter(|d| d.model_id == model_id)
             .collect()
     }
@@ -849,8 +905,12 @@ impl ModelRegistry {
         let _span = info_span!("registry.delete_deployment", id = %id).entered();
 
         if let Some(ref db) = self.db {
-            db.delete_deployment(id)
-                .map_err(|e| RegistryError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            db.delete_deployment(id).map_err(|e| {
+                RegistryError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))
+            })?;
         } else {
             self.deployments.write().remove(id);
         }
@@ -870,11 +930,18 @@ impl ModelRegistry {
             "registry.update_deployment_status",
             deployment_id = %deployment_id,
             status = ?status
-        ).entered();
+        )
+        .entered();
 
         if let Some(ref db) = self.db {
-            let mut deployment = db.load_deployment(deployment_id)
-                .map_err(|e| RegistryError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
+            let mut deployment = db
+                .load_deployment(deployment_id)
+                .map_err(|e| {
+                    RegistryError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e.to_string(),
+                    ))
+                })?
                 .ok_or_else(|| RegistryError::DeploymentNotFound(deployment_id.to_string()))?;
 
             let event_type = match status {
@@ -887,11 +954,16 @@ impl ModelRegistry {
             deployment.status = status;
             deployment.record_event(event_type, details);
 
-            db.save_deployment(&deployment)
-                .map_err(|e| RegistryError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            db.save_deployment(&deployment).map_err(|e| {
+                RegistryError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))
+            })?;
         } else {
             let mut deployments = self.deployments.write();
-            let deployment = deployments.get_mut(deployment_id)
+            let deployment = deployments
+                .get_mut(deployment_id)
                 .ok_or_else(|| RegistryError::DeploymentNotFound(deployment_id.to_string()))?;
 
             let event_type = match status {
@@ -910,57 +982,84 @@ impl ModelRegistry {
     }
 
     /// Rolls back a deployment to a previous version.
-    pub fn rollback_deployment(
-        &self,
-        deployment_id: &str,
-        target_version: u32,
-    ) -> Result<()> {
+    pub fn rollback_deployment(&self, deployment_id: &str, target_version: u32) -> Result<()> {
         let _span = info_span!(
             "registry.rollback_deployment",
             deployment_id = %deployment_id,
             target_version = target_version
-        ).entered();
+        )
+        .entered();
 
         // Verify version exists
-        let deployment = self.get_deployment(deployment_id)
+        let deployment = self
+            .get_deployment(deployment_id)
             .ok_or_else(|| RegistryError::DeploymentNotFound(deployment_id.to_string()))?;
 
-        let model = self.get_model(&deployment.model_id)
+        let model = self
+            .get_model(&deployment.model_id)
             .ok_or_else(|| RegistryError::NotFound(deployment.model_id.clone()))?;
 
         if model.get_version(target_version).is_none() {
-            return Err(RegistryError::VersionNotFound(format!("v{}", target_version)));
+            return Err(RegistryError::VersionNotFound(format!(
+                "v{}",
+                target_version
+            )));
         }
 
         if let Some(ref db) = self.db {
-            let mut deployment = db.load_deployment(deployment_id)
-                .map_err(|e| RegistryError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
+            let mut deployment = db
+                .load_deployment(deployment_id)
+                .map_err(|e| {
+                    RegistryError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e.to_string(),
+                    ))
+                })?
                 .ok_or_else(|| RegistryError::DeploymentNotFound(deployment_id.to_string()))?;
 
             let old_version = deployment.model_version;
             deployment.model_version = target_version;
             deployment.record_event(
                 DeploymentEventType::RolledBack,
-                Some(format!("Rolled back from v{} to v{}", old_version, target_version)),
+                Some(format!(
+                    "Rolled back from v{} to v{}",
+                    old_version, target_version
+                )),
             );
 
-            db.save_deployment(&deployment)
-                .map_err(|e| RegistryError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            db.save_deployment(&deployment).map_err(|e| {
+                RegistryError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))
+            })?;
 
-            warn!(from = old_version, to = target_version, "Rolled back deployment");
+            warn!(
+                from = old_version,
+                to = target_version,
+                "Rolled back deployment"
+            );
         } else {
             let mut deployments = self.deployments.write();
-            let deployment = deployments.get_mut(deployment_id)
+            let deployment = deployments
+                .get_mut(deployment_id)
                 .ok_or_else(|| RegistryError::DeploymentNotFound(deployment_id.to_string()))?;
 
             let old_version = deployment.model_version;
             deployment.model_version = target_version;
             deployment.record_event(
                 DeploymentEventType::RolledBack,
-                Some(format!("Rolled back from v{} to v{}", old_version, target_version)),
+                Some(format!(
+                    "Rolled back from v{} to v{}",
+                    old_version, target_version
+                )),
             );
 
-            warn!(from = old_version, to = target_version, "Rolled back deployment");
+            warn!(
+                from = old_version,
+                to = target_version,
+                "Rolled back deployment"
+            );
         }
 
         Ok(())
@@ -968,10 +1067,12 @@ impl ModelRegistry {
 
     /// Gets model lineage (what was used to create this model).
     pub fn get_lineage(&self, model_id: &str, version_num: u32) -> Result<ModelLineage> {
-        let model = self.get_model(model_id)
+        let model = self
+            .get_model(model_id)
             .ok_or_else(|| RegistryError::NotFound(model_id.to_string()))?;
 
-        let version = model.get_version(version_num)
+        let version = model
+            .get_version(version_num)
             .ok_or_else(|| RegistryError::VersionNotFound(format!("v{}", version_num)))?;
 
         Ok(ModelLineage {
@@ -993,16 +1094,21 @@ impl ModelRegistry {
         version_a: u32,
         version_b: u32,
     ) -> Result<VersionComparison> {
-        let model = self.get_model(model_id)
+        let model = self
+            .get_model(model_id)
             .ok_or_else(|| RegistryError::NotFound(model_id.to_string()))?;
 
-        let va = model.get_version(version_a)
+        let va = model
+            .get_version(version_a)
             .ok_or_else(|| RegistryError::VersionNotFound(format!("v{}", version_a)))?;
-        let vb = model.get_version(version_b)
+        let vb = model
+            .get_version(version_b)
             .ok_or_else(|| RegistryError::VersionNotFound(format!("v{}", version_b)))?;
 
         // Find common metrics
-        let common_metrics: Vec<String> = va.metrics.keys()
+        let common_metrics: Vec<String> = va
+            .metrics
+            .keys()
             .filter(|k| vb.metrics.contains_key(*k))
             .cloned()
             .collect();
@@ -1016,7 +1122,11 @@ impl ModelRegistry {
                 version_a_value: val_a,
                 version_b_value: val_b,
                 difference: val_b - val_a,
-                percent_change: if val_a != 0.0 { ((val_b - val_a) / val_a) * 100.0 } else { 0.0 },
+                percent_change: if val_a != 0.0 {
+                    ((val_b - val_a) / val_a) * 100.0
+                } else {
+                    0.0
+                },
             });
         }
 
@@ -1148,8 +1258,7 @@ mod tests {
     fn test_model_versioning() {
         let mut model = Model::new("test", "llama", "gen");
 
-        let metadata = ModelMetadata::new()
-            .with_format("safetensors");
+        let metadata = ModelMetadata::new().with_format("safetensors");
 
         let v1 = model.create_version(metadata.clone());
         assert_eq!(v1.version, 1);
@@ -1167,12 +1276,14 @@ mod tests {
         let mut version = ModelVersion::new(1, ModelMetadata::new());
 
         // Valid: Dev -> Staging
-        version.transition_to(ModelStage::Staging, Some("Ready for testing".to_string()))
+        version
+            .transition_to(ModelStage::Staging, Some("Ready for testing".to_string()))
             .expect("transition to staging");
         assert_eq!(version.stage, ModelStage::Staging);
 
         // Valid: Staging -> Production
-        version.transition_to(ModelStage::Production, Some("Passed QA".to_string()))
+        version
+            .transition_to(ModelStage::Production, Some("Passed QA".to_string()))
             .expect("transition to production");
         assert_eq!(version.stage, ModelStage::Production);
 
@@ -1186,7 +1297,10 @@ mod tests {
 
         // Invalid: Dev -> Production (must go through Staging)
         let result = version.transition_to(ModelStage::Production, None);
-        assert!(matches!(result, Err(RegistryError::InvalidTransition { .. })));
+        assert!(matches!(
+            result,
+            Err(RegistryError::InvalidTransition { .. })
+        ));
     }
 
     #[test]
@@ -1214,12 +1328,15 @@ mod tests {
         let model_id = registry.register_model(model).expect("register model");
 
         let metadata = ModelMetadata::new().with_format("safetensors");
-        let version = registry.create_version(&model_id, metadata).expect("create version");
+        let version = registry
+            .create_version(&model_id, metadata)
+            .expect("create version");
 
         assert_eq!(version.version, 1);
 
         // Transition to staging
-        registry.transition_stage(&model_id, 1, ModelStage::Staging, None)
+        registry
+            .transition_stage(&model_id, 1, ModelStage::Staging, None)
             .expect("transition");
 
         let model = registry.get_model(&model_id).expect("get model");
@@ -1233,19 +1350,21 @@ mod tests {
         let model = Model::new("test-model", "llama-7b", "generation");
         let model_id = registry.register_model(model).expect("register model");
 
-        registry.create_version(&model_id, ModelMetadata::new()).expect("version");
+        registry
+            .create_version(&model_id, ModelMetadata::new())
+            .expect("version");
 
-        let deployment = registry.create_deployment(
-            "test-deploy",
-            &model_id,
-            1,
-            DeploymentEnvironment::Staging,
-        ).expect("deploy");
+        let deployment = registry
+            .create_deployment("test-deploy", &model_id, 1, DeploymentEnvironment::Staging)
+            .expect("deploy");
 
-        registry.update_deployment_status(&deployment.id, DeploymentStatus::Running, None)
+        registry
+            .update_deployment_status(&deployment.id, DeploymentStatus::Running, None)
             .expect("update status");
 
-        let deployment = registry.get_deployment(&deployment.id).expect("get deployment");
+        let deployment = registry
+            .get_deployment(&deployment.id)
+            .expect("get deployment");
         assert_eq!(deployment.status, DeploymentStatus::Running);
     }
 
@@ -1256,21 +1375,32 @@ mod tests {
         let model = Model::new("test-model", "llama-7b", "generation");
         let model_id = registry.register_model(model).expect("register model");
 
-        registry.create_version(&model_id, ModelMetadata::new()).expect("v1");
-        registry.create_version(&model_id, ModelMetadata::new()).expect("v2");
+        registry
+            .create_version(&model_id, ModelMetadata::new())
+            .expect("v1");
+        registry
+            .create_version(&model_id, ModelMetadata::new())
+            .expect("v2");
 
-        let deployment = registry.create_deployment(
-            "test-deploy",
-            &model_id,
-            2,
-            DeploymentEnvironment::Production,
-        ).expect("deploy");
+        let deployment = registry
+            .create_deployment(
+                "test-deploy",
+                &model_id,
+                2,
+                DeploymentEnvironment::Production,
+            )
+            .expect("deploy");
 
-        registry.rollback_deployment(&deployment.id, 1).expect("rollback");
+        registry
+            .rollback_deployment(&deployment.id, 1)
+            .expect("rollback");
 
         let deployment = registry.get_deployment(&deployment.id).expect("get");
         assert_eq!(deployment.model_version, 1);
-        assert!(deployment.history.iter().any(|e| e.event_type == DeploymentEventType::RolledBack));
+        assert!(deployment
+            .history
+            .iter()
+            .any(|e| e.event_type == DeploymentEventType::RolledBack));
     }
 
     #[test]
@@ -1280,24 +1410,34 @@ mod tests {
         let model = Model::new("test-model", "llama-7b", "generation");
         let model_id = registry.register_model(model).expect("register model");
 
-        registry.create_version(&model_id, ModelMetadata::new()).expect("v1");
-        registry.create_version(&model_id, ModelMetadata::new()).expect("v2");
+        registry
+            .create_version(&model_id, ModelMetadata::new())
+            .expect("v1");
+        registry
+            .create_version(&model_id, ModelMetadata::new())
+            .expect("v2");
 
         let mut metrics1 = HashMap::new();
         metrics1.insert("accuracy".to_string(), 0.85);
         metrics1.insert("loss".to_string(), 0.3);
-        registry.set_metrics(&model_id, 1, metrics1).expect("set metrics v1");
+        registry
+            .set_metrics(&model_id, 1, metrics1)
+            .expect("set metrics v1");
 
         let mut metrics2 = HashMap::new();
         metrics2.insert("accuracy".to_string(), 0.90);
         metrics2.insert("loss".to_string(), 0.25);
-        registry.set_metrics(&model_id, 2, metrics2).expect("set metrics v2");
+        registry
+            .set_metrics(&model_id, 2, metrics2)
+            .expect("set metrics v2");
 
         let comparison = registry.compare_versions(&model_id, 1, 2).expect("compare");
 
         assert_eq!(comparison.metric_comparison.len(), 2);
 
-        let accuracy = comparison.metric_comparison.iter()
+        let accuracy = comparison
+            .metric_comparison
+            .iter()
             .find(|m| m.name == "accuracy")
             .expect("accuracy metric");
         assert!((accuracy.difference - 0.05).abs() < 0.001);
@@ -1305,8 +1445,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_registry_with_database() {
-        use std::sync::Arc;
         use crate::persistence::StudioDatabase;
+        use std::sync::Arc;
 
         let db = Arc::new(StudioDatabase::in_memory().expect("create db"));
         let registry = ModelRegistry::with_database("/tmp/test-registry", db);
@@ -1317,7 +1457,9 @@ mod tests {
 
         // Create version
         let metadata = ModelMetadata::new().with_format("safetensors");
-        let version = registry.create_version(&model_id, metadata).expect("create version");
+        let version = registry
+            .create_version(&model_id, metadata)
+            .expect("create version");
         assert_eq!(version.version, 1);
 
         // Get model
@@ -1325,19 +1467,22 @@ mod tests {
         assert_eq!(retrieved.versions.len(), 1);
 
         // Transition to staging
-        registry.transition_stage(&model_id, 1, ModelStage::Staging, None)
+        registry
+            .transition_stage(&model_id, 1, ModelStage::Staging, None)
             .expect("transition");
 
         let updated = registry.get_model(&model_id).expect("get model");
         assert_eq!(updated.get_version(1).unwrap().stage, ModelStage::Staging);
 
         // Create deployment
-        let deployment = registry.create_deployment(
-            "db-deployment",
-            &model_id,
-            1,
-            DeploymentEnvironment::Staging,
-        ).expect("deploy");
+        let deployment = registry
+            .create_deployment(
+                "db-deployment",
+                &model_id,
+                1,
+                DeploymentEnvironment::Staging,
+            )
+            .expect("deploy");
 
         // List models and deployments
         assert_eq!(registry.list_models().len(), 1);
@@ -1353,8 +1498,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_registry_persistence_across_instances() {
-        use std::sync::Arc;
         use crate::persistence::StudioDatabase;
+        use std::sync::Arc;
 
         let temp = tempfile::TempDir::new().expect("temp dir");
         let db_path = temp.path().join("test.db");
@@ -1369,14 +1514,18 @@ mod tests {
 
             let model = Model::new("persistent-model", "llama-7b", "generation");
             model_id = registry.register_model(model).expect("register");
-            registry.create_version(&model_id, ModelMetadata::new()).expect("version");
+            registry
+                .create_version(&model_id, ModelMetadata::new())
+                .expect("version");
 
-            let deployment = registry.create_deployment(
-                "persistent-deployment",
-                &model_id,
-                1,
-                DeploymentEnvironment::Production,
-            ).expect("deploy");
+            let deployment = registry
+                .create_deployment(
+                    "persistent-deployment",
+                    &model_id,
+                    1,
+                    DeploymentEnvironment::Production,
+                )
+                .expect("deploy");
             deployment_id = deployment.id.clone();
         }
 
@@ -1391,7 +1540,9 @@ mod tests {
             assert_eq!(loaded_model.name, "persistent-model");
             assert_eq!(loaded_model.versions.len(), 1);
 
-            let loaded_deployment = registry.get_deployment(&deployment_id).expect("deployment exists");
+            let loaded_deployment = registry
+                .get_deployment(&deployment_id)
+                .expect("deployment exists");
             assert_eq!(loaded_deployment.name, "persistent-deployment");
             assert_eq!(loaded_deployment.model_version, 1);
         }

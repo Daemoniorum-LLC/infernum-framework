@@ -162,8 +162,11 @@ impl CrossEntropyLoss {
         let (batch_size, seq_len, vocab_size) = logits.dims3()?;
         let targets_shape = targets.dims2()?;
 
-        assert_eq!((batch_size, seq_len), targets_shape,
-            "Logits and targets batch/seq dimensions must match");
+        assert_eq!(
+            (batch_size, seq_len),
+            targets_shape,
+            "Logits and targets batch/seq dimensions must match"
+        );
 
         // Reshape for computation: (batch * seq, vocab)
         let logits_flat = logits.reshape((batch_size * seq_len, vocab_size))?;
@@ -188,7 +191,10 @@ impl CrossEntropyLoss {
         let loss = if self.label_smoothing > 0.0 {
             // Smooth loss = (1 - smoothing) * nll + smoothing * uniform_loss
             let nll = target_log_probs.neg()?;
-            let uniform_loss = log_probs.mean_keepdim(D::Minus1)?.squeeze(D::Minus1)?.neg()?;
+            let uniform_loss = log_probs
+                .mean_keepdim(D::Minus1)?
+                .squeeze(D::Minus1)?
+                .neg()?;
             let smooth_factor = self.label_smoothing;
             let nll_factor = 1.0 - smooth_factor;
 
@@ -212,7 +218,7 @@ impl CrossEntropyLoss {
                 // Avoid division by zero
                 let count = valid_count.to_scalar::<f32>()?.max(1.0);
                 loss_sum.affine(1.0 / count as f64, 0.0)
-            }
+            },
         }
     }
 
@@ -222,12 +228,13 @@ impl CrossEntropyLoss {
         let ignore_val = self.ignore_index;
 
         // Create mask: 1.0 where target != ignore_index, 0.0 otherwise
-        let ignore_tensor = Tensor::full(ignore_val, (len,), device)?
-            .to_dtype(DType::I64)?;
+        let ignore_tensor = Tensor::full(ignore_val, (len,), device)?.to_dtype(DType::I64)?;
 
         // Compare using subtraction and checking for non-zero
         let diff = targets.sub(&ignore_tensor)?;
-        let is_nonzero = diff.abs()?.gt(&Tensor::zeros((len,), DType::I64, device)?)?;
+        let is_nonzero = diff
+            .abs()?
+            .gt(&Tensor::zeros((len,), DType::I64, device)?)?;
         is_nonzero.to_dtype(DType::F32)
     }
 
@@ -249,11 +256,10 @@ impl CrossEntropyLoss {
         let flat_input = input.reshape((rows * cols,))?;
 
         // Compute flat indices: i * cols + indices[i]
-        let row_offsets = Tensor::arange(0u32, rows as u32, indices.device())?
-            .to_dtype(DType::U32)?;
+        let row_offsets =
+            Tensor::arange(0u32, rows as u32, indices.device())?.to_dtype(DType::U32)?;
         let col_offset = (cols as u32).into();
-        let row_offsets = row_offsets.affine(col_offset, 0.0)?
-            .to_dtype(DType::U32)?;
+        let row_offsets = row_offsets.affine(col_offset, 0.0)?.to_dtype(DType::U32)?;
 
         let flat_indices = indices.add(&row_offsets)?;
         let flat_indices_vec: Vec<u32> = flat_indices.to_vec1()?;
@@ -262,7 +268,8 @@ impl CrossEntropyLoss {
         let result_vec: Vec<f32> = flat_indices_vec
             .iter()
             .map(|&idx| {
-                flat_input.get(idx as usize)
+                flat_input
+                    .get(idx as usize)
                     .and_then(|t| t.to_scalar::<f32>())
                     .unwrap_or(0.0)
             })
@@ -336,16 +343,17 @@ impl SFTLoss {
         // Gather target log probs
         let safe_targets = targets_flat.maximum(&Tensor::zeros_like(&targets_flat)?)?;
         let safe_targets = safe_targets.to_dtype(DType::U32)?;
-        let target_log_probs = self.ce_loss.gather_along_axis(&log_probs, &safe_targets, 1)?;
+        let target_log_probs = self
+            .ce_loss
+            .gather_along_axis(&log_probs, &safe_targets, 1)?;
 
         // Apply NLL
         let nll = target_log_probs.neg()?;
 
         // Apply response mask and ignore index mask
-        let ignore_mask = self.ce_loss.create_valid_mask(
-            &targets_flat.to_dtype(DType::I64)?,
-            batch_size * seq_len,
-        )?;
+        let ignore_mask = self
+            .ce_loss
+            .create_valid_mask(&targets_flat.to_dtype(DType::I64)?, batch_size * seq_len)?;
         let combined_mask = mask_flat.mul(&ignore_mask)?;
         let masked_loss = nll.mul(&combined_mask)?;
 
@@ -449,14 +457,17 @@ impl DPOLoss {
         let loss_mean = loss.mean_all()?;
 
         // Compute rewards for monitoring
-        let chosen_rewards = policy_chosen_logps.sub(ref_chosen_logps)?
+        let chosen_rewards = policy_chosen_logps
+            .sub(ref_chosen_logps)?
             .affine(self.beta, 0.0)?;
-        let rejected_rewards = policy_rejected_logps.sub(ref_rejected_logps)?
+        let rejected_rewards = policy_rejected_logps
+            .sub(ref_rejected_logps)?
             .affine(self.beta, 0.0)?;
 
         // Accuracy: how often chosen > rejected
         let reward_diff = chosen_rewards.sub(&rejected_rewards)?;
-        let accuracy = reward_diff.gt(&Tensor::zeros_like(&reward_diff)?)?
+        let accuracy = reward_diff
+            .gt(&Tensor::zeros_like(&reward_diff)?)?
             .to_dtype(DType::F32)?
             .mean_all()?;
 
@@ -631,7 +642,10 @@ impl GradientScaler {
             self.overflow_detected = true;
             self.scale = (self.scale * self.backoff_factor).max(self.min_scale);
             self.steps_since_growth = 0;
-            tracing::warn!(new_scale = self.scale, "Overflow detected, reduced gradient scale");
+            tracing::warn!(
+                new_scale = self.scale,
+                "Overflow detected, reduced gradient scale"
+            );
         }
     }
 
@@ -662,10 +676,7 @@ pub fn compute_grad_norm(gradients: &HashMap<String, Tensor>) -> CandleResult<f6
 }
 
 /// Clips gradients by global norm.
-pub fn clip_grad_norm(
-    gradients: &mut HashMap<String, Tensor>,
-    max_norm: f64,
-) -> CandleResult<f64> {
+pub fn clip_grad_norm(gradients: &mut HashMap<String, Tensor>, max_norm: f64) -> CandleResult<f64> {
     let total_norm = compute_grad_norm(gradients)?;
 
     if total_norm > max_norm {
@@ -762,9 +773,7 @@ mod tests {
 
     #[test]
     fn test_dpo_loss_creation() {
-        let loss = DPOLoss::new()
-            .with_beta(0.2)
-            .with_label_smoothing(0.1);
+        let loss = DPOLoss::new().with_beta(0.2).with_label_smoothing(0.1);
 
         assert!((loss.beta - 0.2).abs() < 1e-6);
         assert!((loss.label_smoothing - 0.1).abs() < 1e-6);
@@ -803,8 +812,7 @@ mod tests {
 
     #[test]
     fn test_sft_loss_creation() {
-        let loss = SFTLoss::new()
-            .with_response_start_token(128000);
+        let loss = SFTLoss::new().with_response_start_token(128000);
 
         assert_eq!(loss.response_start_token, Some(128000));
     }

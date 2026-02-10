@@ -6,8 +6,8 @@
 /// CUDA-accelerated LRDF encoding using GPU SVD.
 #[cfg(feature = "cuda")]
 pub mod cuda {
-    use std::sync::Arc;
     use cudarc::driver::CudaDevice;
+    use std::sync::Arc;
 
     use crate::cuda_svd::cuda::GpuSvd;
 
@@ -63,11 +63,14 @@ pub mod cuda {
             // Compute SVD with limited rank using GPU
             let rank = self.max_rank.min(rows.min(cols));
             let iterations = 20; // Same as haagenti
-            let (u, s, v) = self.gpu_svd.svd_power_iteration(data, rows, cols, rank, iterations)?;
+            let (u, s, v) = self
+                .gpu_svd
+                .svd_power_iteration(data, rows, cols, rank, iterations)?;
 
             // Distribute rank-1 components across fragments
             // Each fragment gets approximately rank/num_fragments components
-            let components_per_frag = (rank + self.num_fragments as usize - 1) / self.num_fragments as usize;
+            let components_per_frag =
+                (rank + self.num_fragments as usize - 1) / self.num_fragments as usize;
 
             let mut fragments = Vec::with_capacity(self.num_fragments as usize);
 
@@ -133,10 +136,13 @@ pub mod cuda {
             // Compute SVD directly from GPU data (no host round-trip)
             let rank = self.max_rank.min(rows.min(cols));
             let iterations = 20;
-            let (u, s, v) = self.gpu_svd.svd_power_iteration_gpu(d_f32, rows, cols, rank, iterations)?;
+            let (u, s, v) = self
+                .gpu_svd
+                .svd_power_iteration_gpu(d_f32, rows, cols, rank, iterations)?;
 
             // Build fragments (same as encode_2d)
-            let components_per_frag = (rank + self.num_fragments as usize - 1) / self.num_fragments as usize;
+            let components_per_frag =
+                (rank + self.num_fragments as usize - 1) / self.num_fragments as usize;
             let mut fragments = Vec::with_capacity(self.num_fragments as usize);
 
             for frag_idx in 0..self.num_fragments {
@@ -260,7 +266,7 @@ mod tests {
             Err(_) => {
                 eprintln!("Skipping GPU test: no CUDA device available");
                 return;
-            }
+            },
         };
 
         let encoder = GpuLrdfEncoder::new(device, 4, 42).unwrap().with_max_rank(8);
@@ -268,9 +274,7 @@ mod tests {
         // Create test matrix
         let rows = 64;
         let cols = 64;
-        let data: Vec<f32> = (0..rows * cols)
-            .map(|i| (i as f32 * 0.01).sin())
-            .collect();
+        let data: Vec<f32> = (0..rows * cols).map(|i| (i as f32 * 0.01).sin()).collect();
 
         let fragments = encoder.encode_2d(&data, rows, cols).unwrap();
 
@@ -291,16 +295,16 @@ mod tests {
             Err(_) => {
                 eprintln!("Skipping GPU test: no CUDA device available");
                 return;
-            }
+            },
         };
 
-        let encoder = GpuLrdfEncoder::new(device, 4, 42).unwrap().with_max_rank(16);
+        let encoder = GpuLrdfEncoder::new(device, 4, 42)
+            .unwrap()
+            .with_max_rank(16);
 
         let rows = 32;
         let cols = 32;
-        let data: Vec<f32> = (0..rows * cols)
-            .map(|i| (i as f32 * 0.01).sin())
-            .collect();
+        let data: Vec<f32> = (0..rows * cols).map(|i| (i as f32 * 0.01).sin()).collect();
 
         let gpu_fragments = encoder.encode_2d(&data, rows, cols).unwrap();
 
@@ -319,12 +323,20 @@ mod tests {
         assert_eq!(reconstructed.len(), data.len());
 
         // Calculate reconstruction quality (cosine similarity)
-        let dot: f32 = data.iter().zip(reconstructed.iter()).map(|(a, b)| a * b).sum();
+        let dot: f32 = data
+            .iter()
+            .zip(reconstructed.iter())
+            .map(|(a, b)| a * b)
+            .sum();
         let norm_a: f32 = data.iter().map(|x| x * x).sum::<f32>().sqrt();
         let norm_b: f32 = reconstructed.iter().map(|x| x * x).sum::<f32>().sqrt();
         let similarity = dot / (norm_a * norm_b);
 
         // Should have reasonable quality with rank 16 on 32x32 matrix
-        assert!(similarity > 0.8, "Poor reconstruction quality: {}", similarity);
+        assert!(
+            similarity > 0.8,
+            "Poor reconstruction quality: {}",
+            similarity
+        );
     }
 }

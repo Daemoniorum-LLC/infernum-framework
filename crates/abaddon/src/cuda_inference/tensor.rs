@@ -173,12 +173,8 @@ impl GpuTensor {
 
         // Reinterpret as bytes
         // SAFETY: half::f16 is repr(C) and Copy, so byte reinterpretation is safe
-        let host_bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(
-                host_f16.as_ptr() as *const u8,
-                num_elements * 2,
-            )
-        };
+        let host_bytes: &[u8] =
+            unsafe { std::slice::from_raw_parts(host_f16.as_ptr() as *const u8, num_elements * 2) };
 
         // Upload as u8
         let data_u8: CudaSlice<u8> = device
@@ -427,7 +423,8 @@ impl GpuTensor {
         }
 
         // Deep copy for when independence is needed
-        let new_data: CudaSlice<u8> = self.device
+        let new_data: CudaSlice<u8> = self
+            .device
             .alloc_zeros(self.logical_size)
             .map_err(|e| InferenceError::Memory(e.to_string()))?;
 
@@ -436,7 +433,8 @@ impl GpuTensor {
                 *new_data.device_ptr(),
                 self.device_ptr(), // Uses offset-adjusted pointer
                 self.logical_size,
-            ).map_err(|e| InferenceError::Memory(e.to_string()))?;
+            )
+            .map_err(|e| InferenceError::Memory(e.to_string()))?;
         }
 
         Ok(GpuTensor {
@@ -507,7 +505,8 @@ impl GpuTensor {
         let slice_length = (end - start) * bytes_per_row;
 
         // Allocate new buffer and copy data
-        let new_data: CudaSlice<u8> = self.device
+        let new_data: CudaSlice<u8> = self
+            .device
             .alloc_zeros(slice_length)
             .map_err(|e| InferenceError::Memory(e.to_string()))?;
 
@@ -517,7 +516,8 @@ impl GpuTensor {
                 *new_data.device_ptr(),
                 self.device_ptr() + slice_offset as u64,
                 slice_length,
-            ).map_err(|e| InferenceError::Memory(e.to_string()))?;
+            )
+            .map_err(|e| InferenceError::Memory(e.to_string()))?;
         }
 
         let mut new_shape = self.shape.clone();
@@ -552,18 +552,14 @@ impl GpuTensor {
             // Since views share the buffer, we need to handle this carefully
             // For now, just use raw CUDA memcpy
             unsafe {
-                cudarc::driver::result::memcpy_htod_sync(
-                    self.device_ptr(),
-                    data,
-                ).map_err(|e| InferenceError::Memory(e.to_string()))?;
+                cudarc::driver::result::memcpy_htod_sync(self.device_ptr(), data)
+                    .map_err(|e| InferenceError::Memory(e.to_string()))?;
             }
         } else {
             // View case: copy to offset position
             unsafe {
-                cudarc::driver::result::memcpy_htod_sync(
-                    self.device_ptr(),
-                    data,
-                ).map_err(|e| InferenceError::Memory(e.to_string()))?;
+                cudarc::driver::result::memcpy_htod_sync(self.device_ptr(), data)
+                    .map_err(|e| InferenceError::Memory(e.to_string()))?;
             }
         }
         Ok(())
@@ -580,10 +576,8 @@ impl GpuTensor {
 
         // Use offset-adjusted pointer for views
         unsafe {
-            cudarc::driver::result::memcpy_dtoh_sync(
-                dst,
-                self.device_ptr(),
-            ).map_err(|e| InferenceError::Memory(e.to_string()))?;
+            cudarc::driver::result::memcpy_dtoh_sync(dst, self.device_ptr())
+                .map_err(|e| InferenceError::Memory(e.to_string()))?;
         }
         Ok(())
     }
@@ -598,7 +592,8 @@ impl GpuTensor {
     /// Copy to a new tensor (deep copy).
     pub fn clone_tensor(&self) -> Result<GpuTensor, InferenceError> {
         // Allocate new buffer for the logical size (not full buffer if we're a view)
-        let new_data: CudaSlice<u8> = self.device
+        let new_data: CudaSlice<u8> = self
+            .device
             .alloc_zeros(self.logical_size)
             .map_err(|e| InferenceError::Memory(e.to_string()))?;
 
@@ -608,7 +603,8 @@ impl GpuTensor {
                 *new_data.device_ptr(),
                 self.device_ptr(), // Uses offset
                 self.logical_size,
-            ).map_err(|e| InferenceError::Memory(e.to_string()))?;
+            )
+            .map_err(|e| InferenceError::Memory(e.to_string()))?;
         }
 
         Ok(GpuTensor {
@@ -628,7 +624,11 @@ impl GpuTensor {
     /// target[offset:offset+D, :, :].
     ///
     /// Used for KV cache updates.
-    pub fn copy_from_at_dim0(&mut self, source: &GpuTensor, dim0_offset: usize) -> Result<(), InferenceError> {
+    pub fn copy_from_at_dim0(
+        &mut self,
+        source: &GpuTensor,
+        dim0_offset: usize,
+    ) -> Result<(), InferenceError> {
         // Validate shapes match (except dim 0)
         if self.shape[1..] != source.shape[1..] {
             return Err(InferenceError::Shape {
@@ -641,7 +641,12 @@ impl GpuTensor {
         if dim0_offset + source_rows > self.shape[0] {
             return Err(InferenceError::Shape {
                 expected: format!("offset + rows <= {}", self.shape[0]),
-                got: format!("{} + {} = {}", dim0_offset, source_rows, dim0_offset + source_rows),
+                got: format!(
+                    "{} + {} = {}",
+                    dim0_offset,
+                    source_rows,
+                    dim0_offset + source_rows
+                ),
             });
         }
 
@@ -656,7 +661,8 @@ impl GpuTensor {
                 self.device_ptr() + dest_byte_offset as u64,
                 source.device_ptr(),
                 copy_size,
-            ).map_err(|e| InferenceError::Memory(e.to_string()))?;
+            )
+            .map_err(|e| InferenceError::Memory(e.to_string()))?;
         }
 
         Ok(())
@@ -760,7 +766,12 @@ impl GpuTensor {
         if dim0_offset + source_rows > self.shape[0] {
             return Err(InferenceError::Shape {
                 expected: format!("offset + rows <= {}", self.shape[0]),
-                got: format!("{} + {} = {}", dim0_offset, source_rows, dim0_offset + source_rows),
+                got: format!(
+                    "{} + {} = {}",
+                    dim0_offset,
+                    source_rows,
+                    dim0_offset + source_rows
+                ),
             });
         }
 
@@ -845,7 +856,12 @@ impl GpuTensor {
         if seq_offset + source_seq > max_seq {
             return Err(InferenceError::Shape {
                 expected: format!("seq_offset + seq <= {}", max_seq),
-                got: format!("{} + {} = {}", seq_offset, source_seq, seq_offset + source_seq),
+                got: format!(
+                    "{} + {} = {}",
+                    seq_offset,
+                    source_seq,
+                    seq_offset + source_seq
+                ),
             });
         }
 
@@ -861,15 +877,17 @@ impl GpuTensor {
         // Use 2D memcpy to transpose while copying, one head at a time
         for h in 0..kv_heads {
             let src_offset = h * head_dim * elem_size;
-            let dst_offset = layer_idx * target_layer_stride + h * target_head_stride + seq_offset * head_dim * elem_size;
+            let dst_offset = layer_idx * target_layer_stride
+                + h * target_head_stride
+                + seq_offset * head_dim * elem_size;
 
             let status = cudaMemcpy2DAsync(
                 self.device_ptr() + dst_offset as u64,
-                head_dim * elem_size,  // dst pitch (contiguous in target)
+                head_dim * elem_size, // dst pitch (contiguous in target)
                 source.device_ptr() + src_offset as u64,
-                source_seq_stride,     // src pitch (strided in source)
-                head_dim * elem_size,  // width in bytes
-                source_seq,            // height (number of rows)
+                source_seq_stride,    // src pitch (strided in source)
+                head_dim * elem_size, // width in bytes
+                source_seq,           // height (number of rows)
                 CudaMemcpyKind::DeviceToDevice as i32,
                 stream,
             );
@@ -940,7 +958,12 @@ impl GpuTensor {
     ///
     /// This performs a transpose from [seq, kv_heads, head_dim] to [kv_heads, seq, head_dim]
     /// while copying into the cache at the specified layer and sequence offset.
-    pub fn write_layer_at(&mut self, layer_idx: usize, seq_offset: usize, source: &GpuTensor) -> Result<(), InferenceError> {
+    pub fn write_layer_at(
+        &mut self,
+        layer_idx: usize,
+        seq_offset: usize,
+        source: &GpuTensor,
+    ) -> Result<(), InferenceError> {
         if self.shape.len() != 4 {
             return Err(InferenceError::Shape {
                 expected: "4D target tensor".to_string(),
@@ -983,7 +1006,12 @@ impl GpuTensor {
         if seq_offset + source_seq > max_seq {
             return Err(InferenceError::Shape {
                 expected: format!("seq_offset + seq <= {}", max_seq),
-                got: format!("{} + {} = {}", seq_offset, source_seq, seq_offset + source_seq),
+                got: format!(
+                    "{} + {} = {}",
+                    seq_offset,
+                    source_seq,
+                    seq_offset + source_seq
+                ),
             });
         }
 
@@ -1004,7 +1032,9 @@ impl GpuTensor {
             let src_offset = h * head_dim * elem_size;
 
             // Target: element (layer, h, seq_offset, 0) is at layer_stride + h * target_head_stride + seq_offset * head_dim * elem_size
-            let dst_offset = layer_idx * target_layer_stride + h * target_head_stride + seq_offset * head_dim * elem_size;
+            let dst_offset = layer_idx * target_layer_stride
+                + h * target_head_stride
+                + seq_offset * head_dim * elem_size;
 
             // 2D copy: source has pitch source_seq_stride, target has pitch head_dim * elem_size (contiguous)
             // Width: head_dim * elem_size bytes per row
@@ -1012,13 +1042,13 @@ impl GpuTensor {
             unsafe {
                 let status = cudaMemcpy2DAsync(
                     self.device_ptr() + dst_offset as u64,
-                    head_dim * elem_size,  // dst pitch (contiguous in target)
+                    head_dim * elem_size, // dst pitch (contiguous in target)
                     source.device_ptr() + src_offset as u64,
-                    source_seq_stride,     // src pitch (strided in source)
-                    head_dim * elem_size,  // width in bytes
-                    source_seq,            // height (number of rows)
+                    source_seq_stride,    // src pitch (strided in source)
+                    head_dim * elem_size, // width in bytes
+                    source_seq,           // height (number of rows)
                     CudaMemcpyKind::DeviceToDevice as i32,
-                    std::ptr::null_mut(),  // default stream (synchronous)
+                    std::ptr::null_mut(), // default stream (synchronous)
                 );
                 if status != 0 {
                     return Err(InferenceError::Memory(format!(
@@ -1040,7 +1070,11 @@ impl GpuTensor {
     /// This function creates a CONTIGUOUS copy of the KV data suitable for Flash Attention.
     /// Flash Attention requires contiguous memory with stride seq_len*head_dim per head,
     /// but the cache has stride max_seq*head_dim per head.
-    pub fn get_layer_kv_slice(&self, layer_idx: usize, seq_len: usize) -> Result<GpuTensor, InferenceError> {
+    pub fn get_layer_kv_slice(
+        &self,
+        layer_idx: usize,
+        seq_len: usize,
+    ) -> Result<GpuTensor, InferenceError> {
         if self.shape.len() != 4 {
             return Err(InferenceError::Shape {
                 expected: "4D tensor".to_string(),
@@ -1099,7 +1133,8 @@ impl GpuTensor {
         let output_bytes = kv_heads * effective_seq * head_dim_bytes;
 
         // Allocate contiguous output buffer
-        let output_data: CudaSlice<u8> = self.device
+        let output_data: CudaSlice<u8> = self
+            .device
             .alloc_zeros(output_bytes)
             .map_err(|e| InferenceError::Memory(e.to_string()))?;
 
@@ -1124,7 +1159,8 @@ impl GpuTensor {
                     *output_data.device_ptr() + dst_offset as u64,
                     self.device_ptr() + src_offset as u64,
                     effective_seq * head_dim_bytes,
-                ).map_err(|e| InferenceError::Memory(e.to_string()))?;
+                )
+                .map_err(|e| InferenceError::Memory(e.to_string()))?;
             }
         }
 

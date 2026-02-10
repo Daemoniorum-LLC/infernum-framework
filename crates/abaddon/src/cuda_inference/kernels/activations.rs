@@ -18,8 +18,8 @@
 //! Uses NVRTC to compile CUDA C code at runtime for better compatibility
 //! across GPU architectures.
 
-use std::sync::Arc;
 use cudarc::driver::{CudaDevice, CudaFunction, LaunchAsync, LaunchConfig};
+use std::sync::Arc;
 
 use super::compile_cuda_kernel;
 use crate::cuda_inference::tensor::GpuTensor;
@@ -263,43 +263,59 @@ impl ActivationKernel {
         self.silu_func = Some(
             self.device
                 .get_func("activation_kernels", "silu_f16")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get silu_f16 function".to_string()))?,
+                .ok_or_else(|| {
+                    InferenceError::Kernel("Failed to get silu_f16 function".to_string())
+                })?,
         );
 
         self.silu_mul_func = Some(
             self.device
                 .get_func("activation_kernels", "silu_mul_f16")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get silu_mul_f16 function".to_string()))?,
+                .ok_or_else(|| {
+                    InferenceError::Kernel("Failed to get silu_mul_f16 function".to_string())
+                })?,
         );
 
         self.gelu_fast_func = Some(
             self.device
                 .get_func("activation_kernels", "gelu_fast_f16")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get gelu_fast_f16 function".to_string()))?,
+                .ok_or_else(|| {
+                    InferenceError::Kernel("Failed to get gelu_fast_f16 function".to_string())
+                })?,
         );
 
         self.gelu_tanh_func = Some(
             self.device
                 .get_func("activation_kernels", "gelu_tanh_f16")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get gelu_tanh_f16 function".to_string()))?,
+                .ok_or_else(|| {
+                    InferenceError::Kernel("Failed to get gelu_tanh_f16 function".to_string())
+                })?,
         );
 
         self.relu_func = Some(
             self.device
                 .get_func("activation_kernels", "relu_f16")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get relu_f16 function".to_string()))?,
+                .ok_or_else(|| {
+                    InferenceError::Kernel("Failed to get relu_f16 function".to_string())
+                })?,
         );
 
         self.hadamard_func = Some(
             self.device
                 .get_func("activation_kernels", "hadamard_f16")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get hadamard_f16 function".to_string()))?,
+                .ok_or_else(|| {
+                    InferenceError::Kernel("Failed to get hadamard_f16 function".to_string())
+                })?,
         );
 
         self.hadamard_inplace_func = Some(
             self.device
                 .get_func("activation_kernels", "hadamard_inplace_f16")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get hadamard_inplace_f16 function".to_string()))?,
+                .ok_or_else(|| {
+                    InferenceError::Kernel(
+                        "Failed to get hadamard_inplace_f16 function".to_string(),
+                    )
+                })?,
         );
 
         Ok(())
@@ -340,7 +356,8 @@ impl ActivationKernel {
 
         // Launch config: 256 threads, each processing 4 elements
         let block_size = 256;
-        let grid_size = (n + block_size * ELEMENTS_PER_THREAD - 1) / (block_size * ELEMENTS_PER_THREAD);
+        let grid_size =
+            (n + block_size * ELEMENTS_PER_THREAD - 1) / (block_size * ELEMENTS_PER_THREAD);
 
         let cfg = LaunchConfig {
             grid_dim: (grid_size as u32, 1, 1),
@@ -349,10 +366,8 @@ impl ActivationKernel {
         };
 
         unsafe {
-            func.clone().launch(
-                cfg,
-                (x.device_ptr(), out.device_ptr(), n as i32),
-            )
+            func.clone()
+                .launch(cfg, (x.device_ptr(), out.device_ptr(), n as i32))
         }
         .map_err(|e| InferenceError::Kernel(format!("Activation kernel launch failed: {}", e)))?;
 
@@ -380,19 +395,27 @@ impl ActivationKernel {
         up: &GpuTensor,
         out: &mut GpuTensor,
     ) -> Result<(), InferenceError> {
-        let func = self.silu_mul_func.as_ref()
+        let func = self
+            .silu_mul_func
+            .as_ref()
             .ok_or_else(|| InferenceError::Kernel("silu_mul_f16 kernel not loaded".to_string()))?;
 
         let n = gate.numel();
         if up.numel() != n || out.numel() != n {
             return Err(InferenceError::Shape {
                 expected: format!("all tensors must have {} elements", n),
-                got: format!("gate={}, up={}, out={}", gate.numel(), up.numel(), out.numel()),
+                got: format!(
+                    "gate={}, up={}, out={}",
+                    gate.numel(),
+                    up.numel(),
+                    out.numel()
+                ),
             });
         }
 
         let block_size = 256;
-        let grid_size = (n + block_size * ELEMENTS_PER_THREAD - 1) / (block_size * ELEMENTS_PER_THREAD);
+        let grid_size =
+            (n + block_size * ELEMENTS_PER_THREAD - 1) / (block_size * ELEMENTS_PER_THREAD);
 
         let cfg = LaunchConfig {
             grid_dim: (grid_size as u32, 1, 1),
@@ -403,7 +426,12 @@ impl ActivationKernel {
         unsafe {
             func.clone().launch(
                 cfg,
-                (gate.device_ptr(), up.device_ptr(), out.device_ptr(), n as i32),
+                (
+                    gate.device_ptr(),
+                    up.device_ptr(),
+                    out.device_ptr(),
+                    n as i32,
+                ),
             )
         }
         .map_err(|e| InferenceError::Kernel(format!("SiLU mul kernel launch failed: {}", e)))?;
@@ -423,7 +451,9 @@ impl ActivationKernel {
         b: &GpuTensor,
         out: &mut GpuTensor,
     ) -> Result<(), InferenceError> {
-        let func = self.hadamard_func.as_ref()
+        let func = self
+            .hadamard_func
+            .as_ref()
             .ok_or_else(|| InferenceError::Kernel("hadamard_f16 kernel not loaded".to_string()))?;
 
         let n = a.numel();
@@ -435,7 +465,8 @@ impl ActivationKernel {
         }
 
         let block_size = 256;
-        let grid_size = (n + block_size * ELEMENTS_PER_THREAD - 1) / (block_size * ELEMENTS_PER_THREAD);
+        let grid_size =
+            (n + block_size * ELEMENTS_PER_THREAD - 1) / (block_size * ELEMENTS_PER_THREAD);
 
         let cfg = LaunchConfig {
             grid_dim: (grid_size as u32, 1, 1),
@@ -459,13 +490,10 @@ impl ActivationKernel {
     /// # Arguments
     /// * `a` - Input/output tensor [n] in F16 (modified in place)
     /// * `b` - Second input tensor [n] in F16
-    pub fn hadamard_inplace(
-        &self,
-        a: &mut GpuTensor,
-        b: &GpuTensor,
-    ) -> Result<(), InferenceError> {
-        let func = self.hadamard_inplace_func.as_ref()
-            .ok_or_else(|| InferenceError::Kernel("hadamard_inplace_f16 kernel not loaded".to_string()))?;
+    pub fn hadamard_inplace(&self, a: &mut GpuTensor, b: &GpuTensor) -> Result<(), InferenceError> {
+        let func = self.hadamard_inplace_func.as_ref().ok_or_else(|| {
+            InferenceError::Kernel("hadamard_inplace_f16 kernel not loaded".to_string())
+        })?;
 
         let n = a.numel();
         if b.numel() != n {
@@ -476,7 +504,8 @@ impl ActivationKernel {
         }
 
         let block_size = 256;
-        let grid_size = (n + block_size * ELEMENTS_PER_THREAD - 1) / (block_size * ELEMENTS_PER_THREAD);
+        let grid_size =
+            (n + block_size * ELEMENTS_PER_THREAD - 1) / (block_size * ELEMENTS_PER_THREAD);
 
         let cfg = LaunchConfig {
             grid_dim: (grid_size as u32, 1, 1),
@@ -485,12 +514,12 @@ impl ActivationKernel {
         };
 
         unsafe {
-            func.clone().launch(
-                cfg,
-                (a.device_ptr(), b.device_ptr(), n as i32),
-            )
+            func.clone()
+                .launch(cfg, (a.device_ptr(), b.device_ptr(), n as i32))
         }
-        .map_err(|e| InferenceError::Kernel(format!("Hadamard inplace kernel launch failed: {}", e)))?;
+        .map_err(|e| {
+            InferenceError::Kernel(format!("Hadamard inplace kernel launch failed: {}", e))
+        })?;
 
         Ok(())
     }
@@ -510,7 +539,8 @@ impl ActivationKernel {
         let n = x.numel();
 
         let block_size = 256;
-        let grid_size = (n + block_size * ELEMENTS_PER_THREAD - 1) / (block_size * ELEMENTS_PER_THREAD);
+        let grid_size =
+            (n + block_size * ELEMENTS_PER_THREAD - 1) / (block_size * ELEMENTS_PER_THREAD);
 
         let cfg = LaunchConfig {
             grid_dim: (grid_size as u32, 1, 1),
@@ -520,10 +550,8 @@ impl ActivationKernel {
 
         // Use same pointer for input and output (in-place)
         unsafe {
-            func.clone().launch(
-                cfg,
-                (x.device_ptr(), x.device_ptr(), n as i32),
-            )
+            func.clone()
+                .launch(cfg, (x.device_ptr(), x.device_ptr(), n as i32))
         }
         .map_err(|e| InferenceError::Kernel(format!("Activation kernel launch failed: {}", e)))?;
 

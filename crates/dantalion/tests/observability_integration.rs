@@ -20,10 +20,9 @@ use std::time::Duration;
 use tempfile::tempdir;
 
 use dantalion::{
-    ActiveRequestGuard, ConsoleListener, EventType, GlobalStats,
-    InferenceMetrics, JsonFileListener, MetricsCollector, ModelFamily,
-    PrometheusRegistry, ResearchEvent, ResearchTracker, SessionId,
-    SessionStats, Telemetry, TelemetryConfig, Timer,
+    ActiveRequestGuard, ConsoleListener, EventType, GlobalStats, InferenceMetrics,
+    JsonFileListener, MetricsCollector, ModelFamily, PrometheusRegistry, ResearchEvent,
+    ResearchTracker, SessionId, SessionStats, Telemetry, TelemetryConfig, Timer,
 };
 
 // ============================================================================
@@ -51,8 +50,7 @@ fn test_telemetry_config_new() {
 
 #[test]
 fn test_telemetry_config_with_otlp() {
-    let config = TelemetryConfig::new("test")
-        .with_otlp("http://localhost:4317");
+    let config = TelemetryConfig::new("test").with_otlp("http://localhost:4317");
 
     assert_eq!(
         config.otlp_endpoint,
@@ -62,28 +60,22 @@ fn test_telemetry_config_with_otlp() {
 
 #[test]
 fn test_telemetry_config_with_prometheus() {
-    let config = TelemetryConfig::new("test")
-        .with_prometheus("0.0.0.0:9090");
+    let config = TelemetryConfig::new("test").with_prometheus("0.0.0.0:9090");
 
     assert!(config.prometheus_enabled);
-    assert_eq!(
-        config.prometheus_addr,
-        Some("0.0.0.0:9090".to_string())
-    );
+    assert_eq!(config.prometheus_addr, Some("0.0.0.0:9090".to_string()));
 }
 
 #[test]
 fn test_telemetry_config_with_log_level() {
-    let config = TelemetryConfig::new("test")
-        .with_log_level("debug");
+    let config = TelemetryConfig::new("test").with_log_level("debug");
 
     assert_eq!(config.log_level, "debug");
 }
 
 #[test]
 fn test_telemetry_config_with_json_logs() {
-    let config = TelemetryConfig::new("test")
-        .with_json_logs();
+    let config = TelemetryConfig::new("test").with_json_logs();
 
     assert!(config.json_logs);
 }
@@ -97,10 +89,7 @@ fn test_telemetry_config_builder_chain() {
         .with_json_logs();
 
     assert_eq!(config.service_name, "my-service");
-    assert_eq!(
-        config.otlp_endpoint,
-        Some("http://jaeger:4317".to_string())
-    );
+    assert_eq!(config.otlp_endpoint, Some("http://jaeger:4317".to_string()));
     assert!(config.prometheus_enabled);
     assert_eq!(config.log_level, "trace");
     assert!(config.json_logs);
@@ -155,7 +144,9 @@ fn test_telemetry_metrics_access() {
 
     telemetry.metrics.inference().record_request(100, 50);
     telemetry.metrics.inference().record_request(200, 100);
-    telemetry.metrics.record_error("chat", "test-model", "timeout");
+    telemetry
+        .metrics
+        .record_error("chat", "test-model", "timeout");
 
     assert_eq!(telemetry.metrics.inference().requests(), 2);
     assert_eq!(telemetry.metrics.inference().prompt_tokens(), 300);
@@ -235,8 +226,7 @@ fn test_metrics_collector_multiple_requests() {
 
 #[test]
 fn test_metrics_collector_prometheus_render() {
-    let config = TelemetryConfig::new("prometheus-test")
-        .with_prometheus("0.0.0.0:9090");
+    let config = TelemetryConfig::new("prometheus-test").with_prometheus("0.0.0.0:9090");
     let collector = MetricsCollector::new(&config);
 
     collector.record_chat_request(50, 25, 0.1, "test-model");
@@ -647,15 +637,7 @@ fn test_research_tracker_record_inference() {
         "model",
     );
 
-    tracker.record_inference(
-        &session_id,
-        100,
-        50,
-        150,
-        true,
-        "project",
-        "claude-opus-4",
-    );
+    tracker.record_inference(&session_id, 100, 50, 150, true, "project", "claude-opus-4");
 
     let stats = tracker.get_stats(&session_id).unwrap();
     assert_eq!(stats.total_requests, 1);
@@ -790,9 +772,24 @@ fn test_research_tracker_get_events() {
 fn test_research_tracker_all_stats() {
     let tracker = ResearchTracker::new();
 
-    tracker.start_session(SessionId("session-1".to_string()), "project", "agent", "model");
-    tracker.start_session(SessionId("session-2".to_string()), "project", "agent", "model");
-    tracker.start_session(SessionId("session-3".to_string()), "project", "agent", "model");
+    tracker.start_session(
+        SessionId("session-1".to_string()),
+        "project",
+        "agent",
+        "model",
+    );
+    tracker.start_session(
+        SessionId("session-2".to_string()),
+        "project",
+        "agent",
+        "model",
+    );
+    tracker.start_session(
+        SessionId("session-3".to_string()),
+        "project",
+        "agent",
+        "model",
+    );
 
     let all_stats = tracker.all_stats();
     assert_eq!(all_stats.len(), 3);
@@ -802,18 +799,8 @@ fn test_research_tracker_all_stats() {
 fn test_research_tracker_global_stats() {
     let tracker = ResearchTracker::new();
 
-    let session1 = tracker.start_session(
-        SessionId("s1".to_string()),
-        "p",
-        "a",
-        "m",
-    );
-    let session2 = tracker.start_session(
-        SessionId("s2".to_string()),
-        "p",
-        "a",
-        "m",
-    );
+    let session1 = tracker.start_session(SessionId("s1".to_string()), "p", "a", "m");
+    let session2 = tracker.start_session(SessionId("s2".to_string()), "p", "a", "m");
 
     tracker.record_inference(&session1, 100, 50, 100, true, "p", "m");
     tracker.record_inference(&session2, 200, 100, 200, true, "p", "m");
@@ -1006,8 +993,12 @@ fn test_telemetry_workflow() {
     let telemetry = Telemetry::init(config);
 
     // 3. Record some metrics
-    telemetry.metrics.record_chat_request(100, 50, 0.1, "claude");
-    telemetry.metrics.record_chat_request(200, 100, 0.2, "claude");
+    telemetry
+        .metrics
+        .record_chat_request(100, 50, 0.1, "claude");
+    telemetry
+        .metrics
+        .record_chat_request(200, 100, 0.2, "claude");
     telemetry.metrics.record_error("chat", "claude", "timeout");
 
     // 4. Verify metrics
@@ -1037,8 +1028,8 @@ fn test_research_session_workflow() {
         let success = i % 3 != 0;
         tracker.record_inference(
             &session_id,
-            100 + i * 10,      // input_tokens: u32
-            50 + i * 5,        // output_tokens: u32
+            100 + i * 10,          // input_tokens: u32
+            50 + i * 5,            // output_tokens: u32
             100 + (i as u64) * 20, // latency_ms: u64
             success,
             "infernum",
@@ -1093,15 +1084,7 @@ fn test_concurrent_tracking() {
                 );
 
                 for j in 0..10 {
-                    t.record_inference(
-                        &session_id,
-                        100,
-                        50,
-                        100,
-                        j % 2 == 0,
-                        "project",
-                        "model",
-                    );
+                    t.record_inference(&session_id, 100, 50, 100, j % 2 == 0, "project", "model");
                 }
 
                 t.end_session(&session_id);

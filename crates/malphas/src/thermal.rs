@@ -44,10 +44,10 @@ impl ThermalThresholds {
     /// Thresholds for AMD Threadripper PRO.
     pub fn threadripper_pro() -> Self {
         Self {
-            target: 70.0,     // Threadripper runs hot, keep lower target
-            warning: 80.0,    // Start throttling earlier
-            critical: 90.0,   // Aggressive throttling
-            emergency: 95.0,  // Max safe temp for sustained loads
+            target: 70.0,    // Threadripper runs hot, keep lower target
+            warning: 80.0,   // Start throttling earlier
+            critical: 90.0,  // Aggressive throttling
+            emergency: 95.0, // Max safe temp for sustained loads
         }
     }
 
@@ -56,7 +56,7 @@ impl ThermalThresholds {
         Self {
             target: 70.0,
             warning: 80.0,
-            critical: 87.0,   // Ada throttles at ~83°C
+            critical: 87.0, // Ada throttles at ~83°C
             emergency: 90.0,
         }
     }
@@ -207,12 +207,14 @@ impl ThermalManager {
 
         // Read CPU temperature
         if let Some(cpu_temp) = read_cpu_temperature() {
-            let entry = temps.entry("cpu".to_string()).or_insert(TemperatureReading {
-                name: "CPU".to_string(),
-                temperature: cpu_temp,
-                max_observed: cpu_temp,
-                timestamp: Instant::now(),
-            });
+            let entry = temps
+                .entry("cpu".to_string())
+                .or_insert(TemperatureReading {
+                    name: "CPU".to_string(),
+                    temperature: cpu_temp,
+                    max_observed: cpu_temp,
+                    timestamp: Instant::now(),
+                });
             entry.temperature = cpu_temp;
             entry.max_observed = entry.max_observed.max(cpu_temp);
             entry.timestamp = Instant::now();
@@ -220,12 +222,14 @@ impl ThermalManager {
 
         // Read GPU temperature
         if let Some(gpu_temp) = read_gpu_temperature() {
-            let entry = temps.entry("gpu".to_string()).or_insert(TemperatureReading {
-                name: "GPU".to_string(),
-                temperature: gpu_temp,
-                max_observed: gpu_temp,
-                timestamp: Instant::now(),
-            });
+            let entry = temps
+                .entry("gpu".to_string())
+                .or_insert(TemperatureReading {
+                    name: "GPU".to_string(),
+                    temperature: gpu_temp,
+                    max_observed: gpu_temp,
+                    timestamp: Instant::now(),
+                });
             entry.temperature = gpu_temp;
             entry.max_observed = entry.max_observed.max(gpu_temp);
             entry.timestamp = Instant::now();
@@ -460,7 +464,10 @@ fn read_gpu_temperature() -> Option<f32> {
 fn read_nvidia_gpu_temperature() -> Option<f32> {
     // Try nvidia-smi
     let output = std::process::Command::new("nvidia-smi")
-        .args(["--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"])
+        .args([
+            "--query-gpu=temperature.gpu",
+            "--format=csv,noheader,nounits",
+        ])
         .output()
         .ok()?;
 

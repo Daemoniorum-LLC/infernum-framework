@@ -314,11 +314,9 @@ impl LoopExecutor {
                             })
                             .await;
                         terminal_signal = true;
-                    }
+                    },
                     MetaSignal::Stuck {
-                        attempts,
-                        request,
-                        ..
+                        attempts, request, ..
                     } => {
                         state_machine.stuck_detected(attempts, request)?;
                         let _ = event_tx
@@ -328,7 +326,7 @@ impl LoopExecutor {
                             })
                             .await;
                         terminal_signal = true;
-                    }
+                    },
                     MetaSignal::Yield {
                         partial_progress,
                         suggested_expertise,
@@ -345,10 +343,10 @@ impl LoopExecutor {
                             })
                             .await;
                         terminal_signal = true;
-                    }
+                    },
                     MetaSignal::Uncertain { .. } | MetaSignal::Thinking { .. } => {
                         // Non-terminal: continue to tool call detection
-                    }
+                    },
                 }
             }
 
@@ -403,14 +401,13 @@ impl LoopExecutor {
                     })
                     .await;
 
-                let result =
-                    self.execute_single_tool(call, &tool_ctx, &event_tx).await;
+                let result = self.execute_single_tool(call, &tool_ctx, &event_tx).await;
 
                 // Add tool result to conversation context
                 let content = match &result.status {
                     ResultStatus::Success | ResultStatus::PartialSuccess { .. } => {
                         serde_json::to_string(&result.data).unwrap_or_default()
-                    }
+                    },
                     ResultStatus::Empty => "No results found.".to_string(),
                     ResultStatus::Failed { .. } => {
                         format!(
@@ -421,7 +418,7 @@ impl LoopExecutor {
                                 .and_then(|e| e.as_str())
                                 .unwrap_or("Tool execution failed")
                         )
-                    }
+                    },
                 };
                 messages.push(Message::tool_result(&call.id, &content));
 
@@ -446,11 +443,11 @@ impl LoopExecutor {
 
             // Integrating → Generating (or resource limit)
             match state_machine.continue_loop() {
-                Ok(()) => {}
+                Ok(()) => {},
                 Err(TransitionError::ResourceLimitReached(_)) => {
                     debug!("Resource limit reached, terminating loop");
                     break;
-                }
+                },
                 Err(e) => return Err(e.into()),
             }
         }
@@ -523,7 +520,7 @@ impl LoopExecutor {
                     latency_ms: 0,
                     truncated: false,
                 }
-            }
+            },
             Permission::RequiresApproval => {
                 debug!(tool = %call.name, "Tool requires approval");
                 let timeout = self.config.loop_config.approval_timeout;
@@ -531,11 +528,7 @@ impl LoopExecutor {
                 if let Some(gate) = &self.approval_gate {
                     // Register the pending request BEFORE emitting the event,
                     // so the entry exists by the time a client tries to deliver.
-                    let rx = gate.request(
-                        &call.id,
-                        &call.name,
-                        call.arguments.clone(),
-                    );
+                    let rx = gate.request(&call.id, &call.name, call.arguments.clone());
 
                     let _ = event_tx
                         .send(LoopEvent::ToolApprovalRequired {
@@ -550,12 +543,11 @@ impl LoopExecutor {
                     // Block until decision or timeout
                     match tokio::time::timeout(timeout, rx).await {
                         Ok(Ok(
-                            ApprovalDecision::Approve
-                            | ApprovalDecision::ApproveAlways { .. },
+                            ApprovalDecision::Approve | ApprovalDecision::ApproveAlways { .. },
                         )) => {
                             // Approved — execute the tool
                             self.execute_approved_tool(call, tool_ctx, event_tx).await
-                        }
+                        },
                         Ok(Ok(ApprovalDecision::Deny)) => {
                             debug!(tool = %call.name, "Tool call denied by operator");
                             AgenticToolResult {
@@ -567,7 +559,7 @@ impl LoopExecutor {
                                 latency_ms: 0,
                                 truncated: false,
                             }
-                        }
+                        },
                         Ok(Err(_)) | Err(_) => {
                             // Oneshot dropped or timeout expired
                             let secs = timeout.as_secs_f64();
@@ -584,7 +576,7 @@ impl LoopExecutor {
                                 latency_ms: 0,
                                 truncated: false,
                             }
-                        }
+                        },
                     }
                 } else {
                     // No approval gate — emit event and fail immediately
@@ -607,10 +599,8 @@ impl LoopExecutor {
                         truncated: false,
                     }
                 }
-            }
-            Permission::Allowed => {
-                self.execute_approved_tool(call, tool_ctx, event_tx).await
-            }
+            },
+            Permission::Allowed => self.execute_approved_tool(call, tool_ctx, event_tx).await,
         }
     }
 
@@ -644,13 +634,25 @@ impl LoopExecutor {
                 } else {
                     ResultStatus::Failed { recoverable: true }
                 };
-                let data = result.data.unwrap_or_else(|| {
-                    if result.success {
-                        serde_json::json!({"output": result.output})
-                    } else {
-                        serde_json::json!({"error": result.error.as_deref().unwrap_or("unknown error")})
-                    }
-                });
+                // Always include the tool's output in data so the model can see it
+                let data = match result.data {
+                    Some(mut d) => {
+                        // If data exists but doesn't have output, add it
+                        if d.get("output").is_none() && d.get("content").is_none() {
+                            if let Some(obj) = d.as_object_mut() {
+                                obj.insert("output".to_string(), serde_json::json!(result.output));
+                            }
+                        }
+                        d
+                    },
+                    None => {
+                        if result.success {
+                            serde_json::json!({"output": result.output})
+                        } else {
+                            serde_json::json!({"error": result.error.as_deref().unwrap_or("unknown error")})
+                        }
+                    },
+                };
                 AgenticToolResult {
                     call_id: call.id.clone(),
                     tool_name: call.name.clone(),
@@ -660,7 +662,7 @@ impl LoopExecutor {
                     latency_ms,
                     truncated: false,
                 }
-            }
+            },
             Err(e) => {
                 warn!(tool = %call.name, error = %e, "Tool execution failed");
                 AgenticToolResult {
@@ -672,7 +674,7 @@ impl LoopExecutor {
                     latency_ms,
                     truncated: false,
                 }
-            }
+            },
         };
 
         let _ = event_tx
@@ -700,10 +702,7 @@ impl LoopExecutor {
              or provide a final answer with <answer confidence=\"0.9\">...</answer>."
         );
 
-        vec![
-            Message::system(system_prompt),
-            Message::user(objective),
-        ]
+        vec![Message::system(system_prompt), Message::user(objective)]
     }
 
     fn build_generate_request(&self, messages: &[Message]) -> GenerateRequest {

@@ -19,7 +19,9 @@ use super::vram_cache::SharedWeights;
 use crate::adaptive_tiering::{AllocationPlan, MemoryTier, TensorAllocation};
 use crate::cuda_inference::arch::ModelConfig;
 use crate::cuda_inference::tensor::{GpuDType, GpuTensor};
-use crate::cuda_inference::weight_store::{LayerWeights, QuantFormat, QuantizedWeight, RMSNormWeights};
+use crate::cuda_inference::weight_store::{
+    LayerWeights, QuantFormat, QuantizedWeight, RMSNormWeights,
+};
 
 /// Trait for weight loading strategies.
 pub trait WeightLoader {
@@ -119,7 +121,8 @@ impl EagerLoader {
             weight: self.load_tensor(&format!("{}.post_attention_layernorm.weight", prefix))?,
         };
 
-        self.layers_loaded.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.layers_loaded
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         Ok(LayerWeights {
             index: layer_idx,
@@ -165,10 +168,7 @@ impl EagerLoader {
 
 impl WeightLoader for EagerLoader {
     fn load(&self, store: &mut TieredWeightStore) -> Result<(), TieredError> {
-        tracing::info!(
-            num_layers = self.config.num_layers,
-            "Starting eager load"
-        );
+        tracing::info!(num_layers = self.config.num_layers, "Starting eager load");
 
         // Load shared weights first (always to VRAM)
         let shared = self.load_shared()?;
@@ -186,19 +186,21 @@ impl WeightLoader for EagerLoader {
                     let layer = self.load_layer(layer_idx)?;
                     let priority = self.get_layer_priority(layer_idx);
                     store.vram_cache_mut().insert(layer_idx, layer, priority)?;
-                }
+                },
                 MemoryTier::Ram => {
                     // Load to RAM (pinned memory)
                     let cpu_weights = self.load_layer_to_cpu(layer_idx)?;
                     let priority = self.get_layer_priority(layer_idx);
-                    store.ram_cache_mut().insert(layer_idx, cpu_weights, priority)?;
-                }
+                    store
+                        .ram_cache_mut()
+                        .insert(layer_idx, cpu_weights, priority)?;
+                },
                 MemoryTier::Nvme => {
                     // For eager loading, NVMe should not be used
                     return Err(TieredError::Config(
                         "EagerLoader cannot load to NVMe tier".into(),
                     ));
-                }
+                },
             }
 
             if (layer_idx + 1) % 10 == 0 || layer_idx == num_layers - 1 {
@@ -215,7 +217,9 @@ impl WeightLoader for EagerLoader {
     }
 
     fn progress(&self) -> f32 {
-        let loaded = self.layers_loaded.load(std::sync::atomic::Ordering::Relaxed);
+        let loaded = self
+            .layers_loaded
+            .load(std::sync::atomic::Ordering::Relaxed);
         loaded as f32 / self.config.num_layers as f32
     }
 }
@@ -245,13 +249,19 @@ impl EagerLoader {
     }
 
     /// Get mutable VRAM cache access.
-    fn vram_cache_mut<'a>(&self, store: &'a mut TieredWeightStore) -> &'a mut super::vram_cache::VramCache {
+    fn vram_cache_mut<'a>(
+        &self,
+        store: &'a mut TieredWeightStore,
+    ) -> &'a mut super::vram_cache::VramCache {
         // This requires exposing mut access on store
         todo!("Need mut accessor")
     }
 
     /// Get mutable RAM cache access.
-    fn ram_cache_mut<'a>(&self, store: &'a mut TieredWeightStore) -> &'a mut super::ram_cache::RamCache {
+    fn ram_cache_mut<'a>(
+        &self,
+        store: &'a mut TieredWeightStore,
+    ) -> &'a mut super::ram_cache::RamCache {
         // This requires exposing mut access on store
         todo!("Need mut accessor")
     }
@@ -309,9 +319,9 @@ impl ProgressiveLoader {
         // 2. Scanning existing cache directory
         // 3. Symlinking to original HCT files
 
-        let nvme = store.nvme_cache_mut().ok_or_else(|| {
-            TieredError::Config("Progressive loading requires NVMe cache".into())
-        })?;
+        let nvme = store
+            .nvme_cache_mut()
+            .ok_or_else(|| TieredError::Config("Progressive loading requires NVMe cache".into()))?;
 
         // Scan for existing cached layers
         let found = nvme.scan_existing()?;
@@ -359,24 +369,16 @@ pub fn create_loader(
 ) -> Box<dyn WeightLoader> {
     match strategy {
         LoadingStrategy::Eager | LoadingStrategy::EagerQuantized { .. } => {
-            Box::new(EagerLoader::new(
-                model_dir,
-                config,
-                plan,
-                device,
-                stats,
-            ))
-        }
-        LoadingStrategy::Progressive => {
-            Box::new(ProgressiveLoader::new(
-                model_dir,
-                config,
-                plan,
-                device,
-                tiered_config.progressive.prefetch_depth,
-                stats,
-            ))
-        }
+            Box::new(EagerLoader::new(model_dir, config, plan, device, stats))
+        },
+        LoadingStrategy::Progressive => Box::new(ProgressiveLoader::new(
+            model_dir,
+            config,
+            plan,
+            device,
+            tiered_config.progressive.prefetch_depth,
+            stats,
+        )),
     }
 }
 

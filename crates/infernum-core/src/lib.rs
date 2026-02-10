@@ -9,9 +9,6 @@
 //! - Shared traits for inference, embedding, and streaming
 
 #![warn(missing_docs)]
-#![warn(clippy::all)]
-#![warn(clippy::pedantic)]
-#![deny(clippy::unwrap_used)]
 
 pub mod edge;
 pub mod error;
@@ -85,8 +82,7 @@ mod tests {
 
     #[test]
     fn test_generate_request_with_model() {
-        let request = GenerateRequest::new("test")
-            .with_model(ModelId::from("llama-3b"));
+        let request = GenerateRequest::new("test").with_model(ModelId::from("llama-3b"));
         assert!(request.model.is_some());
     }
 

@@ -8,9 +8,9 @@
 //! Unlike standard/quantized caches, this cache computes attention internally
 //! using fused kernels, avoiding the need to materialize full K/V tensors.
 
-use candle_core::{Result as CandleResult, Tensor};
 use super::KvCache;
 use crate::kv_cache_quant_cuda::cuda::CudaQuantizedKvCache as InnerCache;
+use candle_core::{Result as CandleResult, Tensor};
 
 /// CUDA-accelerated INT8 quantized KV cache.
 ///
@@ -97,7 +97,8 @@ impl KvCache for CudaQuantizedCache {
         // CUDA quantized cache doesn't support getting raw K/V
         // It uses fused attention instead
         Err(candle_core::Error::Msg(
-            "CudaQuantizedCache uses fused attention. Use forward_attention() instead of get_kv().".to_string()
+            "CudaQuantizedCache uses fused attention. Use forward_attention() instead of get_kv()."
+                .to_string(),
         ))
     }
 
@@ -131,7 +132,7 @@ impl std::fmt::Debug for CudaQuantizedCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use candle_core::{Device, DType};
+    use candle_core::{DType, Device};
 
     #[test]
     fn test_cuda_cache_creation() {
@@ -142,7 +143,11 @@ mod tests {
         }
 
         let cache = CudaQuantizedCache::new(2, 64, 0);
-        assert!(cache.is_ok(), "Failed to create CUDA cache: {:?}", cache.err());
+        assert!(
+            cache.is_ok(),
+            "Failed to create CUDA cache: {:?}",
+            cache.err()
+        );
 
         let cache = cache.unwrap();
         assert_eq!(cache.num_kv_heads(), 2);

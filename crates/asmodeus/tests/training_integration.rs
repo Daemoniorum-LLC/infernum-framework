@@ -16,10 +16,10 @@ use candle_core::{DType, Device, Tensor};
 use tempfile::tempdir;
 
 use asmodeus::{
-    AdamW, CrossEntropyLoss, DPOLoss, DataLoader, Dataset, GradientAccumulator,
-    GradientConfig, GradientScaler, InMemoryDataset, LRScheduler, LoraConfig, LoraLayer,
-    LoraModel, Reduction, SFTLoss, Trainer, TrainingConfig, TrainingSample,
-    clip_grad_norm, compute_grad_norm, find_target_modules,
+    clip_grad_norm, compute_grad_norm, find_target_modules, AdamW, CrossEntropyLoss, DPOLoss,
+    DataLoader, Dataset, GradientAccumulator, GradientConfig, GradientScaler, InMemoryDataset,
+    LRScheduler, LoraConfig, LoraLayer, LoraModel, Reduction, SFTLoss, Trainer, TrainingConfig,
+    TrainingSample,
 };
 
 // ============================================================================
@@ -587,12 +587,7 @@ fn test_cross_entropy_loss_forward() {
     let logits = Tensor::randn(0.0f32, 1.0f32, (2, 3, 10), &Device::Cpu).unwrap();
 
     // Create targets: (batch=2, seq=3)
-    let targets = Tensor::from_vec(
-        vec![1u32, 2, 3, 4, 5, 6],
-        (2, 3),
-        &Device::Cpu,
-    )
-    .unwrap();
+    let targets = Tensor::from_vec(vec![1u32, 2, 3, 4, 5, 6], (2, 3), &Device::Cpu).unwrap();
 
     let loss_val = loss.forward(&logits, &targets).unwrap();
 
@@ -653,9 +648,7 @@ fn test_dpo_loss_new() {
 #[test]
 fn test_dpo_loss_builder() {
     // Builder pattern should work without panicking
-    let loss = DPOLoss::new()
-        .with_beta(0.2)
-        .with_label_smoothing(0.1);
+    let loss = DPOLoss::new().with_beta(0.2).with_label_smoothing(0.1);
 
     // Fields are private, just verify construction
     drop(loss);
@@ -666,10 +659,13 @@ fn test_dpo_loss_forward() {
     let loss = DPOLoss::new().with_beta(0.1);
 
     // Create log probs (batch=4)
-    let policy_chosen = Tensor::from_vec(vec![-1.0f32, -0.5, -0.8, -1.2], (4,), &Device::Cpu).unwrap();
-    let policy_rejected = Tensor::from_vec(vec![-2.0f32, -1.5, -1.8, -2.2], (4,), &Device::Cpu).unwrap();
+    let policy_chosen =
+        Tensor::from_vec(vec![-1.0f32, -0.5, -0.8, -1.2], (4,), &Device::Cpu).unwrap();
+    let policy_rejected =
+        Tensor::from_vec(vec![-2.0f32, -1.5, -1.8, -2.2], (4,), &Device::Cpu).unwrap();
     let ref_chosen = Tensor::from_vec(vec![-1.1f32, -0.6, -0.9, -1.3], (4,), &Device::Cpu).unwrap();
-    let ref_rejected = Tensor::from_vec(vec![-2.1f32, -1.6, -1.9, -2.3], (4,), &Device::Cpu).unwrap();
+    let ref_rejected =
+        Tensor::from_vec(vec![-2.1f32, -1.6, -1.9, -2.3], (4,), &Device::Cpu).unwrap();
 
     let output = loss
         .forward(&policy_chosen, &policy_rejected, &ref_chosen, &ref_rejected)
@@ -721,13 +717,11 @@ fn test_in_memory_dataset_new() {
 
 #[test]
 fn test_in_memory_dataset_get() {
-    let samples = vec![
-        TrainingSample {
-            input_ids: vec![1, 2, 3],
-            attention_mask: vec![1, 1, 1],
-            labels: vec![2, 3, 4],
-        },
-    ];
+    let samples = vec![TrainingSample {
+        input_ids: vec![1, 2, 3],
+        attention_mask: vec![1, 1, 1],
+        labels: vec![2, 3, 4],
+    }];
 
     let dataset = InMemoryDataset::new(samples);
 
@@ -742,7 +736,10 @@ fn test_in_memory_dataset_get() {
 fn test_in_memory_dataset_from_instruction_pairs() {
     let pairs = vec![
         ("What is 2+2?".to_string(), "4".to_string()),
-        ("What is the capital of France?".to_string(), "Paris".to_string()),
+        (
+            "What is the capital of France?".to_string(),
+            "Paris".to_string(),
+        ),
     ];
 
     // Simple tokenizer that just converts chars to bytes
@@ -918,7 +915,13 @@ fn test_adamw_step() {
 
     // New param should be different from original
     let diff = new_param.sub(&param).unwrap();
-    let diff_sum = diff.abs().unwrap().sum_all().unwrap().to_scalar::<f32>().unwrap();
+    let diff_sum = diff
+        .abs()
+        .unwrap()
+        .sum_all()
+        .unwrap()
+        .to_scalar::<f32>()
+        .unwrap();
     assert!(diff_sum > 0.0);
 }
 
@@ -952,8 +955,7 @@ fn test_trainer_new() {
 #[test]
 fn test_trainer_with_device() {
     let dir = tempdir().unwrap();
-    let trainer = Trainer::new(dir.path(), "test-model")
-        .with_device(Device::Cpu);
+    let trainer = Trainer::new(dir.path(), "test-model").with_device(Device::Cpu);
 
     assert_eq!(trainer.output_dir(), dir.path());
 }
@@ -1013,7 +1015,9 @@ fn test_lora_training_workflow() {
 
     // 9. Create mock gradients and update
     let grad_a = Tensor::randn(0.0f32, 0.01f32, (4, 256), &Device::Cpu).unwrap();
-    let _new_a = optimizer.step("layer.0.q_proj.lora_a", &output, &grad_a).unwrap();
+    let _new_a = optimizer
+        .step("layer.0.q_proj.lora_a", &output, &grad_a)
+        .unwrap();
 
     // 10. Verify model can be saved
     let dir = tempdir().unwrap();

@@ -1,11 +1,11 @@
 //! Quick test for Qwen 7B HCT lossless.
-use std::path::Path;
-use std::time::Instant;
-use candle_core::{DType, Device, IndexOp, Tensor};
-use candle_nn::VarBuilder;
 use abaddon::hct_sequential::load_hct_directory_sequential;
 use abaddon::models::qwen2::{Qwen2, Qwen2Config};
 use anyhow::Result;
+use candle_core::{DType, Device, IndexOp, Tensor};
+use candle_nn::VarBuilder;
+use std::path::Path;
+use std::time::Instant;
 
 fn tensor_stats(t: &Tensor, name: &str) -> Result<()> {
     let flat = t.flatten_all()?.to_dtype(DType::F32)?;
@@ -16,8 +16,15 @@ fn tensor_stats(t: &Tensor, name: &str) -> Result<()> {
     let min = vals.iter().cloned().fold(f32::INFINITY, f32::min);
     let max = vals.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     println!("  {} -> {:?}", name, t.dims());
-    println!("    non-zero: {}/{} ({:.1}%), sum: {:.4}, range: [{:.4}, {:.4}]",
-             non_zero, total, 100.0 * non_zero as f64 / total as f64, sum, min, max);
+    println!(
+        "    non-zero: {}/{} ({:.1}%), sum: {:.4}, range: [{:.4}, {:.4}]",
+        non_zero,
+        total,
+        100.0 * non_zero as f64 / total as f64,
+        sum,
+        min,
+        max
+    );
     Ok(())
 }
 
@@ -31,12 +38,20 @@ fn main() -> Result<()> {
     println!("Loading 339 tensors from HCT...");
     let start = Instant::now();
     let tensors = load_hct_directory_sequential(hct_dir, &device, dtype)?;
-    println!("Loaded {} tensors in {:.2}s\n", tensors.len(), start.elapsed().as_secs_f64());
+    println!(
+        "Loaded {} tensors in {:.2}s\n",
+        tensors.len(),
+        start.elapsed().as_secs_f64()
+    );
 
     // Check key tensors
     println!("--- Key Tensor Stats ---");
-    for key in ["model.embed_tokens.weight", "model.norm.weight", "lm_head.weight",
-                "model.layers.0.self_attn.q_proj.weight"] {
+    for key in [
+        "model.embed_tokens.weight",
+        "model.norm.weight",
+        "lm_head.weight",
+        "model.layers.0.self_attn.q_proj.weight",
+    ] {
         if let Some(t) = tensors.get(key) {
             tensor_stats(t, key)?;
         } else {
@@ -88,7 +103,11 @@ fn main() -> Result<()> {
 
     println!("\n--- Output Stats ---");
     println!("  Total: {}", vals.len());
-    println!("  Finite: {} ({:.1}%)", finite, 100.0 * finite as f64 / vals.len() as f64);
+    println!(
+        "  Finite: {} ({:.1}%)",
+        finite,
+        100.0 * finite as f64 / vals.len() as f64
+    );
     println!("  Mean: {:.4}", mean);
     println!("  Range: [{:.4}, {:.4}]", min, max);
 

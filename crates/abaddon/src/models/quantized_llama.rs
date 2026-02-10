@@ -115,7 +115,7 @@ impl QAttention {
                 let k = Tensor::cat(&[prev_k, &k], 2)?;
                 let v = Tensor::cat(&[prev_v, &v], 2)?;
                 (k, v)
-            }
+            },
             _ => (k, v),
         };
         self.kv_cache = Some((k.clone(), v.clone()));
@@ -146,9 +146,11 @@ impl QAttention {
         let attn_output = attn_weights.matmul(&v)?;
 
         // Reshape back
-        let attn_output = attn_output
-            .transpose(1, 2)?
-            .reshape((batch_size, seq_len, self.num_heads * self.head_dim))?;
+        let attn_output = attn_output.transpose(1, 2)?.reshape((
+            batch_size,
+            seq_len,
+            self.num_heads * self.head_dim,
+        ))?;
 
         self.o_proj.forward(&attn_output)
     }
@@ -245,9 +247,8 @@ pub struct QuantizedLlama {
 impl QuantizedLlama {
     /// Loads a quantized Llama model from a GGUF file.
     pub fn from_gguf(path: impl AsRef<Path>, device: &Device) -> CandleResult<Self> {
-        let loader = GgufLoader::from_file(&path).map_err(|e| {
-            candle_core::Error::Msg(format!("Failed to load GGUF: {}", e))
-        })?;
+        let loader = GgufLoader::from_file(&path)
+            .map_err(|e| candle_core::Error::Msg(format!("Failed to load GGUF: {}", e)))?;
 
         let metadata = loader.metadata();
         let content = loader.content();
@@ -319,10 +320,22 @@ impl QuantizedLlama {
         let head_dim = config.hidden_size / config.num_attention_heads;
 
         // Load attention
-        let q_proj = QLinear::new(Self::get_tensor(content, &format!("{}.self_attn.q_proj.weight", prefix))?);
-        let k_proj = QLinear::new(Self::get_tensor(content, &format!("{}.self_attn.k_proj.weight", prefix))?);
-        let v_proj = QLinear::new(Self::get_tensor(content, &format!("{}.self_attn.v_proj.weight", prefix))?);
-        let o_proj = QLinear::new(Self::get_tensor(content, &format!("{}.self_attn.o_proj.weight", prefix))?);
+        let q_proj = QLinear::new(Self::get_tensor(
+            content,
+            &format!("{}.self_attn.q_proj.weight", prefix),
+        )?);
+        let k_proj = QLinear::new(Self::get_tensor(
+            content,
+            &format!("{}.self_attn.k_proj.weight", prefix),
+        )?);
+        let v_proj = QLinear::new(Self::get_tensor(
+            content,
+            &format!("{}.self_attn.v_proj.weight", prefix),
+        )?);
+        let o_proj = QLinear::new(Self::get_tensor(
+            content,
+            &format!("{}.self_attn.o_proj.weight", prefix),
+        )?);
 
         let self_attn = QAttention {
             q_proj,
@@ -336,9 +349,18 @@ impl QuantizedLlama {
         };
 
         // Load MLP
-        let gate_proj = QLinear::new(Self::get_tensor(content, &format!("{}.mlp.gate_proj.weight", prefix))?);
-        let up_proj = QLinear::new(Self::get_tensor(content, &format!("{}.mlp.up_proj.weight", prefix))?);
-        let down_proj = QLinear::new(Self::get_tensor(content, &format!("{}.mlp.down_proj.weight", prefix))?);
+        let gate_proj = QLinear::new(Self::get_tensor(
+            content,
+            &format!("{}.mlp.gate_proj.weight", prefix),
+        )?);
+        let up_proj = QLinear::new(Self::get_tensor(
+            content,
+            &format!("{}.mlp.up_proj.weight", prefix),
+        )?);
+        let down_proj = QLinear::new(Self::get_tensor(
+            content,
+            &format!("{}.mlp.down_proj.weight", prefix),
+        )?);
 
         let mlp = QMlp {
             gate_proj,
@@ -352,7 +374,10 @@ impl QuantizedLlama {
             config.rms_norm_eps,
         )?;
         let post_attention_layernorm = QRmsNorm::new(
-            Self::get_tensor(content, &format!("{}.post_attention_layernorm.weight", prefix))?,
+            Self::get_tensor(
+                content,
+                &format!("{}.post_attention_layernorm.weight", prefix),
+            )?,
             config.rms_norm_eps,
         )?;
 
@@ -410,11 +435,7 @@ impl QuantizedLlama {
 
         // Create causal mask
         let mask = if seq_len > 1 {
-            Some(Self::create_causal_mask(
-                seq_len,
-                start_pos,
-                &self.device,
-            )?)
+            Some(Self::create_causal_mask(seq_len, start_pos, &self.device)?)
         } else {
             None
         };

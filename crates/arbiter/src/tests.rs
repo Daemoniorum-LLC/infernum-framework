@@ -31,7 +31,10 @@ mod arbiter_tests {
             })
             .collect();
 
-        let results: Vec<_> = handles.into_iter().map(|h| h.join().expect("Thread panic")).collect();
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|h| h.join().expect("Thread panic"))
+            .collect();
 
         // All allocations should succeed (24GB available, 4GB requested)
         for result in results {
@@ -39,7 +42,10 @@ mod arbiter_tests {
         }
 
         let state = arbiter.state();
-        assert_eq!(state.active_llm_workloads + state.active_diffusion_workloads, 4);
+        assert_eq!(
+            state.active_llm_workloads + state.active_diffusion_workloads,
+            4
+        );
     }
 
     #[test]
@@ -47,18 +53,22 @@ mod arbiter_tests {
         let arbiter = Arbiter::new(ArbiterConfig::for_vram_gb(16)).expect("Failed");
 
         // First allocation at low pressure
-        let alloc1 = arbiter.request_allocation(
-            WorkloadType::LlmInference,
-            Priority::High,
-            8 * 1024 * 1024 * 1024, // 8GB - 50% pressure
-        ).expect("Failed");
+        let alloc1 = arbiter
+            .request_allocation(
+                WorkloadType::LlmInference,
+                Priority::High,
+                8 * 1024 * 1024 * 1024, // 8GB - 50% pressure
+            )
+            .expect("Failed");
 
         // Second allocation at higher pressure
-        let alloc2 = arbiter.request_allocation(
-            WorkloadType::ImageGeneration,
-            Priority::Normal,
-            6 * 1024 * 1024 * 1024, // 6GB more - 87.5% pressure
-        ).expect("Failed");
+        let alloc2 = arbiter
+            .request_allocation(
+                WorkloadType::ImageGeneration,
+                Priority::Normal,
+                6 * 1024 * 1024 * 1024, // 6GB more - 87.5% pressure
+            )
+            .expect("Failed");
 
         // Quality should be lower for the second allocation
         assert!(alloc2.quality_target <= alloc1.quality_target);
@@ -68,11 +78,13 @@ mod arbiter_tests {
     fn test_release_restores_quality() {
         let arbiter = Arbiter::new(ArbiterConfig::for_vram_gb(16)).expect("Failed");
 
-        let alloc1 = arbiter.request_allocation(
-            WorkloadType::LlmInference,
-            Priority::High,
-            12 * 1024 * 1024 * 1024,
-        ).expect("Failed");
+        let alloc1 = arbiter
+            .request_allocation(
+                WorkloadType::LlmInference,
+                Priority::High,
+                12 * 1024 * 1024 * 1024,
+            )
+            .expect("Failed");
 
         let state_before = arbiter.state();
 
@@ -92,11 +104,13 @@ mod arbiter_tests {
         assert_eq!(arbiter.recommended_quality(WorkloadType::LlmInference), 1.0);
 
         // Add LLM workload
-        let _alloc = arbiter.request_allocation(
-            WorkloadType::LlmInference,
-            Priority::High,
-            10 * 1024 * 1024 * 1024,
-        ).expect("Failed");
+        let _alloc = arbiter
+            .request_allocation(
+                WorkloadType::LlmInference,
+                Priority::High,
+                10 * 1024 * 1024 * 1024,
+            )
+            .expect("Failed");
 
         // Should have quality set
         let q = arbiter.recommended_quality(WorkloadType::LlmInference);
@@ -188,17 +202,9 @@ mod coordinator_tests {
     fn test_priority_affects_quality() {
         let coord = Coordinator::new(CoordinatorConfig::default());
 
-        let q_low = coord.calculate_quality(
-            WorkloadType::LlmInference,
-            Priority::Low,
-            0.5,
-        );
+        let q_low = coord.calculate_quality(WorkloadType::LlmInference, Priority::Low, 0.5);
 
-        let q_high = coord.calculate_quality(
-            WorkloadType::LlmInference,
-            Priority::High,
-            0.5,
-        );
+        let q_high = coord.calculate_quality(WorkloadType::LlmInference, Priority::High, 0.5);
 
         assert!(q_high > q_low);
     }
@@ -208,17 +214,10 @@ mod coordinator_tests {
         let coord = Coordinator::new(CoordinatorConfig::default());
 
         // Even at maximum pressure with lowest priority
-        let llm_q = coord.calculate_quality(
-            WorkloadType::LlmInference,
-            Priority::Background,
-            1.0,
-        );
+        let llm_q = coord.calculate_quality(WorkloadType::LlmInference, Priority::Background, 1.0);
 
-        let img_q = coord.calculate_quality(
-            WorkloadType::ImageGeneration,
-            Priority::Background,
-            1.0,
-        );
+        let img_q =
+            coord.calculate_quality(WorkloadType::ImageGeneration, Priority::Background, 1.0);
 
         assert!(llm_q >= coord.min_quality(WorkloadType::LlmInference));
         assert!(img_q >= coord.min_quality(WorkloadType::ImageGeneration));
@@ -233,18 +232,22 @@ mod integration_scenarios {
         let arbiter = Arbiter::new(ArbiterConfig::for_vram_gb(24)).expect("Failed");
 
         // LLM inference starts first (user-facing)
-        let llm_alloc = arbiter.request_allocation(
-            WorkloadType::LlmInference,
-            Priority::High,
-            10 * 1024 * 1024 * 1024,
-        ).expect("LLM allocation failed");
+        let llm_alloc = arbiter
+            .request_allocation(
+                WorkloadType::LlmInference,
+                Priority::High,
+                10 * 1024 * 1024 * 1024,
+            )
+            .expect("LLM allocation failed");
 
         // Image generation starts in background
-        let img_alloc = arbiter.request_allocation(
-            WorkloadType::ImageGeneration,
-            Priority::Background,
-            6 * 1024 * 1024 * 1024,
-        ).expect("Image allocation failed");
+        let img_alloc = arbiter
+            .request_allocation(
+                WorkloadType::ImageGeneration,
+                Priority::Background,
+                6 * 1024 * 1024 * 1024,
+            )
+            .expect("Image allocation failed");
 
         let state = arbiter.state();
 
@@ -264,18 +267,22 @@ mod integration_scenarios {
         let arbiter = Arbiter::new(ArbiterConfig::for_vram_gb(16)).expect("Failed");
 
         // Fill up with LLM
-        let llm1 = arbiter.request_allocation(
-            WorkloadType::LlmInference,
-            Priority::High,
-            12 * 1024 * 1024 * 1024,
-        ).expect("Failed");
+        let llm1 = arbiter
+            .request_allocation(
+                WorkloadType::LlmInference,
+                Priority::High,
+                12 * 1024 * 1024 * 1024,
+            )
+            .expect("Failed");
 
         // Try image gen - should get reduced quality due to pressure
-        let img = arbiter.request_allocation(
-            WorkloadType::ImageGeneration,
-            Priority::Normal,
-            3 * 1024 * 1024 * 1024,
-        ).expect("Failed");
+        let img = arbiter
+            .request_allocation(
+                WorkloadType::ImageGeneration,
+                Priority::Normal,
+                3 * 1024 * 1024 * 1024,
+            )
+            .expect("Failed");
 
         assert!(img.quality_target < 1.0);
 
@@ -283,11 +290,13 @@ mod integration_scenarios {
         arbiter.release_allocation(&llm1);
 
         // New diffusion should get better quality
-        let img2 = arbiter.request_allocation(
-            WorkloadType::ImageGeneration,
-            Priority::Normal,
-            3 * 1024 * 1024 * 1024,
-        ).expect("Failed");
+        let img2 = arbiter
+            .request_allocation(
+                WorkloadType::ImageGeneration,
+                Priority::Normal,
+                3 * 1024 * 1024 * 1024,
+            )
+            .expect("Failed");
 
         assert!(img2.quality_target > img.quality_target);
     }
@@ -297,17 +306,21 @@ mod integration_scenarios {
         let arbiter = Arbiter::new(ArbiterConfig::for_vram_gb(24)).expect("Failed");
 
         // Make some allocations
-        let alloc1 = arbiter.request_allocation(
-            WorkloadType::LlmInference,
-            Priority::Normal,
-            1024 * 1024 * 1024,
-        ).expect("Failed");
+        let alloc1 = arbiter
+            .request_allocation(
+                WorkloadType::LlmInference,
+                Priority::Normal,
+                1024 * 1024 * 1024,
+            )
+            .expect("Failed");
 
-        let _ = arbiter.request_allocation(
-            WorkloadType::ImageGeneration,
-            Priority::Normal,
-            1024 * 1024 * 1024,
-        ).expect("Failed");
+        let _ = arbiter
+            .request_allocation(
+                WorkloadType::ImageGeneration,
+                Priority::Normal,
+                1024 * 1024 * 1024,
+            )
+            .expect("Failed");
 
         arbiter.release_allocation(&alloc1);
 

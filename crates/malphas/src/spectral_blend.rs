@@ -37,7 +37,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use legion::{
-    BlendStats, BlendedModel, DynamicBlendController, LayerWeights, SpectralBlend, SpectralDecomposition, SpectralMergeError,
+    BlendStats, BlendedModel, DynamicBlendController, LayerWeights, SpectralBlend,
+    SpectralDecomposition, SpectralMergeError,
 };
 
 // ==================== Error Types ====================
@@ -239,7 +240,8 @@ impl SpectralBlendEngine {
     /// Gets blended weights for a layer at current quality.
     pub fn get_layer_weights(&self, layer_index: usize) -> Result<Vec<f32>> {
         let quality = self.current_quality();
-        self.blended.get_layer_weights(layer_index, quality)
+        self.blended
+            .get_layer_weights(layer_index, quality)
             .map_err(SpectralBlendEngineError::MergeError)
     }
 
@@ -249,13 +251,15 @@ impl SpectralBlendEngine {
         layer_index: usize,
         quality: f32,
     ) -> Result<Vec<f32>> {
-        self.blended.get_layer_weights(layer_index, quality)
+        self.blended
+            .get_layer_weights(layer_index, quality)
             .map_err(SpectralBlendEngineError::MergeError)
     }
 
     /// Adjusts the weight of a model dynamically.
     pub fn adjust_weight(&self, model_name: &str, adjustment: f32) -> Result<()> {
-        self.blended.adjust_weight(model_name, adjustment)
+        self.blended
+            .adjust_weight(model_name, adjustment)
             .map_err(SpectralBlendEngineError::MergeError)?;
 
         // Update stats
@@ -289,7 +293,8 @@ impl SpectralBlendEngine {
     /// Updates dynamic blend (call after each generation step).
     pub fn update(&self) -> Result<()> {
         if let Some(ref controller) = self.controller {
-            controller.update()
+            controller
+                .update()
                 .map_err(SpectralBlendEngineError::MergeError)?;
         }
 
@@ -382,8 +387,7 @@ impl SpectralBlendEngineBuilder {
         weight: f32,
         layer_weights: LayerWeights,
     ) -> Self {
-        let config = BlendModelConfig::new(&model.name, weight)
-            .with_layer_weights(layer_weights);
+        let config = BlendModelConfig::new(&model.name, weight).with_layer_weights(layer_weights);
         self.models.push((model, config));
         self
     }
@@ -444,7 +448,7 @@ impl SpectralBlendEngineBuilder {
             Some(
                 DynamicBlendController::new(blended.clone())
                     .with_adjustment_rate(self.config.adjustment_rate)
-                    .with_decay_rate(self.config.decay_rate)
+                    .with_decay_rate(self.config.decay_rate),
             )
         } else {
             None
@@ -504,26 +508,16 @@ impl BlendPreset {
     /// Returns layer weights for this preset.
     pub fn layer_weights(&self) -> (LayerWeights, LayerWeights) {
         match self {
-            BlendPreset::CodeFocused => (
-                LayerWeights::uniform(0.7),
-                LayerWeights::uniform(0.3),
-            ),
-            BlendPreset::CreativeFocused => (
-                LayerWeights::uniform(0.3),
-                LayerWeights::uniform(0.7),
-            ),
-            BlendPreset::Balanced => (
-                LayerWeights::uniform(0.5),
-                LayerWeights::uniform(0.5),
-            ),
+            BlendPreset::CodeFocused => (LayerWeights::uniform(0.7), LayerWeights::uniform(0.3)),
+            BlendPreset::CreativeFocused => {
+                (LayerWeights::uniform(0.3), LayerWeights::uniform(0.7))
+            },
+            BlendPreset::Balanced => (LayerWeights::uniform(0.5), LayerWeights::uniform(0.5)),
             BlendPreset::InstructFollowing => (
                 LayerWeights::attention_heavy(0.3, 0.5),
                 LayerWeights::attention_heavy(0.7, 0.5),
             ),
-            BlendPreset::Custom => (
-                LayerWeights::default(),
-                LayerWeights::default(),
-            ),
+            BlendPreset::Custom => (LayerWeights::default(), LayerWeights::default()),
         }
     }
 
@@ -583,11 +577,11 @@ impl BlendManager {
     ) -> Result<Arc<SpectralBlendEngine>> {
         let models = self.models.read();
 
-        let mut builder = SpectralBlendEngine::builder()
-            .with_config(config);
+        let mut builder = SpectralBlendEngine::builder().with_config(config);
 
         for (name, weight) in model_weights {
-            let model = models.get(&name)
+            let model = models
+                .get(&name)
                 .ok_or_else(|| SpectralBlendEngineError::LoadFailed {
                     name: name.clone(),
                     reason: "Model not registered".to_string(),
@@ -611,9 +605,7 @@ impl BlendManager {
         preset_name: &str,
     ) -> Result<Arc<SpectralBlendEngine>> {
         let presets = self.presets.read();
-        let config = presets.get(preset_name)
-            .cloned()
-            .unwrap_or_default();
+        let config = presets.get(preset_name).cloned().unwrap_or_default();
 
         drop(presets);
         self.create_blend(model_weights, config)
@@ -656,22 +648,26 @@ impl std::fmt::Debug for BlendManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use legion::{LayerDecomposition, LayerType};
 
     fn create_test_decomposition(name: &str, layer_count: usize) -> SpectralDecomposition {
-        let mut decomp = SpectralDecomposition::new(
-            name.to_string(),
-            format!("Test model: {}", name),
-        );
+        let mut decomp =
+            SpectralDecomposition::new(name.to_string(), format!("Test model: {}", name));
 
         for i in 0..layer_count {
             let weights: Vec<f32> = (0..64).map(|j| (i * 10 + j) as f32 * 0.1).collect();
             let layer = LayerDecomposition::from_weights(
                 i,
-                if i % 2 == 0 { LayerType::Attention } else { LayerType::Mlp },
+                if i % 2 == 0 {
+                    LayerType::Attention
+                } else {
+                    LayerType::Mlp
+                },
                 format!("layer.{}", i),
                 &weights,
                 vec![8, 8],
-            ).expect("Failed to create layer");
+            )
+            .expect("Failed to create layer");
             decomp.add_layer(layer);
         }
 
@@ -732,7 +728,7 @@ mod tests {
         let engine = SpectralBlendEngine::builder()
             .add_model(model, 1.0)
             .with_quality(0.8)
-            .with_progressive_loading(false)  // Disable progressive to test direct quality
+            .with_progressive_loading(false) // Disable progressive to test direct quality
             .build()
             .expect("Build failed");
 
@@ -859,13 +855,12 @@ mod tests {
         manager.register_model(coder);
         manager.register_model(creative);
 
-        let engine = manager.create_blend(
-            vec![
-                ("coder".to_string(), 0.6),
-                ("creative".to_string(), 0.4),
-            ],
-            SpectralBlendConfig::default(),
-        ).expect("Create blend failed");
+        let engine = manager
+            .create_blend(
+                vec![("coder".to_string(), 0.6), ("creative".to_string(), 0.4)],
+                SpectralBlendConfig::default(),
+            )
+            .expect("Create blend failed");
 
         assert_eq!(engine.model_count(), 2);
         assert!(manager.active().is_some());
@@ -894,7 +889,10 @@ mod tests {
             SpectralBlendConfig::default(),
         );
 
-        assert!(matches!(result, Err(SpectralBlendEngineError::LoadFailed { .. })));
+        assert!(matches!(
+            result,
+            Err(SpectralBlendEngineError::LoadFailed { .. })
+        ));
     }
 
     #[test]

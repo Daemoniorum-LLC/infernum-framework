@@ -183,7 +183,7 @@ impl fmt::Display for ServerError {
             Self::Auth { message } => write!(f, "Authentication failed: {message}"),
             Self::RateLimit { retry_after_secs } => {
                 write!(f, "Rate limit exceeded, retry after {retry_after_secs}s")
-            }
+            },
             Self::Timeout { operation } => write!(f, "Request timed out: {operation}"),
             Self::Internal { message } => write!(f, "Internal error: {message}"),
         }
@@ -269,7 +269,12 @@ mod tests {
     #[test]
     fn test_server_error_rate_limit_creation() {
         let err = ServerError::rate_limited(60);
-        assert!(matches!(err, ServerError::RateLimit { retry_after_secs: 60 }));
+        assert!(matches!(
+            err,
+            ServerError::RateLimit {
+                retry_after_secs: 60
+            }
+        ));
         assert_eq!(err.status_code(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(err.error_code(), ErrorCode::RateLimited);
         assert!(err.to_string().contains("60"));
@@ -349,16 +354,10 @@ mod tests {
     #[test]
     fn test_server_error_display_format() {
         let auth_err = ServerError::auth("token expired");
-        assert_eq!(
-            auth_err.to_string(),
-            "Authentication failed: token expired"
-        );
+        assert_eq!(auth_err.to_string(), "Authentication failed: token expired");
 
         let rate_err = ServerError::rate_limited(30);
-        assert_eq!(
-            rate_err.to_string(),
-            "Rate limit exceeded, retry after 30s"
-        );
+        assert_eq!(rate_err.to_string(), "Rate limit exceeded, retry after 30s");
 
         let timeout_err = ServerError::timeout("embedding");
         assert_eq!(timeout_err.to_string(), "Request timed out: embedding");

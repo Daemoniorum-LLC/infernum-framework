@@ -14,7 +14,9 @@ use abaddon::models::qwen2::{Qwen2, Qwen2Config};
 fn main() -> anyhow::Result<()> {
     println!("=== INT4 Text Generation ===\n");
 
-    let model_dir = Path::new("/home/crook/dev2/workspace/nyx/infernum/infernum-complete/test_models/qwen2.5-7b-int4-v3");
+    let model_dir = Path::new(
+        "/home/crook/dev2/workspace/nyx/infernum/infernum-complete/test_models/qwen2.5-7b-int4-v3",
+    );
     let config_path = model_dir.join("config.json");
     let tokenizer_path = model_dir.join("tokenizer.json");
 
@@ -29,7 +31,11 @@ fn main() -> anyhow::Result<()> {
     // Use CUDA if available, otherwise CPU
     let device = Device::cuda_if_available(0).unwrap_or(Device::Cpu);
     // Use BF16 for GPU (better dynamic range than F16, half bandwidth of F32)
-    let dtype = if device.is_cuda() { DType::BF16 } else { DType::F32 };
+    let dtype = if device.is_cuda() {
+        DType::BF16
+    } else {
+        DType::F32
+    };
 
     println!("Device: {:?}, DType: {:?}", device, dtype);
 
@@ -44,15 +50,23 @@ fn main() -> anyhow::Result<()> {
     let config: Qwen2Config = serde_json::from_str(&config_str)?;
 
     println!("  Model: Qwen2.5-7B-INT4");
-    println!("  Hidden: {}, Layers: {}, Heads: {}/{}",
-             config.hidden_size, config.num_hidden_layers,
-             config.num_attention_heads, config.num_kv_heads());
+    println!(
+        "  Hidden: {}, Layers: {}, Heads: {}/{}",
+        config.hidden_size,
+        config.num_hidden_layers,
+        config.num_attention_heads,
+        config.num_kv_heads()
+    );
 
     // Load weights
     println!("\nLoading INT4 weights...");
     let start = Instant::now();
     let tensors = load_hct_directory_parallel(model_dir, &device, dtype)?;
-    println!("  Loaded {} tensors in {:.1}s", tensors.len(), start.elapsed().as_secs_f64());
+    println!(
+        "  Loaded {} tensors in {:.1}s",
+        tensors.len(),
+        start.elapsed().as_secs_f64()
+    );
 
     // Build model with Flash Attention for faster inference
     println!("\nBuilding model...");
@@ -77,7 +91,8 @@ fn main() -> anyhow::Result<()> {
     println!("{}", "=".repeat(50));
 
     // Tokenize prompt
-    let encoding = tokenizer.encode(prompt, false)
+    let encoding = tokenizer
+        .encode(prompt, false)
         .map_err(|e| anyhow::anyhow!("Tokenization failed: {}", e))?;
     let mut tokens: Vec<u32> = encoding.get_ids().to_vec();
 
@@ -140,11 +155,16 @@ fn main() -> anyhow::Result<()> {
 
     println!("\n");
     println!("{}", "=".repeat(50));
-    println!("Generated {} tokens in {:.2}s ({:.2} tok/s)",
-             generated_tokens.len(), gen_time.as_secs_f64(), tokens_per_sec);
+    println!(
+        "Generated {} tokens in {:.2}s ({:.2} tok/s)",
+        generated_tokens.len(),
+        gen_time.as_secs_f64(),
+        tokens_per_sec
+    );
 
     // Decode full output
-    let full_output = tokenizer.decode(&tokens, false)
+    let full_output = tokenizer
+        .decode(&tokens, false)
         .map_err(|e| anyhow::anyhow!("Decode failed: {}", e))?;
 
     println!("\nFull output:");

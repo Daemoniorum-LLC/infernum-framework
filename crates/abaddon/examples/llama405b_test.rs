@@ -63,7 +63,7 @@ fn main() -> Result<()> {
     // Test 1: Create TieredHoloLoader
     println!("--- Test 1: TieredHoloLoader Creation ---");
     let config = TieredConfig {
-        vram_budget: 0, // No VRAM for CPU test
+        vram_budget: 0,                     // No VRAM for CPU test
         ram_budget: 8 * 1024 * 1024 * 1024, // 8GB RAM budget
         min_quality: 0.7,
         target_quality: 0.95,
@@ -132,10 +132,10 @@ fn main() -> Result<()> {
                     size_mb,
                     elapsed
                 );
-            }
+            },
             Err(e) => {
                 println!("  ✗ Failed: {} -> {}", name, e);
-            }
+            },
         }
     }
 
@@ -161,16 +161,19 @@ fn main() -> Result<()> {
                     tensor.dims(),
                     elapsed
                 );
-            }
+            },
             Err(e) => {
                 corrupted_count += 1;
                 println!("  ⚠️ Corrupted: {} -> {}", name, e);
-            }
+            },
         }
     }
 
     if corrupted_count > 0 {
-        println!("\n  Found {} corrupted tensors - need recovery logic!", corrupted_count);
+        println!(
+            "\n  Found {} corrupted tensors - need recovery logic!",
+            corrupted_count
+        );
     }
 
     // Test 6: Memory usage estimate for 405B
@@ -193,19 +196,28 @@ fn main() -> Result<()> {
     println!("  Intermediate size: {}", intermediate_size);
     println!("  Per-layer params: {:.0}M", layer_params as f64 / 1e6);
     println!("  Per-layer size (F32): {:.2} GB", layer_size_f32 / 1e9);
-    println!("  Total model size (F32): {:.2} GB", layer_size_f32 * num_layers as f64 / 1e9);
+    println!(
+        "  Total model size (F32): {:.2} GB",
+        layer_size_f32 * num_layers as f64 / 1e9
+    );
 
     // With FP8 quantization (what the NVIDIA model uses)
     let layer_size_fp8 = layer_size_f32 / 4.0; // FP8 = 1/4 of F32
     println!("  Per-layer size (FP8): {:.2} GB", layer_size_fp8 / 1e9);
-    println!("  Total model size (FP8): {:.2} GB", layer_size_fp8 * num_layers as f64 / 1e9);
+    println!(
+        "  Total model size (FP8): {:.2} GB",
+        layer_size_fp8 * num_layers as f64 / 1e9
+    );
 
     // How many layers fit in RAM
     let ram_budget = 76.0 * 1e9; // 76GB usable
     let layers_in_ram = (ram_budget / layer_size_fp8).floor() as usize;
     println!("\n  With 80GB RAM budget (76GB usable):");
     println!("    Max layers in RAM (FP8): {}", layers_in_ram);
-    println!("    This is {:.1}% of the model", layers_in_ram as f64 / num_layers as f64 * 100.0);
+    println!(
+        "    This is {:.1}% of the model",
+        layers_in_ram as f64 / num_layers as f64 * 100.0
+    );
 
     // Cache stats
     println!("\n--- Test 7: Cache Statistics ---");
@@ -221,7 +233,10 @@ fn main() -> Result<()> {
 
     println!("\n=== Next Steps ===");
     if corrupted_count > 0 || small_files > 0 {
-        println!("1. Add recovery logic for {} truncated scale tensors", small_files);
+        println!(
+            "1. Add recovery logic for {} truncated scale tensors",
+            small_files
+        );
         println!("   - Initialize scales to 1.0 (neutral)");
         println!("   - Initialize biases to 0.0");
         println!("2. Test end-to-end inference with recovered tensors");

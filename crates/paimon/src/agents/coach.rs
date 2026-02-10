@@ -11,8 +11,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tracing::{info, info_span, warn};
 
-use super::{AgentError, TrainingIssue, TrainingIssueType, Result};
-use crate::llm::{LlmClient, GenerateRequest, Message};
+use super::{AgentError, Result, TrainingIssue, TrainingIssueType};
+use crate::llm::{GenerateRequest, LlmClient, Message};
 
 /// System prompt for the Training Coach agent.
 const COACH_SYSTEM_PROMPT: &str = r#"You are an expert ML Training Coach specializing in deep learning and LLM fine-tuning.
@@ -72,7 +72,8 @@ impl TrainingCoachAgent {
             "coach.analyze",
             epoch = metrics.current_epoch,
             loss = metrics.train_loss.unwrap_or(0.0)
-        ).entered();
+        )
+        .entered();
 
         info!("Analyzing training run at epoch {}", metrics.current_epoch);
 
@@ -82,7 +83,7 @@ impl TrainingCoachAgent {
                 Ok(analysis) => return Ok(analysis),
                 Err(e) => {
                     warn!("LLM analysis failed, falling back to heuristics: {}", e);
-                }
+                },
             }
         }
 
@@ -105,7 +106,9 @@ impl TrainingCoachAgent {
         .with_temperature(0.3) // Lower temperature for consistent JSON
         .with_max_tokens(1024);
 
-        let response = llm.generate(request).await
+        let response = llm
+            .generate(request)
+            .await
             .map_err(|e| AgentError::Llm(format!("LLM request failed: {}", e)))?;
 
         // Parse the JSON response
@@ -129,7 +132,12 @@ impl TrainingCoachAgent {
             prompt.push_str(&format!(
                 "Loss history (last {} epochs): {:?}\n",
                 metrics.loss_history.len().min(10),
-                metrics.loss_history.iter().rev().take(10).collect::<Vec<_>>()
+                metrics
+                    .loss_history
+                    .iter()
+                    .rev()
+                    .take(10)
+                    .collect::<Vec<_>>()
             ));
         }
         if let Some(lr) = metrics.learning_rate {
@@ -194,7 +202,10 @@ impl TrainingCoachAgent {
         if let (Some(train), Some(val)) = (metrics.train_loss, metrics.val_loss) {
             let gap = train - val;
             if gap.abs() > 0.5 && val > train {
-                insights.push("Potential overfitting detected: validation loss exceeds training loss".to_string());
+                insights.push(
+                    "Potential overfitting detected: validation loss exceeds training loss"
+                        .to_string(),
+                );
                 health = RunHealth::Warning;
             }
         }
@@ -255,7 +266,8 @@ impl TrainingCoachAgent {
                         issue_type: TrainingIssueType::Divergence,
                         description: "Loss is increasing rapidly".to_string(),
                         severity: 5,
-                        suggested_action: "Reduce learning rate immediately or restart training".to_string(),
+                        suggested_action: "Reduce learning rate immediately or restart training"
+                            .to_string(),
                         evidence: recent.iter().map(|l| format!("{:.4}", l)).collect(),
                     });
                 }
@@ -265,16 +277,16 @@ impl TrainingCoachAgent {
         // Check for plateau
         if metrics.loss_history.len() >= 5 {
             let recent: Vec<_> = metrics.loss_history.iter().rev().take(5).collect();
-            let variance: f32 = recent.iter()
-                .map(|&x| (x - recent[0]).powi(2))
-                .sum::<f32>() / 5.0;
+            let variance: f32 = recent.iter().map(|&x| (x - recent[0]).powi(2)).sum::<f32>() / 5.0;
 
             if variance < 0.001 {
                 issues.push(TrainingIssue {
                     issue_type: TrainingIssueType::Plateau,
                     description: "Training has plateaued with minimal improvement".to_string(),
                     severity: 3,
-                    suggested_action: "Consider learning rate scheduling, or stop if validation metrics are good".to_string(),
+                    suggested_action:
+                        "Consider learning rate scheduling, or stop if validation metrics are good"
+                            .to_string(),
                     evidence: vec![format!("Loss variance over 5 epochs: {:.6}", variance)],
                 });
             }
@@ -315,9 +327,7 @@ impl TrainingCoachAgent {
                 action: InterventionAction::EarlyStopping,
                 description: "Stop training to prevent further overfitting".to_string(),
                 urgency: Urgency::High,
-                parameters: vec![
-                    ("patience".to_string(), "3 epochs".to_string()),
-                ],
+                parameters: vec![("patience".to_string(), "3 epochs".to_string())],
                 alternative_actions: vec![
                     "Increase dropout rate".to_string(),
                     "Add weight decay".to_string(),
@@ -328,9 +338,7 @@ impl TrainingCoachAgent {
                 action: InterventionAction::ReduceLearningRate,
                 description: "Immediately reduce learning rate to stabilize training".to_string(),
                 urgency: Urgency::Critical,
-                parameters: vec![
-                    ("factor".to_string(), "0.1".to_string()),
-                ],
+                parameters: vec![("factor".to_string(), "0.1".to_string())],
                 alternative_actions: vec![
                     "Restart from last checkpoint".to_string(),
                     "Apply gradient clipping".to_string(),
@@ -353,9 +361,7 @@ impl TrainingCoachAgent {
                 action: InterventionAction::GradientClipping,
                 description: "Apply gradient clipping to prevent explosion".to_string(),
                 urgency: Urgency::Critical,
-                parameters: vec![
-                    ("max_norm".to_string(), "1.0".to_string()),
-                ],
+                parameters: vec![("max_norm".to_string(), "1.0".to_string())],
                 alternative_actions: vec![
                     "Reduce learning rate".to_string(),
                     "Check for NaN in data".to_string(),
@@ -404,9 +410,8 @@ impl TrainingCoachAgent {
                 Some("Loss is slowly increasing - monitor closely".to_string())
             }
         } else {
-            let variance: f32 = recent.iter()
-                .map(|&x| (x - recent[0]).powi(2))
-                .sum::<f32>() / recent.len() as f32;
+            let variance: f32 =
+                recent.iter().map(|&x| (x - recent[0]).powi(2)).sum::<f32>() / recent.len() as f32;
 
             if variance < 0.001 {
                 Some("Loss has reached a plateau".to_string())
@@ -425,14 +430,14 @@ impl TrainingCoachAgent {
                 actions.push("Stop training immediately".to_string());
                 actions.push("Review recent changes to hyperparameters".to_string());
                 actions.push("Consider reverting to last known good checkpoint".to_string());
-            }
+            },
             RunHealth::Warning => {
                 actions.push("Increase monitoring frequency".to_string());
                 actions.push("Prepare early stopping criteria".to_string());
-            }
+            },
             RunHealth::Healthy => {
                 actions.push("Continue training".to_string());
-            }
+            },
         }
 
         actions
@@ -640,7 +645,9 @@ mod tests {
         let issues = coach.detect_issues(&metrics).await.expect("detect");
 
         assert!(!issues.is_empty());
-        assert!(issues.iter().any(|i| i.issue_type == TrainingIssueType::Overfitting));
+        assert!(issues
+            .iter()
+            .any(|i| i.issue_type == TrainingIssueType::Overfitting));
     }
 
     #[tokio::test]
@@ -660,7 +667,9 @@ mod tests {
 
         let issues = coach.detect_issues(&metrics).await.expect("detect");
 
-        assert!(issues.iter().any(|i| i.issue_type == TrainingIssueType::Divergence));
+        assert!(issues
+            .iter()
+            .any(|i| i.issue_type == TrainingIssueType::Divergence));
     }
 
     #[tokio::test]

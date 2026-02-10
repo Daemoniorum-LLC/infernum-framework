@@ -62,7 +62,6 @@ pub mod cuda {
     use cudarc::driver::{CudaDevice, CudaSlice, DeviceSlice, LaunchAsync, LaunchConfig};
     use cudarc::nvrtc::Ptx;
     use haagenti::holotensor::{HoloFragment, HoloTensorHeader, HolographicEncoding, QualityCurve};
-    
 
     // Haagenti's FFT-capable DCT context (when haagenti-gpu feature is enabled)
     #[cfg(feature = "haagenti-gpu")]
@@ -259,7 +258,10 @@ pub mod cuda {
         pub fn for_2d_operation(&self, rows: usize, cols: usize) -> ((u32, u32), (u32, u32)) {
             let grid_x = ((cols as u32) + self.block_size_2d - 1) / self.block_size_2d;
             let grid_y = ((rows as u32) + self.block_size_2d - 1) / self.block_size_2d;
-            ((grid_x.max(1), grid_y.max(1)), (self.block_size_2d, self.block_size_2d))
+            (
+                (grid_x.max(1), grid_y.max(1)),
+                (self.block_size_2d, self.block_size_2d),
+            )
         }
 
         /// Calculate optimal block size for given shared memory requirement.
@@ -286,8 +288,18 @@ pub mod cuda {
 
     impl GpuTensor {
         /// Creates a new GPU tensor.
-        pub fn new(data: CudaSlice<f32>, rows: usize, cols: usize, device: Arc<CudaDevice>) -> Self {
-            Self { data, rows, cols, device }
+        pub fn new(
+            data: CudaSlice<f32>,
+            rows: usize,
+            cols: usize,
+            device: Arc<CudaDevice>,
+        ) -> Self {
+            Self {
+                data,
+                rows,
+                cols,
+                device,
+            }
         }
 
         /// Returns the number of rows.
@@ -479,10 +491,7 @@ pub mod cuda {
                 .load_ptx(
                     ptx,
                     "holo_lrdf",
-                    &[
-                        "holo_lrdf_outer_product",
-                        "holo_lrdf_outer_product_batched",
-                    ],
+                    &["holo_lrdf_outer_product", "holo_lrdf_outer_product_batched"],
                 )
                 .map_err(|e| GpuHoloError::KernelLoad {
                     message: e.to_string(),
@@ -520,11 +529,11 @@ pub mod cuda {
                             message: e.to_string(),
                         })?;
 
-                    let present_mask: CudaSlice<u8> = self
-                        .device
-                        .alloc_zeros(total_size)
-                        .map_err(|e| GpuHoloError::MemoryAlloc {
-                            message: e.to_string(),
+                    let present_mask: CudaSlice<u8> =
+                        self.device.alloc_zeros(total_size).map_err(|e| {
+                            GpuHoloError::MemoryAlloc {
+                                message: e.to_string(),
+                            }
                         })?;
 
                     Ok(AccumulatorState::Spectral {
@@ -533,7 +542,7 @@ pub mod cuda {
                         width,
                         height,
                     })
-                }
+                },
 
                 HolographicEncoding::RandomProjection => {
                     // For RPH, we accumulate projected values
@@ -552,15 +561,15 @@ pub mod cuda {
                         output_dim: total_size,
                         seed: header.seed,
                     })
-                }
+                },
 
                 HolographicEncoding::LowRankDistributed => {
                     // For LRDF, we accumulate the output matrix directly
-                    let output: CudaSlice<f32> = self
-                        .device
-                        .alloc_zeros(total_size)
-                        .map_err(|e| GpuHoloError::MemoryAlloc {
-                            message: e.to_string(),
+                    let output: CudaSlice<f32> =
+                        self.device.alloc_zeros(total_size).map_err(|e| {
+                            GpuHoloError::MemoryAlloc {
+                                message: e.to_string(),
+                            }
                         })?;
 
                     Ok(AccumulatorState::LowRankDistributed {
@@ -569,7 +578,7 @@ pub mod cuda {
                         rows: height,
                         cols: width,
                     })
-                }
+                },
             }
         }
 
@@ -602,7 +611,7 @@ pub mod cuda {
                     return Err(GpuHoloError::InvalidInput {
                         message: "Expected spectral accumulator".to_string(),
                     })
-                }
+                },
             };
 
             let fragment_data = &fragment.data;
@@ -622,7 +631,13 @@ pub mod cuda {
 
             if magic == Self::HCT3_MAGIC {
                 // HCT3 format from CompressiveSpectralEncoder
-                return self.accumulate_spectral_hct3(fragment, coefficients, present_mask, width, height);
+                return self.accumulate_spectral_hct3(
+                    fragment,
+                    coefficients,
+                    present_mask,
+                    width,
+                    height,
+                );
             }
 
             // Legacy format: [num_coeffs: u32][indices: u32...][values: f32...]
@@ -666,7 +681,13 @@ pub mod cuda {
                 values.push(val);
             }
 
-            self.accumulate_spectral_kernel(&indices, &values, coefficients, present_mask, width * height)
+            self.accumulate_spectral_kernel(
+                &indices,
+                &values,
+                coefficients,
+                present_mask,
+                width * height,
+            )
         }
 
         /// Accumulates HCT3 format spectral fragment.
@@ -695,10 +716,14 @@ pub mod cuda {
 
                 // Skip magic (already checked), read dimensions
                 let hct3_width = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
-                let hct3_height = u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
-                let retain_count = u32::from_le_bytes([data[12], data[13], data[14], data[15]]) as usize;
-                let essential_count = u32::from_le_bytes([data[16], data[17], data[18], data[19]]) as usize;
-                let _detail_per_frag = u32::from_le_bytes([data[20], data[21], data[22], data[23]]) as usize;
+                let hct3_height =
+                    u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
+                let retain_count =
+                    u32::from_le_bytes([data[12], data[13], data[14], data[15]]) as usize;
+                let essential_count =
+                    u32::from_le_bytes([data[16], data[17], data[18], data[19]]) as usize;
+                let _detail_per_frag =
+                    u32::from_le_bytes([data[20], data[21], data[22], data[23]]) as usize;
 
                 // Validate dimensions match
                 if hct3_width != width || hct3_height != height {
@@ -735,7 +760,8 @@ pub mod cuda {
                     return Err(GpuHoloError::FragmentDecode {
                         message: format!(
                             "HCT3 bitmap mismatch: {} set bits, expected {}",
-                            indices.len(), retain_count
+                            indices.len(),
+                            retain_count
                         ),
                     });
                 }
@@ -746,7 +772,8 @@ pub mod cuda {
 
                 if data.len() < coeff_end {
                     return Err(GpuHoloError::FragmentDecode {
-                        message: "HCT3 fragment 0 truncated (missing essential coefficients)".to_string(),
+                        message: "HCT3 fragment 0 truncated (missing essential coefficients)"
+                            .to_string(),
                     });
                 }
 
@@ -759,7 +786,13 @@ pub mod cuda {
 
                 // Accumulate essential coefficients (first essential_count indices)
                 let essential_indices: Vec<u32> = indices[..essential_count].to_vec();
-                self.accumulate_spectral_kernel(&essential_indices, &values, coefficients, present_mask, n)?;
+                self.accumulate_spectral_kernel(
+                    &essential_indices,
+                    &values,
+                    coefficients,
+                    present_mask,
+                    n,
+                )?;
 
                 // Store index map for detail fragments (we need this state across fragments)
                 // For now, we'll re-read the bitmap for detail fragments (simpler but slightly less efficient)
@@ -772,7 +805,9 @@ pub mod cuda {
 
                 // For now, return an error to trigger CPU fallback
                 Err(GpuHoloError::FragmentDecode {
-                    message: "HCT3 detail fragments not yet supported in GPU path - use CPU fallback".to_string(),
+                    message:
+                        "HCT3 detail fragments not yet supported in GPU path - use CPU fallback"
+                            .to_string(),
                 })
             }
         }
@@ -792,19 +827,19 @@ pub mod cuda {
             }
 
             // Copy to GPU
-            let d_indices = self
-                .device
-                .htod_copy(indices.to_vec())
-                .map_err(|e| GpuHoloError::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let d_indices =
+                self.device
+                    .htod_copy(indices.to_vec())
+                    .map_err(|e| GpuHoloError::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
-            let d_values = self
-                .device
-                .htod_copy(values.to_vec())
-                .map_err(|e| GpuHoloError::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let d_values =
+                self.device
+                    .htod_copy(values.to_vec())
+                    .map_err(|e| GpuHoloError::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
             // Launch accumulation kernel
             let func = self
@@ -862,7 +897,7 @@ pub mod cuda {
                     return Err(GpuHoloError::InvalidInput {
                         message: "Expected spectral accumulator".to_string(),
                     })
-                }
+                },
             };
 
             // Use FFT-based IDCT for large tensors (40-80x faster)
@@ -914,18 +949,13 @@ pub mod cuda {
             })?;
 
             // Copy result back to GPU
-            let output = self
-                .device
-                .htod_sync_copy(&reconstructed)
-                .map_err(|e| GpuHoloError::MemoryCopy {
+            let output = self.device.htod_sync_copy(&reconstructed).map_err(|e| {
+                GpuHoloError::MemoryCopy {
                     message: format!("FFT IDCT: failed to copy result to GPU: {}", e),
-                })?;
+                }
+            })?;
 
-            tracing::debug!(
-                width,
-                height,
-                "FFT-based IDCT complete for large tensor"
-            );
+            tracing::debug!(width, height, "FFT-based IDCT complete for large tensor");
 
             Ok(output)
         }
@@ -946,19 +976,19 @@ pub mod cuda {
             let total_size = width * height;
 
             // Allocate intermediate and output buffers
-            let temp: CudaSlice<f32> = self
-                .device
-                .alloc_zeros(total_size)
-                .map_err(|e| GpuHoloError::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let temp: CudaSlice<f32> =
+                self.device
+                    .alloc_zeros(total_size)
+                    .map_err(|e| GpuHoloError::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
-            let output: CudaSlice<f32> = self
-                .device
-                .alloc_zeros(total_size)
-                .map_err(|e| GpuHoloError::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let output: CudaSlice<f32> =
+                self.device
+                    .alloc_zeros(total_size)
+                    .map_err(|e| GpuHoloError::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
             // IDCT rows
             let func_rows = self
@@ -977,15 +1007,10 @@ pub mod cuda {
                 shared_mem_bytes: (width * 4) as u32, // Shared memory for one row
             };
 
-            unsafe {
-                func_rows.launch(
-                    cfg,
-                    (coefficients, &temp, width as u32, height as u32),
-                )
-            }
-            .map_err(|e| GpuHoloError::KernelExec {
-                message: e.to_string(),
-            })?;
+            unsafe { func_rows.launch(cfg, (coefficients, &temp, width as u32, height as u32)) }
+                .map_err(|e| GpuHoloError::KernelExec {
+                    message: e.to_string(),
+                })?;
 
             // IDCT columns
             let func_cols = self
@@ -1003,15 +1028,10 @@ pub mod cuda {
                 shared_mem_bytes: (height * 4) as u32,
             };
 
-            unsafe {
-                func_cols.launch(
-                    cfg_cols,
-                    (&temp, &output, width as u32, height as u32),
-                )
-            }
-            .map_err(|e| GpuHoloError::KernelExec {
-                message: e.to_string(),
-            })?;
+            unsafe { func_cols.launch(cfg_cols, (&temp, &output, width as u32, height as u32)) }
+                .map_err(|e| GpuHoloError::KernelExec {
+                    message: e.to_string(),
+                })?;
 
             self.device
                 .synchronize()
@@ -1036,19 +1056,26 @@ pub mod cuda {
                 });
             }
 
-            let (projection_sum, _num_projections, _proj_dim, output_dim, seed) = match accumulator {
+            let (projection_sum, _num_projections, _proj_dim, output_dim, seed) = match accumulator
+            {
                 AccumulatorState::RandomProjection {
                     projection_sum,
                     num_projections,
                     proj_dim,
                     output_dim,
                     seed,
-                } => (projection_sum, num_projections, *proj_dim, *output_dim, *seed),
+                } => (
+                    projection_sum,
+                    num_projections,
+                    *proj_dim,
+                    *output_dim,
+                    *seed,
+                ),
                 _ => {
                     return Err(GpuHoloError::InvalidInput {
                         message: "Expected RPH accumulator".to_string(),
                     })
-                }
+                },
             };
 
             // Parse fragment data: [proj_dim: u32][seed_offset: u64][projection: f32...]
@@ -1103,12 +1130,12 @@ pub mod cuda {
             }
 
             // Copy projection to GPU
-            let d_projection = self
-                .device
-                .htod_copy(projection)
-                .map_err(|e| GpuHoloError::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let d_projection =
+                self.device
+                    .htod_copy(projection)
+                    .map_err(|e| GpuHoloError::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
             // Launch RPH accumulation kernel
             // This generates the projection matrix on-the-fly and accumulates
@@ -1147,7 +1174,10 @@ pub mod cuda {
             })?;
 
             // Update projection count
-            if let AccumulatorState::RandomProjection { num_projections, .. } = accumulator {
+            if let AccumulatorState::RandomProjection {
+                num_projections, ..
+            } = accumulator
+            {
                 *num_projections += 1;
             }
 
@@ -1176,7 +1206,7 @@ pub mod cuda {
                     return Err(GpuHoloError::InvalidInput {
                         message: "Expected RPH accumulator".to_string(),
                     })
-                }
+                },
             };
 
             if num_projections == 0 {
@@ -1187,12 +1217,12 @@ pub mod cuda {
             }
 
             // Allocate output buffer
-            let output: CudaSlice<f32> = self
-                .device
-                .alloc_zeros(output_dim)
-                .map_err(|e| GpuHoloError::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let output: CudaSlice<f32> =
+                self.device
+                    .alloc_zeros(output_dim)
+                    .map_err(|e| GpuHoloError::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
             // Launch finalization kernel (normalize by projection count)
             let func = self
@@ -1214,12 +1244,7 @@ pub mod cuda {
             unsafe {
                 func.launch(
                     cfg,
-                    (
-                        projection_sum,
-                        &output,
-                        output_dim as u32,
-                        num_projections,
-                    ),
+                    (projection_sum, &output, output_dim as u32, num_projections),
                 )
             }
             .map_err(|e| GpuHoloError::KernelExec {
@@ -1260,7 +1285,7 @@ pub mod cuda {
                     return Err(GpuHoloError::InvalidInput {
                         message: "Expected LRDF accumulator".to_string(),
                     })
-                }
+                },
             };
 
             // Parse fragment data (haagenti format):
@@ -1439,14 +1464,7 @@ pub mod cuda {
                 unsafe {
                     func.clone().launch(
                         cfg,
-                        (
-                            &d_u,
-                            &d_v,
-                            &mut *output,
-                            sigma,
-                            rows as u32,
-                            cols as u32,
-                        ),
+                        (&d_u, &d_v, &mut *output, sigma, rows as u32, cols as u32),
                     )
                 }
                 .map_err(|e| GpuHoloError::KernelExec {
@@ -1489,7 +1507,7 @@ pub mod cuda {
                     return Err(GpuHoloError::InvalidInput {
                         message: "Expected LRDF accumulator".to_string(),
                     })
-                }
+                },
             };
 
             let fragment_data = &fragment.data;
@@ -1500,13 +1518,22 @@ pub mod cuda {
             }
 
             let frag_rows = u32::from_le_bytes([
-                fragment_data[0], fragment_data[1], fragment_data[2], fragment_data[3],
+                fragment_data[0],
+                fragment_data[1],
+                fragment_data[2],
+                fragment_data[3],
             ]) as usize;
             let frag_cols = u32::from_le_bytes([
-                fragment_data[4], fragment_data[5], fragment_data[6], fragment_data[7],
+                fragment_data[4],
+                fragment_data[5],
+                fragment_data[6],
+                fragment_data[7],
             ]) as usize;
             let num_comps = u32::from_le_bytes([
-                fragment_data[8], fragment_data[9], fragment_data[10], fragment_data[11],
+                fragment_data[8],
+                fragment_data[9],
+                fragment_data[10],
+                fragment_data[11],
             ]) as usize;
 
             if frag_rows != rows || frag_cols != cols {
@@ -1528,7 +1555,8 @@ pub mod cuda {
                 return Err(GpuHoloError::FragmentDecode {
                     message: format!(
                         "Fragment size mismatch for batched LRDF: expected {}, got {}",
-                        expected_size, fragment_data.len()
+                        expected_size,
+                        fragment_data.len()
                     ),
                 });
             }
@@ -1541,16 +1569,20 @@ pub mod cuda {
             let mut offset = 12;
             for _ in 0..num_comps {
                 let sigma = f32::from_le_bytes([
-                    fragment_data[offset], fragment_data[offset + 1],
-                    fragment_data[offset + 2], fragment_data[offset + 3],
+                    fragment_data[offset],
+                    fragment_data[offset + 1],
+                    fragment_data[offset + 2],
+                    fragment_data[offset + 3],
                 ]);
                 all_sigma.push(sigma);
                 offset += 4;
 
                 for _ in 0..rows {
                     let val = f32::from_le_bytes([
-                        fragment_data[offset], fragment_data[offset + 1],
-                        fragment_data[offset + 2], fragment_data[offset + 3],
+                        fragment_data[offset],
+                        fragment_data[offset + 1],
+                        fragment_data[offset + 2],
+                        fragment_data[offset + 3],
                     ]);
                     all_u.push(val);
                     offset += 4;
@@ -1558,8 +1590,10 @@ pub mod cuda {
 
                 for _ in 0..cols {
                     let val = f32::from_le_bytes([
-                        fragment_data[offset], fragment_data[offset + 1],
-                        fragment_data[offset + 2], fragment_data[offset + 3],
+                        fragment_data[offset],
+                        fragment_data[offset + 1],
+                        fragment_data[offset + 2],
+                        fragment_data[offset + 3],
                     ]);
                     all_v.push(val);
                     offset += 4;
@@ -1567,12 +1601,24 @@ pub mod cuda {
             }
 
             // Upload packed arrays to GPU
-            let d_sigma = self.device.htod_copy(all_sigma)
-                .map_err(|e| GpuHoloError::MemoryAlloc { message: e.to_string() })?;
-            let d_u = self.device.htod_copy(all_u)
-                .map_err(|e| GpuHoloError::MemoryAlloc { message: e.to_string() })?;
-            let d_v = self.device.htod_copy(all_v)
-                .map_err(|e| GpuHoloError::MemoryAlloc { message: e.to_string() })?;
+            let d_sigma =
+                self.device
+                    .htod_copy(all_sigma)
+                    .map_err(|e| GpuHoloError::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
+            let d_u = self
+                .device
+                .htod_copy(all_u)
+                .map_err(|e| GpuHoloError::MemoryAlloc {
+                    message: e.to_string(),
+                })?;
+            let d_v = self
+                .device
+                .htod_copy(all_v)
+                .map_err(|e| GpuHoloError::MemoryAlloc {
+                    message: e.to_string(),
+                })?;
 
             // Single kernel launch for all components
             let func = self
@@ -1633,7 +1679,7 @@ pub mod cuda {
                     return Err(GpuHoloError::InvalidInput {
                         message: "Expected LRDF accumulator".to_string(),
                     })
-                }
+                },
             };
 
             if num_components == 0 {
@@ -1650,12 +1696,12 @@ pub mod cuda {
                 })?;
 
             // Clone the output (LRDF accumulates directly into output)
-            let mut result: CudaSlice<f32> = self
-                .device
-                .alloc_zeros(rows * cols)
-                .map_err(|e| GpuHoloError::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let mut result: CudaSlice<f32> =
+                self.device
+                    .alloc_zeros(rows * cols)
+                    .map_err(|e| GpuHoloError::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
             // Copy from accumulator to result
             self.device
@@ -1681,7 +1727,7 @@ pub mod cuda {
                 HolographicEncoding::RandomProjection => self.accumulate_rph(fragment, accumulator),
                 HolographicEncoding::LowRankDistributed => {
                     self.accumulate_lrdf(fragment, accumulator)
-                }
+                },
             }
         }
 
@@ -1787,10 +1833,7 @@ pub mod cuda {
         fn extract_2d_dims(header: &HoloTensorHeader) -> Result<(usize, usize), GpuHoloError> {
             if header.shape.len() < 2 {
                 return Err(GpuHoloError::InvalidInput {
-                    message: format!(
-                        "Expected 2D tensor, got {} dimensions",
-                        header.shape.len()
-                    ),
+                    message: format!("Expected 2D tensor, got {} dimensions", header.shape.len()),
                 });
             }
             Ok((header.shape[1] as usize, header.shape[0] as usize))
@@ -2653,12 +2696,12 @@ EXIT4:
         ) -> Result<CudaSlice<half::f16>, GpuHoloError> {
             let size = input.len();
 
-            let output: CudaSlice<half::f16> = self
-                .device
-                .alloc_zeros(size)
-                .map_err(|e| GpuHoloError::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let output: CudaSlice<half::f16> =
+                self.device
+                    .alloc_zeros(size)
+                    .map_err(|e| GpuHoloError::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
             let func = self
                 .device
@@ -2676,11 +2719,10 @@ EXIT4:
                 shared_mem_bytes: 0,
             };
 
-            unsafe {
-                func.launch(cfg, (input, &output, size as u32))
-            }
-            .map_err(|e| GpuHoloError::KernelExec {
-                message: e.to_string(),
+            unsafe { func.launch(cfg, (input, &output, size as u32)) }.map_err(|e| {
+                GpuHoloError::KernelExec {
+                    message: e.to_string(),
+                }
             })?;
 
             self.device
@@ -2712,26 +2754,26 @@ EXIT4:
             let size = input.len();
 
             // Copy scales and zeros to GPU
-            let d_scales = self
-                .device
-                .htod_copy(scales.to_vec())
-                .map_err(|e| GpuHoloError::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let d_scales =
+                self.device
+                    .htod_copy(scales.to_vec())
+                    .map_err(|e| GpuHoloError::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
-            let d_zeros = self
-                .device
-                .htod_copy(zeros.to_vec())
-                .map_err(|e| GpuHoloError::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let d_zeros =
+                self.device
+                    .htod_copy(zeros.to_vec())
+                    .map_err(|e| GpuHoloError::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
-            let output: CudaSlice<f32> = self
-                .device
-                .alloc_zeros(size)
-                .map_err(|e| GpuHoloError::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let output: CudaSlice<f32> =
+                self.device
+                    .alloc_zeros(size)
+                    .map_err(|e| GpuHoloError::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
             let func = self
                 .device
@@ -2799,12 +2841,11 @@ EXIT4:
                 shared_mem_bytes: 0,
             };
 
-            unsafe {
-                func.launch(cfg, (data as &CudaSlice<f32>, scale, size as u32))
-            }
-            .map_err(|e| GpuHoloError::KernelExec {
-                message: e.to_string(),
-            })?;
+            unsafe { func.launch(cfg, (data as &CudaSlice<f32>, scale, size as u32)) }.map_err(
+                |e| GpuHoloError::KernelExec {
+                    message: e.to_string(),
+                },
+            )?;
 
             Ok(())
         }
@@ -2827,12 +2868,8 @@ EXIT4:
             let reconstructed = self.reconstruct(header, fragments)?;
 
             // Step 2: Dequantize
-            let dequantized = self.dequantize_reconstructed(
-                &reconstructed,
-                scales,
-                zeros,
-                block_size,
-            )?;
+            let dequantized =
+                self.dequantize_reconstructed(&reconstructed, scales, zeros, block_size)?;
 
             Ok(dequantized)
         }
@@ -2846,13 +2883,8 @@ EXIT4:
             zeros: &[f32],
             block_size: usize,
         ) -> Result<CudaSlice<half::f16>, GpuHoloError> {
-            let dequantized = self.reconstruct_and_dequantize(
-                header,
-                fragments,
-                scales,
-                zeros,
-                block_size,
-            )?;
+            let dequantized =
+                self.reconstruct_and_dequantize(header, fragments, scales, zeros, block_size)?;
 
             self.convert_f32_to_f16(&dequantized)
         }
@@ -2885,11 +2917,15 @@ EXIT4:
 
             // Calculate variance of original for normalization
             let mean: f32 = original.iter().sum::<f32>() / original.len() as f32;
-            let variance: f32 = original.iter().map(|x| (x - mean).powi(2)).sum::<f32>()
-                / original.len() as f32;
+            let variance: f32 =
+                original.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / original.len() as f32;
 
             // Quality = 1 - normalized_mse, clamped to [0, 1]
-            let nmse = if variance > 1e-10 { mse / variance } else { mse };
+            let nmse = if variance > 1e-10 {
+                mse / variance
+            } else {
+                mse
+            };
             let quality = (1.0 - nmse).clamp(0.0, 1.0);
 
             Ok(quality)
@@ -3030,10 +3066,10 @@ EXIT4:
             )?;
 
             self.fragments_loaded += 1;
-            self.current_quality = self.header.quality_curve.predict(
-                self.fragments_loaded,
-                self.header.total_fragments,
-            );
+            self.current_quality = self
+                .header
+                .quality_curve
+                .predict(self.fragments_loaded, self.header.total_fragments);
 
             Ok(self.current_quality)
         }
@@ -3067,7 +3103,8 @@ EXIT4:
                 });
             }
 
-            self.context.finalize_reconstruction(&self.accumulator, self.header.encoding)
+            self.context
+                .finalize_reconstruction(&self.accumulator, self.header.encoding)
         }
 
         /// Returns the header.
@@ -3101,10 +3138,13 @@ EXIT4:
             let mut streams = Vec::with_capacity(num_streams);
 
             for i in 0..num_streams {
-                let stream = device.fork_default_stream().map_err(|e| GpuHoloError::StreamCreate {
-                    stream_id: i,
-                    message: e.to_string(),
-                })?;
+                let stream =
+                    device
+                        .fork_default_stream()
+                        .map_err(|e| GpuHoloError::StreamCreate {
+                            stream_id: i,
+                            message: e.to_string(),
+                        })?;
                 streams.push(stream);
             }
 
@@ -3245,7 +3285,8 @@ EXIT4:
                     let _stream = self.stream_pool.get_stream(i);
 
                     // Accumulate fragment (transfers data and runs kernel)
-                    self.ctx.accumulate_fragment(fragment, &mut accumulator, header.encoding)?;
+                    self.ctx
+                        .accumulate_fragment(fragment, &mut accumulator, header.encoding)?;
                     fragments_loaded += 1;
                 }
 
@@ -3254,7 +3295,9 @@ EXIT4:
 
                 // Check if quality target reached
                 if min_quality > 0.0 {
-                    let quality = header.quality_curve.predict(fragments_loaded, header.total_fragments);
+                    let quality = header
+                        .quality_curve
+                        .predict(fragments_loaded, header.total_fragments);
                     if quality >= min_quality {
                         break;
                     }
@@ -3270,7 +3313,8 @@ EXIT4:
             }
 
             // Finalize reconstruction
-            self.ctx.finalize_reconstruction(&accumulator, header.encoding)
+            self.ctx
+                .finalize_reconstruction(&accumulator, header.encoding)
         }
 
         /// Reconstructs with a callback after each fragment.
@@ -3297,10 +3341,13 @@ EXIT4:
             let mut fragments_loaded: u16 = 0;
 
             for fragment in fragments {
-                self.ctx.accumulate_fragment(fragment, &mut accumulator, header.encoding)?;
+                self.ctx
+                    .accumulate_fragment(fragment, &mut accumulator, header.encoding)?;
                 fragments_loaded += 1;
 
-                let quality = header.quality_curve.predict(fragments_loaded, header.total_fragments);
+                let quality = header
+                    .quality_curve
+                    .predict(fragments_loaded, header.total_fragments);
 
                 // Call user callback - return false to stop
                 if !callback(fragments_loaded, quality) {
@@ -3316,7 +3363,8 @@ EXIT4:
                 });
             }
 
-            self.ctx.finalize_reconstruction(&accumulator, header.encoding)
+            self.ctx
+                .finalize_reconstruction(&accumulator, header.encoding)
         }
 
         /// Reconstructs, dequantizes, and converts to F16 in a streaming pipeline.
@@ -3341,7 +3389,9 @@ EXIT4:
             let reconstructed = self.reconstruct_streaming(header, fragments, min_quality)?;
 
             // Step 2: Dequantize
-            let dequantized = self.ctx.dequantize_reconstructed(&reconstructed, scales, zeros, block_size)?;
+            let dequantized =
+                self.ctx
+                    .dequantize_reconstructed(&reconstructed, scales, zeros, block_size)?;
 
             // Step 3: Convert to F16
             self.ctx.convert_f32_to_f16(&dequantized)
@@ -3580,9 +3630,8 @@ EXIT:
 
             let mut host_ptr: *mut c_void = std::ptr::null_mut();
             // Safety: lib() returns the loaded CUDA driver library
-            let result = unsafe {
-                cudarc::driver::sys::lib().cuMemAllocHost_v2(&mut host_ptr, size)
-            };
+            let result =
+                unsafe { cudarc::driver::sys::lib().cuMemAllocHost_v2(&mut host_ptr, size) };
 
             if result != cudarc::driver::sys::CUresult::CUDA_SUCCESS {
                 // Fallback: try regular allocation if CUDA pinned fails
@@ -3656,7 +3705,10 @@ EXIT:
         ///
         /// Panics if the slice is larger than the buffer capacity.
         pub fn copy_from_slice(&mut self, src: &[u8]) {
-            assert!(src.len() <= self.capacity, "Source slice too large for pinned buffer");
+            assert!(
+                src.len() <= self.capacity,
+                "Source slice too large for pinned buffer"
+            );
             unsafe {
                 std::ptr::copy_nonoverlapping(src.as_ptr(), self.ptr, src.len());
             }
@@ -3744,7 +3796,7 @@ EXIT:
                 PooledBuffer::Fallback(buf) => {
                     buf.clear();
                     buf.extend_from_slice(src);
-                }
+                },
             }
         }
     }
@@ -3753,10 +3805,7 @@ EXIT:
         /// Creates a new pinned memory pool.
         pub fn new(device: Arc<CudaDevice>) -> Self {
             // Size classes: 4KB, 16KB, 64KB, 256KB, 1MB, 4MB, 16MB, 64MB
-            let size_classes: Vec<usize> = (12..=26)
-                .step_by(2)
-                .map(|exp| 1usize << exp)
-                .collect();
+            let size_classes: Vec<usize> = (12..=26).step_by(2).map(|exp| 1usize << exp).collect();
 
             // Test if pinned allocation works
             let pinned_available = PinnedBuffer::new(4096).is_some();
@@ -3852,14 +3901,14 @@ EXIT:
                         .entry(class)
                         .or_insert_with(Vec::new)
                         .push(pinned_buf);
-                }
+                },
                 PooledBuffer::Fallback(buf) => {
                     let class = buf.capacity();
                     self.fallback_pools
                         .entry(class)
                         .or_insert_with(Vec::new)
                         .push(buf);
-                }
+                },
             }
         }
 
@@ -4125,12 +4174,13 @@ EXIT:
             let size = device_results[0].len();
 
             // Allocate output on primary device
-            let output: CudaSlice<f32> = primary_ctx
-                .device
-                .alloc_zeros(size)
-                .map_err(|e| GpuHoloError::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let output: CudaSlice<f32> =
+                primary_ctx
+                    .device
+                    .alloc_zeros(size)
+                    .map_err(|e| GpuHoloError::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
             // Copy first result to output
             let mut host_buf = vec![0.0f32; size];
@@ -4182,7 +4232,11 @@ EXIT:
             MultiGpuStats {
                 num_devices: self.num_devices,
                 primary_device: self.primary_device_id,
-                streams_per_device: self.stream_pools.first().map(|p| p.num_streams()).unwrap_or(0),
+                streams_per_device: self
+                    .stream_pools
+                    .first()
+                    .map(|p| p.num_streams())
+                    .unwrap_or(0),
             }
         }
     }
@@ -4254,12 +4308,11 @@ EXIT:
                 shared_mem_bytes: 0,
             };
 
-            unsafe {
-                func.launch(cfg, (src, dst as &CudaSlice<f32>, size as u32))
-            }
-            .map_err(|e| GpuHoloError::KernelExec {
-                message: e.to_string(),
-            })?;
+            unsafe { func.launch(cfg, (src, dst as &CudaSlice<f32>, size as u32)) }.map_err(
+                |e| GpuHoloError::KernelExec {
+                    message: e.to_string(),
+                },
+            )?;
 
             Ok(())
         }
@@ -4276,12 +4329,12 @@ EXIT:
                 });
             }
 
-            let output: CudaSlice<half::f16> = self
-                .device
-                .alloc_zeros(size)
-                .map_err(|e| GpuHoloError::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let output: CudaSlice<half::f16> =
+                self.device
+                    .alloc_zeros(size)
+                    .map_err(|e| GpuHoloError::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
             let func = self
                 .device
@@ -4301,11 +4354,10 @@ EXIT:
                 shared_mem_bytes: 0,
             };
 
-            unsafe {
-                func.launch(cfg, (input, &output, size as u32))
-            }
-            .map_err(|e| GpuHoloError::KernelExec {
-                message: e.to_string(),
+            unsafe { func.launch(cfg, (input, &output, size as u32)) }.map_err(|e| {
+                GpuHoloError::KernelExec {
+                    message: e.to_string(),
+                }
             })?;
 
             self.device
@@ -4428,7 +4480,10 @@ EXIT:
         /// Adds a fragment with validation.
         ///
         /// Returns the validation result and current quality estimate.
-        pub fn add_fragment(&mut self, fragment: &HoloFragment) -> Result<(ValidationResult, f32), GpuHoloError> {
+        pub fn add_fragment(
+            &mut self,
+            fragment: &HoloFragment,
+        ) -> Result<(ValidationResult, f32), GpuHoloError> {
             let idx = fragment.index as usize;
             if idx >= self.fragment_status.len() {
                 return Err(GpuHoloError::InvalidInput {
@@ -4442,10 +4497,14 @@ EXIT:
             match validation {
                 ValidationResult::Valid => {
                     // Accumulate valid fragment
-                    self.ctx.accumulate_fragment(fragment, &mut self.accumulator, self.header.encoding)?;
+                    self.ctx.accumulate_fragment(
+                        fragment,
+                        &mut self.accumulator,
+                        self.header.encoding,
+                    )?;
                     self.fragment_status[idx] = ValidationResult::Valid;
                     self.valid_count += 1;
-                }
+                },
                 ValidationResult::Corrupted => {
                     self.fragment_status[idx] = ValidationResult::Corrupted;
                     self.corrupted_count += 1;
@@ -4455,14 +4514,17 @@ EXIT:
                             message: format!("Fragment {} checksum validation failed", idx),
                         });
                     }
-                }
+                },
                 ValidationResult::Missing => {
                     // Should not happen for incoming fragment
-                }
+                },
             }
 
             // Calculate quality based on valid fragments only
-            let quality = self.header.quality_curve.predict(self.valid_count, self.header.total_fragments);
+            let quality = self
+                .header
+                .quality_curve
+                .predict(self.valid_count, self.header.total_fragments);
 
             Ok((validation, quality))
         }
@@ -4487,7 +4549,9 @@ EXIT:
 
         /// Returns current quality estimate.
         pub fn quality(&self) -> f32 {
-            self.header.quality_curve.predict(self.valid_count, self.header.total_fragments)
+            self.header
+                .quality_curve
+                .predict(self.valid_count, self.header.total_fragments)
         }
 
         /// Checks if minimum quality threshold is met.
@@ -4520,7 +4584,8 @@ EXIT:
                 });
             }
 
-            self.ctx.finalize_reconstruction(&self.accumulator, self.header.encoding)
+            self.ctx
+                .finalize_reconstruction(&self.accumulator, self.header.encoding)
         }
 
         /// Returns statistics about fault tolerance.
@@ -4671,7 +4736,9 @@ EXIT:
             let mut loaded_indices = std::collections::HashSet::new();
 
             // Calculate how many fragments needed for target quality
-            let needed = self.header.quality_curve
+            let needed = self
+                .header
+                .quality_curve
                 .fragments_for_quality(self.config.target_quality, self.header.total_fragments);
 
             // Load fragments in order (essential first if FLAG_ESSENTIAL_FIRST)
@@ -4684,11 +4751,11 @@ EXIT:
                     Ok(fragment) => {
                         loaded_indices.insert(index);
                         fragments.push(fragment);
-                    }
+                    },
                     Err(e) if self.config.failover_enabled => {
                         // Skip failed fragment, try to continue
                         continue;
-                    }
+                    },
                     Err(e) => return Err(e),
                 }
             }
@@ -4881,7 +4948,8 @@ EXIT:
         /// Adds a per-layer quality target.
         pub fn add_layer_target(&mut self, target: LayerQualityTarget) {
             self.layer_targets.push(target);
-            self.layer_targets.sort_by_key(|t| std::cmp::Reverse(t.priority));
+            self.layer_targets
+                .sort_by_key(|t| std::cmp::Reverse(t.priority));
         }
 
         /// Gets quality target for a specific layer.
@@ -4889,7 +4957,9 @@ EXIT:
             // Check per-layer overrides
             for target in &self.layer_targets {
                 if Self::pattern_matches(&target.layer_pattern, layer_name) {
-                    return target.quality.clamp(self.config.min_quality, self.config.max_quality);
+                    return target
+                        .quality
+                        .clamp(self.config.min_quality, self.config.max_quality);
                 }
             }
 
@@ -4936,17 +5006,17 @@ EXIT:
             match self.config.policy {
                 QualityPolicy::Fixed => {
                     // No adjustment
-                }
+                },
                 QualityPolicy::MemoryAdaptive => {
                     self.adjust_for_memory();
-                }
+                },
                 QualityPolicy::LatencyAdaptive => {
                     self.adjust_for_latency();
-                }
+                },
                 QualityPolicy::BestEffort => {
                     self.adjust_for_memory();
                     self.adjust_for_latency();
-                }
+                },
             }
         }
 
@@ -4956,7 +5026,8 @@ EXIT:
                 return;
             }
 
-            let avg_memory: usize = self.memory_samples.iter().sum::<usize>() / self.memory_samples.len();
+            let avg_memory: usize =
+                self.memory_samples.iter().sum::<usize>() / self.memory_samples.len();
 
             if avg_memory > self.config.memory_threshold {
                 // Reduce quality
@@ -4977,7 +5048,8 @@ EXIT:
                 return;
             }
 
-            let avg_latency: u64 = self.latency_samples.iter().sum::<u64>() / self.latency_samples.len() as u64;
+            let avg_latency: u64 =
+                self.latency_samples.iter().sum::<u64>() / self.latency_samples.len() as u64;
 
             if avg_latency > self.config.latency_threshold_ms {
                 // Reduce quality for faster inference
@@ -5090,11 +5162,18 @@ EXIT:
         /// Adds a fragment and returns whether quality improved.
         ///
         /// Returns (new_quality, quality_improved).
-        pub fn add_fragment(&mut self, fragment: &HoloFragment) -> Result<(f32, bool), GpuHoloError> {
-            self.ctx.accumulate_fragment(fragment, &mut self.accumulator, self.header.encoding)?;
+        pub fn add_fragment(
+            &mut self,
+            fragment: &HoloFragment,
+        ) -> Result<(f32, bool), GpuHoloError> {
+            self.ctx
+                .accumulate_fragment(fragment, &mut self.accumulator, self.header.encoding)?;
             self.fragments_loaded += 1;
 
-            let new_quality = self.header.quality_curve.predict(self.fragments_loaded, self.header.total_fragments);
+            let new_quality = self
+                .header
+                .quality_curve
+                .predict(self.fragments_loaded, self.header.total_fragments);
             let improved = new_quality > self.current_quality;
             self.current_quality = new_quality;
 
@@ -5131,7 +5210,8 @@ EXIT:
                 });
             }
 
-            self.ctx.finalize_reconstruction(&self.accumulator, self.header.encoding)
+            self.ctx
+                .finalize_reconstruction(&self.accumulator, self.header.encoding)
         }
 
         /// Returns statistics.
@@ -5220,7 +5300,7 @@ mod tests {
     #[cfg(not(feature = "cuda"))]
     fn test_holo_context_stub_not_enabled() {
         match GpuHoloContext::new(0) {
-            Err(GpuHoloError::CudaNotEnabled) => {}
+            Err(GpuHoloError::CudaNotEnabled) => {},
             other => panic!("Expected CudaNotEnabled, got {:?}", other.err()),
         }
     }
@@ -5230,7 +5310,7 @@ mod tests {
     #[cfg(not(feature = "cuda"))]
     fn test_streaming_holo_context_stub_not_enabled() {
         match StreamingHoloContext::new(0, 2) {
-            Err(GpuHoloError::CudaNotEnabled) => {}
+            Err(GpuHoloError::CudaNotEnabled) => {},
             other => panic!("Expected CudaNotEnabled, got {:?}", other.err()),
         }
     }
@@ -5242,10 +5322,10 @@ mod tests {
         match GpuHoloContext::new(0) {
             Ok(ctx) => {
                 assert_eq!(ctx.device_id(), 0);
-            }
+            },
             Err(GpuHoloError::DeviceInit { .. }) => {
                 eprintln!("Skipping: no CUDA device available");
-            }
+            },
             Err(e) => panic!("Unexpected error: {:?}", e),
         }
     }
@@ -5259,12 +5339,14 @@ mod tests {
             Err(_) => {
                 eprintln!("Skipping: no CUDA device available");
                 return;
-            }
+            },
         };
 
-        ctx.load_spectral_kernel().expect("spectral kernel should load");
+        ctx.load_spectral_kernel()
+            .expect("spectral kernel should load");
         // Second load should be idempotent
-        ctx.load_spectral_kernel().expect("second load should succeed");
+        ctx.load_spectral_kernel()
+            .expect("second load should succeed");
     }
 
     /// CUDA: RPH kernel loading.
@@ -5276,7 +5358,7 @@ mod tests {
             Err(_) => {
                 eprintln!("Skipping: no CUDA device available");
                 return;
-            }
+            },
         };
 
         ctx.load_rph_kernel().expect("RPH kernel should load");
@@ -5291,7 +5373,7 @@ mod tests {
             Err(_) => {
                 eprintln!("Skipping: no CUDA device available");
                 return;
-            }
+            },
         };
 
         ctx.load_lrdf_kernel().expect("LRDF kernel should load");
@@ -5314,15 +5396,21 @@ mod tests {
             Err(_) => {
                 eprintln!("Skipping: no CUDA device available");
                 return;
-            }
+            },
         };
 
         let config = ctx.kernel_config();
         // Block dimensions should be reasonable (> 0 and <= 1024)
-        assert!(config.block_size_1d > 0 && config.block_size_1d <= 1024,
-            "1D block size should be 1-1024, got {}", config.block_size_1d);
-        assert!(config.block_size_2d > 0 && config.block_size_2d <= 32,
-            "2D block size should be 1-32, got {}", config.block_size_2d);
+        assert!(
+            config.block_size_1d > 0 && config.block_size_1d <= 1024,
+            "1D block size should be 1-1024, got {}",
+            config.block_size_1d
+        );
+        assert!(
+            config.block_size_2d > 0 && config.block_size_2d <= 32,
+            "2D block size should be 1-32, got {}",
+            config.block_size_2d
+        );
     }
 
     // ==================== TDD Phase 4: HoloTensor Reconstruction Tests ====================
@@ -5331,7 +5419,14 @@ mod tests {
     /// Helper to build an LRDF fragment with one rank-1 SVD component.
     /// Format: [rows: u32][cols: u32][num_components: u32][sigma: f32][u: f32*rows][v: f32*cols]
     #[cfg(feature = "cuda")]
-    fn make_lrdf_fragment(index: u16, rows: usize, cols: usize, sigma: f32, u: &[f32], v: &[f32]) -> haagenti::holotensor::HoloFragment {
+    fn make_lrdf_fragment(
+        index: u16,
+        rows: usize,
+        cols: usize,
+        sigma: f32,
+        u: &[f32],
+        v: &[f32],
+    ) -> haagenti::holotensor::HoloFragment {
         assert_eq!(u.len(), rows);
         assert_eq!(v.len(), cols);
         let mut data = Vec::new();
@@ -5360,7 +5455,7 @@ mod tests {
             Err(_) => {
                 eprintln!("Skipping: no CUDA device available");
                 return;
-            }
+            },
         };
         ctx.load_lrdf_kernel().expect("LRDF kernel should load");
 
@@ -5386,16 +5481,22 @@ mod tests {
 
         // Expected: sigma * u_i * v_j (row-major)
         let expected = vec![
-            2.0 * 1.0 * 4.0, 2.0 * 1.0 * 5.0, // row 0: 8, 10
-            2.0 * 2.0 * 4.0, 2.0 * 2.0 * 5.0, // row 1: 16, 20
-            2.0 * 3.0 * 4.0, 2.0 * 3.0 * 5.0, // row 2: 24, 30
+            2.0 * 1.0 * 4.0,
+            2.0 * 1.0 * 5.0, // row 0: 8, 10
+            2.0 * 2.0 * 4.0,
+            2.0 * 2.0 * 5.0, // row 1: 16, 20
+            2.0 * 3.0 * 4.0,
+            2.0 * 3.0 * 5.0, // row 2: 24, 30
         ];
 
         assert_eq!(host.len(), expected.len());
         for (i, (e, g)) in expected.iter().zip(host.iter()).enumerate() {
             assert!(
                 (e - g).abs() < 1e-4,
-                "LRDF rank-1 mismatch at {}: expected={}, got={}", i, e, g
+                "LRDF rank-1 mismatch at {}: expected={}, got={}",
+                i,
+                e,
+                g
             );
         }
     }
@@ -5412,7 +5513,7 @@ mod tests {
             Err(_) => {
                 eprintln!("Skipping: no CUDA device available");
                 return;
-            }
+            },
         };
         ctx.load_lrdf_kernel().expect("LRDF kernel should load");
 
@@ -5441,7 +5542,10 @@ mod tests {
         for (i, (e, g)) in expected.iter().zip(host.iter()).enumerate() {
             assert!(
                 (e - g).abs() < 1e-4,
-                "LRDF multi-comp mismatch at {}: expected={}, got={}", i, e, g
+                "LRDF multi-comp mismatch at {}: expected={}, got={}",
+                i,
+                e,
+                g
             );
         }
     }
@@ -5455,7 +5559,7 @@ mod tests {
             Err(_) => {
                 eprintln!("Skipping: no CUDA device available");
                 return;
-            }
+            },
         };
         ctx.load_fused_kernel().expect("fused kernel should load");
 
@@ -5465,14 +5569,20 @@ mod tests {
         let d_output = ctx.convert_f32_to_f16(&d_input).unwrap();
 
         let mut host_f16 = vec![half::f16::ZERO; input.len()];
-        ctx.device().dtoh_sync_copy_into(&d_output, &mut host_f16).unwrap();
+        ctx.device()
+            .dtoh_sync_copy_into(&d_output, &mut host_f16)
+            .unwrap();
 
         for (i, (&f32_val, &f16_val)) in input.iter().zip(host_f16.iter()).enumerate() {
             let expected = half::f16::from_f32(f32_val);
             assert_eq!(
-                f16_val.to_bits(), expected.to_bits(),
+                f16_val.to_bits(),
+                expected.to_bits(),
                 "F32→F16 wrong at {}: input={}, got=0x{:04X}, expected=0x{:04X}",
-                i, f32_val, f16_val.to_bits(), expected.to_bits()
+                i,
+                f32_val,
+                f16_val.to_bits(),
+                expected.to_bits()
             );
         }
     }
@@ -5486,7 +5596,7 @@ mod tests {
             Err(_) => {
                 eprintln!("Skipping: no CUDA device available");
                 return;
-            }
+            },
         };
         ctx.load_fused_kernel().expect("fused kernel should load");
 
@@ -5496,13 +5606,18 @@ mod tests {
         ctx.scale_values(&mut d_data, 0.5).unwrap();
 
         let mut host = vec![0.0f32; data.len()];
-        ctx.device().dtoh_sync_copy_into(&d_data, &mut host).unwrap();
+        ctx.device()
+            .dtoh_sync_copy_into(&d_data, &mut host)
+            .unwrap();
 
         let expected = vec![0.5, 1.0, 1.5, 2.0];
         for (i, (e, g)) in expected.iter().zip(host.iter()).enumerate() {
             assert!(
                 (e - g).abs() < 1e-6,
-                "Scale mismatch at {}: expected={}, got={}", i, e, g
+                "Scale mismatch at {}: expected={}, got={}",
+                i,
+                e,
+                g
             );
         }
     }
@@ -5516,14 +5631,21 @@ mod tests {
             Err(_) => {
                 eprintln!("Skipping: no CUDA device available");
                 return;
-            }
+            },
         };
         ctx.load_lrdf_kernel().expect("LRDF kernel should load");
 
         let rows = 4;
         let cols = 4;
         // Identity-like: sigma=1 for each basis vector pair
-        let frag = make_lrdf_fragment(0, rows, cols, 1.0, &[1.0, 1.0, 1.0, 1.0], &[1.0, 1.0, 1.0, 1.0]);
+        let frag = make_lrdf_fragment(
+            0,
+            rows,
+            cols,
+            1.0,
+            &[1.0, 1.0, 1.0, 1.0],
+            &[1.0, 1.0, 1.0, 1.0],
+        );
 
         let tensor = ctx.reconstruct_lrdf(&[frag], rows, cols).unwrap();
 
@@ -5536,7 +5658,9 @@ mod tests {
         for (i, &val) in host.iter().enumerate() {
             assert!(
                 (val - 1.0).abs() < 1e-4,
-                "reconstruct_lrdf all-ones mismatch at {}: got={}", i, val
+                "reconstruct_lrdf all-ones mismatch at {}: got={}",
+                i,
+                val
             );
         }
     }
@@ -5579,7 +5703,7 @@ mod tests {
             Err(_) => {
                 eprintln!("Skipping: no CUDA device available");
                 return;
-            }
+            },
         };
         ctx.load_lrdf_kernel().expect("LRDF kernel should load");
 
@@ -5605,7 +5729,8 @@ mod tests {
         // Batched: same data through batched path
         let frag_batched = make_lrdf_multi_fragment(0, rows, cols, &[(sigma, u, v)]);
         let mut acc_batched = ctx.create_accumulator(&header).unwrap();
-        ctx.accumulate_lrdf_batched(&frag_batched, &mut acc_batched).unwrap();
+        ctx.accumulate_lrdf_batched(&frag_batched, &mut acc_batched)
+            .unwrap();
         let result_batched = ctx.finalize_lrdf(&acc_batched).unwrap();
         let host_batched = ctx.copy_to_host(&result_batched).unwrap();
 
@@ -5613,7 +5738,10 @@ mod tests {
         for (i, (&s, &b)) in host_single.iter().zip(host_batched.iter()).enumerate() {
             assert!(
                 (s - b).abs() < 1e-5,
-                "Batched vs unbatched mismatch at {}: single={}, batched={}", i, s, b
+                "Batched vs unbatched mismatch at {}: single={}, batched={}",
+                i,
+                s,
+                b
             );
         }
     }
@@ -5627,7 +5755,7 @@ mod tests {
             Err(_) => {
                 eprintln!("Skipping: no CUDA device available");
                 return;
-            }
+            },
         };
         ctx.load_lrdf_kernel().expect("LRDF kernel should load");
 
@@ -5658,7 +5786,8 @@ mod tests {
         // Batched: all 3 components in single fragment
         let frag_batched = make_lrdf_multi_fragment(0, rows, cols, &components);
         let mut acc_batched = ctx.create_accumulator(&header).unwrap();
-        ctx.accumulate_lrdf_batched(&frag_batched, &mut acc_batched).unwrap();
+        ctx.accumulate_lrdf_batched(&frag_batched, &mut acc_batched)
+            .unwrap();
         let result_batched = ctx.finalize_lrdf(&acc_batched).unwrap();
         let host_batched = ctx.copy_to_host(&result_batched).unwrap();
 
@@ -5666,15 +5795,27 @@ mod tests {
         for (i, (&s, &b)) in host_seq.iter().zip(host_batched.iter()).enumerate() {
             assert!(
                 (s - b).abs() < 1e-5,
-                "Batched vs sequential mismatch at {}: seq={}, batched={}", i, s, b
+                "Batched vs sequential mismatch at {}: seq={}, batched={}",
+                i,
+                s,
+                b
             );
         }
 
         // Verify expected values: diagonal-like pattern
         // output[0][0] = 2.0, output[1][1] = 1.5, output[2][2] = 0.8, rest ~0
-        assert!((host_batched[0] - 2.0).abs() < 1e-5, "Expected 2.0 at [0,0]");
-        assert!((host_batched[4] - 1.5).abs() < 1e-5, "Expected 1.5 at [1,1]");
-        assert!((host_batched[8] - 0.8).abs() < 1e-5, "Expected 0.8 at [2,2]");
+        assert!(
+            (host_batched[0] - 2.0).abs() < 1e-5,
+            "Expected 2.0 at [0,0]"
+        );
+        assert!(
+            (host_batched[4] - 1.5).abs() < 1e-5,
+            "Expected 1.5 at [1,1]"
+        );
+        assert!(
+            (host_batched[8] - 0.8).abs() < 1e-5,
+            "Expected 0.8 at [2,2]"
+        );
     }
 
     // ==================== Phase 4: §6.1 Spectral IDCT Reconstruction ====================
@@ -5714,9 +5855,10 @@ mod tests {
             Err(_) => {
                 eprintln!("Skipping: no CUDA device available");
                 return;
-            }
+            },
         };
-        ctx.load_spectral_kernel().expect("spectral kernel should load");
+        ctx.load_spectral_kernel()
+            .expect("spectral kernel should load");
 
         let width = 8;
         let height = 1;
@@ -5733,9 +5875,13 @@ mod tests {
 
         // Accumulate and verify coefficients directly
         let mut accumulator = ctx.create_accumulator(&header).unwrap();
-        ctx.accumulate_spectral(&fragment, &mut accumulator).unwrap();
+        ctx.accumulate_spectral(&fragment, &mut accumulator)
+            .unwrap();
 
-        if let AccumulatorState::Spectral { ref coefficients, .. } = accumulator {
+        if let AccumulatorState::Spectral {
+            ref coefficients, ..
+        } = accumulator
+        {
             let host_coeffs = ctx.copy_to_host(coefficients).unwrap();
             assert_eq!(host_coeffs.len(), width * height);
 
@@ -5769,7 +5915,9 @@ mod tests {
             assert!(
                 (val - expected).abs() < 1e-3,
                 "DC reconstruction at {}: expected {:.6}, got {:.6}",
-                i, expected, val
+                i,
+                expected,
+                val
             );
         }
     }
@@ -5786,9 +5934,10 @@ mod tests {
             Err(_) => {
                 eprintln!("Skipping: no CUDA device available");
                 return;
-            }
+            },
         };
-        ctx.load_spectral_kernel().expect("spectral kernel should load");
+        ctx.load_spectral_kernel()
+            .expect("spectral kernel should load");
 
         let width = 4;
         let height = 4;
@@ -5805,29 +5954,37 @@ mod tests {
         let mut accumulator = ctx.create_accumulator(&header).unwrap();
         let coeffs = [(0u32, 1.0f32), (3, 2.0), (7, 3.0), (15, 4.0)];
         let fragment = make_spectral_fragment(0, &coeffs);
-        ctx.accumulate_spectral(&fragment, &mut accumulator).unwrap();
+        ctx.accumulate_spectral(&fragment, &mut accumulator)
+            .unwrap();
 
         // Read back coefficient buffer from accumulator
-        if let AccumulatorState::Spectral { ref coefficients, .. } = accumulator {
+        if let AccumulatorState::Spectral {
+            ref coefficients, ..
+        } = accumulator
+        {
             let host_coeffs = ctx.copy_to_host(coefficients).unwrap();
             assert_eq!(host_coeffs.len(), total_size);
 
             // Indexed positions should have the accumulated values
             assert!(
                 (host_coeffs[0] - 1.0).abs() < 1e-6,
-                "Index 0: expected 1.0, got {}", host_coeffs[0]
+                "Index 0: expected 1.0, got {}",
+                host_coeffs[0]
             );
             assert!(
                 (host_coeffs[3] - 2.0).abs() < 1e-6,
-                "Index 3: expected 2.0, got {}", host_coeffs[3]
+                "Index 3: expected 2.0, got {}",
+                host_coeffs[3]
             );
             assert!(
                 (host_coeffs[7] - 3.0).abs() < 1e-6,
-                "Index 7: expected 3.0, got {}", host_coeffs[7]
+                "Index 7: expected 3.0, got {}",
+                host_coeffs[7]
             );
             assert!(
                 (host_coeffs[15] - 4.0).abs() < 1e-6,
-                "Index 15: expected 4.0, got {}", host_coeffs[15]
+                "Index 15: expected 4.0, got {}",
+                host_coeffs[15]
             );
 
             // All non-indexed positions should be zero
@@ -5835,7 +5992,9 @@ mod tests {
                 if ![0, 3, 7, 15].contains(&i) {
                     assert!(
                         val.abs() < 1e-6,
-                        "Non-indexed position {} should be 0, got {}", i, val
+                        "Non-indexed position {} should be 0, got {}",
+                        i,
+                        val
                     );
                 }
             }
@@ -5856,9 +6015,10 @@ mod tests {
             Err(_) => {
                 eprintln!("Skipping: no CUDA device available");
                 return;
-            }
+            },
         };
-        ctx.load_spectral_kernel().expect("spectral kernel should load");
+        ctx.load_spectral_kernel()
+            .expect("spectral kernel should load");
 
         let width = 8;
         let height = 1;
@@ -5883,10 +6043,7 @@ mod tests {
             block_dim: (256, 1, 1),
             shared_mem_bytes: (width * 4) as u32,
         };
-        unsafe {
-            func.launch(cfg, (&d_input, &d_output, width as u32, height as u32))
-        }
-        .unwrap();
+        unsafe { func.launch(cfg, (&d_input, &d_output, width as u32, height as u32)) }.unwrap();
         ctx.device().synchronize().unwrap();
 
         let host = ctx.copy_to_host(&d_output).unwrap();
@@ -5894,8 +6051,7 @@ mod tests {
         let pi_2n = std::f32::consts::PI / (2.0 * width as f32);
 
         for n in 0..width {
-            let expected =
-                amplitude * scale * ((2 * n + 1) as f32 * k as f32 * pi_2n).cos();
+            let expected = amplitude * scale * ((2 * n + 1) as f32 * k as f32 * pi_2n).cos();
             assert!(
                 (host[n] - expected).abs() < 1e-3,
                 "AC[{}] row IDCT at {}: expected {:.6}, got {:.6}",
@@ -5921,9 +6077,10 @@ mod tests {
             Err(_) => {
                 eprintln!("Skipping: no CUDA device available");
                 return;
-            }
+            },
         };
-        ctx.load_spectral_kernel().expect("spectral kernel should load");
+        ctx.load_spectral_kernel()
+            .expect("spectral kernel should load");
 
         let width = 4;
         let height = 4;
@@ -6062,7 +6219,7 @@ mod tests {
             Err(_) => {
                 eprintln!("Skipping: no CUDA device available");
                 return;
-            }
+            },
         };
         ctx.load_rph_kernel().expect("RPH kernel should load");
 
@@ -6105,7 +6262,9 @@ mod tests {
                 v1.to_bits(),
                 v2.to_bits(),
                 "RPH determinism violation at {}: run1={}, run2={}",
-                i, v1, v2
+                i,
+                v1,
+                v2
             );
         }
     }
@@ -6119,7 +6278,7 @@ mod tests {
             Err(_) => {
                 eprintln!("Skipping: no CUDA device available");
                 return;
-            }
+            },
         };
         ctx.load_rph_kernel().expect("RPH kernel should load");
 
@@ -6171,7 +6330,7 @@ mod tests {
             Err(_) => {
                 eprintln!("Skipping: no CUDA device available");
                 return;
-            }
+            },
         };
         ctx.load_rph_kernel().expect("RPH kernel should load");
 
@@ -6208,15 +6367,27 @@ mod tests {
         let frag_a = make_rph_fragment(0, frag_proj_dim, 42, &projection);
         ctx.accumulate_rph(&frag_a, &mut acc).unwrap();
 
-        if let AccumulatorState::RandomProjection { num_projections, .. } = &acc {
-            assert_eq!(*num_projections, 1, "num_projections should be 1 after first accumulate");
+        if let AccumulatorState::RandomProjection {
+            num_projections, ..
+        } = &acc
+        {
+            assert_eq!(
+                *num_projections, 1,
+                "num_projections should be 1 after first accumulate"
+            );
         }
 
         let frag_b = make_rph_fragment(1, frag_proj_dim, 999, &projection);
         ctx.accumulate_rph(&frag_b, &mut acc).unwrap();
 
-        if let AccumulatorState::RandomProjection { num_projections, .. } = &acc {
-            assert_eq!(*num_projections, 2, "num_projections should be 2 after second accumulate");
+        if let AccumulatorState::RandomProjection {
+            num_projections, ..
+        } = &acc
+        {
+            assert_eq!(
+                *num_projections, 2,
+                "num_projections should be 2 after second accumulate"
+            );
         }
 
         // Finalize and verify output shape
@@ -6236,8 +6407,8 @@ mod tests {
 pub use cuda::GpuHoloContext;
 #[cfg(feature = "cuda")]
 pub use cuda::GpuHoloError;
-pub use cuda::StreamingHoloContext;
 #[cfg(feature = "cuda")]
 pub use cuda::HoloStreamPool;
+pub use cuda::StreamingHoloContext;
 #[cfg(feature = "cuda")]
 pub use cuda::StreamingHoloStats;

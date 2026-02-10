@@ -172,36 +172,37 @@ impl Config {
                     .map(|v| v == "1" || v.to_lowercase() == "true")
                     .unwrap_or(false);
 
-                let model_source = if !model.starts_with("holo://") && is_hct_model(&model) && !use_eager_hct {
-                    // Get HoloTensor quality parameters from env, with defaults
-                    let min_quality = std::env::var("INFERNUM_HOLO_MIN_QUALITY")
-                        .ok()
-                        .and_then(|v| v.parse::<f32>().ok())
-                        .unwrap_or(0.7);
-                    let target_quality = std::env::var("INFERNUM_HOLO_TARGET_QUALITY")
-                        .ok()
-                        .and_then(|v| v.parse::<f32>().ok())
-                        .unwrap_or(0.95);
+                let model_source =
+                    if !model.starts_with("holo://") && is_hct_model(&model) && !use_eager_hct {
+                        // Get HoloTensor quality parameters from env, with defaults
+                        let min_quality = std::env::var("INFERNUM_HOLO_MIN_QUALITY")
+                            .ok()
+                            .and_then(|v| v.parse::<f32>().ok())
+                            .unwrap_or(0.7);
+                        let target_quality = std::env::var("INFERNUM_HOLO_TARGET_QUALITY")
+                            .ok()
+                            .and_then(|v| v.parse::<f32>().ok())
+                            .unwrap_or(0.95);
 
-                    let holo_url = format!(
-                        "holo://{}?min={}&target={}",
-                        model, min_quality, target_quality
-                    );
-                    tracing::info!(
-                        original = %model,
-                        holo_url = %holo_url,
-                        "Auto-detected HCT model directory, using HoloTensor lazy loader"
-                    );
-                    holo_url
-                } else if is_hct_model(&model) && use_eager_hct {
-                    tracing::info!(
-                        model = %model,
-                        "HCT model with eager loading (INFERNUM_HCT_EAGER=1)"
-                    );
-                    model
-                } else {
-                    model
-                };
+                        let holo_url = format!(
+                            "holo://{}?min={}&target={}",
+                            model, min_quality, target_quality
+                        );
+                        tracing::info!(
+                            original = %model,
+                            holo_url = %holo_url,
+                            "Auto-detected HCT model directory, using HoloTensor lazy loader"
+                        );
+                        holo_url
+                    } else if is_hct_model(&model) && use_eager_hct {
+                        tracing::info!(
+                            model = %model,
+                            "HCT model with eager loading (INFERNUM_HCT_EAGER=1)"
+                        );
+                        model
+                    } else {
+                        model
+                    };
                 config.model = Some(model_source);
             }
         }
@@ -307,12 +308,9 @@ impl Config {
         // CUDA device
         if let Ok(device) = std::env::var("INFERNUM_CUDA_DEVICE") {
             match device.parse::<u32>() {
-                Ok(d) if d > 15 => errors.push(ConfigError::out_of_range(
-                    "INFERNUM_CUDA_DEVICE",
-                    d,
-                    0,
-                    15,
-                )),
+                Ok(d) if d > 15 => {
+                    errors.push(ConfigError::out_of_range("INFERNUM_CUDA_DEVICE", d, 0, 15))
+                },
                 Ok(d) => config.cuda_device = d,
                 Err(_) => errors.push(ConfigError::invalid_value(
                     "INFERNUM_CUDA_DEVICE",
@@ -389,10 +387,10 @@ impl Config {
                             config = c;
                             tracing::info!("Loaded configuration from {}", path);
                             break;
-                        }
+                        },
                         Err(e) => {
                             tracing::warn!("Failed to load config from {}: {}", path, e);
-                        }
+                        },
                     }
                 }
             }
@@ -489,9 +487,7 @@ impl Config {
 
         // TLS + port 80 warning (not error, just log)
         if self.tls.is_some() && self.port == 80 {
-            tracing::warn!(
-                "TLS enabled but using port 80. Consider using port 443 for HTTPS."
-            );
+            tracing::warn!("TLS enabled but using port 80. Consider using port 443 for HTTPS.");
         }
 
         // Auth enabled but no keys
@@ -550,31 +546,12 @@ impl Config {
         println!("╔══════════════════════════════════════════════════════════╗");
         println!("║                  Infernum Configuration                   ║");
         println!("╠══════════════════════════════════════════════════════════╣");
-        println!(
-            "║ Server: {}:{:<43} ║",
-            self.host,
-            self.port
-        );
-        println!(
-            "║ Max Concurrent: {:<42} ║",
-            self.max_concurrent_requests
-        );
-        println!(
-            "║ Max Queue: {:<47} ║",
-            self.max_queue_size
-        );
-        println!(
-            "║ Auth Enabled: {:<44} ║",
-            self.is_auth_enabled()
-        );
-        println!(
-            "║ Rate Limiting: {:<43} ║",
-            self.rate_limit.enabled
-        );
-        println!(
-            "║ TLS Enabled: {:<45} ║",
-            self.is_tls_enabled()
-        );
+        println!("║ Server: {}:{:<43} ║", self.host, self.port);
+        println!("║ Max Concurrent: {:<42} ║", self.max_concurrent_requests);
+        println!("║ Max Queue: {:<47} ║", self.max_queue_size);
+        println!("║ Auth Enabled: {:<44} ║", self.is_auth_enabled());
+        println!("║ Rate Limiting: {:<43} ║", self.rate_limit.enabled);
+        println!("║ TLS Enabled: {:<45} ║", self.is_tls_enabled());
         if let Some(ref model) = self.model {
             let truncated = if model.len() > 50 {
                 format!("{}...", &model[..47])
@@ -723,7 +700,9 @@ impl ConfigBuilder {
             cors: self.cors.unwrap_or(defaults.cors),
             model: self.model.or(defaults.model),
             draft_model: self.draft_model.or(defaults.draft_model),
-            speculative_tokens: self.speculative_tokens.unwrap_or(defaults.speculative_tokens),
+            speculative_tokens: self
+                .speculative_tokens
+                .unwrap_or(defaults.speculative_tokens),
             max_concurrent_requests: self
                 .max_concurrent_requests
                 .unwrap_or(defaults.max_concurrent_requests),
@@ -893,14 +872,10 @@ mod tests {
 
     #[test]
     fn test_config_build_validated() {
-        let result = Config::builder()
-            .port(0)
-            .build_validated();
+        let result = Config::builder().port(0).build_validated();
         assert!(result.is_err());
 
-        let result = Config::builder()
-            .port(8080)
-            .build_validated();
+        let result = Config::builder().port(8080).build_validated();
         assert!(result.is_ok());
     }
 

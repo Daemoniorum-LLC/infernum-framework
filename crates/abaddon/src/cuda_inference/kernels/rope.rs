@@ -20,8 +20,8 @@
 //! Uses NVRTC to compile CUDA C code at runtime for better compatibility
 //! across GPU architectures.
 
-use std::sync::Arc;
 use cudarc::driver::{CudaDevice, CudaFunction, LaunchAsync, LaunchConfig};
+use std::sync::Arc;
 
 use super::compile_cuda_kernel;
 use crate::cuda_inference::tensor::GpuTensor;
@@ -160,13 +160,19 @@ impl RoPEKernel {
         self.func = Some(
             self.device
                 .get_func("rope_kernels", "rope_f16")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get rope_f16 function".to_string()))?,
+                .ok_or_else(|| {
+                    InferenceError::Kernel("Failed to get rope_f16 function".to_string())
+                })?,
         );
 
         self.precompute_func = Some(
             self.device
                 .get_func("rope_kernels", "rope_precompute_freqs")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get rope_precompute_freqs function".to_string()))?,
+                .ok_or_else(|| {
+                    InferenceError::Kernel(
+                        "Failed to get rope_precompute_freqs function".to_string(),
+                    )
+                })?,
         );
 
         Ok(())
@@ -186,7 +192,9 @@ impl RoPEKernel {
         theta: f32,
         scaling_factor: f32,
     ) -> Result<(), InferenceError> {
-        let func = self.func.as_ref()
+        let func = self
+            .func
+            .as_ref()
             .ok_or_else(|| InferenceError::Kernel("RoPE kernel not loaded".to_string()))?;
 
         // Validate shapes
@@ -258,8 +266,9 @@ impl RoPEKernel {
         head_dim: usize,
         max_seq_len: usize,
     ) -> Result<(), InferenceError> {
-        let func = self.precompute_func.as_ref()
-            .ok_or_else(|| InferenceError::Kernel("RoPE precompute kernel not loaded".to_string()))?;
+        let func = self.precompute_func.as_ref().ok_or_else(|| {
+            InferenceError::Kernel("RoPE precompute kernel not loaded".to_string())
+        })?;
 
         if head_dim % 2 != 0 {
             return Err(InferenceError::Shape {
@@ -307,7 +316,9 @@ impl RoPEKernel {
     ) -> Result<(), InferenceError> {
         // This would use a variant kernel that reads from precomputed freqs
         // For now, fall back to regular forward
-        Err(InferenceError::Kernel("Cached RoPE forward not yet implemented".to_string()))
+        Err(InferenceError::Kernel(
+            "Cached RoPE forward not yet implemented".to_string(),
+        ))
     }
 
     /// Get device reference.

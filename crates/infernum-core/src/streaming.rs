@@ -382,10 +382,7 @@ mod tests {
         assert_eq!(chunk.request_id, request_id);
         assert_eq!(chunk.model.0, "builder-model");
         assert_eq!(chunk.choices.len(), 1);
-        assert_eq!(
-            chunk.choices[0].delta.content,
-            Some("Hello".to_string())
-        );
+        assert_eq!(chunk.choices[0].delta.content, Some("Hello".to_string()));
     }
 
     #[test]

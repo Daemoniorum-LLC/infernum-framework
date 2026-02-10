@@ -286,8 +286,12 @@ fn test_quantization_compression_ratios() {
     // Higher compression = lower quality
     assert_eq!(QuantizationLevel::None.compression_ratio(), 1.0);
     assert!(QuantizationLevel::Q8_0.compression_ratio() > 1.0);
-    assert!(QuantizationLevel::Q4_K_M.compression_ratio() > QuantizationLevel::Q8_0.compression_ratio());
-    assert!(QuantizationLevel::Q2_K.compression_ratio() > QuantizationLevel::Q4_K_M.compression_ratio());
+    assert!(
+        QuantizationLevel::Q4_K_M.compression_ratio() > QuantizationLevel::Q8_0.compression_ratio()
+    );
+    assert!(
+        QuantizationLevel::Q2_K.compression_ratio() > QuantizationLevel::Q4_K_M.compression_ratio()
+    );
 }
 
 #[test]
@@ -364,7 +368,7 @@ fn test_edge_config_validation_model_too_large() {
     let result = config.validate();
     assert!(result.is_err());
     match result {
-        Err(EdgeConfigError::ModelTooLarge { .. }) => {}
+        Err(EdgeConfigError::ModelTooLarge { .. }) => {},
         _ => panic!("Expected ModelTooLarge error"),
     }
 }
@@ -377,7 +381,7 @@ fn test_edge_config_validation_context_too_large() {
     let result = config.validate();
     assert!(result.is_err());
     match result {
-        Err(EdgeConfigError::ContextTooLarge { .. }) => {}
+        Err(EdgeConfigError::ContextTooLarge { .. }) => {},
         _ => panic!("Expected ContextTooLarge error"),
     }
 }
@@ -453,7 +457,9 @@ fn test_model_cache_stats() {
 
     let source = temp.path().join("model.bin");
     std::fs::write(&source, vec![0u8; 1024]).expect("write");
-    cache.add("model1", &source, QuantizationLevel::Q4_0).expect("add");
+    cache
+        .add("model1", &source, QuantizationLevel::Q4_0)
+        .expect("add");
 
     let stats = cache.stats();
     assert_eq!(stats.entry_count, 1);
@@ -471,8 +477,12 @@ fn test_model_cache_list() {
     let source = temp.path().join("model.bin");
     std::fs::write(&source, vec![0u8; 128]).expect("write");
 
-    cache.add("model-a", &source, QuantizationLevel::Q4_0).expect("add");
-    cache.add("model-b", &source, QuantizationLevel::Q8_0).expect("add");
+    cache
+        .add("model-a", &source, QuantizationLevel::Q4_0)
+        .expect("add");
+    cache
+        .add("model-b", &source, QuantizationLevel::Q8_0)
+        .expect("add");
 
     let entries = cache.list();
     assert_eq!(entries.len(), 2);
@@ -490,8 +500,12 @@ fn test_model_cache_clear() {
     let source = temp.path().join("model.bin");
     std::fs::write(&source, vec![0u8; 64]).expect("write");
 
-    cache.add("m1", &source, QuantizationLevel::Q4_0).expect("add");
-    cache.add("m2", &source, QuantizationLevel::Q4_0).expect("add");
+    cache
+        .add("m1", &source, QuantizationLevel::Q4_0)
+        .expect("add");
+    cache
+        .add("m2", &source, QuantizationLevel::Q4_0)
+        .expect("add");
 
     assert_eq!(cache.stats().entry_count, 2);
 
@@ -646,7 +660,9 @@ fn test_edge_deployment_workflow() {
     let model_file = temp.path().join("quantized_model.bin");
     std::fs::write(&model_file, vec![0u8; 1024]).expect("write");
 
-    let cached_path = ctx.cache_model("android-model", &model_file).expect("cache");
+    let cached_path = ctx
+        .cache_model("android-model", &model_file)
+        .expect("cache");
     assert!(cached_path.is_some());
 
     // Verify model is cached

@@ -277,18 +277,10 @@ impl Quantizer {
 
         // Quantize based on format
         let (data, scales, zero_points, stats) = match self.config.format {
-            QuantizeFormat::Int4Symmetric => {
-                self.quantize_int4_symmetric(&values)
-            }
-            QuantizeFormat::Int4Asymmetric => {
-                self.quantize_int4_asymmetric(&values)
-            }
-            QuantizeFormat::Int8Symmetric => {
-                self.quantize_int8_symmetric(&values)
-            }
-            QuantizeFormat::Int8Asymmetric => {
-                self.quantize_int8_asymmetric(&values)
-            }
+            QuantizeFormat::Int4Symmetric => self.quantize_int4_symmetric(&values),
+            QuantizeFormat::Int4Asymmetric => self.quantize_int4_asymmetric(&values),
+            QuantizeFormat::Int8Symmetric => self.quantize_int8_symmetric(&values),
+            QuantizeFormat::Int8Asymmetric => self.quantize_int8_asymmetric(&values),
         };
 
         Ok(QuantizedTensor {
@@ -304,7 +296,10 @@ impl Quantizer {
     }
 
     /// Quantizes values using INT4 symmetric quantization.
-    fn quantize_int4_symmetric(&self, values: &[f32]) -> (Vec<u8>, Vec<half::f16>, Option<Vec<i8>>, QuantizeStats) {
+    fn quantize_int4_symmetric(
+        &self,
+        values: &[f32],
+    ) -> (Vec<u8>, Vec<half::f16>, Option<Vec<i8>>, QuantizeStats) {
         let block_size = self.config.block_size;
         let num_blocks = (values.len() + block_size - 1) / block_size;
 
@@ -322,10 +317,7 @@ impl Quantizer {
             let block = &values[start..end];
 
             // Find max absolute value in block
-            let max_abs = block
-                .iter()
-                .map(|v| v.abs())
-                .fold(0.0f32, f32::max);
+            let max_abs = block.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
 
             // Compute scale: max_abs / 7 (symmetric range is [-8, 7], using 7 for positive max)
             let scale = if max_abs > 1e-10 {
@@ -367,14 +359,22 @@ impl Quantizer {
             } else {
                 f32::INFINITY
             },
-            compression_ratio: compute_compression_ratio(values.len(), packed.len(), scales.len(), None),
+            compression_ratio: compute_compression_ratio(
+                values.len(),
+                packed.len(),
+                scales.len(),
+                None,
+            ),
         };
 
         (packed, scales, None, stats)
     }
 
     /// Quantizes values using INT4 asymmetric quantization (GPTQ/AWQ compatible).
-    fn quantize_int4_asymmetric(&self, values: &[f32]) -> (Vec<u8>, Vec<half::f16>, Option<Vec<i8>>, QuantizeStats) {
+    fn quantize_int4_asymmetric(
+        &self,
+        values: &[f32],
+    ) -> (Vec<u8>, Vec<half::f16>, Option<Vec<i8>>, QuantizeStats) {
         let block_size = self.config.block_size;
         let num_blocks = (values.len() + block_size - 1) / block_size;
 
@@ -393,9 +393,11 @@ impl Quantizer {
             let block = &values[start..end];
 
             // Find min and max in block
-            let (min_val, max_val) = block.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &v| {
-                (min.min(v), max.max(v))
-            });
+            let (min_val, max_val) = block
+                .iter()
+                .fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &v| {
+                    (min.min(v), max.max(v))
+                });
 
             // Compute scale and zero point
             // scale = (max - min) / 15
@@ -420,7 +422,8 @@ impl Quantizer {
             for &val in block {
                 // Quantize: round(val / scale) + zero_point, clamp to [0, 15]
                 let q = ((val / scale) + (zp as f32)).round();
-                let q_clamped = q.clamp(INT4_ASYMMETRIC_MIN as f32, INT4_ASYMMETRIC_MAX as f32) as u8;
+                let q_clamped =
+                    q.clamp(INT4_ASYMMETRIC_MIN as f32, INT4_ASYMMETRIC_MAX as f32) as u8;
                 quantized.push(q_clamped as i8); // Store as i8 for consistency
 
                 // Track error
@@ -449,14 +452,22 @@ impl Quantizer {
             } else {
                 f32::INFINITY
             },
-            compression_ratio: compute_compression_ratio(values.len(), packed.len(), scales.len(), Some(zero_points.len())),
+            compression_ratio: compute_compression_ratio(
+                values.len(),
+                packed.len(),
+                scales.len(),
+                Some(zero_points.len()),
+            ),
         };
 
         (packed, scales, Some(zero_points), stats)
     }
 
     /// Quantizes values using INT8 symmetric quantization.
-    fn quantize_int8_symmetric(&self, values: &[f32]) -> (Vec<u8>, Vec<half::f16>, Option<Vec<i8>>, QuantizeStats) {
+    fn quantize_int8_symmetric(
+        &self,
+        values: &[f32],
+    ) -> (Vec<u8>, Vec<half::f16>, Option<Vec<i8>>, QuantizeStats) {
         let block_size = self.config.block_size;
         let num_blocks = (values.len() + block_size - 1) / block_size;
 
@@ -503,14 +514,18 @@ impl Quantizer {
             } else {
                 f32::INFINITY
             },
-            compression_ratio: (values.len() * 4) as f32 / (quantized.len() + scales.len() * 2) as f32,
+            compression_ratio: (values.len() * 4) as f32
+                / (quantized.len() + scales.len() * 2) as f32,
         };
 
         (quantized, scales, None, stats)
     }
 
     /// Quantizes values using INT8 asymmetric quantization.
-    fn quantize_int8_asymmetric(&self, values: &[f32]) -> (Vec<u8>, Vec<half::f16>, Option<Vec<i8>>, QuantizeStats) {
+    fn quantize_int8_asymmetric(
+        &self,
+        values: &[f32],
+    ) -> (Vec<u8>, Vec<half::f16>, Option<Vec<i8>>, QuantizeStats) {
         let block_size = self.config.block_size;
         let num_blocks = (values.len() + block_size - 1) / block_size;
 
@@ -527,9 +542,11 @@ impl Quantizer {
             let end = (start + block_size).min(values.len());
             let block = &values[start..end];
 
-            let (min_val, max_val) = block.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &v| {
-                (min.min(v), max.max(v))
-            });
+            let (min_val, max_val) = block
+                .iter()
+                .fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &v| {
+                    (min.min(v), max.max(v))
+                });
 
             let range = max_val - min_val;
             let scale = if range > 1e-10 { range / 255.0 } else { 1.0 };
@@ -565,7 +582,8 @@ impl Quantizer {
             } else {
                 f32::INFINITY
             },
-            compression_ratio: (values.len() * 4) as f32 / (quantized.len() + scales.len() * 2 + zero_points.len()) as f32,
+            compression_ratio: (values.len() * 4) as f32
+                / (quantized.len() + scales.len() * 2 + zero_points.len()) as f32,
         };
 
         (quantized, scales, Some(zero_points), stats)
@@ -576,18 +594,10 @@ impl Quantizer {
     /// This is useful for verification and comparison.
     pub fn dequantize(&self, quantized: &QuantizedTensor) -> Result<Tensor, QuantizeError> {
         let values = match quantized.format {
-            QuantizeFormat::Int4Symmetric => {
-                self.dequantize_int4_symmetric(quantized)
-            }
-            QuantizeFormat::Int4Asymmetric => {
-                self.dequantize_int4_asymmetric(quantized)?
-            }
-            QuantizeFormat::Int8Symmetric => {
-                self.dequantize_int8_symmetric(quantized)
-            }
-            QuantizeFormat::Int8Asymmetric => {
-                self.dequantize_int8_asymmetric(quantized)?
-            }
+            QuantizeFormat::Int4Symmetric => self.dequantize_int4_symmetric(quantized),
+            QuantizeFormat::Int4Asymmetric => self.dequantize_int4_asymmetric(quantized)?,
+            QuantizeFormat::Int8Symmetric => self.dequantize_int8_symmetric(quantized),
+            QuantizeFormat::Int8Asymmetric => self.dequantize_int8_asymmetric(quantized)?,
         };
 
         Tensor::from_vec(values, quantized.shape.as_slice(), &Device::Cpu)
@@ -607,9 +617,14 @@ impl Quantizer {
         values
     }
 
-    fn dequantize_int4_asymmetric(&self, quantized: &QuantizedTensor) -> Result<Vec<f32>, QuantizeError> {
+    fn dequantize_int4_asymmetric(
+        &self,
+        quantized: &QuantizedTensor,
+    ) -> Result<Vec<f32>, QuantizeError> {
         let unpacked = unpack_int4_unsigned(&quantized.data, quantized.num_values);
-        let zero_points = quantized.zero_points.as_ref()
+        let zero_points = quantized
+            .zero_points
+            .as_ref()
             .ok_or(QuantizeError::MissingZeroPoints)?;
         let mut values = Vec::with_capacity(quantized.num_values);
 
@@ -635,8 +650,13 @@ impl Quantizer {
         values
     }
 
-    fn dequantize_int8_asymmetric(&self, quantized: &QuantizedTensor) -> Result<Vec<f32>, QuantizeError> {
-        let zero_points = quantized.zero_points.as_ref()
+    fn dequantize_int8_asymmetric(
+        &self,
+        quantized: &QuantizedTensor,
+    ) -> Result<Vec<f32>, QuantizeError> {
+        let zero_points = quantized
+            .zero_points
+            .as_ref()
             .ok_or(QuantizeError::MissingZeroPoints)?;
         let mut values = Vec::with_capacity(quantized.num_values);
 
@@ -746,9 +766,7 @@ fn compute_compression_ratio(
     let original_bytes = num_values * 4;
 
     // Quantized: packed data + scales (2 bytes each) + optional zero points (1 byte each)
-    let quantized_bytes = packed_bytes
-        + num_scales * 2
-        + num_zero_points.unwrap_or(0);
+    let quantized_bytes = packed_bytes + num_scales * 2 + num_zero_points.unwrap_or(0);
 
     original_bytes as f32 / quantized_bytes as f32
 }
@@ -840,7 +858,9 @@ impl RuntimeQuantConfig {
     /// Checks if a tensor name should be excluded from quantization.
     pub fn should_exclude(&self, name: &str) -> bool {
         let name_lower = name.to_lowercase();
-        self.exclude_patterns.iter().any(|p| name_lower.contains(&p.to_lowercase()))
+        self.exclude_patterns
+            .iter()
+            .any(|p| name_lower.contains(&p.to_lowercase()))
     }
 }
 
@@ -962,11 +982,12 @@ impl RuntimeQuantizedStore {
             && matches!(tensor.dtype(), DType::F32 | DType::F16 | DType::BF16);
 
         if should_quantize {
-            let original_size = tensor.elem_count() * match tensor.dtype() {
-                DType::F32 => 4,
-                DType::F16 | DType::BF16 => 2,
-                _ => 4,
-            };
+            let original_size = tensor.elem_count()
+                * match tensor.dtype() {
+                    DType::F32 => 4,
+                    DType::F16 | DType::BF16 => 2,
+                    _ => 4,
+                };
 
             let quantized = RuntimeQuantizedWeight::from_tensor(&tensor, &self.config)?;
             let quantized_size = quantized.memory_bytes();
@@ -1123,7 +1144,11 @@ mod tests {
             .map(|(a, b)| (a - b).abs())
             .fold(0.0f32, f32::max);
 
-        assert!(max_error < 0.20, "Max error {} too large for INT4", max_error);
+        assert!(
+            max_error < 0.20,
+            "Max error {} too large for INT4",
+            max_error
+        );
     }
 
     #[test]
@@ -1281,7 +1306,11 @@ mod tests {
             .fold(0.0f32, f32::max);
 
         // INT8 should have smaller error than INT4
-        assert!(max_error < 0.01, "Max error {} too large for INT8", max_error);
+        assert!(
+            max_error < 0.01,
+            "Max error {} too large for INT8",
+            max_error
+        );
     }
 
     #[test]
@@ -1294,11 +1323,7 @@ mod tests {
 
         // INT4 should achieve ~6-8x compression for large tensors
         let ratio = quantized.compression_ratio();
-        assert!(
-            ratio > 5.0,
-            "Compression ratio {} too low for INT4",
-            ratio
-        );
+        assert!(ratio > 5.0, "Compression ratio {} too low for INT4", ratio);
     }
 
     #[test]
@@ -1320,7 +1345,9 @@ mod tests {
         let values: Vec<f32> = (0..2048).map(|i| (i as f32 - 1024.0) * 0.001).collect();
         let tensor = Tensor::from_vec(values, &[2048], &Device::Cpu).unwrap();
 
-        store.insert("model.layers.0.self_attn.q_proj.weight".to_string(), tensor).unwrap();
+        store
+            .insert("model.layers.0.self_attn.q_proj.weight".to_string(), tensor)
+            .unwrap();
 
         assert_eq!(store.len(), 1);
         assert_eq!(store.num_quantized(), 1);
@@ -1337,7 +1364,9 @@ mod tests {
         let tensor = Tensor::from_vec(values, &[2048], &Device::Cpu).unwrap();
 
         // Insert a norm layer (should be excluded)
-        store.insert("model.layers.0.input_layernorm.weight".to_string(), tensor).unwrap();
+        store
+            .insert("model.layers.0.input_layernorm.weight".to_string(), tensor)
+            .unwrap();
 
         assert_eq!(store.len(), 1);
         assert_eq!(store.num_quantized(), 0);
@@ -1392,7 +1421,9 @@ mod tests {
         let tensor = Tensor::from_vec(values.clone(), &[2048], &Device::Cpu).unwrap();
 
         // Insert as excluded (norm layer)
-        store.insert("model.norm.weight".to_string(), tensor).unwrap();
+        store
+            .insert("model.norm.weight".to_string(), tensor)
+            .unwrap();
 
         let retrieved = store.get("model.norm.weight").unwrap().unwrap();
 
@@ -1417,9 +1448,13 @@ mod tests {
 
         // Insert multiple weights
         for i in 0..10 {
-            let values: Vec<f32> = (0..2048).map(|j| (j as f32 + i as f32 * 100.0) * 0.001).collect();
+            let values: Vec<f32> = (0..2048)
+                .map(|j| (j as f32 + i as f32 * 100.0) * 0.001)
+                .collect();
             let tensor = Tensor::from_vec(values, &[2048], &Device::Cpu).unwrap();
-            store.insert(format!("model.layers.{}.weight", i), tensor).unwrap();
+            store
+                .insert(format!("model.layers.{}.weight", i), tensor)
+                .unwrap();
         }
 
         assert_eq!(store.len(), 10);
@@ -1435,8 +1470,12 @@ mod tests {
         // Insert quantized and passthrough weights
         let values: Vec<f32> = (0..2048).map(|i| i as f32 * 0.001).collect();
         let tensor = Tensor::from_vec(values.clone(), &[2048], &Device::Cpu).unwrap();
-        store.insert("q_proj.weight".to_string(), tensor.clone()).unwrap();
-        store.insert("model.norm.weight".to_string(), tensor).unwrap();
+        store
+            .insert("q_proj.weight".to_string(), tensor.clone())
+            .unwrap();
+        store
+            .insert("model.norm.weight".to_string(), tensor)
+            .unwrap();
 
         let names: Vec<&String> = store.names().collect();
         assert_eq!(names.len(), 2);
@@ -1469,13 +1508,15 @@ mod tests {
             .iter()
             .zip(int4_deq.iter())
             .map(|(a, b)| (a - b).abs())
-            .sum::<f32>() / values.len() as f32;
+            .sum::<f32>()
+            / values.len() as f32;
 
         let int8_error: f32 = values
             .iter()
             .zip(int8_deq.iter())
             .map(|(a, b)| (a - b).abs())
-            .sum::<f32>() / values.len() as f32;
+            .sum::<f32>()
+            / values.len() as f32;
 
         assert!(
             int8_error < int4_error,
@@ -1505,7 +1546,9 @@ mod tests {
 
         // Insert several large weights
         for i in 0..5 {
-            let values: Vec<f32> = (0..8192).map(|j| (j as f32 + i as f32 * 1000.0) * 0.0001).collect();
+            let values: Vec<f32> = (0..8192)
+                .map(|j| (j as f32 + i as f32 * 1000.0) * 0.0001)
+                .collect();
             let tensor = Tensor::from_vec(values, &[8192], &Device::Cpu).unwrap();
             store.insert(format!("layer.{}.weight", i), tensor).unwrap();
         }
@@ -1514,6 +1557,10 @@ mod tests {
         // 5 * 8192 * 4 bytes = 163,840 bytes original
         // INT4 should compress to ~1/6th = ~27,000 bytes
         // Memory saved should be ~136,000 bytes
-        assert!(store.memory_saved() > 100_000, "Memory saved {} too low", store.memory_saved());
+        assert!(
+            store.memory_saved() > 100_000,
+            "Memory saved {} too low",
+            store.memory_saved()
+        );
     }
 }

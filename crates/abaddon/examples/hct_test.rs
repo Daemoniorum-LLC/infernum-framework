@@ -4,9 +4,9 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
-use haagenti::holotensor::{HoloTensorReader, HoloTensorDecoder, HolographicEncoding};
-use candle_core::Device;
 use abaddon::hct::HctLoader;
+use candle_core::Device;
+use haagenti::holotensor::{HoloTensorDecoder, HoloTensorReader, HolographicEncoding};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).ok_or("Pass HCT file path")?;
@@ -32,7 +32,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if frag.data.len() >= 12 {
             let rows = u32::from_le_bytes([frag.data[0], frag.data[1], frag.data[2], frag.data[3]]);
             let cols = u32::from_le_bytes([frag.data[4], frag.data[5], frag.data[6], frag.data[7]]);
-            let num_comp = u32::from_le_bytes([frag.data[8], frag.data[9], frag.data[10], frag.data[11]]);
+            let num_comp =
+                u32::from_le_bytes([frag.data[8], frag.data[9], frag.data[10], frag.data[11]]);
             let format = if num_comp == 0xFFFFFFFF { "RAW" } else { "SVD" };
             println!("  LRDF: rows={}, cols={}, format={}", rows, cols, format);
         }
@@ -45,11 +46,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let haagenti_data = decoder.reconstruct()?;
 
     let h_min = haagenti_data.iter().cloned().fold(f32::INFINITY, f32::min);
-    let h_max = haagenti_data.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let h_max = haagenti_data
+        .iter()
+        .cloned()
+        .fold(f32::NEG_INFINITY, f32::max);
     let h_mean: f32 = haagenti_data.iter().sum::<f32>() / haagenti_data.len() as f32;
-    println!("  Result: {} values, min={:.6}, max={:.6}, mean={:.6}",
-             haagenti_data.len(), h_min, h_max, h_mean);
-    println!("  First 5: {:?}", &haagenti_data[..5.min(haagenti_data.len())]);
+    println!(
+        "  Result: {} values, min={:.6}, max={:.6}, mean={:.6}",
+        haagenti_data.len(),
+        h_min,
+        h_max,
+        h_mean
+    );
+    println!(
+        "  First 5: {:?}",
+        &haagenti_data[..5.min(haagenti_data.len())]
+    );
 
     // === Method 2: HctLoader (what inference actually uses) ===
     println!("\n=== Method 2: HctLoader (inference path) ===");
@@ -70,15 +82,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let l_min = hct_data.iter().cloned().fold(f32::INFINITY, f32::min);
     let l_max = hct_data.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let l_mean: f32 = hct_data.iter().sum::<f32>() / hct_data.len() as f32;
-    println!("  Result: {} values, min={:.6}, max={:.6}, mean={:.6}",
-             hct_data.len(), l_min, l_max, l_mean);
+    println!(
+        "  Result: {} values, min={:.6}, max={:.6}, mean={:.6}",
+        hct_data.len(),
+        l_min,
+        l_max,
+        l_mean
+    );
     println!("  First 5: {:?}", &hct_data[..5.min(hct_data.len())]);
 
     // === Comparison ===
     println!("\n=== Comparison ===");
     if haagenti_data.len() != hct_data.len() {
-        println!("  ERROR: Length mismatch! haagenti={} vs hctloader={}",
-                 haagenti_data.len(), hct_data.len());
+        println!(
+            "  ERROR: Length mismatch! haagenti={} vs hctloader={}",
+            haagenti_data.len(),
+            hct_data.len()
+        );
     } else {
         let mut max_diff = 0.0f32;
         let mut total_diff = 0.0f64;
@@ -93,8 +113,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if diff > 1e-5 {
                 mismatches += 1;
                 if mismatches <= 5 {
-                    println!("  Mismatch at [{}]: haagenti={:.8} vs hctloader={:.8} (diff={:.8})",
-                             i, a, b, diff);
+                    println!(
+                        "  Mismatch at [{}]: haagenti={:.8} vs hctloader={:.8} (diff={:.8})",
+                        i, a, b, diff
+                    );
                 }
             }
         }

@@ -12,10 +12,8 @@
 //! compatibility. Each snapshot includes all relevant metrics except
 //! the internal Instant timestamp (which is recreated on load).
 
-use crate::wellbeing::{
-    DistressSignal, Intervention, WellbeingSnapshot, WellbeingState,
-};
 use crate::ooda::OodaPhase;
+use crate::wellbeing::{DistressSignal, Intervention, WellbeingSnapshot, WellbeingState};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -202,8 +200,8 @@ impl PersistedHistory {
 /// Saves wellbeing history to a JSON file.
 pub async fn save_history(history: &PersistedHistory, path: impl AsRef<Path>) -> Result<()> {
     let path = path.as_ref();
-    let json = serde_json::to_string_pretty(history)
-        .context("Failed to serialize wellbeing history")?;
+    let json =
+        serde_json::to_string_pretty(history).context("Failed to serialize wellbeing history")?;
 
     // Create parent directory if needed
     if let Some(parent) = path.parent() {
@@ -239,8 +237,8 @@ pub async fn load_history(path: impl AsRef<Path>) -> Result<PersistedHistory> {
         .await
         .context("Failed to read wellbeing history file")?;
 
-    let history: PersistedHistory = serde_json::from_str(&json)
-        .context("Failed to parse wellbeing history")?;
+    let history: PersistedHistory =
+        serde_json::from_str(&json).context("Failed to parse wellbeing history")?;
 
     info!(
         "Loaded wellbeing history for '{}' ({} snapshots) from {}",
@@ -269,7 +267,7 @@ pub async fn load_or_create_history(
                 );
                 PersistedHistory::new(agent_id)
             }
-        }
+        },
         Err(_) => PersistedHistory::new(agent_id),
     }
 }
@@ -282,8 +280,7 @@ pub fn default_history_path(agent_id: &str) -> std::path::PathBuf {
         .ok()
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
-            dirs::data_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("/var/lib"))
+            dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from("/var/lib"))
         });
 
     base.join("infernum")
@@ -294,7 +291,13 @@ pub fn default_history_path(agent_id: &str) -> std::path::PathBuf {
 /// Sanitizes a string for use as a filename.
 fn sanitize_filename(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 

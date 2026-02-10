@@ -5,12 +5,11 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Instant;
 use std::thread;
+use std::time::Instant;
 
 use abaddon::holotensor::arena::{
-    FragmentArena, ArenaConfig, ArenaStats,
-    ThreadLocalArena, ArenaAllocator,
+    ArenaAllocator, ArenaConfig, ArenaStats, FragmentArena, ThreadLocalArena,
 };
 
 // =============================================================================
@@ -97,11 +96,21 @@ fn test_arena_reuses_memory() {
     let ptr4 = arena.alloc(4096);
 
     // Should reuse same memory region
-    assert_eq!(arena.base_ptr(), first_base, "Base pointer should be same after reset");
+    assert_eq!(
+        arena.base_ptr(),
+        first_base,
+        "Base pointer should be same after reset"
+    );
 
     // New allocations should be at same offsets
-    assert_eq!(ptr3, ptr1, "First allocation after reset should be at same address");
-    assert_eq!(ptr4, ptr2, "Second allocation after reset should be at same address");
+    assert_eq!(
+        ptr3, ptr1,
+        "First allocation after reset should be at same address"
+    );
+    assert_eq!(
+        ptr4, ptr2,
+        "Second allocation after reset should be at same address"
+    );
 
     let stats = arena.stats();
     assert_eq!(stats.reset_count, 1);
@@ -159,7 +168,8 @@ impl CountingAllocator {
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         self.alloc_count.fetch_add(1, Ordering::SeqCst);
-        self.bytes_allocated.fetch_add(layout.size(), Ordering::SeqCst);
+        self.bytes_allocated
+            .fetch_add(layout.size(), Ordering::SeqCst);
         self.inner.alloc(layout)
     }
 
@@ -201,7 +211,10 @@ fn test_arena_reduces_allocations() {
     assert_eq!(arena.system_alloc_count(), 1);
 
     println!("Vec allocations: {}", vec_allocs);
-    println!("Arena allocation count: {}", arena_stats_after.allocation_count);
+    println!(
+        "Arena allocation count: {}",
+        arena_stats_after.allocation_count
+    );
     println!("Arena system allocations: {}", arena.system_alloc_count());
 }
 
@@ -297,9 +310,7 @@ fn test_arena_thread_safe() {
         .map(|thread_id| {
             thread::spawn(move || {
                 // Each thread gets its own arena
-                let arena = ThreadLocalArena::get_or_init(|| {
-                    FragmentArena::new(1024 * 1024)
-                });
+                let arena = ThreadLocalArena::get_or_init(|| FragmentArena::new(1024 * 1024));
 
                 let mut ptrs = Vec::new();
                 for _ in 0..100 {
@@ -338,8 +349,8 @@ fn test_arena_thread_safe() {
 
 #[test]
 fn test_thread_local_arena_isolation() {
-    use std::sync::Arc;
     use std::sync::atomic::AtomicPtr;
+    use std::sync::Arc;
 
     // Track arena base addresses from each thread
     let addresses: Vec<Arc<AtomicPtr<u8>>> = (0..4)
@@ -352,9 +363,7 @@ fn test_thread_local_arena_isolation() {
         .map(|(i, addr_holder)| {
             let addr = Arc::clone(addr_holder);
             thread::spawn(move || {
-                let arena = ThreadLocalArena::get_or_init(|| {
-                    FragmentArena::new(1024 * 1024)
-                });
+                let arena = ThreadLocalArena::get_or_init(|| FragmentArena::new(1024 * 1024));
                 addr.store(arena.base_ptr(), Ordering::SeqCst);
 
                 // Do some allocations
@@ -443,7 +452,8 @@ fn test_arena_allocator_fragment_buffer() {
             assert!(
                 end_i <= start_j || end_j <= start_i,
                 "Buffers {} and {} overlap",
-                i, j
+                i,
+                j
             );
         }
     }

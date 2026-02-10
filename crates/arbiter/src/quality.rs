@@ -2,9 +2,9 @@
 //!
 //! Manages quality targets based on available resources and priorities.
 
-use serde::{Deserialize, Serialize};
-use crate::priority::{Priority, WorkloadType};
 use crate::memory::MemoryPressure;
+use crate::priority::{Priority, WorkloadType};
+use serde::{Deserialize, Serialize};
 
 /// Policy for quality allocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -232,12 +232,7 @@ impl QualityCalculator {
     }
 
     /// Calculates quality for a workload given current pressure.
-    pub fn calculate(
-        &self,
-        workload: WorkloadType,
-        priority: Priority,
-        pressure: f32,
-    ) -> f32 {
+    pub fn calculate(&self, workload: WorkloadType, priority: Priority, pressure: f32) -> f32 {
         let base = self.budget.for_workload(workload);
         let pressure_factor = 1.0 - (pressure * 0.5); // 50% max reduction
         let priority_factor = priority.quality_multiplier();

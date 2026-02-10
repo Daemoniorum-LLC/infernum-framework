@@ -179,8 +179,14 @@ impl MemoryEntry {
     pub fn matches(&self, query: &str) -> bool {
         let query_lower = query.to_lowercase();
         self.content.to_lowercase().contains(&query_lower)
-            || self.summary.as_ref().map_or(false, |s| s.to_lowercase().contains(&query_lower))
-            || self.tags.iter().any(|t| t.to_lowercase().contains(&query_lower))
+            || self
+                .summary
+                .as_ref()
+                .map_or(false, |s| s.to_lowercase().contains(&query_lower))
+            || self
+                .tags
+                .iter()
+                .any(|t| t.to_lowercase().contains(&query_lower))
     }
 }
 
@@ -232,8 +238,9 @@ impl LongTermMemory {
 
         // Create directory structure
         if !base_dir.exists() {
-            fs::create_dir_all(&base_dir)
-                .map_err(|e| infernum_core::Error::internal(format!("Failed to create memory dir: {}", e)))?;
+            fs::create_dir_all(&base_dir).map_err(|e| {
+                infernum_core::Error::internal(format!("Failed to create memory dir: {}", e))
+            })?;
         }
 
         // Create subdirectories for each memory type
@@ -249,8 +256,9 @@ impl LongTermMemory {
         ] {
             let type_dir = base_dir.join(memory_type.dir_name());
             if !type_dir.exists() {
-                fs::create_dir_all(&type_dir)
-                    .map_err(|e| infernum_core::Error::internal(format!("Failed to create type dir: {}", e)))?;
+                fs::create_dir_all(&type_dir).map_err(|e| {
+                    infernum_core::Error::internal(format!("Failed to create type dir: {}", e))
+                })?;
             }
         }
 
@@ -329,21 +337,14 @@ impl LongTermMemory {
 
     /// Searches for memories matching a query.
     pub fn search(&self, query: &str) -> Vec<&MemoryEntry> {
-        self.cache
-            .values()
-            .filter(|e| e.matches(query))
-            .collect()
+        self.cache.values().filter(|e| e.matches(query)).collect()
     }
 
     /// Gets memories by type.
     pub fn get_by_type(&self, memory_type: MemoryType) -> Vec<&MemoryEntry> {
         self.type_index
             .get(&memory_type)
-            .map(|ids| {
-                ids.iter()
-                    .filter_map(|id| self.cache.get(id))
-                    .collect()
-            })
+            .map(|ids| ids.iter().filter_map(|id| self.cache.get(id)).collect())
             .unwrap_or_default()
     }
 
@@ -351,16 +352,16 @@ impl LongTermMemory {
     pub fn get_by_tag(&self, tag: &str) -> Vec<&MemoryEntry> {
         self.tag_index
             .get(tag)
-            .map(|ids| {
-                ids.iter()
-                    .filter_map(|id| self.cache.get(id))
-                    .collect()
-            })
+            .map(|ids| ids.iter().filter_map(|id| self.cache.get(id)).collect())
             .unwrap_or_default()
     }
 
     /// Gets the most important memories.
-    pub fn get_important(&self, min_importance: ImportanceLevel, limit: usize) -> Vec<&MemoryEntry> {
+    pub fn get_important(
+        &self,
+        min_importance: ImportanceLevel,
+        limit: usize,
+    ) -> Vec<&MemoryEntry> {
         let mut entries: Vec<_> = self
             .cache
             .values()
@@ -401,8 +402,9 @@ impl LongTermMemory {
             // Delete from disk
             let path = self.entry_path(&entry);
             if path.exists() {
-                fs::remove_file(&path)
-                    .map_err(|e| infernum_core::Error::internal(format!("Failed to delete: {}", e)))?;
+                fs::remove_file(&path).map_err(|e| {
+                    infernum_core::Error::internal(format!("Failed to delete: {}", e))
+                })?;
             }
 
             return Ok(true);
@@ -453,10 +455,10 @@ impl LongTermMemory {
             let entry_a = self.cache.get(a);
             let entry_b = self.cache.get(b);
             match (entry_a, entry_b) {
-                (Some(a), Some(b)) => {
-                    a.importance.cmp(&b.importance)
-                        .then(a.last_accessed.cmp(&b.last_accessed))
-                }
+                (Some(a), Some(b)) => a
+                    .importance
+                    .cmp(&b.importance)
+                    .then(a.last_accessed.cmp(&b.last_accessed)),
                 _ => std::cmp::Ordering::Equal,
             }
         });
@@ -491,12 +493,17 @@ impl LongTermMemory {
     fn load_entry(&self, id: &str) -> Result<MemoryEntry> {
         // Use ID-to-type index for O(1) lookup if available
         if let Some(memory_type) = self.id_type_index.get(id) {
-            let path = self.base_dir.join(memory_type.dir_name()).join(format!("{}.json", id));
+            let path = self
+                .base_dir
+                .join(memory_type.dir_name())
+                .join(format!("{}.json", id));
             if path.exists() {
-                let content = fs::read_to_string(&path)
-                    .map_err(|e| infernum_core::Error::internal(format!("Failed to read: {}", e)))?;
-                let entry: MemoryEntry = serde_json::from_str(&content)
-                    .map_err(|e| infernum_core::Error::internal(format!("Failed to parse: {}", e)))?;
+                let content = fs::read_to_string(&path).map_err(|e| {
+                    infernum_core::Error::internal(format!("Failed to read: {}", e))
+                })?;
+                let entry: MemoryEntry = serde_json::from_str(&content).map_err(|e| {
+                    infernum_core::Error::internal(format!("Failed to parse: {}", e))
+                })?;
                 return Ok(entry);
             }
         }
@@ -512,16 +519,24 @@ impl LongTermMemory {
             MemoryType::UserPreference,
             MemoryType::CodePattern,
         ] {
-            let path = self.base_dir.join(memory_type.dir_name()).join(format!("{}.json", id));
+            let path = self
+                .base_dir
+                .join(memory_type.dir_name())
+                .join(format!("{}.json", id));
             if path.exists() {
-                let content = fs::read_to_string(&path)
-                    .map_err(|e| infernum_core::Error::internal(format!("Failed to read: {}", e)))?;
-                let entry: MemoryEntry = serde_json::from_str(&content)
-                    .map_err(|e| infernum_core::Error::internal(format!("Failed to parse: {}", e)))?;
+                let content = fs::read_to_string(&path).map_err(|e| {
+                    infernum_core::Error::internal(format!("Failed to read: {}", e))
+                })?;
+                let entry: MemoryEntry = serde_json::from_str(&content).map_err(|e| {
+                    infernum_core::Error::internal(format!("Failed to parse: {}", e))
+                })?;
                 return Ok(entry);
             }
         }
-        Err(infernum_core::Error::internal(format!("Entry not found: {}", id)))
+        Err(infernum_core::Error::internal(format!(
+            "Entry not found: {}",
+            id
+        )))
     }
 
     fn load_all(&mut self) -> Result<()> {
@@ -655,9 +670,24 @@ mod tests {
     fn test_long_term_memory_search() {
         let (mut memory, _temp) = create_test_memory();
 
-        memory.store(MemoryEntry::new(MemoryType::Context, "Rust is a systems language")).ok();
-        memory.store(MemoryEntry::new(MemoryType::Context, "Python is interpreted")).ok();
-        memory.store(MemoryEntry::new(MemoryType::Context, "Rust has zero-cost abstractions")).ok();
+        memory
+            .store(MemoryEntry::new(
+                MemoryType::Context,
+                "Rust is a systems language",
+            ))
+            .ok();
+        memory
+            .store(MemoryEntry::new(
+                MemoryType::Context,
+                "Python is interpreted",
+            ))
+            .ok();
+        memory
+            .store(MemoryEntry::new(
+                MemoryType::Context,
+                "Rust has zero-cost abstractions",
+            ))
+            .ok();
 
         let results = memory.search("rust");
         assert_eq!(results.len(), 2);
@@ -667,9 +697,15 @@ mod tests {
     fn test_long_term_memory_get_by_type() {
         let (mut memory, _temp) = create_test_memory();
 
-        memory.store(MemoryEntry::new(MemoryType::Decision, "Decision 1")).ok();
-        memory.store(MemoryEntry::new(MemoryType::Decision, "Decision 2")).ok();
-        memory.store(MemoryEntry::new(MemoryType::Context, "Context 1")).ok();
+        memory
+            .store(MemoryEntry::new(MemoryType::Decision, "Decision 1"))
+            .ok();
+        memory
+            .store(MemoryEntry::new(MemoryType::Decision, "Decision 2"))
+            .ok();
+        memory
+            .store(MemoryEntry::new(MemoryType::Context, "Context 1"))
+            .ok();
 
         let decisions = memory.get_by_type(MemoryType::Decision);
         assert_eq!(decisions.len(), 2);
@@ -679,9 +715,15 @@ mod tests {
     fn test_long_term_memory_get_by_tag() {
         let (mut memory, _temp) = create_test_memory();
 
-        memory.store(MemoryEntry::new(MemoryType::Context, "Content 1").with_tag("important")).ok();
-        memory.store(MemoryEntry::new(MemoryType::Context, "Content 2").with_tag("important")).ok();
-        memory.store(MemoryEntry::new(MemoryType::Context, "Content 3").with_tag("other")).ok();
+        memory
+            .store(MemoryEntry::new(MemoryType::Context, "Content 1").with_tag("important"))
+            .ok();
+        memory
+            .store(MemoryEntry::new(MemoryType::Context, "Content 2").with_tag("important"))
+            .ok();
+        memory
+            .store(MemoryEntry::new(MemoryType::Context, "Content 3").with_tag("other"))
+            .ok();
 
         let important = memory.get_by_tag("important");
         assert_eq!(important.len(), 2);
@@ -691,9 +733,23 @@ mod tests {
     fn test_long_term_memory_get_important() {
         let (mut memory, _temp) = create_test_memory();
 
-        memory.store(MemoryEntry::new(MemoryType::Context, "Low").with_importance(ImportanceLevel::Low)).ok();
-        memory.store(MemoryEntry::new(MemoryType::Context, "High").with_importance(ImportanceLevel::High)).ok();
-        memory.store(MemoryEntry::new(MemoryType::Context, "Critical").with_importance(ImportanceLevel::Critical)).ok();
+        memory
+            .store(
+                MemoryEntry::new(MemoryType::Context, "Low").with_importance(ImportanceLevel::Low),
+            )
+            .ok();
+        memory
+            .store(
+                MemoryEntry::new(MemoryType::Context, "High")
+                    .with_importance(ImportanceLevel::High),
+            )
+            .ok();
+        memory
+            .store(
+                MemoryEntry::new(MemoryType::Context, "Critical")
+                    .with_importance(ImportanceLevel::Critical),
+            )
+            .ok();
 
         let important = memory.get_important(ImportanceLevel::High, 10);
         assert_eq!(important.len(), 2);
@@ -703,7 +759,8 @@ mod tests {
     fn test_long_term_memory_delete() {
         let (mut memory, _temp) = create_test_memory();
 
-        let id = memory.store(MemoryEntry::new(MemoryType::Context, "To delete"))
+        let id = memory
+            .store(MemoryEntry::new(MemoryType::Context, "To delete"))
             .expect("Failed to store");
 
         assert!(memory.get(&id).is_some());
@@ -715,9 +772,19 @@ mod tests {
     fn test_long_term_memory_stats() {
         let (mut memory, _temp) = create_test_memory();
 
-        memory.store(MemoryEntry::new(MemoryType::Decision, "D1").with_importance(ImportanceLevel::High)).ok();
-        memory.store(MemoryEntry::new(MemoryType::Decision, "D2").with_importance(ImportanceLevel::Low)).ok();
-        memory.store(MemoryEntry::new(MemoryType::Context, "C1")).ok();
+        memory
+            .store(
+                MemoryEntry::new(MemoryType::Decision, "D1").with_importance(ImportanceLevel::High),
+            )
+            .ok();
+        memory
+            .store(
+                MemoryEntry::new(MemoryType::Decision, "D2").with_importance(ImportanceLevel::Low),
+            )
+            .ok();
+        memory
+            .store(MemoryEntry::new(MemoryType::Context, "C1"))
+            .ok();
 
         let stats = memory.stats();
         assert_eq!(stats.total_entries, 3);

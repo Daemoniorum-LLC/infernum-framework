@@ -774,10 +774,8 @@ pub trait InfernumService: Send + Sync + 'static {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatCompletionChunk, Status>> + Send>>, GrpcError>;
 
     /// Text completion.
-    async fn completion(
-        &self,
-        request: CompletionRequest,
-    ) -> Result<CompletionResponse, GrpcError>;
+    async fn completion(&self, request: CompletionRequest)
+        -> Result<CompletionResponse, GrpcError>;
 
     /// Streaming text completion.
     async fn completion_stream(
@@ -938,7 +936,8 @@ impl InfernumService for MockInfernumService {
     async fn completion_stream(
         &self,
         request: CompletionRequest,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<CompletionChunk, Status>> + Send>>, GrpcError> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<CompletionChunk, Status>> + Send>>, GrpcError>
+    {
         self.metrics.record_request();
         self.metrics.stream_start();
 
@@ -1090,10 +1089,19 @@ mod tests {
 
     #[test]
     fn test_grpc_priority_to_batch_priority() {
-        assert_eq!(BatchPriority::from(GrpcPriority::Background), BatchPriority::Background);
-        assert_eq!(BatchPriority::from(GrpcPriority::Normal), BatchPriority::Normal);
+        assert_eq!(
+            BatchPriority::from(GrpcPriority::Background),
+            BatchPriority::Background
+        );
+        assert_eq!(
+            BatchPriority::from(GrpcPriority::Normal),
+            BatchPriority::Normal
+        );
         assert_eq!(BatchPriority::from(GrpcPriority::High), BatchPriority::High);
-        assert_eq!(BatchPriority::from(GrpcPriority::Critical), BatchPriority::Critical);
+        assert_eq!(
+            BatchPriority::from(GrpcPriority::Critical),
+            BatchPriority::Critical
+        );
     }
 
     #[test]

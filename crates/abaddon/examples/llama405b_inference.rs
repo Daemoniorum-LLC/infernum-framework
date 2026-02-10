@@ -51,8 +51,14 @@ fn main() -> Result<()> {
     };
 
     println!("Memory configuration:");
-    println!("  VRAM budget: {} GB", config.vram_budget / (1024 * 1024 * 1024));
-    println!("  RAM budget: {} GB", config.ram_budget / (1024 * 1024 * 1024));
+    println!(
+        "  VRAM budget: {} GB",
+        config.vram_budget / (1024 * 1024 * 1024)
+    );
+    println!(
+        "  RAM budget: {} GB",
+        config.ram_budget / (1024 * 1024 * 1024)
+    );
     println!();
 
     // Create the tiered loader
@@ -68,13 +74,23 @@ fn main() -> Result<()> {
         loader = loader.with_safetensors_dir(safetensors_dir);
         println!("Safetensors fast-load: ENABLED (100x faster loading!)");
     } else {
-        println!("Safetensors directory not found: {}", safetensors_dir.display());
+        println!(
+            "Safetensors directory not found: {}",
+            safetensors_dir.display()
+        );
         println!("  Run 'holo_to_safetensors' to pre-convert for faster loading");
     }
 
     let loader = Arc::new(loader);
     println!("TieredHoloLoader created in {:?}", start.elapsed());
-    println!("GPU acceleration: {}", if loader.is_gpu_enabled() { "enabled" } else { "disabled (CPU fallback)" });
+    println!(
+        "GPU acceleration: {}",
+        if loader.is_gpu_enabled() {
+            "enabled"
+        } else {
+            "disabled (CPU fallback)"
+        }
+    );
 
     // Create LazyVarBuilder
     let provider: Arc<dyn TensorProvider> = Arc::clone(&loader) as Arc<dyn TensorProvider>;
@@ -119,19 +135,22 @@ fn main() -> Result<()> {
                     size_mb,
                     elapsed
                 );
-            }
+            },
             Err(e) => {
                 println!("  ✗ {}: {}", name, e);
-            }
+            },
         }
     }
 
     println!("\n--- Creating LazyLlama Model ---");
-    println!("Config: {} layers, {} hidden, {} heads, {} KV heads",
+    println!(
+        "Config: {} layers, {} hidden, {} heads, {} KV heads",
         model_config.num_hidden_layers,
         model_config.hidden_size,
         model_config.num_attention_heads,
-        model_config.num_key_value_heads.unwrap_or(model_config.num_attention_heads)
+        model_config
+            .num_key_value_heads
+            .unwrap_or(model_config.num_attention_heads)
     );
 
     // Calculate max layers for available RAM
@@ -147,11 +166,13 @@ fn main() -> Result<()> {
     let max_layers = (ram_budget / layer_bytes) as usize;
 
     println!("Memory estimate:");
-    println!("  Per-layer size ({}): {:.2} GB",
+    println!(
+        "  Per-layer size ({}): {:.2} GB",
         if bytes_per_element == 2 { "F16" } else { "F32" },
         layer_bytes as f64 / 1e9
     );
-    println!("  Max layers in {}GB RAM: {}",
+    println!(
+        "  Max layers in {}GB RAM: {}",
         ram_budget / (1024 * 1024 * 1024),
         max_layers
     );
@@ -169,7 +190,10 @@ fn main() -> Result<()> {
             // Get initial stats
             let stats = model.stats();
             println!("\nInitial model stats:");
-            println!("  Layers loaded: {}/{}", stats.loaded_layers, stats.total_layers);
+            println!(
+                "  Layers loaded: {}/{}",
+                stats.loaded_layers, stats.total_layers
+            );
             println!("  Max loaded layers: {}", stats.max_loaded_layers);
             println!("  Prefetch depth: {}", stats.prefetch_depth);
             println!("  Layer loads: {}", stats.layer_loads);
@@ -179,14 +203,17 @@ fn main() -> Result<()> {
             println!("\n--- Warming up (prefetching initial layers) ---");
             let warmup_start = Instant::now();
             let warmed = model.warmup();
-            println!("Warmed up {} layers in {:?}", warmed, warmup_start.elapsed());
+            println!(
+                "Warmed up {} layers in {:?}",
+                warmed,
+                warmup_start.elapsed()
+            );
 
             // Test forward passes to measure cache effectiveness
             println!("\n--- Testing Forward Passes (Cache Effectiveness) ---");
 
             // Create a simple input: [1, 4] with token IDs
-            let input_ids = Tensor::new(&[1u32, 2, 3, 4], &device)?
-                .unsqueeze(0)?; // [1, 4]
+            let input_ids = Tensor::new(&[1u32, 2, 3, 4], &device)?.unsqueeze(0)?; // [1, 4]
 
             println!("Input shape: {:?}", input_ids.dims());
 
@@ -201,7 +228,10 @@ fn main() -> Result<()> {
                     println!("  Time: {:?}", elapsed1);
 
                     let stats = model.stats();
-                    println!("  Layer loads: {}, evictions: {}", stats.layer_loads, stats.layer_evictions);
+                    println!(
+                        "  Layer loads: {}, evictions: {}",
+                        stats.layer_loads, stats.layer_evictions
+                    );
 
                     // SECOND FORWARD PASS - should use cached tensors (fast)
                     println!("\n[Pass 2] Second forward pass (should use cache)...");
@@ -214,7 +244,10 @@ fn main() -> Result<()> {
                             println!("  Time: {:?}", elapsed2);
 
                             let stats2 = model.stats();
-                            println!("  Layer loads: {}, evictions: {}", stats2.layer_loads, stats2.layer_evictions);
+                            println!(
+                                "  Layer loads: {}, evictions: {}",
+                                stats2.layer_loads, stats2.layer_evictions
+                            );
 
                             // Calculate speedup
                             let speedup = elapsed1.as_secs_f64() / elapsed2.as_secs_f64();
@@ -230,23 +263,23 @@ fn main() -> Result<()> {
                             } else {
                                 println!("  ✗ No speedup - cache may be evicting tensors.");
                             }
-                        }
+                        },
                         Err(e) => {
                             println!("✗ Pass 2 failed: {}", e);
-                        }
+                        },
                     }
-                }
+                },
                 Err(e) => {
                     println!("✗ Pass 1 failed: {}", e);
                     println!("\nThis may be expected for 405B on limited hardware.");
                     println!("The model requires progressive loading of 126 layers.");
-                }
+                },
             }
-        }
+        },
         Err(e) => {
             println!("Failed to create LazyLlama: {}", e);
             println!("\nThis may be due to memory constraints or missing tensors.");
-        }
+        },
     }
 
     // Print tiered loader stats
@@ -256,24 +289,36 @@ fn main() -> Result<()> {
 
     // Safetensor fast-loads (if any)
     if tiered_stats.safetensor_loads > 0 {
-        println!("  Safetensor loads: {} ({} ms total)",
-            tiered_stats.safetensor_loads, tiered_stats.safetensor_time_ms);
-        println!("  Avg safetensor time: {:.1} ms/tensor",
-            tiered_stats.safetensor_time_ms as f64 / tiered_stats.safetensor_loads as f64);
+        println!(
+            "  Safetensor loads: {} ({} ms total)",
+            tiered_stats.safetensor_loads, tiered_stats.safetensor_time_ms
+        );
+        println!(
+            "  Avg safetensor time: {:.1} ms/tensor",
+            tiered_stats.safetensor_time_ms as f64 / tiered_stats.safetensor_loads as f64
+        );
     }
 
     // HoloTensor reconstructions
-    println!("  GPU reconstructions: {} ({} ms total)",
-        tiered_stats.gpu_reconstructions, tiered_stats.gpu_time_ms);
-    println!("  CPU reconstructions: {} ({} ms total)",
-        tiered_stats.cpu_reconstructions, tiered_stats.cpu_time_ms);
+    println!(
+        "  GPU reconstructions: {} ({} ms total)",
+        tiered_stats.gpu_reconstructions, tiered_stats.gpu_time_ms
+    );
+    println!(
+        "  CPU reconstructions: {} ({} ms total)",
+        tiered_stats.cpu_reconstructions, tiered_stats.cpu_time_ms
+    );
     if tiered_stats.gpu_reconstructions > 0 {
-        println!("  Avg GPU time: {:.1} ms/tensor",
-            tiered_stats.gpu_time_ms as f64 / tiered_stats.gpu_reconstructions as f64);
+        println!(
+            "  Avg GPU time: {:.1} ms/tensor",
+            tiered_stats.gpu_time_ms as f64 / tiered_stats.gpu_reconstructions as f64
+        );
     }
     if tiered_stats.cpu_reconstructions > 0 {
-        println!("  Avg CPU time: {:.1} ms/tensor",
-            tiered_stats.cpu_time_ms as f64 / tiered_stats.cpu_reconstructions as f64);
+        println!(
+            "  Avg CPU time: {:.1} ms/tensor",
+            tiered_stats.cpu_time_ms as f64 / tiered_stats.cpu_reconstructions as f64
+        );
     }
     if tiered_stats.gpu_reconstructions > 0 && tiered_stats.cpu_reconstructions > 0 {
         let gpu_avg = tiered_stats.gpu_time_ms as f64 / tiered_stats.gpu_reconstructions as f64;

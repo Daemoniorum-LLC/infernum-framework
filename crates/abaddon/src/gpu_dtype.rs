@@ -7,9 +7,8 @@
 /// CUDA-accelerated FP8 to F32 dtype conversion.
 #[cfg(feature = "cuda")]
 pub mod cuda {
-    use std::sync::Arc;
     use cudarc::driver::{CudaDevice, CudaSlice, LaunchAsync, LaunchConfig};
-    
+    use std::sync::Arc;
 
     /// GPU dtype converter for FP8 → F32 conversion.
     pub struct GpuDtypeConverter {
@@ -114,7 +113,10 @@ extern "C" __global__ void fp8_e5m2_to_f32(
         /// Convert FP8 E4M3 data to F32 on GPU.
         ///
         /// Takes raw FP8 bytes, transfers to GPU, converts, returns F32 slice.
-        pub fn fp8_e4m3_to_f32(&self, fp8_data: &[u8]) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        pub fn fp8_e4m3_to_f32(
+            &self,
+            fp8_data: &[u8],
+        ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
             let n = fp8_data.len();
 
             // Transfer FP8 bytes to GPU (1 byte per element)
@@ -124,7 +126,9 @@ extern "C" __global__ void fp8_e5m2_to_f32(
             let mut d_f32: CudaSlice<f32> = self.device.alloc_zeros(n)?;
 
             // Launch kernel
-            let kernel = self.device.get_func("fp8_e4m3", "fp8_e4m3_to_f32")
+            let kernel = self
+                .device
+                .get_func("fp8_e4m3", "fp8_e4m3_to_f32")
                 .ok_or("FP8 E4M3 kernel not loaded")?;
 
             let threads_per_block = 256;
@@ -144,13 +148,18 @@ extern "C" __global__ void fp8_e5m2_to_f32(
         }
 
         /// Convert FP8 E5M2 data to F32 on GPU.
-        pub fn fp8_e5m2_to_f32(&self, fp8_data: &[u8]) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        pub fn fp8_e5m2_to_f32(
+            &self,
+            fp8_data: &[u8],
+        ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
             let n = fp8_data.len();
 
             let d_fp8: CudaSlice<u8> = self.device.htod_sync_copy(fp8_data)?;
             let mut d_f32: CudaSlice<f32> = self.device.alloc_zeros(n)?;
 
-            let kernel = self.device.get_func("fp8_e5m2", "fp8_e5m2_to_f32")
+            let kernel = self
+                .device
+                .get_func("fp8_e5m2", "fp8_e5m2_to_f32")
                 .ok_or("FP8 E5M2 kernel not loaded")?;
 
             let threads_per_block = 256;
@@ -170,7 +179,10 @@ extern "C" __global__ void fp8_e5m2_to_f32(
         }
 
         /// Convert FP8 E4M3 and return host F32 vector.
-        pub fn fp8_e4m3_to_f32_host(&self, fp8_data: &[u8]) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        pub fn fp8_e4m3_to_f32_host(
+            &self,
+            fp8_data: &[u8],
+        ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
             let d_f32 = self.fp8_e4m3_to_f32(fp8_data)?;
             let mut h_f32 = vec![0.0f32; fp8_data.len()];
             self.device.dtoh_sync_copy_into(&d_f32, &mut h_f32)?;
@@ -178,7 +190,10 @@ extern "C" __global__ void fp8_e5m2_to_f32(
         }
 
         /// Convert FP8 E5M2 and return host F32 vector.
-        pub fn fp8_e5m2_to_f32_host(&self, fp8_data: &[u8]) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        pub fn fp8_e5m2_to_f32_host(
+            &self,
+            fp8_data: &[u8],
+        ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
             let d_f32 = self.fp8_e5m2_to_f32(fp8_data)?;
             let mut h_f32 = vec![0.0f32; fp8_data.len()];
             self.device.dtoh_sync_copy_into(&d_f32, &mut h_f32)?;
@@ -200,12 +215,18 @@ pub mod cuda {
         }
 
         /// Convert FP8 E4M3 to F32 on host (requires CUDA).
-        pub fn fp8_e4m3_to_f32_host(&self, _fp8_data: &[u8]) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        pub fn fp8_e4m3_to_f32_host(
+            &self,
+            _fp8_data: &[u8],
+        ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
             Err("CUDA not enabled".into())
         }
 
         /// Convert FP8 E5M2 to F32 on host (requires CUDA).
-        pub fn fp8_e5m2_to_f32_host(&self, _fp8_data: &[u8]) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        pub fn fp8_e5m2_to_f32_host(
+            &self,
+            _fp8_data: &[u8],
+        ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
             Err("CUDA not enabled".into())
         }
     }
@@ -255,7 +276,11 @@ mod tests {
         };
 
         // Apply sign uniformly (zero branch returns unsigned 0.0, negated here to -0.0)
-        if sign == 1 && !value.is_nan() { -value } else { value }
+        if sign == 1 && !value.is_nan() {
+            -value
+        } else {
+            value
+        }
     }
 
     /// CPU reference: FP8 E5M2 → F32.
@@ -280,7 +305,11 @@ mod tests {
             if mantissa == 0 {
                 // Infinity (sign handled by final sign application for zero;
                 // infinity needs explicit sign since we skip it below)
-                if sign == 1 { f32::NEG_INFINITY } else { f32::INFINITY }
+                if sign == 1 {
+                    f32::NEG_INFINITY
+                } else {
+                    f32::INFINITY
+                }
             } else {
                 f32::NAN
             }
@@ -290,7 +319,11 @@ mod tests {
         };
 
         // Apply sign uniformly (zero branch returns unsigned 0.0, negated here to -0.0)
-        if sign == 1 && !value.is_nan() && !value.is_infinite() { -value } else { value }
+        if sign == 1 && !value.is_nan() && !value.is_infinite() {
+            -value
+        } else {
+            value
+        }
     }
 
     /// E4M3: Zero (0x00 = +0, 0x80 = -0).
@@ -320,7 +353,11 @@ mod tests {
     #[test]
     fn test_fp8_e4m3_max_normal() {
         let val = fp8_e4m3_to_f32_cpu(0x77);
-        assert!((val - 240.0).abs() < 0.01, "Max normal should be 240, got {}", val);
+        assert!(
+            (val - 240.0).abs() < 0.01,
+            "Max normal should be 240, got {}",
+            val
+        );
     }
 
     /// E4M3: Smallest subnormal = 0b0_0000_001 = 0x01 → 2^(-6) * (1/8).
@@ -328,7 +365,12 @@ mod tests {
     fn test_fp8_e4m3_smallest_subnormal() {
         let val = fp8_e4m3_to_f32_cpu(0x01);
         let expected = 2.0f32.powi(-6) / 8.0; // 1/512 ≈ 0.001953
-        assert!((val - expected).abs() < 1e-7, "Smallest subnormal: expected {}, got {}", expected, val);
+        assert!(
+            (val - expected).abs() < 1e-7,
+            "Smallest subnormal: expected {}, got {}",
+            expected,
+            val
+        );
     }
 
     /// E4M3: NaN = 0b0_1111_111 = 0x7F.
@@ -373,7 +415,12 @@ mod tests {
             if byte == 0x7F || byte == 0xFF {
                 assert!(val.is_nan(), "Byte 0x{:02X} should be NaN", byte);
             } else {
-                assert!(val.is_finite(), "Byte 0x{:02X} should be finite, got {}", byte, val);
+                assert!(
+                    val.is_finite(),
+                    "Byte 0x{:02X} should be finite, got {}",
+                    byte,
+                    val
+                );
             }
         }
     }
@@ -390,7 +437,12 @@ mod tests {
             } else if exp == 31 && man == 0 {
                 assert!(val.is_infinite(), "Byte 0x{:02X} should be Inf", byte);
             } else {
-                assert!(val.is_finite(), "Byte 0x{:02X} should be finite, got {}", byte, val);
+                assert!(
+                    val.is_finite(),
+                    "Byte 0x{:02X} should be finite, got {}",
+                    byte,
+                    val
+                );
             }
         }
     }
@@ -399,33 +451,39 @@ mod tests {
     #[test]
     #[cfg(feature = "cuda")]
     fn test_fp8_e4m3_gpu_matches_cpu() {
-        use std::sync::Arc;
         use cudarc::driver::CudaDevice;
+        use std::sync::Arc;
 
         let device = match CudaDevice::new(0) {
             Ok(d) => Arc::new(d),
             Err(_) => {
                 eprintln!("Skipping: no CUDA device available");
                 return;
-            }
+            },
         };
 
-        let converter = GpuDtypeConverter::new(Arc::clone(&device))
-            .expect("converter creation");
+        let converter = GpuDtypeConverter::new(Arc::clone(&device)).expect("converter creation");
 
         // Test all 256 byte values
         let input: Vec<u8> = (0..=255).collect();
-        let gpu_result = converter.fp8_e4m3_to_f32_host(&input)
+        let gpu_result = converter
+            .fp8_e4m3_to_f32_host(&input)
             .expect("GPU conversion");
 
         for (byte, &gpu_val) in input.iter().zip(gpu_result.iter()) {
             let cpu_val = fp8_e4m3_to_f32_cpu(*byte);
             if cpu_val.is_nan() {
-                assert!(gpu_val.is_nan(), "Byte 0x{:02X}: CPU=NaN, GPU={}", byte, gpu_val);
+                assert!(
+                    gpu_val.is_nan(),
+                    "Byte 0x{:02X}: CPU=NaN, GPU={}",
+                    byte,
+                    gpu_val
+                );
             } else {
                 assert_eq!(
                     gpu_val, cpu_val,
-                    "Byte 0x{:02X}: CPU={}, GPU={}", byte, cpu_val, gpu_val
+                    "Byte 0x{:02X}: CPU={}, GPU={}",
+                    byte, cpu_val, gpu_val
                 );
             }
         }
@@ -435,37 +493,46 @@ mod tests {
     #[test]
     #[cfg(feature = "cuda")]
     fn test_fp8_e5m2_gpu_matches_cpu() {
-        use std::sync::Arc;
         use cudarc::driver::CudaDevice;
+        use std::sync::Arc;
 
         let device = match CudaDevice::new(0) {
             Ok(d) => Arc::new(d),
             Err(_) => {
                 eprintln!("Skipping: no CUDA device available");
                 return;
-            }
+            },
         };
 
-        let converter = GpuDtypeConverter::new(Arc::clone(&device))
-            .expect("converter creation");
+        let converter = GpuDtypeConverter::new(Arc::clone(&device)).expect("converter creation");
 
         let input: Vec<u8> = (0..=255).collect();
-        let gpu_result = converter.fp8_e5m2_to_f32_host(&input)
+        let gpu_result = converter
+            .fp8_e5m2_to_f32_host(&input)
             .expect("GPU conversion");
 
         for (byte, &gpu_val) in input.iter().zip(gpu_result.iter()) {
             let cpu_val = fp8_e5m2_to_f32_cpu(*byte);
             if cpu_val.is_nan() {
-                assert!(gpu_val.is_nan(), "Byte 0x{:02X}: CPU=NaN, GPU={}", byte, gpu_val);
+                assert!(
+                    gpu_val.is_nan(),
+                    "Byte 0x{:02X}: CPU=NaN, GPU={}",
+                    byte,
+                    gpu_val
+                );
             } else if cpu_val.is_infinite() {
                 assert_eq!(
                     gpu_val, cpu_val,
-                    "Byte 0x{:02X}: CPU=Inf, GPU={}", byte, gpu_val
+                    "Byte 0x{:02X}: CPU=Inf, GPU={}",
+                    byte, gpu_val
                 );
             } else {
                 assert!(
                     (gpu_val - cpu_val).abs() < 1e-10,
-                    "Byte 0x{:02X}: CPU={}, GPU={}", byte, cpu_val, gpu_val
+                    "Byte 0x{:02X}: CPU={}, GPU={}",
+                    byte,
+                    cpu_val,
+                    gpu_val
                 );
             }
         }

@@ -3,27 +3,50 @@
 //! Tests the integration between mock implementations, fixtures,
 //! assertions, and server helpers.
 
-use test_utils::{
-    // Mock
-    MockConfig, MockInferenceEngine, MockError, MockVectorStore, MockDocument,
-    // Fixtures
-    sample_chat_request, sample_streaming_chat_request,
-    sample_embedding_request, sample_batch_embedding_request,
-    sample_chat_response, sample_error_response,
-    invalid_request_missing_model, invalid_request_empty_messages, invalid_request_bad_temperature,
-    TEST_API_KEY_ADMIN, TEST_API_KEY_INFERENCE, TEST_API_KEY_INVALID,
-    TEST_MODEL_ID, TEST_EMBEDDING_MODEL_ID,
-    // Assertions
-    assert_error_code, assert_error_type, assert_has_choices, assert_has_usage,
-    assert_header_present, assert_header_value, assert_response_time_ms,
-    get_json_string, get_json_i64, get_json_f64, get_json_bool,
-    assert_json_string, assert_json_i64,
-    // Server
-    TestServer, TestRequest, TestResponse,
-};
-use infernum_core::{GenerateRequest, SamplingParams};
 use axum::{routing::get, routing::post, Json, Router};
+use infernum_core::{GenerateRequest, SamplingParams};
 use serde_json::json;
+use test_utils::{
+    // Assertions
+    assert_error_code,
+    assert_error_type,
+    assert_has_choices,
+    assert_has_usage,
+    assert_header_present,
+    assert_header_value,
+    assert_json_i64,
+    assert_json_string,
+    assert_response_time_ms,
+    get_json_bool,
+    get_json_f64,
+    get_json_i64,
+    get_json_string,
+    invalid_request_bad_temperature,
+    invalid_request_empty_messages,
+    invalid_request_missing_model,
+    sample_batch_embedding_request,
+    // Fixtures
+    sample_chat_request,
+    sample_chat_response,
+    sample_embedding_request,
+    sample_error_response,
+    sample_streaming_chat_request,
+    // Mock
+    MockConfig,
+    MockDocument,
+    MockError,
+    MockInferenceEngine,
+    MockVectorStore,
+    TestRequest,
+    TestResponse,
+    // Server
+    TestServer,
+    TEST_API_KEY_ADMIN,
+    TEST_API_KEY_INFERENCE,
+    TEST_API_KEY_INVALID,
+    TEST_EMBEDDING_MODEL_ID,
+    TEST_MODEL_ID,
+};
 
 // ============================================================================
 // MockConfig Tests
@@ -98,8 +121,8 @@ async fn test_mock_engine_multiple_calls() {
     let engine = MockInferenceEngine::new();
 
     for i in 0..5 {
-        let request = GenerateRequest::new(format!("Request {}", i))
-            .with_sampling(SamplingParams::default());
+        let request =
+            GenerateRequest::new(format!("Request {}", i)).with_sampling(SamplingParams::default());
         engine.generate(request).await.expect("generate");
     }
 
@@ -111,8 +134,7 @@ async fn test_mock_engine_custom_response() {
     let engine = MockInferenceEngine::new();
     engine.set_response("Custom test response").await;
 
-    let request = GenerateRequest::new("Test")
-        .with_sampling(SamplingParams::default());
+    let request = GenerateRequest::new("Test").with_sampling(SamplingParams::default());
     let response = engine.generate(request).await.expect("generate");
 
     assert_eq!(response.choices[0].text, "Custom test response");
@@ -124,8 +146,7 @@ async fn test_mock_engine_latency() {
     engine.set_latency(50).await;
 
     let start = std::time::Instant::now();
-    let request = GenerateRequest::new("Test")
-        .with_sampling(SamplingParams::default());
+    let request = GenerateRequest::new("Test").with_sampling(SamplingParams::default());
     engine.generate(request).await.expect("generate");
     let elapsed = start.elapsed();
 
@@ -135,8 +156,7 @@ async fn test_mock_engine_latency() {
 #[tokio::test]
 async fn test_mock_engine_failing() {
     let engine = MockInferenceEngine::failing("Connection refused");
-    let request = GenerateRequest::new("Test")
-        .with_sampling(SamplingParams::default());
+    let request = GenerateRequest::new("Test").with_sampling(SamplingParams::default());
 
     let result = engine.generate(request).await;
 
@@ -151,12 +171,10 @@ async fn test_mock_engine_failing() {
 async fn test_mock_engine_last_request_tracking() {
     let engine = MockInferenceEngine::new();
 
-    let request1 = GenerateRequest::new("First request")
-        .with_sampling(SamplingParams::default());
+    let request1 = GenerateRequest::new("First request").with_sampling(SamplingParams::default());
     engine.generate(request1).await.expect("generate 1");
 
-    let request2 = GenerateRequest::new("Second request")
-        .with_sampling(SamplingParams::default());
+    let request2 = GenerateRequest::new("Second request").with_sampling(SamplingParams::default());
     engine.generate(request2).await.expect("generate 2");
 
     let last = engine.last_request().await.expect("last request");
@@ -171,8 +189,7 @@ async fn test_mock_engine_clone() {
 
     let cloned = engine.clone();
 
-    let request = GenerateRequest::new("Test")
-        .with_sampling(SamplingParams::default());
+    let request = GenerateRequest::new("Test").with_sampling(SamplingParams::default());
     let response = cloned.generate(request).await.expect("generate");
 
     assert_eq!(response.choices[0].text, "Cloned response");
@@ -231,9 +248,15 @@ async fn test_vector_store_default() {
 async fn test_vector_store_add_and_query() {
     let store = MockVectorStore::new();
 
-    store.add_document("doc1", "First document content", 0.95).await;
-    store.add_document("doc2", "Second document content", 0.85).await;
-    store.add_document("doc3", "Third document content", 0.75).await;
+    store
+        .add_document("doc1", "First document content", 0.95)
+        .await;
+    store
+        .add_document("doc2", "Second document content", 0.85)
+        .await;
+    store
+        .add_document("doc3", "Third document content", 0.75)
+        .await;
 
     let results = store.query("test query", 2).await;
 
@@ -248,7 +271,13 @@ async fn test_vector_store_top_k() {
     let store = MockVectorStore::new();
 
     for i in 0..10 {
-        store.add_document(&format!("doc{}", i), &format!("Content {}", i), i as f32 * 0.1).await;
+        store
+            .add_document(
+                &format!("doc{}", i),
+                &format!("Content {}", i),
+                i as f32 * 0.1,
+            )
+            .await;
     }
 
     let results = store.query("test", 5).await;
@@ -306,7 +335,10 @@ fn test_mock_document_debug() {
 fn test_sample_chat_request() {
     let request = sample_chat_request();
 
-    assert_eq!(request.get("model").and_then(|v| v.as_str()), Some("test-model"));
+    assert_eq!(
+        request.get("model").and_then(|v| v.as_str()),
+        Some("test-model")
+    );
     assert!(request.get("messages").is_some());
     assert!(request.get("temperature").is_some());
     assert!(request.get("max_tokens").is_some());
@@ -324,7 +356,10 @@ fn test_sample_streaming_chat_request() {
 fn test_sample_embedding_request() {
     let request = sample_embedding_request();
 
-    assert_eq!(request.get("model").and_then(|v| v.as_str()), Some("test-embedding-model"));
+    assert_eq!(
+        request.get("model").and_then(|v| v.as_str()),
+        Some("test-embedding-model")
+    );
     assert!(request.get("input").is_some());
 }
 
@@ -352,7 +387,10 @@ fn test_sample_error_response() {
 
     assert_error_code(&response, "rate_limit_exceeded");
     let error = response.get("error").expect("error");
-    assert_eq!(error.get("message").and_then(|v| v.as_str()), Some("Too many requests"));
+    assert_eq!(
+        error.get("message").and_then(|v| v.as_str()),
+        Some("Too many requests")
+    );
 }
 
 #[test]
@@ -466,17 +504,13 @@ fn test_assert_header_present() {
 #[test]
 #[should_panic(expected = "to be present")]
 fn test_assert_header_present_fails() {
-    let headers = vec![
-        ("Content-Type".to_string(), "application/json".to_string()),
-    ];
+    let headers = vec![("Content-Type".to_string(), "application/json".to_string())];
     assert_header_present(&headers, "X-Missing");
 }
 
 #[test]
 fn test_assert_header_value() {
-    let headers = vec![
-        ("Content-Type".to_string(), "application/json".to_string()),
-    ];
+    let headers = vec![("Content-Type".to_string(), "application/json".to_string())];
     assert_header_value(&headers, "Content-Type", "application/json");
 }
 
@@ -544,19 +578,21 @@ fn test_request_post() {
 
 #[test]
 fn test_request_with_header() {
-    let request = TestRequest::get("/test")
-        .header("X-Custom", "value");
+    let request = TestRequest::get("/test").header("X-Custom", "value");
 
     assert_eq!(request.headers().len(), 1);
-    assert!(request.headers().iter().any(|(k, v)| k == "X-Custom" && v == "value"));
+    assert!(request
+        .headers()
+        .iter()
+        .any(|(k, v)| k == "X-Custom" && v == "value"));
 }
 
 #[test]
 fn test_request_with_bearer_token() {
-    let request = TestRequest::post("/test")
-        .bearer_token("sk-test-token");
+    let request = TestRequest::post("/test").bearer_token("sk-test-token");
 
-    let auth_header = request.headers()
+    let auth_header = request
+        .headers()
         .iter()
         .find(|(k, _)| k == "Authorization")
         .map(|(_, v)| v.as_str());
@@ -567,8 +603,7 @@ fn test_request_with_bearer_token() {
 #[test]
 fn test_request_with_json_body() {
     let body = json!({"model": "test", "messages": []});
-    let request = TestRequest::post("/test")
-        .json(body.clone());
+    let request = TestRequest::post("/test").json(body.clone());
 
     assert!(request.body().is_some());
     assert_eq!(request.body().unwrap(), &body);
@@ -610,7 +645,11 @@ fn test_response_is_success() {
             json: None,
             body: String::new(),
         };
-        assert!(!response.is_success(), "Status {} should not be success", status);
+        assert!(
+            !response.is_success(),
+            "Status {} should not be success",
+            status
+        );
     }
 }
 
@@ -636,9 +675,7 @@ fn test_response_has_header() {
 fn test_response_header() {
     let response = TestResponse {
         status: 200,
-        headers: vec![
-            ("Content-Type".to_string(), "application/json".to_string()),
-        ],
+        headers: vec![("Content-Type".to_string(), "application/json".to_string())],
         json: None,
         body: String::new(),
     };
@@ -776,17 +813,29 @@ async fn test_vector_store_with_assertions() {
     let store = MockVectorStore::new();
 
     // Add documents
-    store.add_document("relevant-1", "Rust programming guide", 0.95).await;
-    store.add_document("relevant-2", "Rust async patterns", 0.88).await;
-    store.add_document("less-relevant", "Python basics", 0.45).await;
+    store
+        .add_document("relevant-1", "Rust programming guide", 0.95)
+        .await;
+    store
+        .add_document("relevant-2", "Rust async patterns", 0.88)
+        .await;
+    store
+        .add_document("less-relevant", "Python basics", 0.45)
+        .await;
 
     // Query
     let results = store.query("Rust programming", 2).await;
 
     // Use assertions
     assert_eq!(results.len(), 2);
-    assert!(results[0].score >= results[1].score, "Results should be sorted by score");
-    assert!(results[0].content.contains("Rust"), "Top result should be about Rust");
+    assert!(
+        results[0].score >= results[1].score,
+        "Results should be sorted by score"
+    );
+    assert!(
+        results[0].content.contains("Rust"),
+        "Top result should be about Rust"
+    );
 }
 
 #[tokio::test]
@@ -821,8 +870,7 @@ async fn test_error_handling_workflow() {
     // Create failing engine
     let engine = MockInferenceEngine::failing("Service unavailable");
 
-    let request = GenerateRequest::new("Test")
-        .with_sampling(SamplingParams::default());
+    let request = GenerateRequest::new("Test").with_sampling(SamplingParams::default());
 
     let result = engine.generate(request).await;
 
@@ -863,10 +911,18 @@ async fn test_concurrent_mock_access() {
 async fn test_vector_store_rag_workflow() {
     // Set up knowledge base
     let store = MockVectorStore::new();
-    store.add_document("doc1", "The capital of France is Paris.", 0.95).await;
-    store.add_document("doc2", "France is a country in Europe.", 0.85).await;
-    store.add_document("doc3", "The Eiffel Tower is in Paris.", 0.80).await;
-    store.add_document("doc4", "Tokyo is the capital of Japan.", 0.20).await;
+    store
+        .add_document("doc1", "The capital of France is Paris.", 0.95)
+        .await;
+    store
+        .add_document("doc2", "France is a country in Europe.", 0.85)
+        .await;
+    store
+        .add_document("doc3", "The Eiffel Tower is in Paris.", 0.80)
+        .await;
+    store
+        .add_document("doc4", "Tokyo is the capital of Japan.", 0.20)
+        .await;
 
     // Query for relevant context
     let query = "What is the capital of France?";
@@ -877,7 +933,8 @@ async fn test_vector_store_rag_workflow() {
     assert!(context[0].content.contains("France") || context[0].content.contains("Paris"));
 
     // Build prompt with context
-    let context_text: String = context.iter()
+    let context_text: String = context
+        .iter()
         .map(|d| d.content.as_str())
         .collect::<Vec<_>>()
         .join("\n");

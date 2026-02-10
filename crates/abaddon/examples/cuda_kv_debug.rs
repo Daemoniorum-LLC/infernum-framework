@@ -36,44 +36,67 @@ fn cuda_main() -> anyhow::Result<()> {
 
     // Qwen2.5-0.5B dimensions
     let batch = 1;
-    let num_heads = 14;     // Q heads (from config)
-    let num_kv_heads = 2;   // K/V heads (GQA: 7 Q heads per KV head)
-    let seq_len = 5;        // Like a short prompt
-    let head_dim = 64;      // 896 / 14 = 64
+    let num_heads = 14; // Q heads (from config)
+    let num_kv_heads = 2; // K/V heads (GQA: 7 Q heads per KV head)
+    let seq_len = 5; // Like a short prompt
+    let head_dim = 64; // 896 / 14 = 64
 
     println!("\nTest dimensions:");
-    println!("  batch={}, num_heads={}, num_kv_heads={}, seq_len={}, head_dim={}",
-             batch, num_heads, num_kv_heads, seq_len, head_dim);
-    println!("  GQA ratio: {} Q heads per KV head", num_heads / num_kv_heads);
+    println!(
+        "  batch={}, num_heads={}, num_kv_heads={}, seq_len={}, head_dim={}",
+        batch, num_heads, num_kv_heads, seq_len, head_dim
+    );
+    println!(
+        "  GQA ratio: {} Q heads per KV head",
+        num_heads / num_kv_heads
+    );
 
     // Create known test data
     // Q: [batch, num_heads, seq_len, head_dim]
     let q_data: Vec<f32> = (0..batch * num_heads * seq_len * head_dim)
         .map(|i| (i as f32 * 0.1) - 1.0)
         .collect();
-    let q = Tensor::from_vec(q_data.clone(), (batch, num_heads, seq_len, head_dim), &device)?
-        .to_dtype(DType::BF16)?;
+    let q = Tensor::from_vec(
+        q_data.clone(),
+        (batch, num_heads, seq_len, head_dim),
+        &device,
+    )?
+    .to_dtype(DType::BF16)?;
 
     // K: [batch, num_kv_heads, seq_len, head_dim]
     let k_data: Vec<f32> = (0..batch * num_kv_heads * seq_len * head_dim)
         .map(|i| (i as f32 * 0.05) - 0.5)
         .collect();
-    let k = Tensor::from_vec(k_data.clone(), (batch, num_kv_heads, seq_len, head_dim), &device)?
-        .to_dtype(DType::BF16)?;
+    let k = Tensor::from_vec(
+        k_data.clone(),
+        (batch, num_kv_heads, seq_len, head_dim),
+        &device,
+    )?
+    .to_dtype(DType::BF16)?;
 
     // V: [batch, num_kv_heads, seq_len, head_dim]
     let v_data: Vec<f32> = (0..batch * num_kv_heads * seq_len * head_dim)
         .map(|i| (i as f32 * 0.02))
         .collect();
-    let v = Tensor::from_vec(v_data.clone(), (batch, num_kv_heads, seq_len, head_dim), &device)?
-        .to_dtype(DType::BF16)?;
+    let v = Tensor::from_vec(
+        v_data.clone(),
+        (batch, num_kv_heads, seq_len, head_dim),
+        &device,
+    )?
+    .to_dtype(DType::BF16)?;
 
-    println!("\nQ sample (first head, first token): {:?}",
-             q.i((0, 0, 0, ..))?.to_dtype(DType::F32)?.to_vec1::<f32>()?);
-    println!("K sample (first kv_head, first token): {:?}",
-             k.i((0, 0, 0, ..))?.to_dtype(DType::F32)?.to_vec1::<f32>()?);
-    println!("V sample (first kv_head, first token): {:?}",
-             v.i((0, 0, 0, ..))?.to_dtype(DType::F32)?.to_vec1::<f32>()?);
+    println!(
+        "\nQ sample (first head, first token): {:?}",
+        q.i((0, 0, 0, ..))?.to_dtype(DType::F32)?.to_vec1::<f32>()?
+    );
+    println!(
+        "K sample (first kv_head, first token): {:?}",
+        k.i((0, 0, 0, ..))?.to_dtype(DType::F32)?.to_vec1::<f32>()?
+    );
+    println!(
+        "V sample (first kv_head, first token): {:?}",
+        v.i((0, 0, 0, ..))?.to_dtype(DType::F32)?.to_vec1::<f32>()?
+    );
 
     // ========== Test 1: Standard attention (ground truth) ==========
     println!("\n--- Test 1: Standard BF16 Attention (Ground Truth) ---");
@@ -89,23 +112,43 @@ fn cuda_main() -> anyhow::Result<()> {
     let attn_scores = q.matmul(&k_repeated.transpose(2, 3)?)?;
     let attn_scores = (attn_scores * scale)?;
 
-    println!("Attention scores (head 0, token 0): {:?}",
-             attn_scores.i((0, 0, 0, ..))?.to_dtype(DType::F32)?.to_vec1::<f32>()?);
+    println!(
+        "Attention scores (head 0, token 0): {:?}",
+        attn_scores
+            .i((0, 0, 0, ..))?
+            .to_dtype(DType::F32)?
+            .to_vec1::<f32>()?
+    );
 
     // Apply causal mask (for fair comparison with CUDA path)
     let attn_scores = apply_causal_mask(&attn_scores, 0)?;
-    println!("Attention scores after causal mask (head 0, token 0): {:?}",
-             attn_scores.i((0, 0, 0, ..))?.to_dtype(DType::F32)?.to_vec1::<f32>()?);
+    println!(
+        "Attention scores after causal mask (head 0, token 0): {:?}",
+        attn_scores
+            .i((0, 0, 0, ..))?
+            .to_dtype(DType::F32)?
+            .to_vec1::<f32>()?
+    );
 
     // Softmax
     let attn_weights = candle_nn::ops::softmax_last_dim(&attn_scores)?;
-    println!("Attention weights (head 0, token 0): {:?}",
-             attn_weights.i((0, 0, 0, ..))?.to_dtype(DType::F32)?.to_vec1::<f32>()?);
+    println!(
+        "Attention weights (head 0, token 0): {:?}",
+        attn_weights
+            .i((0, 0, 0, ..))?
+            .to_dtype(DType::F32)?
+            .to_vec1::<f32>()?
+    );
 
     // attn @ V
     let output_std = attn_weights.matmul(&v_repeated)?;
-    println!("Output (head 0, token 0): {:?}",
-             output_std.i((0, 0, 0, ..))?.to_dtype(DType::F32)?.to_vec1::<f32>()?);
+    println!(
+        "Output (head 0, token 0): {:?}",
+        output_std
+            .i((0, 0, 0, ..))?
+            .to_dtype(DType::F32)?
+            .to_vec1::<f32>()?
+    );
 
     // ========== Test 2: CUDA Quantized Attention ==========
     println!("\n--- Test 2: CUDA INT8 Quantized Attention ---");
@@ -121,14 +164,25 @@ fn cuda_main() -> anyhow::Result<()> {
     let output_cuda = cuda_cache.forward_attention(&q, num_heads, attn_scale)?;
 
     println!("CUDA output shape: {:?}", output_cuda.dims());
-    println!("CUDA output (head 0, token 0): {:?}",
-             output_cuda.i((0, 0, 0, ..))?.to_dtype(DType::F32)?.to_vec1::<f32>()?);
+    println!(
+        "CUDA output (head 0, token 0): {:?}",
+        output_cuda
+            .i((0, 0, 0, ..))?
+            .to_dtype(DType::F32)?
+            .to_vec1::<f32>()?
+    );
 
     // ========== Test 3: Compare outputs ==========
     println!("\n--- Test 3: Compare Standard vs CUDA ---");
 
-    let std_flat = output_std.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
-    let cuda_flat = output_cuda.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+    let std_flat = output_std
+        .to_dtype(DType::F32)?
+        .flatten_all()?
+        .to_vec1::<f32>()?;
+    let cuda_flat = output_cuda
+        .to_dtype(DType::F32)?
+        .flatten_all()?
+        .to_vec1::<f32>()?;
 
     let mut max_diff = 0.0f32;
     let mut sum_diff = 0.0f32;
@@ -143,7 +197,10 @@ fn cuda_main() -> anyhow::Result<()> {
         if diff > 0.1 {
             num_large_diff += 1;
             if num_large_diff <= 5 {
-                println!("  Large diff at {}: std={:.4}, cuda={:.4}, diff={:.4}", i, s, c, diff);
+                println!(
+                    "  Large diff at {}: std={:.4}, cuda={:.4}, diff={:.4}",
+                    i, s, c, diff
+                );
             }
         }
     }
@@ -152,7 +209,11 @@ fn cuda_main() -> anyhow::Result<()> {
     println!("\nDifference statistics:");
     println!("  Max diff: {:.6}", max_diff);
     println!("  Mean diff: {:.6}", mean_diff);
-    println!("  Large diffs (>0.1): {}/{}", num_large_diff, std_flat.len());
+    println!(
+        "  Large diffs (>0.1): {}/{}",
+        num_large_diff,
+        std_flat.len()
+    );
 
     // ========== Test 4: Test with single token decode ==========
     println!("\n--- Test 4: Single Token Decode ---");
@@ -170,14 +231,24 @@ fn cuda_main() -> anyhow::Result<()> {
     let attn_weights_decode = candle_nn::ops::softmax_last_dim(&attn_scores_decode)?;
     let output_std_decode = attn_weights_decode.matmul(&v_repeated)?;
 
-    println!("Standard decode output (head 0): {:?}",
-             output_std_decode.i((0, 0, 0, ..))?.to_dtype(DType::F32)?.to_vec1::<f32>()?);
+    println!(
+        "Standard decode output (head 0): {:?}",
+        output_std_decode
+            .i((0, 0, 0, ..))?
+            .to_dtype(DType::F32)?
+            .to_vec1::<f32>()?
+    );
 
     // CUDA decode (cache already has K/V)
     let output_cuda_decode = cuda_cache.forward_attention(&q_decode, num_heads, attn_scale)?;
 
-    println!("CUDA decode output (head 0): {:?}",
-             output_cuda_decode.i((0, 0, 0, ..))?.to_dtype(DType::F32)?.to_vec1::<f32>()?);
+    println!(
+        "CUDA decode output (head 0): {:?}",
+        output_cuda_decode
+            .i((0, 0, 0, ..))?
+            .to_dtype(DType::F32)?
+            .to_vec1::<f32>()?
+    );
 
     // ========== Test 5: Check intermediate values ==========
     println!("\n--- Test 5: Debug Intermediate Values ---");
@@ -223,7 +294,10 @@ fn cuda_main() -> anyhow::Result<()> {
     // CUDA: append to cache
     cuda_cache2.append(&prefill_k, &prefill_v)?;
 
-    println!("After prefill: std_cache_len=5, cuda_cache_len={}", cuda_cache2.seq_len());
+    println!(
+        "After prefill: std_cache_len=5, cuda_cache_len={}",
+        cuda_cache2.seq_len()
+    );
 
     // Compute prefill attention (with causal mask for fair comparison)
     let k_rep = repeat_kv(&prefill_k, num_heads / num_kv_heads)?;
@@ -239,7 +313,11 @@ fn cuda_main() -> anyhow::Result<()> {
 
     let std_prefill_f32 = std_prefill_out.to_dtype(DType::F32)?;
     let cuda_prefill_f32 = cuda_prefill_out.to_dtype(DType::F32)?;
-    let prefill_diff = std_prefill_f32.sub(&cuda_prefill_f32)?.abs()?.max_all()?.to_scalar::<f32>()?;
+    let prefill_diff = std_prefill_f32
+        .sub(&cuda_prefill_f32)?
+        .abs()?
+        .max_all()?
+        .to_scalar::<f32>()?;
     println!("Prefill max diff (with causal mask): {:.6}", prefill_diff);
 
     // Now do 10 decode steps
@@ -273,18 +351,34 @@ fn cuda_main() -> anyhow::Result<()> {
 
         let std_out_f32 = std_out.to_dtype(DType::F32)?;
         let cuda_out_f32 = cuda_out.to_dtype(DType::F32)?;
-        let diff = std_out_f32.sub(&cuda_out_f32)?.abs()?.max_all()?.to_scalar::<f32>()?;
+        let diff = std_out_f32
+            .sub(&cuda_out_f32)?
+            .abs()?
+            .max_all()?
+            .to_scalar::<f32>()?;
         let mean_std = std_out_f32.abs()?.mean_all()?.to_scalar::<f32>()?;
         let mean_cuda = cuda_out_f32.abs()?.mean_all()?.to_scalar::<f32>()?;
 
-        println!("Step {}: cache_len={}, max_diff={:.6}, std_mean={:.4}, cuda_mean={:.4}",
-                 step, cuda_cache2.seq_len(), diff, mean_std, mean_cuda);
+        println!(
+            "Step {}: cache_len={}, max_diff={:.6}, std_mean={:.4}, cuda_mean={:.4}",
+            step,
+            cuda_cache2.seq_len(),
+            diff,
+            mean_std,
+            mean_cuda
+        );
 
         if diff > 1.0 {
             println!("  WARNING: Large difference detected!");
             // Print some sample values
-            let std_sample = std_out.i((0, 0, 0, ..8))?.to_dtype(DType::F32)?.to_vec1::<f32>()?;
-            let cuda_sample = cuda_out.i((0, 0, 0, ..8))?.to_dtype(DType::F32)?.to_vec1::<f32>()?;
+            let std_sample = std_out
+                .i((0, 0, 0, ..8))?
+                .to_dtype(DType::F32)?
+                .to_vec1::<f32>()?;
+            let cuda_sample = cuda_out
+                .i((0, 0, 0, ..8))?
+                .to_dtype(DType::F32)?
+                .to_vec1::<f32>()?;
             println!("  std[:8]:  {:?}", std_sample);
             println!("  cuda[:8]: {:?}", cuda_sample);
         }
@@ -312,7 +406,10 @@ fn repeat_kv(x: &candle_core::Tensor, n_rep: usize) -> anyhow::Result<candle_cor
 /// Scores shape: [batch, num_heads, q_len, kv_len]
 /// cache_offset: number of KV positions that existed before the current Q tokens
 #[cfg(feature = "cuda")]
-fn apply_causal_mask(scores: &candle_core::Tensor, cache_offset: usize) -> anyhow::Result<candle_core::Tensor> {
+fn apply_causal_mask(
+    scores: &candle_core::Tensor,
+    cache_offset: usize,
+) -> anyhow::Result<candle_core::Tensor> {
     let (batch, num_heads, q_len, kv_len) = scores.dims4()?;
     let device = scores.device();
     let dtype = scores.dtype();

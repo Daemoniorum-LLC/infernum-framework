@@ -11,10 +11,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use stolas::{
-    BM25Config, BM25Index, BatchEmbedder, Chunker, ChunkingStrategy, Embedder,
-    HybridRetriever, InMemoryStore, MockEmbedder, PoolingStrategy, SearchParams,
-    SentenceEmbedder, VectorRecord, VectorStore,
-    cosine_similarity, dot_product, euclidean_distance,
+    cosine_similarity, dot_product, euclidean_distance, BM25Config, BM25Index, BatchEmbedder,
+    Chunker, ChunkingStrategy, Embedder, HybridRetriever, InMemoryStore, MockEmbedder,
+    PoolingStrategy, SearchParams, SentenceEmbedder, VectorRecord, VectorStore,
 };
 
 // ============================================================================
@@ -913,8 +912,8 @@ async fn test_hybrid_search_workflow() {
 fn test_bm25_score_ordering() {
     let mut index = BM25Index::with_defaults();
     index.add_documents([
-        ("doc1", "fox fox fox fox fox"), // High term frequency
-        ("doc2", "fox"),                  // Low term frequency
+        ("doc1", "fox fox fox fox fox"),    // High term frequency
+        ("doc2", "fox"),                    // Low term frequency
         ("doc3", "the quick brown animal"), // No match
     ]);
 

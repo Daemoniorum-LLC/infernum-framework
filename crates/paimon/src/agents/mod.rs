@@ -7,16 +7,16 @@
 //! - **Eval Analyst**: Interprets benchmarks, compares models, suggests improvements
 //! - **Hyperparam Optimizer**: Analyzes datasets, suggests configurations
 
-mod curator;
-/// Training coach agent module.
-pub mod coach;
 /// Evaluation analyst agent module.
 pub mod analyst;
+/// Training coach agent module.
+pub mod coach;
+mod curator;
 mod optimizer;
 
-pub use curator::DataCuratorAgent;
-pub use coach::TrainingCoachAgent;
 pub use analyst::EvalAnalystAgent;
+pub use coach::TrainingCoachAgent;
+pub use curator::DataCuratorAgent;
 pub use optimizer::HyperparamOptimizerAgent;
 
 use serde::{Deserialize, Serialize};

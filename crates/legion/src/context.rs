@@ -115,7 +115,11 @@ impl SharedContext {
         let mut sorted: Vec<_> = fragments.values().cloned().collect();
 
         // Sort by importance (highest first)
-        sorted.sort_by(|a, b| b.importance.partial_cmp(&a.importance).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.sort_by(|a, b| {
+            b.importance
+                .partial_cmp(&a.importance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // Take proportion based on fraction
         let count = ((sorted.len() as f32 * fraction).ceil() as usize).min(sorted.len());
@@ -166,7 +170,10 @@ mod tests {
 
         let fragment = ctx.get_fragment(id);
         assert!(fragment.is_some());
-        assert_eq!(fragment.as_ref().map(|f| f.content.as_str()), Some("Test content"));
+        assert_eq!(
+            fragment.as_ref().map(|f| f.content.as_str()),
+            Some("Test content")
+        );
     }
 
     #[test]

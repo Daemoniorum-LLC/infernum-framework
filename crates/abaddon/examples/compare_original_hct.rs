@@ -13,18 +13,11 @@ use std::path::Path;
 use anyhow::Result;
 use candle_core::{DType, Device, Tensor};
 
-fn load_safetensors_tensor(
-    path: &Path,
-    tensor_name: &str,
-) -> Result<Option<Tensor>> {
+fn load_safetensors_tensor(path: &Path, tensor_name: &str) -> Result<Option<Tensor>> {
     // Find all safetensors files
     let st_files: Vec<_> = std::fs::read_dir(path)?
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .is_some_and(|ext| ext == "safetensors")
-        })
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "safetensors"))
         .map(|e| e.path())
         .collect();
 
@@ -153,10 +146,16 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 3 {
-        eprintln!("Usage: {} <original_model_dir> <hct_model_dir> [num_tensors]", args[0]);
+        eprintln!(
+            "Usage: {} <original_model_dir> <hct_model_dir> [num_tensors]",
+            args[0]
+        );
         eprintln!();
         eprintln!("Example:");
-        eprintln!("  {} /home/crook/models/llama-3.1-70b /home/crook/models/llama-3.1-70b-hct-v3 10", args[0]);
+        eprintln!(
+            "  {} /home/crook/models/llama-3.1-70b /home/crook/models/llama-3.1-70b-hct-v3 10",
+            args[0]
+        );
         std::process::exit(1);
     }
 
@@ -174,7 +173,10 @@ fn main() -> Result<()> {
 
     // Verify directories exist
     if !original_dir.exists() {
-        anyhow::bail!("Original model directory not found: {}", original_dir.display());
+        anyhow::bail!(
+            "Original model directory not found: {}",
+            original_dir.display()
+        );
     }
     if !hct_dir.exists() {
         anyhow::bail!("HCT model directory not found: {}", hct_dir.display());
@@ -233,7 +235,7 @@ fn main() -> Result<()> {
                 println!("\n  {} - NOT FOUND in HCT", tensor_name);
                 fail_count += 1;
                 continue;
-            }
+            },
         };
 
         // Load original tensor
@@ -243,7 +245,7 @@ fn main() -> Result<()> {
                 println!("\n  {} - NOT FOUND in original", tensor_name);
                 fail_count += 1;
                 continue;
-            }
+            },
         };
 
         // Compute quality metrics
@@ -252,11 +254,11 @@ fn main() -> Result<()> {
                 metrics.print(tensor_name);
                 all_metrics.push((tensor_name.to_string(), metrics));
                 success_count += 1;
-            }
+            },
             Err(e) => {
                 println!("\n  {} - ERROR: {}", tensor_name, e);
                 fail_count += 1;
-            }
+            },
         }
     }
 
@@ -265,12 +267,19 @@ fn main() -> Result<()> {
     println!("                          SUMMARY");
     println!("══════════════════════════════════════════════════════════════════");
     println!();
-    println!("Tensors compared: {} / {}", success_count, tensors_to_compare.len());
+    println!(
+        "Tensors compared: {} / {}",
+        success_count,
+        tensors_to_compare.len()
+    );
     println!("Failed:           {}", fail_count);
 
     if !all_metrics.is_empty() {
         // Aggregate statistics
-        let avg_cosine: f32 = all_metrics.iter().map(|(_, m)| m.cosine_similarity).sum::<f32>()
+        let avg_cosine: f32 = all_metrics
+            .iter()
+            .map(|(_, m)| m.cosine_similarity)
+            .sum::<f32>()
             / all_metrics.len() as f32;
         let min_cosine: f32 = all_metrics
             .iter()
@@ -281,16 +290,26 @@ fn main() -> Result<()> {
             .map(|(_, m)| m.cosine_similarity)
             .fold(f32::NEG_INFINITY, f32::max);
 
-        let avg_quality: f32 = all_metrics.iter().map(|(_, m)| m.quality_score).sum::<f32>()
+        let avg_quality: f32 = all_metrics
+            .iter()
+            .map(|(_, m)| m.quality_score)
+            .sum::<f32>()
             / all_metrics.len() as f32;
         let avg_snr: f32 = all_metrics
             .iter()
             .filter(|(_, m)| !m.snr_db.is_infinite())
             .map(|(_, m)| m.snr_db)
             .sum::<f32>()
-            / all_metrics.iter().filter(|(_, m)| !m.snr_db.is_infinite()).count().max(1) as f32;
+            / all_metrics
+                .iter()
+                .filter(|(_, m)| !m.snr_db.is_infinite())
+                .count()
+                .max(1) as f32;
 
-        let excellent = all_metrics.iter().filter(|(_, m)| m.cosine_similarity >= 0.99).count();
+        let excellent = all_metrics
+            .iter()
+            .filter(|(_, m)| m.cosine_similarity >= 0.99)
+            .count();
         let good = all_metrics
             .iter()
             .filter(|(_, m)| m.cosine_similarity >= 0.95 && m.cosine_similarity < 0.99)
@@ -299,7 +318,10 @@ fn main() -> Result<()> {
             .iter()
             .filter(|(_, m)| m.cosine_similarity >= 0.90 && m.cosine_similarity < 0.95)
             .count();
-        let poor = all_metrics.iter().filter(|(_, m)| m.cosine_similarity < 0.90).count();
+        let poor = all_metrics
+            .iter()
+            .filter(|(_, m)| m.cosine_similarity < 0.90)
+            .count();
 
         println!();
         println!("Cosine Similarity:");
@@ -336,12 +358,16 @@ fn main() -> Result<()> {
         }
 
         // Find worst tensor
-        if let Some((worst_name, worst_metrics)) = all_metrics
-            .iter()
-            .min_by(|(_, a), (_, b)| a.cosine_similarity.partial_cmp(&b.cosine_similarity).unwrap())
-        {
+        if let Some((worst_name, worst_metrics)) = all_metrics.iter().min_by(|(_, a), (_, b)| {
+            a.cosine_similarity
+                .partial_cmp(&b.cosine_similarity)
+                .unwrap()
+        }) {
             println!();
-            println!("Worst tensor: {} (cosine={:.6})", worst_name, worst_metrics.cosine_similarity);
+            println!(
+                "Worst tensor: {} (cosine={:.6})",
+                worst_name, worst_metrics.cosine_similarity
+            );
         }
     }
 

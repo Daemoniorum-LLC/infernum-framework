@@ -93,7 +93,8 @@ impl VariantMetrics {
     pub fn record_success(&self, latency_ms: u64, input_tokens: u32, output_tokens: u32) {
         self.request_count.fetch_add(1, Ordering::Relaxed);
         self.success_count.fetch_add(1, Ordering::Relaxed);
-        self.total_latency_ms.fetch_add(latency_ms, Ordering::Relaxed);
+        self.total_latency_ms
+            .fetch_add(latency_ms, Ordering::Relaxed);
         self.total_input_tokens
             .fetch_add(input_tokens as u64, Ordering::Relaxed);
         self.total_output_tokens
@@ -104,7 +105,8 @@ impl VariantMetrics {
     pub fn record_failure(&self, latency_ms: u64) {
         self.request_count.fetch_add(1, Ordering::Relaxed);
         self.failure_count.fetch_add(1, Ordering::Relaxed);
-        self.total_latency_ms.fetch_add(latency_ms, Ordering::Relaxed);
+        self.total_latency_ms
+            .fetch_add(latency_ms, Ordering::Relaxed);
     }
 
     /// Records a quality score.
@@ -316,9 +318,10 @@ impl Experiment {
     /// Checks if experiment should auto-complete.
     pub fn should_complete(&self) -> bool {
         // Check minimum samples
-        let all_have_min_samples = self.metrics.values().all(|m| {
-            m.request_count.load(Ordering::Relaxed) >= self.min_samples
-        });
+        let all_have_min_samples = self
+            .metrics
+            .values()
+            .all(|m| m.request_count.load(Ordering::Relaxed) >= self.min_samples);
 
         if !all_have_min_samples {
             return false;

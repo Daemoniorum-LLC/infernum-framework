@@ -10,13 +10,13 @@ use std::time::{Duration, Instant};
 
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::StatusCode;
+use axum::middleware;
 use axum::response::{IntoResponse, Response, Sse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, Semaphore};
-use axum::middleware;
 use tower_http::cors::CorsLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
@@ -28,30 +28,37 @@ use dantalion::{MetricsCollector, TelemetryConfig};
 use infernum_core::{GenerateRequest, ModelSource, Result, SamplingParams};
 
 use crate::agentic::run_agent;
-use crate::error_response::{api_error, ApiError, ErrorCode};
-use crate::rag::{RagState, rag_health, list_documents, document_count, index_document, delete_document, search};
-use crate::sessions::{
-    SessionRegistry, cancel_session, get_session, list_sessions, session_stream, sessions_stream,
-};
-use crate::model_cache::{
-    ModelCacheState, list_cached_models, delete_cached_model, convert_model, download_model,
-    find_model_path, is_holotensor_model,
-};
-use crate::speculative_engine::{SpeculativeEngine, SpeculativeEngineBuilder};
-use crate::validation::validate_chat_request;
-use crate::batching::{BatchConfig, BatchScheduler};
-use crate::request_batcher::{BatcherConfig, BatcherHandle, RequestBatcher};
 use crate::api_types::{
     ChatChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage, CompletionChoice,
     CompletionRequest, CompletionResponse, EmbeddingData, EmbeddingInput, EmbeddingRequest,
     EmbeddingResponse, EmbeddingUsage, ModelObject, ModelsResponse, ToolChoice, Usage,
 };
-use crate::tool_use::{
-    format_tools_for_prompt, get_forced_tool, process_model_output, should_include_tools,
-    validate_tool_exists, ModelFamily,
-    // Agent-centric streaming tool detection (Phase 3)
-    StreamingToolDetector, SseEvent,
+use crate::batching::{BatchConfig, BatchScheduler};
+use crate::error_response::{api_error, ApiError, ErrorCode};
+use crate::model_cache::{
+    convert_model, delete_cached_model, download_model, find_model_path, is_holotensor_model,
+    list_cached_models, ModelCacheState,
 };
+use crate::rag::{
+    delete_document, document_count, index_document, list_documents, rag_health, search, RagState,
+};
+use crate::request_batcher::{BatcherConfig, BatcherHandle, RequestBatcher};
+use crate::sessions::{
+    cancel_session, get_session, list_sessions, session_stream, sessions_stream, SessionRegistry,
+};
+use crate::speculative_engine::{SpeculativeEngine, SpeculativeEngineBuilder};
+use crate::tool_use::{
+    format_tools_for_prompt,
+    get_forced_tool,
+    process_model_output,
+    should_include_tools,
+    validate_tool_exists,
+    ModelFamily,
+    SseEvent,
+    // Agent-centric streaming tool detection (Phase 3)
+    StreamingToolDetector,
+};
+use crate::validation::validate_chat_request;
 
 /// Default server address.
 const DEFAULT_ADDR: ([u8; 4], u16) = ([0, 0, 0, 0], 8080);
@@ -517,9 +524,14 @@ impl Server {
         // Add middleware (order matters - last added is first executed)
         router = router
             // Request body size limit (prevents DoS with oversized payloads)
-            .layer(DefaultBodyLimit::max(self.config.validation_limits.max_body_size))
+            .layer(DefaultBodyLimit::max(
+                self.config.validation_limits.max_body_size,
+            ))
             // Global request timeout (returns 408 Request Timeout on expiry)
-            .layer(TimeoutLayer::with_status_code(axum::http::StatusCode::REQUEST_TIMEOUT, default_timeout))
+            .layer(TimeoutLayer::with_status_code(
+                axum::http::StatusCode::REQUEST_TIMEOUT,
+                default_timeout,
+            ))
             // Request tracing
             .layer(TraceLayer::new_for_http())
             // Request ID middleware (generates/propagates x-request-id)
@@ -552,7 +564,7 @@ impl Server {
                     match key {
                         "min" => min_quality = value.parse().unwrap_or(0.7),
                         "target" => target_quality = value.parse().unwrap_or(0.95),
-                        _ => {}
+                        _ => {},
                     }
                 }
             }
@@ -568,7 +580,11 @@ impl Server {
             use infernum_core::ModelSource;
 
             EngineConfig::builder()
-                .model_source(ModelSource::holotensor_with_quality(path, min_quality, target_quality))
+                .model_source(ModelSource::holotensor_with_quality(
+                    path,
+                    min_quality,
+                    target_quality,
+                ))
                 .holotensor(HoloTensorConfig {
                     min_quality,
                     target_quality,
@@ -620,7 +636,11 @@ impl Server {
         let speculative_mode = self.config.is_speculative_enabled();
 
         if speculative_mode {
-            let draft_model = self.config.draft_model.as_ref().expect("draft model checked");
+            let draft_model = self
+                .config
+                .draft_model
+                .as_ref()
+                .expect("draft model checked");
             let target_model = self.config.model.as_ref().expect("model checked");
 
             // Parse HoloTensor URL params if present: holo://path?min=0.7&target=0.95
@@ -636,7 +656,7 @@ impl Server {
                         match key {
                             "min" => min_q = value.parse().unwrap_or(0.7),
                             "target" => target_q = value.parse().unwrap_or(0.95),
-                            _ => {}
+                            _ => {},
                         }
                     }
                 }
@@ -673,9 +693,9 @@ impl Server {
                 .num_draft_tokens(self.config.speculative_tokens as usize)
                 .min_quality(min_quality)
                 .target_quality(target_quality)
-                .vram_budget(20 * 1024 * 1024 * 1024)  // 20GB VRAM (leave 4GB headroom)
-                .ram_budget(64 * 1024 * 1024 * 1024)   // 64GB RAM
-                .max_loaded_layers(5);                 // 5 layers for 70B on 24GB with draft model
+                .vram_budget(20 * 1024 * 1024 * 1024) // 20GB VRAM (leave 4GB headroom)
+                .ram_budget(64 * 1024 * 1024 * 1024) // 64GB RAM
+                .max_loaded_layers(5); // 5 layers for 70B on 24GB with draft model
 
             if let Some(dir) = cache_dir {
                 builder = builder.cache_dir(dir);
@@ -689,7 +709,7 @@ impl Server {
                         model = %model_path,
                         "Speculative decoding engine ready (draft + target models loaded)"
                     );
-                }
+                },
                 Err(e) => {
                     tracing::error!(
                         error = %e,
@@ -701,7 +721,7 @@ impl Server {
                         self.load_model(model).await?;
                         tracing::info!(model = %model, "Model loaded for standard inference");
                     }
-                }
+                },
             }
         } else if let Some(model) = &self.config.model {
             // Standard mode (no speculative decoding) - load main engine
@@ -743,7 +763,7 @@ impl Server {
                     Err(e) => {
                         tracing::error!(error = %e, "Failed to listen for Ctrl+C signal");
                         None
-                    }
+                    },
                 }
             };
 
@@ -753,11 +773,11 @@ impl Server {
                     Ok(mut signal) => {
                         signal.recv().await;
                         Some("SIGTERM")
-                    }
+                    },
                     Err(e) => {
                         tracing::error!(error = %e, "Failed to listen for SIGTERM signal");
                         None
-                    }
+                    },
                 }
             };
 
@@ -770,7 +790,10 @@ impl Server {
             };
 
             if let Some(name) = signal_name {
-                eprintln!("\n\x1b[33m⚡\x1b[0m Received {}, shutting down gracefully...", name);
+                eprintln!(
+                    "\n\x1b[33m⚡\x1b[0m Received {}, shutting down gracefully...",
+                    name
+                );
                 tracing::info!(signal = name, "Initiating graceful shutdown");
             }
 
@@ -854,7 +877,8 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
                 timestamp: chrono::Utc::now(),
                 uptime_seconds: uptime,
             }),
-        ).into_response();
+        )
+            .into_response();
     }
 
     (
@@ -864,7 +888,8 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
             timestamp: chrono::Utc::now(),
             uptime_seconds: uptime,
         }),
-    ).into_response()
+    )
+        .into_response()
 }
 
 /// Deep health check response.
@@ -893,15 +918,24 @@ struct CheckStatus {
 
 impl CheckStatus {
     fn healthy() -> Self {
-        Self { status: "healthy", message: None }
+        Self {
+            status: "healthy",
+            message: None,
+        }
     }
 
     fn unhealthy(message: impl Into<String>) -> Self {
-        Self { status: "unhealthy", message: Some(message.into()) }
+        Self {
+            status: "unhealthy",
+            message: Some(message.into()),
+        }
     }
 
     fn degraded(message: impl Into<String>) -> Self {
-        Self { status: "degraded", message: Some(message.into()) }
+        Self {
+            status: "degraded",
+            message: Some(message.into()),
+        }
     }
 }
 
@@ -941,9 +975,15 @@ async fn deep_health(State(state): State<Arc<AppState>>) -> Response {
             overall_status = "degraded";
             degraded_reason = Some("Request queue near capacity".to_string());
         }
-        CheckStatus::degraded(format!("Queue at {}% capacity", (queue_utilization * 100.0) as u32))
+        CheckStatus::degraded(format!(
+            "Queue at {}% capacity",
+            (queue_utilization * 100.0) as u32
+        ))
     } else if queue_utilization > 0.7 {
-        CheckStatus::degraded(format!("Queue at {}% capacity", (queue_utilization * 100.0) as u32))
+        CheckStatus::degraded(format!(
+            "Queue at {}% capacity",
+            (queue_utilization * 100.0) as u32
+        ))
     } else {
         CheckStatus::healthy()
     };
@@ -987,7 +1027,8 @@ async fn prometheus_metrics(State(state): State<Arc<AppState>>) -> Response {
     let mut metrics = state.metrics.render_prometheus();
 
     // Add queue metrics
-    metrics.push_str("\n# HELP infernum_queue_depth Current number of requests waiting in queue.\n");
+    metrics
+        .push_str("\n# HELP infernum_queue_depth Current number of requests waiting in queue.\n");
     metrics.push_str("# TYPE infernum_queue_depth gauge\n");
     metrics.push_str(&format!(
         "infernum_queue_depth {}\n",
@@ -1001,28 +1042,34 @@ async fn prometheus_metrics(State(state): State<Arc<AppState>>) -> Response {
         state.config.queue.max_queue_size
     ));
 
-    metrics.push_str("# HELP infernum_concurrent_requests_limit Maximum concurrent requests allowed.\n");
+    metrics.push_str(
+        "# HELP infernum_concurrent_requests_limit Maximum concurrent requests allowed.\n",
+    );
     metrics.push_str("# TYPE infernum_concurrent_requests_limit gauge\n");
     metrics.push_str(&format!(
         "infernum_concurrent_requests_limit {}\n",
         state.config.queue.max_concurrent_requests
     ));
 
-    metrics.push_str("# HELP infernum_active_requests_total Current number of requests being processed.\n");
+    metrics.push_str(
+        "# HELP infernum_active_requests_total Current number of requests being processed.\n",
+    );
     metrics.push_str("# TYPE infernum_active_requests_total gauge\n");
     metrics.push_str(&format!(
         "infernum_active_requests_total {}\n",
         state.active_requests.load(Ordering::Relaxed)
     ));
 
-    metrics.push_str("# HELP infernum_total_requests_served Total requests served since startup.\n");
+    metrics
+        .push_str("# HELP infernum_total_requests_served Total requests served since startup.\n");
     metrics.push_str("# TYPE infernum_total_requests_served counter\n");
     metrics.push_str(&format!(
         "infernum_total_requests_served {}\n",
         state.total_requests.load(Ordering::Relaxed)
     ));
 
-    metrics.push_str("# HELP infernum_failed_requests_total Total failed requests since startup.\n");
+    metrics
+        .push_str("# HELP infernum_failed_requests_total Total failed requests since startup.\n");
     metrics.push_str("# TYPE infernum_failed_requests_total counter\n");
     metrics.push_str(&format!(
         "infernum_failed_requests_total {}\n",
@@ -1058,7 +1105,8 @@ async fn ready(State(state): State<Arc<AppState>>) -> Response {
                 model: None,
                 timestamp: chrono::Utc::now(),
             }),
-        ).into_response();
+        )
+            .into_response();
     }
 
     let engine = state.engine.read().await;
@@ -1070,7 +1118,8 @@ async fn ready(State(state): State<Arc<AppState>>) -> Response {
                 model: Some(eng.model_info().id.to_string()),
                 timestamp: chrono::Utc::now(),
             }),
-        ).into_response()
+        )
+            .into_response()
     } else {
         (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1079,7 +1128,8 @@ async fn ready(State(state): State<Arc<AppState>>) -> Response {
                 model: None,
                 timestamp: chrono::Utc::now(),
             }),
-        ).into_response()
+        )
+            .into_response()
     }
 }
 
@@ -1225,18 +1275,27 @@ fn validate_model_id(model: &str) -> std::result::Result<(), (StatusCode, &'stat
 
     // Check for path traversal attempts
     if model.contains("..") {
-        return Err((StatusCode::BAD_REQUEST, "model identifier contains invalid characters"));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "model identifier contains invalid characters",
+        ));
     }
 
     // Check for absolute paths (security concern)
     if model.starts_with('/') || model.starts_with('\\') {
-        return Err((StatusCode::BAD_REQUEST, "model identifier cannot be an absolute path"));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "model identifier cannot be an absolute path",
+        ));
     }
 
     // Check for shell metacharacters
     const FORBIDDEN_CHARS: &[char] = &['$', '`', ';', '|', '&', '>', '<', '\n', '\r', '\0'];
     if model.chars().any(|c| FORBIDDEN_CHARS.contains(&c)) {
-        return Err((StatusCode::BAD_REQUEST, "model identifier contains invalid characters"));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "model identifier contains invalid characters",
+        ));
     }
 
     Ok(())
@@ -1387,7 +1446,7 @@ async fn tokenize(
                 _ => ErrorCode::InternalError,
             };
             api_error(error_code, "tokenize-error").into_response()
-        }
+        },
     }
 }
 
@@ -1435,7 +1494,7 @@ async fn chat_completions(
                 &request_id,
                 "Server is shutting down",
             );
-        }
+        },
     };
 
     // Decrement queue, increment active
@@ -1578,7 +1637,9 @@ async fn chat_completions(
 
     // If no system message exists but we have tools, prepend a system message with tools
     let messages = if !tools_prompt.is_empty()
-        && !messages.iter().any(|m| m.role == infernum_core::Role::System)
+        && !messages
+            .iter()
+            .any(|m| m.role == infernum_core::Role::System)
     {
         let mut new_messages = vec![infernum_core::Message {
             role: infernum_core::Role::System,
@@ -1638,7 +1699,7 @@ async fn chat_completions(
                     &request_id,
                     "Streaming not supported in speculative decoding mode. Use stream=false.",
                 );
-            }
+            },
         };
         let state_clone = state.clone();
         match engine.generate_stream(gen_request).await {
@@ -1649,18 +1710,22 @@ async fn chat_completions(
                 // Complete, typed events - no partial JSON accumulation required by agents
                 let model_family = ModelFamily::from_model_name(&model_name);
                 let detector = std::sync::Arc::new(parking_lot::Mutex::new(
-                    StreamingToolDetector::new(model_family)
+                    StreamingToolDetector::new(model_family),
                 ));
 
                 let sse_stream = token_stream.flat_map(move |chunk_result| {
-                    let events: Vec<std::result::Result<axum::response::sse::Event, std::convert::Infallible>> = match chunk_result {
+                    let events: Vec<
+                        std::result::Result<axum::response::sse::Event, std::convert::Infallible>,
+                    > = match chunk_result {
                         Ok(chunk) => {
                             // Extract content from chunk
-                            let content = chunk.choices.first()
+                            let content = chunk
+                                .choices
+                                .first()
                                 .and_then(|c| c.delta.content.as_deref())
                                 .unwrap_or("");
-                            let finish_reason = chunk.choices.first()
-                                .and_then(|c| c.finish_reason.as_ref());
+                            let finish_reason =
+                                chunk.choices.first().and_then(|c| c.finish_reason.as_ref());
 
                             let mut result_events = Vec::new();
 
@@ -1670,7 +1735,9 @@ async fn chat_completions(
                                 for event in detection_events {
                                     if let Some(sse_event) = Option::<SseEvent>::from(event) {
                                         let json_str = sse_event.to_json();
-                                        result_events.push(Ok(axum::response::sse::Event::default().data(json_str)));
+                                        result_events
+                                            .push(Ok(axum::response::sse::Event::default()
+                                                .data(json_str)));
                                     }
                                 }
                             }
@@ -1682,7 +1749,9 @@ async fn chat_completions(
                                 for event in remaining {
                                     if let Some(sse_event) = Option::<SseEvent>::from(event) {
                                         let json_str = sse_event.to_json();
-                                        result_events.push(Ok(axum::response::sse::Event::default().data(json_str)));
+                                        result_events
+                                            .push(Ok(axum::response::sse::Event::default()
+                                                .data(json_str)));
                                     }
                                 }
 
@@ -1692,22 +1761,27 @@ async fn chat_completions(
                                     None => "stop".to_string(),
                                 };
                                 let done_event = if let Some(u) = &chunk.usage {
-                                    SseEvent::done_with_usage(&reason, u.prompt_tokens, u.completion_tokens)
+                                    SseEvent::done_with_usage(
+                                        &reason,
+                                        u.prompt_tokens,
+                                        u.completion_tokens,
+                                    )
                                 } else {
                                     SseEvent::done(&reason)
                                 };
                                 let json_str = done_event.to_json();
-                                result_events.push(Ok(axum::response::sse::Event::default().data(json_str)));
+                                result_events
+                                    .push(Ok(axum::response::sse::Event::default().data(json_str)));
                             }
 
                             result_events
-                        }
+                        },
                         Err(e) => {
                             state_clone.failed_requests.fetch_add(1, Ordering::Relaxed);
                             let error_event = SseEvent::error("server_error", e.to_string());
                             let json_str = error_event.to_json();
                             vec![Ok(axum::response::sse::Event::default().data(json_str))]
-                        }
+                        },
                     };
                     futures::stream::iter(events)
                 });
@@ -1733,20 +1807,27 @@ async fn chat_completions(
 
         if use_speculative {
             // Use speculative decoding - clone the Arc to release the lock
-            let spec_engine = Arc::clone(speculative_guard.as_ref().expect("speculative engine checked"));
-            drop(speculative_guard);  // Release read lock
+            let spec_engine = Arc::clone(
+                speculative_guard
+                    .as_ref()
+                    .expect("speculative engine checked"),
+            );
+            drop(speculative_guard); // Release read lock
 
             let max_tokens = req.max_tokens.unwrap_or(256) as usize;
 
             // Build prompt from messages (simple concatenation for now)
-            let prompt: String = req.messages.iter().map(|m| {
-                match m.role.as_str() {
+            let prompt: String = req
+                .messages
+                .iter()
+                .map(|m| match m.role.as_str() {
                     "system" => format!("<|system|>\n{}\n", m.content),
                     "user" => format!("<|user|>\n{}\n", m.content),
                     "assistant" => format!("<|assistant|>\n{}\n", m.content),
                     _ => m.content.clone(),
-                }
-            }).collect::<String>() + "<|assistant|>\n";
+                })
+                .collect::<String>()
+                + "<|assistant|>\n";
 
             match spec_engine.generate(&prompt, max_tokens) {
                 Ok(raw_content) => {
@@ -1811,7 +1892,7 @@ async fn chat_completions(
                     drop(permit);
 
                     return Json(chat_response).into_response();
-                }
+                },
                 Err(e) => {
                     // In speculative-only mode, there's no fallback engine
                     if engine.is_none() {
@@ -1829,7 +1910,7 @@ async fn chat_completions(
                         "Speculative decoding failed, falling back to regular generation"
                     );
                     // Fall through to regular generation
-                }
+                },
             }
         } else {
             drop(speculative_guard);
@@ -1844,7 +1925,7 @@ async fn chat_completions(
                 state.active_requests.fetch_sub(1, Ordering::Relaxed);
                 drop(permit);
                 return typed_error(ErrorCode::ModelNotLoaded, &request_id);
-            }
+            },
         };
 
         // Try to use batcher for parallel inference, fall back to direct generation
@@ -1853,14 +1934,16 @@ async fn chat_completions(
             Some(batcher) => {
                 // Submit to batcher for batched processing
                 match batcher.submit(gen_request).await {
-                    Ok(rx) => rx.await.unwrap_or_else(|_| Err(infernum_core::Error::internal("Batcher channel closed"))),
+                    Ok(rx) => rx.await.unwrap_or_else(|_| {
+                        Err(infernum_core::Error::internal("Batcher channel closed"))
+                    }),
                     Err(e) => Err(e),
                 }
-            }
+            },
             None => {
                 // No batcher, use direct generation
                 engine.generate(gen_request).await
-            }
+            },
         };
 
         match result {
@@ -1947,7 +2030,9 @@ async fn chat_completions(
             Err(e) => {
                 state.failed_requests.fetch_add(1, Ordering::Relaxed);
                 let model_id = engine.model_info().id.to_string();
-                state.metrics.record_error("chat", &model_id, "generation_error");
+                state
+                    .metrics
+                    .record_error("chat", &model_id, "generation_error");
                 typed_error_with_message(
                     ErrorCode::InternalError,
                     &error_request_id,
@@ -1981,7 +2066,10 @@ fn validate_completion_request(
     // Validate temperature
     if let Some(temp) = req.temperature {
         if !(0.0..=2.0).contains(&temp) {
-            return Err((StatusCode::BAD_REQUEST, "temperature must be between 0.0 and 2.0"));
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "temperature must be between 0.0 and 2.0",
+            ));
         }
     }
 
@@ -1995,7 +2083,10 @@ fn validate_completion_request(
     // Validate max_tokens
     if let Some(max_tokens) = req.max_tokens {
         if max_tokens == 0 || max_tokens > limits.max_max_tokens {
-            return Err((StatusCode::BAD_REQUEST, "max_tokens exceeds maximum allowed value"));
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "max_tokens exceeds maximum allowed value",
+            ));
         }
     }
 
@@ -2046,7 +2137,7 @@ async fn completions(
                 &request_id,
                 "Server is shutting down",
             );
-        }
+        },
     };
 
     state.queue_depth.fetch_sub(1, Ordering::Relaxed);
@@ -2117,8 +2208,12 @@ async fn completions(
 
     let response = if use_speculative {
         // Use speculative decoding - clone the Arc to release the lock
-        let spec_engine = Arc::clone(speculative_guard.as_ref().expect("speculative engine checked"));
-        drop(speculative_guard);  // Release read lock
+        let spec_engine = Arc::clone(
+            speculative_guard
+                .as_ref()
+                .expect("speculative engine checked"),
+        );
+        drop(speculative_guard); // Release read lock
 
         let max_tokens = req.max_tokens.unwrap_or(256) as usize;
 
@@ -2127,7 +2222,8 @@ async fn completions(
             Ok(generated_text) => {
                 let stats = spec_engine.stats();
                 let prompt_tokens: u32 = (req.prompt.split_whitespace().count() as u32 * 4) / 3; // rough estimate
-                let completion_tokens: u32 = (generated_text.split_whitespace().count() as u32 * 4) / 3;
+                let completion_tokens: u32 =
+                    (generated_text.split_whitespace().count() as u32 * 4) / 3;
 
                 let completion_response = CompletionResponse {
                     id: request_id.clone(),
@@ -2171,7 +2267,9 @@ async fn completions(
             Err(e) => {
                 state.failed_requests.fetch_add(1, Ordering::Relaxed);
                 let model_id = spec_engine.model_id();
-                state.metrics.record_error("completion", model_id, "speculative_error");
+                state
+                    .metrics
+                    .record_error("completion", model_id, "speculative_error");
                 let error_msg = format!("{}", e);
                 typed_error_with_message(
                     ErrorCode::InternalError,
@@ -2187,8 +2285,9 @@ async fn completions(
         let engine = engine.expect("engine checked earlier");
 
         // Create inference request
-        let gen_request = GenerateRequest::new(infernum_core::request::PromptInput::Text(req.prompt))
-            .with_sampling(sampling);
+        let gen_request =
+            GenerateRequest::new(infernum_core::request::PromptInput::Text(req.prompt))
+                .with_sampling(sampling);
 
         match engine.generate(gen_request).await {
             Ok(response) => {
@@ -2239,7 +2338,9 @@ async fn completions(
             Err(e) => {
                 state.failed_requests.fetch_add(1, Ordering::Relaxed);
                 let model_id = engine.model_info().id.to_string();
-                state.metrics.record_error("completion", &model_id, "generation_error");
+                state
+                    .metrics
+                    .record_error("completion", &model_id, "generation_error");
                 typed_error_with_message(
                     ErrorCode::InternalError,
                     &error_request_id,
@@ -2269,7 +2370,7 @@ fn validate_embedding_request(
             if s.len() > limits.max_prompt_length {
                 return Err((StatusCode::BAD_REQUEST, "input exceeds maximum length"));
             }
-        }
+        },
         EmbeddingInput::Multiple(inputs) => {
             if inputs.is_empty() {
                 return Err((StatusCode::BAD_REQUEST, "input array cannot be empty"));
@@ -2285,7 +2386,7 @@ fn validate_embedding_request(
                     return Err((StatusCode::BAD_REQUEST, "input exceeds maximum length"));
                 }
             }
-        }
+        },
     }
     Ok(())
 }
@@ -2334,7 +2435,7 @@ async fn embeddings(
                 &request_id,
                 "Server is shutting down",
             );
-        }
+        },
     };
 
     state.queue_depth.fetch_sub(1, Ordering::Relaxed);
@@ -2387,7 +2488,11 @@ async fn embeddings(
                     None => {
                         state.failed_requests.fetch_add(1, Ordering::Relaxed);
                         let model_id = engine.model_info().id.to_string();
-                        state.metrics.record_error("embedding", &model_id, "embedding_extraction_failed");
+                        state.metrics.record_error(
+                            "embedding",
+                            &model_id,
+                            "embedding_extraction_failed",
+                        );
                         state.active_requests.fetch_sub(1, Ordering::Relaxed);
                         drop(permit);
                         return typed_error_with_message(
@@ -2395,7 +2500,7 @@ async fn embeddings(
                             &error_request_id,
                             "No embedding data returned from model",
                         );
-                    }
+                    },
                 };
 
                 let embedding_vec = match embedding_data.embedding.as_floats() {
@@ -2404,7 +2509,11 @@ async fn embeddings(
                         tracing::error!(request_id = %error_request_id, error = %e, "Failed to extract embedding floats");
                         state.failed_requests.fetch_add(1, Ordering::Relaxed);
                         let model_id = engine.model_info().id.to_string();
-                        state.metrics.record_error("embedding", &model_id, "embedding_extraction_failed");
+                        state.metrics.record_error(
+                            "embedding",
+                            &model_id,
+                            "embedding_extraction_failed",
+                        );
                         state.active_requests.fetch_sub(1, Ordering::Relaxed);
                         drop(permit);
                         return typed_error_with_message(
@@ -2412,7 +2521,7 @@ async fn embeddings(
                             &error_request_id,
                             "Failed to convert embedding to float array",
                         );
-                    }
+                    },
                 };
 
                 embeddings.push(EmbeddingData {
@@ -2425,7 +2534,9 @@ async fn embeddings(
             Err(e) => {
                 state.failed_requests.fetch_add(1, Ordering::Relaxed);
                 let model_id = engine.model_info().id.to_string();
-                state.metrics.record_error("embedding", &model_id, "embedding_error");
+                state
+                    .metrics
+                    .record_error("embedding", &model_id, "embedding_error");
                 state.active_requests.fetch_sub(1, Ordering::Relaxed);
                 drop(permit);
                 return typed_error_with_message(
@@ -2450,12 +2561,9 @@ async fn embeddings(
 
     // Record metrics
     let latency_secs = start.elapsed().as_secs_f64();
-    state.metrics.record_embedding_request(
-        total_tokens,
-        latency_secs,
-        &response.model,
-        batch_size,
-    );
+    state
+        .metrics
+        .record_embedding_request(total_tokens, latency_secs, &response.model, batch_size);
 
     state.active_requests.fetch_sub(1, Ordering::Relaxed);
     drop(permit);
@@ -2476,7 +2584,10 @@ mod tests {
             .max_concurrent_requests(32)
             .build();
 
-        assert_eq!(config.addr, "127.0.0.1:3000".parse::<std::net::SocketAddr>().unwrap());
+        assert_eq!(
+            config.addr,
+            "127.0.0.1:3000".parse::<std::net::SocketAddr>().unwrap()
+        );
         assert!(!config.cors);
         assert_eq!(config.model, Some("test-model".to_string()));
         assert_eq!(config.queue.max_concurrent_requests, 32);
@@ -2619,9 +2730,7 @@ mod tests {
     #[test]
     fn test_validate_chat_request_valid() {
         let limits = ValidationLimits::default();
-        let req = make_chat_request(vec![
-            make_chat_message("user", "Hello, world!"),
-        ]);
+        let req = make_chat_request(vec![make_chat_message("user", "Hello, world!")]);
         assert!(validate_chat_request(&req, &limits).is_ok());
     }
 
@@ -2651,7 +2760,13 @@ mod tests {
         let result = validate_chat_request(&req, &limits);
         assert!(result.is_err());
         let err = result.err().unwrap();
-        assert!(matches!(err, RequestValidationError::TooManyMessages { count: 10, limit: 5 }));
+        assert!(matches!(
+            err,
+            RequestValidationError::TooManyMessages {
+                count: 10,
+                limit: 5
+            }
+        ));
         assert_eq!(err.status_code(), StatusCode::BAD_REQUEST);
     }
 
@@ -2667,7 +2782,14 @@ mod tests {
         let result = validate_chat_request(&req, &limits);
         assert!(result.is_err());
         let err = result.err().unwrap();
-        assert!(matches!(err, RequestValidationError::MessageTooLong { index: 0, length: 150, limit: 100 }));
+        assert!(matches!(
+            err,
+            RequestValidationError::MessageTooLong {
+                index: 0,
+                length: 150,
+                limit: 100
+            }
+        ));
         assert_eq!(err.status_code(), StatusCode::BAD_REQUEST);
     }
 
@@ -2983,7 +3105,10 @@ mod tests {
 
         // AppState should have a batch scheduler
         let scheduler = state.batch_scheduler();
-        assert!(scheduler.pending_count() == 0, "New scheduler should be empty");
+        assert!(
+            scheduler.pending_count() == 0,
+            "New scheduler should be empty"
+        );
     }
 
     #[test]
@@ -3002,9 +3127,7 @@ mod tests {
     #[test]
     fn test_batch_scheduler_inherits_queue_limits() {
         // Verify the scheduler respects the server's queue configuration
-        let config = ServerConfig::builder()
-            .max_queue_size(500)
-            .build();
+        let config = ServerConfig::builder().max_queue_size(500).build();
         let state = AppState::new(config);
 
         let scheduler = state.batch_scheduler();
@@ -3040,7 +3163,7 @@ mod tests {
             assert_eq!(response.status_code(), StatusCode::OK);
 
             let body: serde_json::Value = response.json();
-            assert_eq!(body["status"], "healthy");
+            assert_eq!(body["status"], "ok");
         }
 
         #[tokio::test]
@@ -3052,7 +3175,7 @@ mod tests {
             assert_eq!(response.status_code(), StatusCode::SERVICE_UNAVAILABLE);
 
             let body: serde_json::Value = response.json();
-            assert_eq!(body["status"], "not_ready");
+            assert_eq!(body["ready"], false);
         }
 
         #[tokio::test]
@@ -3093,10 +3216,7 @@ mod tests {
                 ]
             });
 
-            let response = server
-                .post("/v1/chat/completions")
-                .json(&request)
-                .await;
+            let response = server.post("/v1/chat/completions").json(&request).await;
 
             // Should fail because no model is loaded
             assert_eq!(response.status_code(), StatusCode::SERVICE_UNAVAILABLE);
@@ -3111,10 +3231,7 @@ mod tests {
                 "prompt": "Hello!"
             });
 
-            let response = server
-                .post("/v1/completions")
-                .json(&request)
-                .await;
+            let response = server.post("/v1/completions").json(&request).await;
 
             // Should fail because no model is loaded
             assert_eq!(response.status_code(), StatusCode::SERVICE_UNAVAILABLE);
@@ -3129,10 +3246,7 @@ mod tests {
                 "input": "Hello, world!"
             });
 
-            let response = server
-                .post("/v1/embeddings")
-                .json(&request)
-                .await;
+            let response = server.post("/v1/embeddings").json(&request).await;
 
             // Should fail because no model is loaded
             assert_eq!(response.status_code(), StatusCode::SERVICE_UNAVAILABLE);
@@ -3147,17 +3261,15 @@ mod tests {
                 "messages": []
             });
 
-            let response = server
-                .post("/v1/chat/completions")
-                .json(&request)
-                .await;
+            let response = server.post("/v1/chat/completions").json(&request).await;
 
             assert_eq!(response.status_code(), StatusCode::BAD_REQUEST);
 
             let body: serde_json::Value = response.json();
-            assert!(body["error"]["message"].as_str()
+            assert!(body["error"]["message"]
+                .as_str()
                 .expect("error message")
-                .contains("at least one message"));
+                .contains("cannot be empty"));
         }
 
         #[tokio::test]
@@ -3170,15 +3282,13 @@ mod tests {
                 "temperature": 3.0
             });
 
-            let response = server
-                .post("/v1/chat/completions")
-                .json(&request)
-                .await;
+            let response = server.post("/v1/chat/completions").json(&request).await;
 
             assert_eq!(response.status_code(), StatusCode::BAD_REQUEST);
 
             let body: serde_json::Value = response.json();
-            assert!(body["error"]["message"].as_str()
+            assert!(body["error"]["message"]
+                .as_str()
                 .expect("error message")
                 .contains("temperature"));
         }
@@ -3192,15 +3302,13 @@ mod tests {
                 "prompt": ""
             });
 
-            let response = server
-                .post("/v1/completions")
-                .json(&request)
-                .await;
+            let response = server.post("/v1/completions").json(&request).await;
 
             assert_eq!(response.status_code(), StatusCode::BAD_REQUEST);
 
             let body: serde_json::Value = response.json();
-            assert!(body["error"]["message"].as_str()
+            assert!(body["error"]["message"]
+                .as_str()
                 .expect("error message")
                 .contains("empty"));
         }
@@ -3214,10 +3322,7 @@ mod tests {
                 "input": ""
             });
 
-            let response = server
-                .post("/v1/embeddings")
-                .json(&request)
-                .await;
+            let response = server.post("/v1/embeddings").json(&request).await;
 
             assert_eq!(response.status_code(), StatusCode::BAD_REQUEST);
         }
@@ -3230,17 +3335,15 @@ mod tests {
                 "model": "../etc/passwd"
             });
 
-            let response = server
-                .post("/api/models/load")
-                .json(&request)
-                .await;
+            let response = server.post("/api/models/load").json(&request).await;
 
             assert_eq!(response.status_code(), StatusCode::BAD_REQUEST);
 
             let body: serde_json::Value = response.json();
-            assert!(body["error"]["message"].as_str()
+            assert!(body["error"]["message"]
+                .as_str()
                 .expect("error message")
-                .contains("path traversal"));
+                .contains("invalid characters"));
         }
 
         #[tokio::test]
@@ -3251,17 +3354,15 @@ mod tests {
                 "model": "model; rm -rf /"
             });
 
-            let response = server
-                .post("/api/models/load")
-                .json(&request)
-                .await;
+            let response = server.post("/api/models/load").json(&request).await;
 
             assert_eq!(response.status_code(), StatusCode::BAD_REQUEST);
 
             let body: serde_json::Value = response.json();
-            assert!(body["error"]["message"].as_str()
+            assert!(body["error"]["message"]
+                .as_str()
                 .expect("error message")
-                .contains("shell"));
+                .contains("invalid characters"));
         }
 
         #[tokio::test]
@@ -3274,10 +3375,22 @@ mod tests {
             let body = response.text();
             // Day 16.1: Verify Prometheus text exposition format
             // Check for required metric types
-            assert!(body.contains("infernum_queue_depth"), "should have queue_depth gauge");
-            assert!(body.contains("infernum_active_requests_total"), "should have active_requests gauge");
-            assert!(body.contains("infernum_total_requests_served"), "should have total_requests counter");
-            assert!(body.contains("infernum_uptime_seconds"), "should have uptime gauge");
+            assert!(
+                body.contains("infernum_queue_depth"),
+                "should have queue_depth gauge"
+            );
+            assert!(
+                body.contains("infernum_active_requests_total"),
+                "should have active_requests gauge"
+            );
+            assert!(
+                body.contains("infernum_total_requests_served"),
+                "should have total_requests counter"
+            );
+            assert!(
+                body.contains("infernum_uptime_seconds"),
+                "should have uptime gauge"
+            );
             // Check for proper Prometheus format markers
             assert!(body.contains("# HELP"), "should have HELP comments");
             assert!(body.contains("# TYPE"), "should have TYPE declarations");
@@ -3292,7 +3405,11 @@ mod tests {
 
             // Verify Content-Type header for Prometheus
             let content_type = response.header("content-type");
-            assert!(content_type.contains("text/plain"), "should have text/plain content type");
+            let content_type_str = content_type.to_str().unwrap_or("");
+            assert!(
+                content_type_str.contains("text/plain"),
+                "should have text/plain content type"
+            );
 
             let body = response.text();
             // Verify each line is valid Prometheus format:

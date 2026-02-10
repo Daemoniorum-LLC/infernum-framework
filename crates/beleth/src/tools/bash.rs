@@ -7,8 +7,8 @@ use infernum_core::Result;
 use serde_json::Value;
 use tokio::process::Command;
 
-use crate::tool::{RiskLevel, Tool, ToolContext, ToolResult};
 use super::{optional_str_param, optional_u64_param, require_str_param};
+use crate::tool::{RiskLevel, Tool, ToolContext, ToolResult};
 
 /// Default timeout for shell commands (120 seconds).
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
@@ -109,11 +109,8 @@ impl Tool for BashTool {
         let child = match child {
             Ok(c) => c,
             Err(e) => {
-                return Ok(ToolResult::error(format!(
-                    "Failed to spawn command: {}",
-                    e
-                )));
-            }
+                return Ok(ToolResult::error(format!("Failed to spawn command: {}", e)));
+            },
         };
 
         let timeout = Duration::from_secs(timeout_secs);
@@ -168,7 +165,7 @@ impl Tool for BashTool {
                 }));
 
                 Ok(tool_result)
-            }
+            },
             Ok(Err(e)) => Ok(ToolResult::error(format!(
                 "Command execution failed: {}",
                 e
@@ -185,7 +182,7 @@ impl Tool for BashTool {
                     "Command timed out after {} seconds",
                     timeout_secs
                 )))
-            }
+            },
         }
     }
 }

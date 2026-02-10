@@ -13,9 +13,6 @@
 //! - **Prometheus Export**: Metrics endpoint for scraping
 
 #![warn(missing_docs)]
-#![warn(clippy::all)]
-#![warn(clippy::pedantic)]
-#![deny(clippy::unwrap_used)]
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::must_use_candidate)]
 
@@ -29,14 +26,16 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 
 pub use logging::init_logging;
-pub use metrics::{ActiveRequestGuard, InferenceMetrics, MetricsCollector, PrometheusRegistry, Timer};
+pub use metrics::{
+    ActiveRequestGuard, InferenceMetrics, MetricsCollector, PrometheusRegistry, Timer,
+};
 pub use research::{
     ConsoleListener, EventListener, EventType, GlobalStats, JsonFileListener, ModelFamily,
     ResearchEvent, ResearchTracker, SessionId, SessionStats,
 };
 pub use tracing_config::{
-    create_tracer, init_tracing, AgentSpan, InferenceSpan, LLMSpan, LLMSpanBuilder,
-    RetrievalSpan, ToolSpan, TracingConfig, TracingGuard,
+    create_tracer, init_tracing, AgentSpan, InferenceSpan, LLMSpan, LLMSpanBuilder, RetrievalSpan,
+    ToolSpan, TracingConfig, TracingGuard,
 };
 
 /// Global telemetry state.
@@ -158,16 +157,17 @@ mod tests {
 
     #[test]
     fn test_telemetry_config_with_otlp() {
-        let config = TelemetryConfig::new("test")
-            .with_otlp("http://localhost:4317");
+        let config = TelemetryConfig::new("test").with_otlp("http://localhost:4317");
 
-        assert_eq!(config.otlp_endpoint, Some("http://localhost:4317".to_string()));
+        assert_eq!(
+            config.otlp_endpoint,
+            Some("http://localhost:4317".to_string())
+        );
     }
 
     #[test]
     fn test_telemetry_config_with_prometheus() {
-        let config = TelemetryConfig::new("test")
-            .with_prometheus("0.0.0.0:9090");
+        let config = TelemetryConfig::new("test").with_prometheus("0.0.0.0:9090");
 
         assert!(config.prometheus_enabled);
         assert_eq!(config.prometheus_addr, Some("0.0.0.0:9090".to_string()));
@@ -175,16 +175,14 @@ mod tests {
 
     #[test]
     fn test_telemetry_config_with_log_level() {
-        let config = TelemetryConfig::new("test")
-            .with_log_level("debug");
+        let config = TelemetryConfig::new("test").with_log_level("debug");
 
         assert_eq!(config.log_level, "debug");
     }
 
     #[test]
     fn test_telemetry_config_with_json_logs() {
-        let config = TelemetryConfig::new("test")
-            .with_json_logs();
+        let config = TelemetryConfig::new("test").with_json_logs();
 
         assert!(config.json_logs);
     }
@@ -250,7 +248,9 @@ mod tests {
         // Record some metrics
         telemetry.metrics.inference().record_request(100, 50);
         telemetry.metrics.inference().record_request(200, 100);
-        telemetry.metrics.record_error("chat", "test-model", "timeout");
+        telemetry
+            .metrics
+            .record_error("chat", "test-model", "timeout");
 
         assert_eq!(telemetry.metrics.inference().requests(), 2);
         assert_eq!(telemetry.metrics.inference().prompt_tokens(), 300);
@@ -260,11 +260,12 @@ mod tests {
 
     #[test]
     fn test_telemetry_prometheus_render() {
-        let config = TelemetryConfig::new("prometheus-test")
-            .with_prometheus("0.0.0.0:9090");
+        let config = TelemetryConfig::new("prometheus-test").with_prometheus("0.0.0.0:9090");
         let telemetry = Telemetry::init(config);
 
-        telemetry.metrics.record_chat_request(50, 25, 0.1, "test-model");
+        telemetry
+            .metrics
+            .record_chat_request(50, 25, 0.1, "test-model");
 
         let output = telemetry.metrics.render_prometheus();
         assert!(output.contains("infernum_requests_total"));

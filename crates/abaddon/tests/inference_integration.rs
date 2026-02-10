@@ -4,14 +4,12 @@
 //! sampling, attention, and KV cache management.
 
 use abaddon::{
-    EngineConfig, MemoryConfig, SpeculativeConfig,
-    DeviceInfo, best_device, enumerate_devices,
-    Sampler, KVCache,
-    FlashAttention, FlashAttentionConfig, AttentionVariant,
-    GgufMetadata, QuantizedModelConfig,
+    best_device, enumerate_devices, AttentionVariant, DeviceInfo, EngineConfig, FlashAttention,
+    FlashAttentionConfig, GgufMetadata, KVCache, MemoryConfig, QuantizedModelConfig, Sampler,
+    SpeculativeConfig,
 };
-use infernum_core::{DeviceType, ModelSource, QuantizationType, SamplingParams, RequestId};
 use candle_core::{Device, Tensor};
+use infernum_core::{DeviceType, ModelSource, QuantizationType, RequestId, SamplingParams};
 
 // ============================================================================
 // EngineConfig Builder Pattern Tests
@@ -28,7 +26,7 @@ fn test_engine_config_builder_minimal() {
         ModelSource::HuggingFace { repo_id, revision } => {
             assert_eq!(repo_id, "meta-llama/Llama-3.2-3B-Instruct");
             assert!(revision.is_none());
-        }
+        },
         _ => panic!("Expected HuggingFace source"),
     }
     assert_eq!(config.device, DeviceType::Cpu);
@@ -116,10 +114,7 @@ fn test_engine_config_builder_with_cache_dir() {
 
 #[test]
 fn test_engine_config_builder_no_model_fails() {
-    let result = EngineConfig::builder()
-        .cuda(0)
-        .max_batch_size(32)
-        .build();
+    let result = EngineConfig::builder().cuda(0).max_batch_size(32).build();
 
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("model is required"));
@@ -267,7 +262,7 @@ fn test_speculative_config_with_local_draft() {
     match &config.draft_model {
         ModelSource::LocalPath { path } => {
             assert!(path.to_string_lossy().contains("draft.gguf"));
-        }
+        },
         _ => panic!("Expected LocalPath source"),
     }
 }
@@ -296,7 +291,9 @@ fn test_enumerate_devices_always_has_cpu() {
     let devices = enumerate_devices();
 
     assert!(!devices.is_empty());
-    let has_cpu = devices.iter().any(|d| matches!(d.device_type, DeviceType::Cpu));
+    let has_cpu = devices
+        .iter()
+        .any(|d| matches!(d.device_type, DeviceType::Cpu));
     assert!(has_cpu, "CPU should always be available");
 }
 
@@ -305,7 +302,10 @@ fn test_enumerate_devices_marks_one_recommended() {
     let devices = enumerate_devices();
 
     let recommended_count = devices.iter().filter(|d| d.recommended).count();
-    assert_eq!(recommended_count, 1, "Exactly one device should be recommended");
+    assert_eq!(
+        recommended_count, 1,
+        "Exactly one device should be recommended"
+    );
 }
 
 #[test]
@@ -839,10 +839,24 @@ fn test_attention_with_kv_cache_workflow() {
     let decode_q = Tensor::randn(0.0f32, 0.5, (batch, heads, 1, head_dim), &device).unwrap();
 
     // In real scenario, K/V would come from cache
-    let decode_k = Tensor::randn(0.0f32, 0.5, (batch, heads, prefill_len + 1, head_dim), &device).unwrap();
-    let decode_v = Tensor::randn(0.0f32, 0.5, (batch, heads, prefill_len + 1, head_dim), &device).unwrap();
+    let decode_k = Tensor::randn(
+        0.0f32,
+        0.5,
+        (batch, heads, prefill_len + 1, head_dim),
+        &device,
+    )
+    .unwrap();
+    let decode_v = Tensor::randn(
+        0.0f32,
+        0.5,
+        (batch, heads, prefill_len + 1, head_dim),
+        &device,
+    )
+    .unwrap();
 
-    let decode_output = flash_attn.forward(&decode_q, &decode_k, &decode_v, None, Some(true)).unwrap();
+    let decode_output = flash_attn
+        .forward(&decode_q, &decode_k, &decode_v, None, Some(true))
+        .unwrap();
     assert_eq!(decode_output.dims(), &[batch, heads, 1, head_dim]);
 }
 

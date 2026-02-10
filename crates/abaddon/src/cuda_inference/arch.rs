@@ -321,11 +321,9 @@ impl ModelConfig {
     pub fn num_params(&self) -> usize {
         let embed_params = self.vocab_size * self.hidden_size;
 
-        let attn_params = self.num_layers
-            * (self.hidden_size * self.hidden_size * 4); // Q, K, V, O
+        let attn_params = self.num_layers * (self.hidden_size * self.hidden_size * 4); // Q, K, V, O
 
-        let mlp_params = self.num_layers
-            * (self.hidden_size * self.intermediate_size * 3); // gate, up, down
+        let mlp_params = self.num_layers * (self.hidden_size * self.intermediate_size * 3); // gate, up, down
 
         let norm_params = self.num_layers * self.hidden_size * 2 + self.hidden_size;
 
@@ -579,7 +577,10 @@ impl WeightNameMap {
             mappings: vec![
                 ("gpt_neox.embed_in.weight".into(), "embed_tokens".into()),
                 ("embed_out.weight".into(), "lm_head".into()),
-                ("gpt_neox.final_layer_norm.weight".into(), "final_norm".into()),
+                (
+                    "gpt_neox.final_layer_norm.weight".into(),
+                    "final_norm".into(),
+                ),
                 (
                     "gpt_neox.layers.{layer}.input_layernorm.weight".into(),
                     "layers.{layer}.input_norm".into(),

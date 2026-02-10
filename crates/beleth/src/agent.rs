@@ -43,7 +43,10 @@ impl PersonaSource {
 
     /// Creates a new Grimoire persona source with a variant.
     #[must_use]
-    pub fn grimoire_with_variant(persona_id: impl Into<String>, variant: impl Into<String>) -> Self {
+    pub fn grimoire_with_variant(
+        persona_id: impl Into<String>,
+        variant: impl Into<String>,
+    ) -> Self {
         Self::Grimoire {
             persona_id: persona_id.into(),
             variant: Some(variant.into()),
@@ -56,7 +59,10 @@ impl PersonaSource {
     pub async fn resolve(&self) -> String {
         match self {
             Self::Inline(s) => s.clone(),
-            Self::Grimoire { persona_id, variant } => {
+            Self::Grimoire {
+                persona_id,
+                variant,
+            } => {
                 let loader = grimoire_loader::GrimoireLoader::new();
 
                 match loader.load(persona_id).await {
@@ -74,13 +80,13 @@ impl PersonaSource {
                         } else {
                             persona.system_prompt
                         }
-                    }
+                    },
                     Err(_) => {
                         // Try legacy filesystem path loading as fallback
                         Self::load_from_filesystem(persona_id, variant.as_deref())
-                    }
+                    },
                 }
-            }
+            },
         }
     }
 
@@ -107,7 +113,7 @@ impl PersonaSource {
                     "Grimoire persona not found, using default prompt"
                 );
                 format!("You are {} - an AI assistant.", persona_id)
-            }
+            },
         }
     }
 }
@@ -293,7 +299,10 @@ impl Agent {
         let mut ctx = ToolContext::new(&self.id);
         ctx.messages = messages.clone();
         if let Some(ref wd) = self.working_dir {
-            ctx.set_state("working_dir", serde_json::json!(wd.to_string_lossy().as_ref()));
+            ctx.set_state(
+                "working_dir",
+                serde_json::json!(wd.to_string_lossy().as_ref()),
+            );
         }
 
         // Context size management: prevent OOM by limiting context growth
@@ -365,17 +374,17 @@ impl Agent {
                     let observation = match self.tools.execute(&tool_call, &ctx).await {
                         Ok(result) if result.success => {
                             format!("Observation: {}", result.output)
-                        }
+                        },
                         Ok(result) => {
                             format!(
                                 "Observation: Tool error - {}",
                                 result.error.unwrap_or_default()
                             )
-                        }
+                        },
                         Err(e) => {
                             tracing::warn!(tool = %tool_call.name, error = %e, "Tool execution failed");
                             format!("Observation: Tool execution failed - {}", e)
-                        }
+                        },
                     };
 
                     messages.push(Message {
@@ -413,7 +422,10 @@ impl Agent {
                 .iter()
                 .rev()
                 .find(|m| m.role == Role::Assistant)
-                .map_or_else(|| "No response generated.".to_string(), |m| m.content.clone());
+                .map_or_else(
+                    || "No response generated.".to_string(),
+                    |m| m.content.clone(),
+                );
         }
 
         Ok(final_answer)
@@ -445,7 +457,7 @@ impl Agent {
                     Always think step by step.",
                     base_prompt, tools_desc
                 )
-            }
+            },
             _ => {
                 let tools_desc = self.tools.to_prompt_description();
                 format!(
@@ -459,7 +471,7 @@ impl Agent {
                     Always think step by step. Use Thought: to express your reasoning.",
                     base_prompt, tools_desc
                 )
-            }
+            },
         }
     }
 
@@ -544,7 +556,10 @@ impl Agent {
 
         let parsed: serde_json::Value = serde_json::from_str(json_str).ok()?;
         let name = parsed.get("name")?.as_str()?.to_string();
-        let params = parsed.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+        let params = parsed
+            .get("arguments")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
 
         Some(ToolCall { name, params })
     }
@@ -585,7 +600,10 @@ impl Agent {
 
         let mut ctx = ToolContext::new(&self.id);
         if let Some(ref wd) = self.working_dir {
-            ctx.set_state("working_dir", serde_json::json!(wd.to_string_lossy().as_ref()));
+            ctx.set_state(
+                "working_dir",
+                serde_json::json!(wd.to_string_lossy().as_ref()),
+            );
         }
         let mut step_results = Vec::new();
         let mut final_output = String::new();
@@ -615,7 +633,10 @@ impl Agent {
                 // Add observation to context messages
                 ctx.messages.push(Message {
                     role: Role::User,
-                    content: format!("Step {}: {}\nResult: {}", step.id, step.description, observation),
+                    content: format!(
+                        "Step {}: {}\nResult: {}",
+                        step.id, step.description, observation
+                    ),
                     name: Some("system".to_string()),
                     tool_calls: None,
                     tool_call_id: None,
@@ -665,7 +686,7 @@ impl Agent {
                 let output = response
                     .choices
                     .first()
-                .map_or_else(String::new, |c| c.text.clone());
+                    .map_or_else(String::new, |c| c.text.clone());
 
                 ctx.messages.push(Message {
                     role: Role::Assistant,
@@ -755,7 +776,7 @@ impl Agent {
         let assistant_response = response
             .choices
             .first()
-                .map_or_else(String::new, |c| c.text.clone());
+            .map_or_else(String::new, |c| c.text.clone());
 
         // Add to memory
         self.memory
@@ -930,11 +951,7 @@ impl Agent {
             .copied()
             .collect();
 
-        let mut result = format!(
-            "{}\n[Compressed from {} lines]",
-            first_line,
-            lines.len()
-        );
+        let mut result = format!("{}\n[Compressed from {} lines]", first_line, lines.len());
 
         if !paths.is_empty() {
             result.push_str("\nKey files:\n");
@@ -1239,12 +1256,13 @@ Action: search
 
     #[test]
     fn test_agent_builder_grimoire_persona() {
-        let agent = Agent::builder()
-            .grimoire_persona("test-persona")
-            .build();
+        let agent = Agent::builder().grimoire_persona("test-persona").build();
 
         match &agent.persona.system {
-            PersonaSource::Grimoire { persona_id, variant } => {
+            PersonaSource::Grimoire {
+                persona_id,
+                variant,
+            } => {
                 assert_eq!(persona_id, "test-persona");
                 assert!(variant.is_none());
             },
@@ -1345,7 +1363,10 @@ Action: search
             variant: Some("friendly".to_string()),
         };
         match source {
-            PersonaSource::Grimoire { persona_id, variant } => {
+            PersonaSource::Grimoire {
+                persona_id,
+                variant,
+            } => {
                 assert_eq!(persona_id, "assistant");
                 assert_eq!(variant, Some("friendly".to_string()));
             },
@@ -1360,7 +1381,10 @@ Action: search
             variant: None,
         };
         match source {
-            PersonaSource::Grimoire { persona_id, variant } => {
+            PersonaSource::Grimoire {
+                persona_id,
+                variant,
+            } => {
                 assert_eq!(persona_id, "default");
                 assert!(variant.is_none());
             },
@@ -1623,9 +1647,7 @@ Action: search
         use crate::tool::ToolRegistry;
 
         let registry = ToolRegistry::with_builtins();
-        let agent = Agent::builder()
-            .tools(registry)
-            .build();
+        let agent = Agent::builder().tools(registry).build();
 
         assert!(agent.tools.len() >= 3);
     }
@@ -1633,9 +1655,7 @@ Action: search
     #[test]
     fn test_agent_builder_with_planning_strategy() {
         let agent = Agent::builder()
-            .planning_strategy(PlanningStrategy::Hierarchical {
-                max_depth: 3,
-            })
+            .planning_strategy(PlanningStrategy::Hierarchical { max_depth: 3 })
             .build();
 
         // Agent should be built successfully with custom strategy
@@ -1644,9 +1664,7 @@ Action: search
 
     #[test]
     fn test_agent_builder_with_model() {
-        let agent = Agent::builder()
-            .model("gpt-4-turbo")
-            .build();
+        let agent = Agent::builder().model("gpt-4-turbo").build();
 
         assert_eq!(agent.persona.model, Some("gpt-4-turbo".into()));
     }
@@ -1864,9 +1882,7 @@ Action: search
 
     #[test]
     fn test_agent_builder_partial() {
-        let agent = Agent::builder()
-            .id("partial-agent")
-            .build();
+        let agent = Agent::builder().id("partial-agent").build();
 
         assert_eq!(agent.id, "partial-agent");
         // Other fields should use defaults
@@ -1890,7 +1906,10 @@ Action: search
     fn test_persona_source_grimoire_builder() {
         let source = PersonaSource::grimoire("code-reviewer");
         match source {
-            PersonaSource::Grimoire { persona_id, variant } => {
+            PersonaSource::Grimoire {
+                persona_id,
+                variant,
+            } => {
                 assert_eq!(persona_id, "code-reviewer");
                 assert!(variant.is_none());
             },
@@ -1902,7 +1921,10 @@ Action: search
     fn test_persona_source_grimoire_with_variant_builder() {
         let source = PersonaSource::grimoire_with_variant("assistant", "friendly");
         match source {
-            PersonaSource::Grimoire { persona_id, variant } => {
+            PersonaSource::Grimoire {
+                persona_id,
+                variant,
+            } => {
                 assert_eq!(persona_id, "assistant");
                 assert_eq!(variant, Some("friendly".to_string()));
             },
@@ -1943,7 +1965,10 @@ Action: search
     fn test_persona_from_grimoire() {
         let persona = Persona::from_grimoire("code-reviewer");
         match &persona.system {
-            PersonaSource::Grimoire { persona_id, variant } => {
+            PersonaSource::Grimoire {
+                persona_id,
+                variant,
+            } => {
                 assert_eq!(persona_id, "code-reviewer");
                 assert!(variant.is_none());
             },
@@ -1955,7 +1980,10 @@ Action: search
     fn test_persona_from_grimoire_variant() {
         let persona = Persona::from_grimoire_variant("assistant", "concise");
         match &persona.system {
-            PersonaSource::Grimoire { persona_id, variant } => {
+            PersonaSource::Grimoire {
+                persona_id,
+                variant,
+            } => {
                 assert_eq!(persona_id, "assistant");
                 assert_eq!(variant.as_deref(), Some("concise"));
             },
@@ -2040,9 +2068,7 @@ Action: search
         let mut registry = ToolRegistry::new();
         registry.register(Arc::new(crate::tool::CalculatorTool));
 
-        let agent = Agent::builder()
-            .tools(registry)
-            .build();
+        let agent = Agent::builder().tools(registry).build();
 
         let prompt = agent.build_system_prompt();
 
@@ -2055,9 +2081,7 @@ Action: search
 
     #[test]
     fn test_parse_action_detects_native_tool_call_tags() {
-        let agent = Agent::builder()
-            .model("Qwen/Qwen2.5-7B-Instruct")
-            .build();
+        let agent = Agent::builder().model("Qwen/Qwen2.5-7B-Instruct").build();
 
         let response = r#"<tool_call>
 {"name": "calculator", "arguments": {"expression": "2+2"}}
@@ -2067,16 +2091,14 @@ Action: search
             AgentAction::ToolCall(call) => {
                 assert_eq!(call.name, "calculator");
                 assert_eq!(call.params["expression"], "2+2");
-            }
+            },
             other => panic!("Expected ToolCall from native format, got {:?}", other),
         }
     }
 
     #[test]
     fn test_parse_action_detects_native_with_text_before() {
-        let agent = Agent::builder()
-            .model("Qwen/Qwen2.5-7B-Instruct")
-            .build();
+        let agent = Agent::builder().model("Qwen/Qwen2.5-7B-Instruct").build();
 
         let response = r#"I'll calculate that for you.
 <tool_call>
@@ -2087,7 +2109,7 @@ Action: search
             AgentAction::ToolCall(call) => {
                 assert_eq!(call.name, "calculator");
                 assert_eq!(call.params["expression"], "15*7");
-            }
+            },
             other => panic!("Expected ToolCall, got {:?}", other),
         }
     }
@@ -2095,16 +2117,14 @@ Action: search
     #[test]
     fn test_parse_action_generic_still_works_with_qwen_model() {
         // §5.6: Backwards compatibility — generic format should still parse
-        let agent = Agent::builder()
-            .model("Qwen/Qwen2.5-7B-Instruct")
-            .build();
+        let agent = Agent::builder().model("Qwen/Qwen2.5-7B-Instruct").build();
 
         let response = "Thought: I need to calculate.\nAction: calculator\nAction Input: {\"expression\": \"3+3\"}";
 
         match agent.parse_action(response) {
             AgentAction::ToolCall(call) => {
                 assert_eq!(call.name, "calculator");
-            }
+            },
             other => panic!("Expected ToolCall from generic format, got {:?}", other),
         }
     }

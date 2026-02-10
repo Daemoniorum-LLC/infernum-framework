@@ -16,7 +16,10 @@ fn main() -> anyhow::Result<()> {
     }
 
     let model_dir = Path::new(&args[1]);
-    let prompt = args.get(2).map(|s| s.as_str()).unwrap_or("The capital of France is");
+    let prompt = args
+        .get(2)
+        .map(|s| s.as_str())
+        .unwrap_or("The capital of France is");
     let max_tokens = 50;
 
     println!("=== HCT Text Generation ===");
@@ -56,7 +59,11 @@ fn main() -> anyhow::Result<()> {
     println!("\n--- Loading HCT Weights ---");
     let start = Instant::now();
     let tensors = load_hct_directory_sequential(model_dir, &device, dtype)?;
-    println!("Loaded {} tensors in {:.2}s", tensors.len(), start.elapsed().as_secs_f32());
+    println!(
+        "Loaded {} tensors in {:.2}s",
+        tensors.len(),
+        start.elapsed().as_secs_f32()
+    );
 
     // Build model
     println!("\n--- Building Model ---");
@@ -66,7 +73,8 @@ fn main() -> anyhow::Result<()> {
     println!("Model built in {:.2}s", start.elapsed().as_secs_f32());
 
     // Tokenize prompt
-    let encoding = tokenizer.encode(prompt, false)
+    let encoding = tokenizer
+        .encode(prompt, false)
         .map_err(|e| anyhow::anyhow!("Tokenization failed: {}", e))?;
     let mut tokens: Vec<u32> = encoding.get_ids().to_vec();
     println!("\nInput tokens ({} total): {:?}", tokens.len(), tokens);
@@ -78,19 +86,19 @@ fn main() -> anyhow::Result<()> {
     print!("Output: ");
     use std::io::Write;
     std::io::stdout().flush()?;
-    
+
     let gen_start = Instant::now();
     let initial_len = tokens.len();
-    
+
     // First pass: process entire prompt
     let input = Tensor::new(&tokens[..], &device)?.unsqueeze(0)?;
-    let logits = model.forward(&input, 0)?;  // seqlen_offset = 0 for first pass
-    
+    let logits = model.forward(&input, 0)?; // seqlen_offset = 0 for first pass
+
     // Get first generated token
     let seq_len = logits.dim(1)?;
     let last_logits = logits.i((0, seq_len - 1, ..))?;
     let next_token = last_logits.argmax(0)?.to_scalar::<u32>()?;
-    
+
     if next_token != eos_token_id {
         tokens.push(next_token);
         if let Ok(text) = tokenizer.decode(&[next_token], false) {
@@ -98,40 +106,45 @@ fn main() -> anyhow::Result<()> {
             std::io::stdout().flush()?;
         }
     }
-    
+
     // Subsequent passes: feed only the last token, use KV cache
     for _ in 1..max_tokens {
         let last_token = *tokens.last().unwrap();
         let input = Tensor::new(&[last_token], &device)?.unsqueeze(0)?;
-        
+
         // seqlen_offset = number of tokens before this one (KV cache position)
         let seqlen_offset = tokens.len() - 1;
         let logits = model.forward(&input, seqlen_offset)?;
-        
-        let last_logits = logits.i((0, 0, ..))?;  // Only 1 token output
+
+        let last_logits = logits.i((0, 0, ..))?; // Only 1 token output
         let next_token = last_logits.argmax(0)?.to_scalar::<u32>()?;
-        
+
         if next_token == eos_token_id {
             print!("[EOS]");
             std::io::stdout().flush()?;
             break;
         }
-        
+
         tokens.push(next_token);
-        
+
         if let Ok(text) = tokenizer.decode(&[next_token], false) {
             print!("{}", text);
             std::io::stdout().flush()?;
         }
     }
-    
+
     let gen_time = gen_start.elapsed().as_secs_f32();
     let tokens_generated = tokens.len() - initial_len;
-    println!("\n\nGenerated {} tokens in {:.2}s ({:.2} tok/s)", 
-             tokens_generated, gen_time, tokens_generated as f32 / gen_time);
-    
+    println!(
+        "\n\nGenerated {} tokens in {:.2}s ({:.2} tok/s)",
+        tokens_generated,
+        gen_time,
+        tokens_generated as f32 / gen_time
+    );
+
     // Decode full output
-    let output = tokenizer.decode(&tokens, false)
+    let output = tokenizer
+        .decode(&tokens, false)
         .map_err(|e| anyhow::anyhow!("Decode failed: {}", e))?;
     println!("\n=== Full Output ===");
     println!("{}", output);

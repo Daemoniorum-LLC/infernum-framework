@@ -198,10 +198,8 @@ impl Generator {
         self.position = input_ids.len();
 
         // Set up repetition penalty
-        let mut rep_penalty = RepetitionPenalty::new(
-            params.repetition_penalty,
-            params.repetition_context,
-        );
+        let mut rep_penalty =
+            RepetitionPenalty::new(params.repetition_penalty, params.repetition_context);
         for &id in input_ids {
             rep_penalty.add_token(id);
         }
@@ -212,11 +210,7 @@ impl Generator {
             let logits = self.engine.get_logits()?;
 
             // Sample next token
-            let next_token = self.sample_token(
-                logits,
-                &params,
-                &mut rep_penalty,
-            )?;
+            let next_token = self.sample_token(logits, &params, &mut rep_penalty)?;
 
             // Check for stop token
             if params.stop_tokens.contains(&next_token) {
@@ -259,10 +253,8 @@ impl Generator {
         stats.prefill_tokens = input_ids.len();
 
         // Set up repetition penalty
-        let mut rep_penalty = RepetitionPenalty::new(
-            params.repetition_penalty,
-            params.repetition_context,
-        );
+        let mut rep_penalty =
+            RepetitionPenalty::new(params.repetition_penalty, params.repetition_context);
         for &id in input_ids {
             rep_penalty.add_token(id);
         }
@@ -276,11 +268,7 @@ impl Generator {
 
             // Sampling timing
             let sample_start = Instant::now();
-            let next_token = self.sample_token(
-                logits,
-                &params,
-                &mut rep_penalty,
-            )?;
+            let next_token = self.sample_token(logits, &params, &mut rep_penalty)?;
             stats.sampling_time_ms += sample_start.elapsed().as_secs_f64() * 1000.0;
 
             // Check for stop token
@@ -306,7 +294,8 @@ impl Generator {
 
         stats.total_time_ms = start_time.elapsed().as_secs_f64() * 1000.0;
         if stats.total_time_ms > 0.0 {
-            stats.tokens_per_second = stats.tokens_generated as f64 / (stats.total_time_ms / 1000.0);
+            stats.tokens_per_second =
+                stats.tokens_generated as f64 / (stats.total_time_ms / 1000.0);
         }
 
         Ok(stats)
@@ -348,7 +337,10 @@ impl Generator {
             self.sampler.sample_greedy(&logits)
         } else {
             // Update RNG state
-            self.rng_state = self.rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            self.rng_state = self
+                .rng_state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1);
 
             self.sampler.sample(
                 &mut logits,
@@ -420,7 +412,10 @@ impl GeneratorBuilder {
     }
 
     /// Build generator from HCT model path.
-    pub fn build(self, model_path: impl AsRef<std::path::Path>) -> Result<Generator, InferenceError> {
+    pub fn build(
+        self,
+        model_path: impl AsRef<std::path::Path>,
+    ) -> Result<Generator, InferenceError> {
         let weights = WeightStore::load_hct(model_path, None, self.device_id)?;
         Generator::new(weights, self.max_seq_len)
     }

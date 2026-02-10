@@ -9,17 +9,33 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use beleth::{
-    // Tools
-    Tool, ToolCall, ToolContext, ToolRegistry, ToolResult, RiskLevel,
-    CalculatorTool, DateTimeTool, JsonTool,
     // Memory
-    AgentMemory, SummarizationStrategy,
-    // Long-term memory
-    LongTermMemory, MemoryEntry, MemoryType, ImportanceLevel,
-    // Planning
-    Plan, PlanStep, PlanningStrategy, DefaultPlanner, Planner,
+    AgentMemory,
+    CalculatorTool,
+    ContextConfig,
+    DateTimeTool,
+    DefaultPlanner,
     // Dynamic Context
-    DynamicContextManager, ContextConfig,
+    DynamicContextManager,
+    ImportanceLevel,
+    JsonTool,
+    // Long-term memory
+    LongTermMemory,
+    MemoryEntry,
+    MemoryType,
+    // Planning
+    Plan,
+    PlanStep,
+    Planner,
+    PlanningStrategy,
+    RiskLevel,
+    SummarizationStrategy,
+    // Tools
+    Tool,
+    ToolCall,
+    ToolContext,
+    ToolRegistry,
+    ToolResult,
 };
 use tempfile::TempDir;
 
@@ -375,8 +391,8 @@ fn test_long_term_memory_importance_filter() {
     let critical = MemoryEntry::new(MemoryType::Decision, "Critical decision")
         .with_importance(ImportanceLevel::Critical);
 
-    let low = MemoryEntry::new(MemoryType::Context, "Minor detail")
-        .with_importance(ImportanceLevel::Low);
+    let low =
+        MemoryEntry::new(MemoryType::Context, "Minor detail").with_importance(ImportanceLevel::Low);
 
     memory.store(critical).expect("store");
     memory.store(low).expect("store");

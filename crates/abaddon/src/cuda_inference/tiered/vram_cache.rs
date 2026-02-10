@@ -280,9 +280,7 @@ impl VramCache {
 
         // Update priorities from plan
         for (&idx, _) in &self.layers {
-            let priority = plan
-                .get_layer_priority(idx)
-                .unwrap_or(0.5);
+            let priority = plan.get_layer_priority(idx).unwrap_or(0.5);
             self.lru.touch_with_priority(idx, priority);
         }
 

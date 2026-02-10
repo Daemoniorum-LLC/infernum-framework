@@ -77,11 +77,11 @@ impl BudgetTracker {
             match tier {
                 MemoryTier::Vram => {
                     self.vram_used = self.vram_used.saturating_sub(size_bytes);
-                }
+                },
                 MemoryTier::Ram => {
                     self.ram_used = self.ram_used.saturating_sub(size_bytes);
-                }
-                MemoryTier::Nvme => {}
+                },
+                MemoryTier::Nvme => {},
             }
             true
         } else {
@@ -128,9 +128,7 @@ fn ram_budget_strategy() -> impl Strategy<Value = u64> {
 }
 
 /// Generate a collection of layer allocations.
-fn layer_allocations_strategy(
-    num_layers: usize,
-) -> impl Strategy<Value = Vec<LayerAllocation>> {
+fn layer_allocations_strategy(num_layers: usize) -> impl Strategy<Value = Vec<LayerAllocation>> {
     prop::collection::vec(
         (layer_size_strategy(), priority_strategy()).prop_map(|(size, priority)| {
             LayerAllocation {
@@ -683,8 +681,11 @@ mod unit_tests {
         }
 
         // Should fit entirely in VRAM with quantization
-        let vram_layers = budget.allocations.values()
-            .filter(|&&t| t == MemoryTier::Vram).count();
+        let vram_layers = budget
+            .allocations
+            .values()
+            .filter(|&&t| t == MemoryTier::Vram)
+            .count();
 
         assert!(
             vram_layers >= 40,
@@ -703,12 +704,21 @@ mod unit_tests {
             budget.allocate(i, layer_size);
         }
 
-        let vram_count = budget.allocations.values()
-            .filter(|&&t| t == MemoryTier::Vram).count();
-        let ram_count = budget.allocations.values()
-            .filter(|&&t| t == MemoryTier::Ram).count();
-        let nvme_count = budget.allocations.values()
-            .filter(|&&t| t == MemoryTier::Nvme).count();
+        let vram_count = budget
+            .allocations
+            .values()
+            .filter(|&&t| t == MemoryTier::Vram)
+            .count();
+        let ram_count = budget
+            .allocations
+            .values()
+            .filter(|&&t| t == MemoryTier::Ram)
+            .count();
+        let nvme_count = budget
+            .allocations
+            .values()
+            .filter(|&&t| t == MemoryTier::Nvme)
+            .count();
 
         // Should use multiple tiers
         assert!(vram_count > 0, "Should have VRAM layers");

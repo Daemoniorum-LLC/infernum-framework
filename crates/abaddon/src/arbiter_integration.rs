@@ -32,7 +32,7 @@
 
 use std::sync::Arc;
 
-use arbiter::{Arbiter, Allocation, Priority, WorkloadType, MemoryPressure};
+use arbiter::{Allocation, Arbiter, MemoryPressure, Priority, WorkloadType};
 
 /// Wrapper for Arbiter integration with the inference engine.
 pub struct ArbiterCoordinator {
@@ -240,10 +240,10 @@ impl ArbiterCoordinator {
             .unwrap_or(0);
 
         match pressure {
-            MemoryPressure::Critical => base_kv / 4,     // 25% of original
-            MemoryPressure::High => base_kv / 2,         // 50% of original
+            MemoryPressure::Critical => base_kv / 4, // 25% of original
+            MemoryPressure::High => base_kv / 2,     // 50% of original
             MemoryPressure::Moderate => base_kv * 3 / 4, // 75% of original
-            MemoryPressure::Low => base_kv,              // Full KV cache
+            MemoryPressure::Low => base_kv,          // Full KV cache
         }
     }
 }
@@ -275,13 +275,16 @@ impl std::fmt::Display for ArbiterCoordinatorError {
         match self {
             Self::AllocationFailed(msg) => write!(f, "Allocation failed: {}", msg),
             Self::NotAvailable => write!(f, "Arbiter not available"),
-            Self::InsufficientMemory { requested, available } => {
+            Self::InsufficientMemory {
+                requested,
+                available,
+            } => {
                 write!(
                     f,
                     "Insufficient memory: requested {} bytes, {} available",
                     requested, available
                 )
-            }
+            },
         }
     }
 }
@@ -341,7 +344,7 @@ mod tests {
     #[test]
     fn test_coordinator_creation() {
         let arbiter = Arc::new(
-            Arbiter::new(ArbiterConfig::for_vram_gb(24)).expect("Failed to create arbiter")
+            Arbiter::new(ArbiterConfig::for_vram_gb(24)).expect("Failed to create arbiter"),
         );
         let coordinator = ArbiterCoordinator::new(arbiter, "test-inference");
 
@@ -352,12 +355,12 @@ mod tests {
     #[test]
     fn test_coordinator_register() {
         let arbiter = Arc::new(
-            Arbiter::new(ArbiterConfig::for_vram_gb(24)).expect("Failed to create arbiter")
+            Arbiter::new(ArbiterConfig::for_vram_gb(24)).expect("Failed to create arbiter"),
         );
         let mut coordinator = ArbiterCoordinator::new(arbiter, "test-inference");
 
         let model_size = 8 * 1024 * 1024 * 1024; // 8GB
-        let kv_cache = 4 * 1024 * 1024 * 1024;   // 4GB
+        let kv_cache = 4 * 1024 * 1024 * 1024; // 4GB
 
         let result = coordinator.register(model_size, kv_cache);
         assert!(result.is_ok());
@@ -368,7 +371,7 @@ mod tests {
     #[test]
     fn test_coordinator_register_high_priority() {
         let arbiter = Arc::new(
-            Arbiter::new(ArbiterConfig::for_vram_gb(24)).expect("Failed to create arbiter")
+            Arbiter::new(ArbiterConfig::for_vram_gb(24)).expect("Failed to create arbiter"),
         );
         let mut coordinator = ArbiterCoordinator::new(arbiter, "test-inference");
 
@@ -383,14 +386,16 @@ mod tests {
     #[test]
     fn test_coordinator_release() {
         let arbiter = Arc::new(
-            Arbiter::new(ArbiterConfig::for_vram_gb(24)).expect("Failed to create arbiter")
+            Arbiter::new(ArbiterConfig::for_vram_gb(24)).expect("Failed to create arbiter"),
         );
         let mut coordinator = ArbiterCoordinator::new(arbiter, "test-inference");
 
         let model_size = 4 * 1024 * 1024 * 1024;
         let kv_cache = 2 * 1024 * 1024 * 1024;
 
-        coordinator.register(model_size, kv_cache).expect("Failed to register");
+        coordinator
+            .register(model_size, kv_cache)
+            .expect("Failed to register");
         assert!(coordinator.is_registered());
 
         coordinator.release();
@@ -400,7 +405,7 @@ mod tests {
     #[test]
     fn test_allocated_memory() {
         let arbiter = Arc::new(
-            Arbiter::new(ArbiterConfig::for_vram_gb(24)).expect("Failed to create arbiter")
+            Arbiter::new(ArbiterConfig::for_vram_gb(24)).expect("Failed to create arbiter"),
         );
         let mut coordinator = ArbiterCoordinator::new(arbiter, "test");
 
@@ -457,7 +462,7 @@ mod tests {
     #[test]
     fn test_memory_pressure_query() {
         let arbiter = Arc::new(
-            Arbiter::new(ArbiterConfig::for_vram_gb(24)).expect("Failed to create arbiter")
+            Arbiter::new(ArbiterConfig::for_vram_gb(24)).expect("Failed to create arbiter"),
         );
         let coordinator = ArbiterCoordinator::new(arbiter, "test");
 
@@ -469,7 +474,7 @@ mod tests {
     #[test]
     fn test_pressure_level() {
         let arbiter = Arc::new(
-            Arbiter::new(ArbiterConfig::for_vram_gb(24)).expect("Failed to create arbiter")
+            Arbiter::new(ArbiterConfig::for_vram_gb(24)).expect("Failed to create arbiter"),
         );
         let coordinator = ArbiterCoordinator::new(arbiter, "test");
 
@@ -486,9 +491,7 @@ mod tests {
 
     #[test]
     fn test_coordinator_workload_id() {
-        let arbiter = Arc::new(
-            Arbiter::new(ArbiterConfig::for_vram_gb(16)).expect("Failed")
-        );
+        let arbiter = Arc::new(Arbiter::new(ArbiterConfig::for_vram_gb(16)).expect("Failed"));
         let coordinator = ArbiterCoordinator::new(arbiter, "my-workload");
 
         assert_eq!(coordinator.workload_id, "my-workload");
@@ -496,9 +499,7 @@ mod tests {
 
     #[test]
     fn test_allocation_not_present_initially() {
-        let arbiter = Arc::new(
-            Arbiter::new(ArbiterConfig::for_vram_gb(16)).expect("Failed")
-        );
+        let arbiter = Arc::new(Arbiter::new(ArbiterConfig::for_vram_gb(16)).expect("Failed"));
         let coordinator = ArbiterCoordinator::new(arbiter, "test");
 
         assert!(coordinator.allocation().is_none());
@@ -506,9 +507,7 @@ mod tests {
 
     #[test]
     fn test_update_allocation_when_not_registered() {
-        let arbiter = Arc::new(
-            Arbiter::new(ArbiterConfig::for_vram_gb(16)).expect("Failed")
-        );
+        let arbiter = Arc::new(Arbiter::new(ArbiterConfig::for_vram_gb(16)).expect("Failed"));
         let mut coordinator = ArbiterCoordinator::new(arbiter, "test");
 
         assert!(coordinator.update_allocation().is_none());
@@ -516,9 +515,7 @@ mod tests {
 
     #[test]
     fn test_update_allocation_returns_quality() {
-        let arbiter = Arc::new(
-            Arbiter::new(ArbiterConfig::for_vram_gb(24)).expect("Failed")
-        );
+        let arbiter = Arc::new(Arbiter::new(ArbiterConfig::for_vram_gb(24)).expect("Failed"));
         let mut coordinator = ArbiterCoordinator::new(arbiter, "test");
 
         let model_size = 4 * 1024 * 1024 * 1024;
@@ -533,9 +530,7 @@ mod tests {
 
     #[test]
     fn test_insufficient_memory_allocation() {
-        let arbiter = Arc::new(
-            Arbiter::new(ArbiterConfig::for_vram_gb(8)).expect("Failed")
-        );
+        let arbiter = Arc::new(Arbiter::new(ArbiterConfig::for_vram_gb(8)).expect("Failed"));
         let mut coordinator = ArbiterCoordinator::new(arbiter, "test");
 
         // Try to allocate more than available
@@ -547,14 +542,14 @@ mod tests {
 
     #[test]
     fn test_drop_releases_allocation() {
-        let arbiter = Arc::new(
-            Arbiter::new(ArbiterConfig::for_vram_gb(24)).expect("Failed")
-        );
+        let arbiter = Arc::new(Arbiter::new(ArbiterConfig::for_vram_gb(24)).expect("Failed"));
 
         // Scope to trigger drop
         {
             let mut coordinator = ArbiterCoordinator::new(Arc::clone(&arbiter), "test");
-            coordinator.register(4 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024).expect("Failed");
+            coordinator
+                .register(4 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024)
+                .expect("Failed");
             // Drop happens here
         }
 
