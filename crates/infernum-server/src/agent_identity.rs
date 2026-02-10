@@ -602,7 +602,7 @@ impl std::fmt::Debug for EncryptedIdentity {
 /// Hex serialization helper for serde
 ///
 /// This module provides serialize/deserialize functions for both fixed-size
-/// arrays and Vec<u8>. The deserialize function is generic over the output type.
+/// arrays and `Vec<u8>`. The deserialize function is generic over the output type.
 mod hex_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -629,7 +629,7 @@ mod hex_serde {
     }
 }
 
-/// Hex serialization for Vec<u8> (variable length)
+/// Hex serialization for `Vec<u8>` (variable length)
 mod hex_serde_vec {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 

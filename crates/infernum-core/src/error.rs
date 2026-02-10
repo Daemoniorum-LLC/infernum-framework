@@ -3,7 +3,7 @@
 use std::time::Duration;
 use thiserror::Error;
 
-/// Result type alias using [`Error`].
+/// Result type alias using [`enum@Error`].
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Unified error type for the Infernum ecosystem.
