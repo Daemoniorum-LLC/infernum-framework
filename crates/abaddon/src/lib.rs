@@ -3,8 +3,8 @@
 //! *"The Destroyer renders judgment"*
 //!
 //! Abaddon is the core inference engine for the Infernum ecosystem.
-//! It provides blazingly fast LLM inference with support for multiple backends
-//! and advanced optimizations.
+//! It provides LLM inference with support for multiple backends
+//! and optimizations for throughput and latency.
 //!
 //! ## Features
 //!

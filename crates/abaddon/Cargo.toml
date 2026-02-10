@@ -6,7 +6,7 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Blazingly fast LLM inference engine - The Destroyer renders judgment"
+description = "LLM inference engine - The Destroyer renders judgment"
 
 [features]
 default = ["cpu"]

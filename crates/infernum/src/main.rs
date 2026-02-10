@@ -19,8 +19,8 @@ mod config;
 #[command(name = "infernum")]
 #[command(author = "Daemoniorum Engineering")]
 #[command(version)]
-#[command(about = "Blazingly fast LLM inference ecosystem")]
-#[command(long_about = "Blazingly fast LLM inference ecosystem.\n\n\
+#[command(about = "Local LLM inference framework")]
+#[command(long_about = "Local LLM inference framework.\n\n\
     Run without arguments to start interactive chat mode.\n\n\
     Examples:\n  \
     infernum                              # Start interactive chat\n  \

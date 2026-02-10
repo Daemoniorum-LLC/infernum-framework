@@ -12,7 +12,7 @@ entry_points:
 
 ## Purpose
 
-Blazingly fast local LLM inference engine written in Rust, providing OpenAI-compatible API and CLI for running large language models locally.
+Local LLM inference framework written in Rust, providing OpenAI-compatible API and CLI for running large language models locally.
 
 ## Architecture
 

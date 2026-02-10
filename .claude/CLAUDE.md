@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Infernum is a blazingly fast local LLM inference framework written in Rust. The codebase is organized as a workspace with 10+ specialized crates.
+Infernum is a local LLM inference framework written in Rust. The codebase is organized as a workspace with specialized crates.
 
 ## Crate Architecture
 

@@ -2,7 +2,7 @@
 
 > *"From the depths, intelligence rises"*
 
-**Blazingly fast local LLM inference CLI for running large language models on your machine.**
+**Local LLM inference CLI for running large language models on your machine.**
 
 [![Crates.io](https://img.shields.io/crates/v/infernum.svg)](https://crates.io/crates/infernum)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
