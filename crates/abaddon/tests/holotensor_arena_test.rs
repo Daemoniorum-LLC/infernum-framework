@@ -350,26 +350,39 @@ fn test_arena_thread_safe() {
 #[test]
 fn test_thread_local_arena_isolation() {
     use std::sync::atomic::AtomicPtr;
-    use std::sync::Arc;
+    use std::sync::{Arc, Barrier};
+
+    const NUM_THREADS: usize = 4;
 
     // Track arena base addresses from each thread
-    let addresses: Vec<Arc<AtomicPtr<u8>>> = (0..4)
+    let addresses: Vec<Arc<AtomicPtr<u8>>> = (0..NUM_THREADS)
         .map(|_| Arc::new(AtomicPtr::new(std::ptr::null_mut())))
         .collect();
 
+    // Barrier ensures all threads are alive simultaneously before capturing addresses
+    // This prevents memory address reuse from sequential thread execution
+    let barrier = Arc::new(Barrier::new(NUM_THREADS));
+
     let handles: Vec<_> = addresses
         .iter()
-        .enumerate()
-        .map(|(i, addr_holder)| {
+        .map(|addr_holder| {
             let addr = Arc::clone(addr_holder);
+            let barrier = Arc::clone(&barrier);
             thread::spawn(move || {
                 let arena = ThreadLocalArena::get_or_init(|| FragmentArena::new(1024 * 1024));
+
+                // Wait for all threads to have their arena before storing address
+                barrier.wait();
+
                 addr.store(arena.base_ptr(), Ordering::SeqCst);
 
                 // Do some allocations
                 for _ in 0..10 {
                     arena.alloc(1024);
                 }
+
+                // Keep thread alive until all have stored their addresses
+                barrier.wait();
             })
         })
         .collect();
