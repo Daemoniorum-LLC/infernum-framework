@@ -50,25 +50,18 @@ jobs:
         run: cargo clippy --workspace ${{ env.SAFE_FEATURES }} -- -D warnings
 
   test:
-    name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # Note: macOS temporarily excluded due to arcanum-primitives 0.1.2 SIMD bug
-        # See: arcanum-primitives uses x86_64-only SIMD intrinsics unconditionally on ARM
-        os: [ubuntu-latest, windows-latest]
-        include:
-          - os: ubuntu-latest
-            features: "--features llama-cpp,holotensor,integration-tests"
-          - os: windows-latest
-            features: "--features llama-cpp,holotensor,integration-tests"
+    name: Test
+    runs-on: ubuntu-latest
+    # Note: macOS and Windows temporarily excluded due to arcanum dependency issues:
+    # - macOS: arcanum-primitives 0.1.2 uses x86_64-only SIMD intrinsics on ARM
+    # - Windows: sha2-asm 0.6.4 linker failures with MSVC
+    # TODO: Re-enable cross-platform tests when arcanum dependencies are fixed
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
-        run: cargo test --workspace ${{ matrix.features }}
+        run: cargo test --workspace --features llama-cpp,holotensor,integration-tests
 
   docs:
     name: Documentation
