@@ -865,7 +865,7 @@ impl StudioDatabase {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
-                row.get::<_, usize>(2)?,
+                row.get::<_, i64>(2)? as usize,
             ))
         })?;
 
@@ -885,8 +885,8 @@ impl StudioDatabase {
     /// Counts datasets.
     pub fn count_datasets(&self) -> Result<usize> {
         let conn = self.conn.lock();
-        let count: usize = conn.query_row("SELECT COUNT(*) FROM datasets", [], |row| row.get(0))?;
-        Ok(count)
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM datasets", [], |row| row.get(0))?;
+        Ok(count as usize)
     }
 
     // =========================================================================
@@ -921,16 +921,16 @@ impl StudioDatabase {
     /// Counts experiments.
     pub fn count_experiments(&self) -> Result<usize> {
         let conn = self.conn.lock();
-        let count: usize =
+        let count: i64 =
             conn.query_row("SELECT COUNT(*) FROM experiments", [], |row| row.get(0))?;
-        Ok(count)
+        Ok(count as usize)
     }
 
     /// Counts runs.
     pub fn count_runs(&self) -> Result<usize> {
         let conn = self.conn.lock();
-        let count: usize = conn.query_row("SELECT COUNT(*) FROM runs", [], |row| row.get(0))?;
-        Ok(count)
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM runs", [], |row| row.get(0))?;
+        Ok(count as usize)
     }
 
     // =========================================================================
@@ -1096,7 +1096,7 @@ impl StudioDatabase {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
-                row.get::<_, usize>(2)?,
+                row.get::<_, i64>(2)? as usize,
             ))
         })?;
 
@@ -1118,10 +1118,10 @@ impl StudioDatabase {
     /// Counts prompt templates.
     pub fn count_prompt_templates(&self) -> Result<usize> {
         let conn = self.conn.lock();
-        let count: usize = conn.query_row("SELECT COUNT(*) FROM prompt_templates", [], |row| {
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM prompt_templates", [], |row| {
             row.get(0)
         })?;
-        Ok(count)
+        Ok(count as usize)
     }
 
     /// Saves a prompt A/B test.
@@ -1450,7 +1450,7 @@ impl StudioDatabase {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
-                row.get::<_, usize>(2)?,
+                row.get::<_, i64>(2)? as usize,
             ))
         })?;
 
@@ -1472,8 +1472,8 @@ impl StudioDatabase {
     /// Counts models.
     pub fn count_models(&self) -> Result<usize> {
         let conn = self.conn.lock();
-        let count: usize = conn.query_row("SELECT COUNT(*) FROM models", [], |row| row.get(0))?;
-        Ok(count)
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM models", [], |row| row.get(0))?;
+        Ok(count as usize)
     }
 
     /// Saves a deployment.
@@ -1627,9 +1627,9 @@ impl StudioDatabase {
     /// Counts deployments.
     pub fn count_deployments(&self) -> Result<usize> {
         let conn = self.conn.lock();
-        let count: usize =
+        let count: i64 =
             conn.query_row("SELECT COUNT(*) FROM deployments", [], |row| row.get(0))?;
-        Ok(count)
+        Ok(count as usize)
     }
 }
 

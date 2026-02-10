@@ -1290,7 +1290,7 @@ pub async fn model_quantize(
             })
             .collect::<Result<Vec<_>>>()?;
 
-        safetensors::serialize_to_file(tensors_for_save, &Some(metadata.clone()), &output_file)?;
+        safetensors::serialize_to_file(tensors_for_save, Some(metadata.clone()), &output_file)?;
     }
 
     spinner.finish_and_clear();

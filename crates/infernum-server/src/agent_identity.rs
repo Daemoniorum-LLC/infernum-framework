@@ -495,8 +495,8 @@ impl EncryptedIdentityStore {
         // Generate random salt and nonce
         let mut salt = [0u8; SALT_LEN];
         let mut nonce = [0u8; NONCE_LEN];
-        rand::rngs::OsRng.fill_bytes(&mut salt);
-        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        rand::rng().fill_bytes(&mut salt);
+        rand::rng().fill_bytes(&mut nonce);
 
         // Derive encryption key from passphrase using Argon2id
         // Using OWASP recommended parameters for security

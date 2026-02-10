@@ -291,8 +291,8 @@ impl Experiment {
             return None;
         }
 
-        let mut rng = rand::thread_rng();
-        let roll: f64 = rng.gen();
+        let mut rng = rand::rng();
+        let roll: f64 = rng.random();
 
         let mut cumulative = 0.0;
         for variant in &self.variants {

@@ -493,9 +493,13 @@ impl ModelLoader {
 
         info!(url = %url, "Downloading from S3");
 
-        // Use blocking HTTP request
-        let response = ureq::get(&url)
-            .timeout(std::time::Duration::from_secs(300))
+        // Use blocking HTTP request with timeout via agent config
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(300)))
+            .build()
+            .new_agent();
+        let response = agent
+            .get(&url)
             .call()
             .map_err(|e: ureq::Error| {
                 // Check if it's an auth error
@@ -519,7 +523,7 @@ impl ModelLoader {
 
         // Stream the response to file
         let mut file = std::fs::File::create(local_path)?;
-        let mut reader = response.into_reader();
+        let mut reader = response.into_body().into_reader();
         std::io::copy(&mut reader, &mut file).map_err(|e| infernum_core::Error::ModelLoad {
             message: format!("Failed to write S3 file: {}", e),
         })?;

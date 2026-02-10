@@ -392,6 +392,8 @@ fn dtype_size(dtype: DType) -> u64 {
         DType::F64 | DType::I64 => 8,
         DType::F16 | DType::BF16 => 2,
         DType::U8 => 1,
+        // Handle new candle_core DType variants (I16, I32, F8E4M3, etc.)
+        _ => 4,
     }
 }
 

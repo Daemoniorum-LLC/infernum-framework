@@ -28,6 +28,8 @@ fn from_candle_dtype(dtype: candle_core::DType) -> DType {
         candle_core::DType::BF16 => DType::BF16,
         candle_core::DType::F64 => DType::F32, // Map F64 to F32
         candle_core::DType::U8 | candle_core::DType::U32 | candle_core::DType::I64 => DType::I8,
+        // Handle new candle_core DType variants (I16, I32, F8E4M3, etc.)
+        _ => DType::F32,
     }
 }
 

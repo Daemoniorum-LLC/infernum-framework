@@ -299,10 +299,7 @@ impl Agent {
         let mut ctx = ToolContext::new(&self.id);
         ctx.messages = messages.clone();
         if let Some(ref wd) = self.working_dir {
-            ctx.set_state(
-                "working_dir",
-                serde_json::json!(wd.to_string_lossy().as_ref()),
-            );
+            ctx.set_state("working_dir", serde_json::json!(&*wd.to_string_lossy()));
         }
 
         // Context size management: prevent OOM by limiting context growth
@@ -600,10 +597,7 @@ impl Agent {
 
         let mut ctx = ToolContext::new(&self.id);
         if let Some(ref wd) = self.working_dir {
-            ctx.set_state(
-                "working_dir",
-                serde_json::json!(wd.to_string_lossy().as_ref()),
-            );
+            ctx.set_state("working_dir", serde_json::json!(&*wd.to_string_lossy()));
         }
         let mut step_results = Vec::new();
         let mut final_output = String::new();
