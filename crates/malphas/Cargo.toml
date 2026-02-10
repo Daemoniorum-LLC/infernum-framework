@@ -12,7 +12,7 @@ description = "Model orchestration and routing layer - The Builder constructs or
 infernum-core = { path = "../infernum-core", version = "0.2.0-rc.1" }
 abaddon = { path = "../abaddon", version = "0.2.0-rc.1" }
 dantalion = { path = "../dantalion", version = "0.2.0-rc.1" }
-legion = { path = "../legion", version = "0.2.0-rc.1", default-features = false }
+infernum-legion = { path = "../legion", version = "0.2.0-rc.1", default-features = false }
 
 # Async
 tokio = { workspace = true }

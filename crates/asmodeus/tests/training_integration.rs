@@ -15,7 +15,7 @@ use std::sync::Arc;
 use candle_core::{DType, Device, Tensor};
 use tempfile::tempdir;
 
-use asmodeus::{
+use infernum_asmodeus::{
     clip_grad_norm, compute_grad_norm, find_target_modules, AdamW, CrossEntropyLoss, DPOLoss,
     DataLoader, Dataset, GradientAccumulator, GradientConfig, GradientScaler, InMemoryDataset,
     LRScheduler, LoraConfig, LoraLayer, LoraModel, Reduction, SFTLoss, Trainer, TrainingConfig,

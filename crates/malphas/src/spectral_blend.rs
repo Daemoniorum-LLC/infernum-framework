@@ -15,7 +15,7 @@
 //!
 //! ```ignore
 //! use malphas::spectral_blend::{SpectralBlendEngine, SpectralBlendConfig};
-//! use legion::{SpectralDecomposition, SpectralBlend, LayerWeights};
+//! use infernum_legion::{SpectralDecomposition, SpectralBlend, LayerWeights};
 //!
 //! let coder = SpectralDecomposition::load("path/to/coder.hct")?;
 //! let creative = SpectralDecomposition::load("path/to/creative.hct")?;
@@ -36,7 +36,7 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use legion::{
+use infernum_legion::{
     BlendStats, BlendedModel, DynamicBlendController, LayerWeights, SpectralBlend,
     SpectralDecomposition, SpectralMergeError,
 };
@@ -648,7 +648,7 @@ impl std::fmt::Debug for BlendManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use legion::{LayerDecomposition, LayerType};
+    use infernum_legion::{LayerDecomposition, LayerType};
 
     fn create_test_decomposition(name: &str, layer_count: usize) -> SpectralDecomposition {
         let mut decomp =

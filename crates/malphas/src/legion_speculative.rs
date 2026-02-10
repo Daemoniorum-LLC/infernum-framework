@@ -50,7 +50,7 @@ use abaddon::sampler::Sampler;
 use abaddon::speculative::SpeculativeStats;
 use abaddon::tokenizer::Tokenizer;
 use infernum_core::{Result, SamplingParams};
-use legion::{
+use infernum_legion::{
     DraftSequence, FrequencyBand, LegionPattern, RankedPath, SpeculativeLegion,
     SpeculativeLegionConfig, TokenId,
 };

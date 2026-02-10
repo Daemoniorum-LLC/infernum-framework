@@ -29,7 +29,7 @@ llama-cpp-vulkan = ["llama-cpp", "llama_cpp/vulkan"]
 [dependencies]
 infernum-core = { path = "../infernum-core", version = "0.2.0-rc.1" }
 dantalion = { path = "../dantalion", version = "0.2.0-rc.1" }
-arbiter = { path = "../arbiter", version = "0.2.0-rc.1" }
+infernum-arbiter = { path = "../arbiter", version = "0.2.0-rc.1" }
 
 # Async
 tokio = { workspace = true }

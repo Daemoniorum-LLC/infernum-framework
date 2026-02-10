@@ -33,7 +33,7 @@ abaddon = { path = "../abaddon", version = "0.2.0-rc.1" }
 malphas = { path = "../malphas", version = "0.2.0-rc.1" }
 stolas = { path = "../stolas", version = "0.2.0-rc.1", default-features = false }
 beleth = { path = "../beleth", version = "0.2.0-rc.1" }
-asmodeus = { path = "../asmodeus", version = "0.2.0-rc.1" }
+infernum-asmodeus = { path = "../asmodeus", version = "0.2.0-rc.1" }
 dantalion = { path = "../dantalion", version = "0.2.0-rc.1" }
 grimoire-loader = { path = "../grimoire-loader", version = "0.2.0-rc.1" }
 paimon = { path = "../paimon", version = "0.2.0-rc.1" }

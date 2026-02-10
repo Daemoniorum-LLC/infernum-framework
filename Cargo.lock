@@ -7,7 +7,6 @@ name = "abaddon"
 version = "0.2.0-rc.1"
 dependencies = [
  "anyhow",
- "arbiter",
  "async-trait",
  "bytemuck",
  "bytes",
@@ -31,6 +30,7 @@ dependencies = [
  "half",
  "hf-hub",
  "humansize",
+ "infernum-arbiter",
  "infernum-core",
  "llama_cpp",
  "lz4_flex 0.12.0",
@@ -259,22 +259,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cab112f0a86d568ea0e627cc1d6be74a1e9cd55214684db5561995f6dad897c6"
 dependencies = [
  "num-traits",
-]
-
-[[package]]
-name = "arbiter"
-version = "0.2.0-rc.1"
-dependencies = [
- "async-trait",
- "futures",
- "infernum-core",
- "parking_lot",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-test",
- "tracing",
 ]
 
 [[package]]
@@ -788,33 +772,6 @@ name = "ash"
 version = "0.37.3+1.3.251"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39e9c3835d686b0a6084ab4234fcd1b07dbf6e4767dce60874b12356a25ecd4a"
-
-[[package]]
-name = "asmodeus"
-version = "0.2.0-rc.1"
-dependencies = [
- "abaddon",
- "anyhow",
- "async-trait",
- "candle-core",
- "candle-nn",
- "chrono",
- "dantalion",
- "futures",
- "indicatif 0.18.3",
- "infernum-core",
- "parking_lot",
- "safetensors 0.7.0",
- "serde",
- "serde_json",
- "stolas",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-stream",
- "tracing",
- "uuid",
-]
 
 [[package]]
 name = "assert-json-diff"
@@ -5914,7 +5871,6 @@ version = "0.2.0-rc.1"
 dependencies = [
  "abaddon",
  "anyhow",
- "asmodeus",
  "assert_cmd",
  "async-trait",
  "beleth",
@@ -5932,6 +5888,7 @@ dependencies = [
  "grimoire-loader",
  "hf-hub",
  "indicatif 0.18.3",
+ "infernum-asmodeus",
  "infernum-core",
  "infernum-server",
  "malphas",
@@ -5950,6 +5907,49 @@ dependencies = [
 ]
 
 [[package]]
+name = "infernum-arbiter"
+version = "0.2.0-rc.1"
+dependencies = [
+ "async-trait",
+ "futures",
+ "infernum-core",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
+ "tracing",
+]
+
+[[package]]
+name = "infernum-asmodeus"
+version = "0.2.0-rc.1"
+dependencies = [
+ "abaddon",
+ "anyhow",
+ "async-trait",
+ "candle-core",
+ "candle-nn",
+ "chrono",
+ "dantalion",
+ "futures",
+ "indicatif 0.18.3",
+ "infernum-core",
+ "parking_lot",
+ "safetensors 0.7.0",
+ "serde",
+ "serde_json",
+ "stolas",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "infernum-core"
 version = "0.2.0-rc.1"
 dependencies = [
@@ -5965,6 +5965,23 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "infernum-legion"
+version = "0.2.0-rc.1"
+dependencies = [
+ "async-trait",
+ "crossbeam",
+ "futures",
+ "infernum-core",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
+ "tracing",
 ]
 
 [[package]]
@@ -6923,23 +6940,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "830d08ce1d1d941e6b30645f1a0eb5643013d835ce3779a5fc208261dbe10f55"
 
 [[package]]
-name = "legion"
-version = "0.2.0-rc.1"
-dependencies = [
- "async-trait",
- "crossbeam",
- "futures",
- "infernum-core",
- "parking_lot",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-test",
- "tracing",
-]
-
-[[package]]
 name = "levenshtein_automata"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7236,7 +7236,7 @@ dependencies = [
  "dashmap",
  "futures",
  "infernum-core",
- "legion",
+ "infernum-legion",
  "mockall",
  "parking_lot",
  "rand 0.9.2",
@@ -8321,7 +8321,6 @@ version = "0.2.0-rc.1"
 dependencies = [
  "abaddon",
  "anyhow",
- "asmodeus",
  "async-trait",
  "beleth",
  "chrono",
@@ -8329,6 +8328,7 @@ dependencies = [
  "dashmap",
  "dirs 6.0.0",
  "futures",
+ "infernum-asmodeus",
  "infernum-core",
  "parking_lot",
  "rusqlite",

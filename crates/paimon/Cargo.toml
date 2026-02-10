@@ -12,7 +12,7 @@ description = "LLM Studio - Teaches arts, sciences, and gives good familiars"
 # Internal crates
 infernum-core = { path = "../infernum-core", version = "0.2.0-rc.1" }
 beleth = { path = "../beleth", version = "0.2.0-rc.1" }
-asmodeus = { path = "../asmodeus", version = "0.2.0-rc.1" }
+infernum-asmodeus = { path = "../asmodeus", version = "0.2.0-rc.1" }
 stolas = { path = "../stolas", version = "0.2.0-rc.1", default-features = false }
 dantalion = { path = "../dantalion", version = "0.2.0-rc.1" }
 abaddon = { path = "../abaddon", version = "0.2.0-rc.1" }

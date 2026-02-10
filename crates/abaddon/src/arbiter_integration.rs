@@ -13,7 +13,7 @@
 //!
 //! ```ignore
 //! use abaddon::{Engine, EngineConfig, ArbiterCoordinator};
-//! use arbiter::{Arbiter, ArbiterConfig};
+//! use infernum_arbiter::{Arbiter, ArbiterConfig};
 //! use std::sync::Arc;
 //!
 //! let arbiter = Arc::new(Arbiter::new(ArbiterConfig::auto_detect())?);
@@ -32,7 +32,7 @@
 
 use std::sync::Arc;
 
-use arbiter::{Allocation, Arbiter, MemoryPressure, Priority, WorkloadType};
+use infernum_arbiter::{Allocation, Arbiter, MemoryPressure, Priority, WorkloadType};
 
 /// Wrapper for Arbiter integration with the inference engine.
 pub struct ArbiterCoordinator {
@@ -339,7 +339,7 @@ impl QualityLevel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arbiter::ArbiterConfig;
+    use infernum_arbiter::ArbiterConfig;
 
     #[test]
     fn test_coordinator_creation() {
