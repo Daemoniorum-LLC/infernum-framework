@@ -8,13 +8,13 @@
 
 ## Executive Summary
 
-Successfully implemented the **COMPLETE** infernum-server roadmap (Phases 1-5, all 19 features), transforming it from a basic OpenAI-compatible API server into a production-ready, high-performance LLM inference platform with enterprise features.
+Successfully implemented the **COMPLETE** infernum-server roadmap (Phases 1-5, all 19 features), transforming it from a basic API server into a production-ready, high-performance LLM inference platform with enterprise features.
 
 **Total Implementation:**
 - ~16,000+ lines of new Rust code
 - 619 comprehensive unit tests
 - 20 new modules
-- Full OpenAI API compatibility with advanced features
+- Standard `/v1/*` API with advanced features
 - **100% roadmap completion**
 
 ---
@@ -55,7 +55,7 @@ infernum-server/
 │   ├── handlers.rs         # Request handlers
 │   │
 │   ├── # Phase 1: API Parity
-│   ├── openai.rs           # OpenAI-compatible types
+│   ├── api_types.rs        # API types
 │   ├── tokenize.rs         # Token counting endpoint
 │   ├── priority.rs         # X-Priority header
 │   │
@@ -123,7 +123,7 @@ POST /v1/tokenize
 
 **Function Calling**
 ```rust
-// OpenAI-compatible tool use
+// Tool use with model-aware formatting
 {
   "tools": [{
     "type": "function",

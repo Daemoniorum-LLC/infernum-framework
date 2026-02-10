@@ -10,14 +10,14 @@ description = "HTTP API server for local LLM inference"
 readme = "README.md"
 
 [dependencies]
-infernum-core = { path = "../infernum-core", version = "0.2.0-rc.1" }
-abaddon = { path = "../abaddon", version = "0.2.0-rc.1" }
+infernum-core = { path = "../infernum-core", version = "0.2.0-rc.2" }
+abaddon = { path = "../abaddon", version = "0.2.0-rc.2" }
 candle-core = { workspace = true }
 candle-nn = { workspace = true }
-malphas = { path = "../malphas", version = "0.2.0-rc.1" }
-stolas = { path = "../stolas", version = "0.2.0-rc.1", default-features = false }
-beleth = { path = "../beleth", version = "0.2.0-rc.1" }
-dantalion = { path = "../dantalion", version = "0.2.0-rc.1" }
+malphas = { path = "../malphas", version = "0.2.0-rc.2" }
+stolas = { path = "../stolas", version = "0.2.0-rc.2", default-features = false }
+beleth = { path = "../beleth", version = "0.2.0-rc.2" }
+dantalion = { path = "../dantalion", version = "0.2.0-rc.2" }
 
 # Async
 tokio = { workspace = true }

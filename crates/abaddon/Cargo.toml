@@ -6,7 +6,7 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Blazingly fast LLM inference engine - The Destroyer renders judgment"
+description = "LLM inference engine - The Destroyer renders judgment"
 
 [features]
 default = ["cpu"]
@@ -27,9 +27,9 @@ llama-cpp-metal = ["llama-cpp", "llama_cpp/metal"]
 llama-cpp-vulkan = ["llama-cpp", "llama_cpp/vulkan"]
 
 [dependencies]
-infernum-core = { path = "../infernum-core", version = "0.2.0-rc.1" }
-dantalion = { path = "../dantalion", version = "0.2.0-rc.1" }
-arbiter = { path = "../arbiter", version = "0.2.0-rc.1" }
+infernum-core = { path = "../infernum-core", version = "0.2.0-rc.2" }
+dantalion = { path = "../dantalion", version = "0.2.0-rc.2" }
+infernum-arbiter = { path = "../arbiter", version = "0.2.0-rc.2" }
 
 # Async
 tokio = { workspace = true }

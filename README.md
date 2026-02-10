@@ -4,7 +4,7 @@
 
 **Local LLM inference for the command line and beyond.**
 
-Infernum is a high-performance LLM inference framework written in Rust, designed to run large language models locally with exceptional speed and minimal setup. Drop-in OpenAI API compatibility means your existing tools just work.
+Infernum is a high-performance LLM inference framework written in Rust, designed to run large language models locally with exceptional speed and minimal setup. Industry-standard `/v1/*` API routes mean your existing tools just work.
 
 [![Rust](https://img.shields.io/badge/rust-1.91+-orange.svg)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
@@ -34,7 +34,7 @@ infernum chat
 | Feature | Description |
 |---------|-------------|
 | **Local Inference** | Run LLMs entirely on your machine - no API keys, no cloud, no data leaving your system |
-| **OpenAI Compatible** | Drop-in replacement API at `localhost:8080` - works with any OpenAI client |
+| **Standard API** | Industry-standard `/v1/*` routes at `localhost:8080` - works with existing clients |
 | **Tool Calling** | Native function calling with streaming detection, parallel execution, and strict mode validation |
 | **Agent Runtime** | Ed25519-signed agent identities with cryptographic audit trails via Moloch |
 | **HoloCrypt Encryption** | Selective field encryption for sensitive prompts with ZK proofs and post-quantum security |
@@ -125,7 +125,7 @@ infernum generate "Write a haiku about Rust" \
 infernum serve --model TinyLlama/TinyLlama-1.1B-Chat-v1.0
 
 # Server runs at http://localhost:8080
-# Compatible with any OpenAI client!
+# Standard /v1/* API routes
 ```
 
 **Use with curl:**
@@ -138,8 +138,9 @@ curl http://localhost:8080/v1/chat/completions \
   }'
 ```
 
-**Use with Python (OpenAI client):**
+**Use with Python:**
 ```python
+# Works with any client that supports /v1/* endpoints
 from openai import OpenAI
 
 client = OpenAI(base_url="http://localhost:8080/v1", api_key="not-needed")
@@ -250,7 +251,7 @@ export INFERNUM_TEMPERATURE="0.8"
 
 ```json
 {
-  "id": "chatcmpl-abc123",
+  "id": "inf-chat-abc123",
   "object": "chat.completion",
   "created": 1699000000,
   "model": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
@@ -267,7 +268,7 @@ export INFERNUM_TEMPERATURE="0.8"
 
 ## Tool Calling
 
-Infernum supports OpenAI-compatible function calling with advanced features:
+Infernum supports native function calling with model-aware formatting:
 
 ```bash
 curl http://localhost:8080/v1/chat/completions \

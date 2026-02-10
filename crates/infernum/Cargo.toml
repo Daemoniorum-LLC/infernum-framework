@@ -28,16 +28,16 @@ llama-cpp-metal = ["llama-cpp", "abaddon/llama-cpp-metal"]
 llama-cpp-vulkan = ["llama-cpp", "abaddon/llama-cpp-vulkan"]
 
 [dependencies]
-infernum-core = { path = "../infernum-core", version = "0.2.0-rc.1" }
-abaddon = { path = "../abaddon", version = "0.2.0-rc.1" }
-malphas = { path = "../malphas", version = "0.2.0-rc.1" }
-stolas = { path = "../stolas", version = "0.2.0-rc.1", default-features = false }
-beleth = { path = "../beleth", version = "0.2.0-rc.1" }
-asmodeus = { path = "../asmodeus", version = "0.2.0-rc.1" }
-dantalion = { path = "../dantalion", version = "0.2.0-rc.1" }
-grimoire-loader = { path = "../grimoire-loader", version = "0.2.0-rc.1" }
-paimon = { path = "../paimon", version = "0.2.0-rc.1" }
-infernum-server = { path = "../infernum-server", version = "0.2.0-rc.1", optional = true }
+infernum-core = { path = "../infernum-core", version = "0.2.0-rc.2" }
+abaddon = { path = "../abaddon", version = "0.2.0-rc.2" }
+malphas = { path = "../malphas", version = "0.2.0-rc.2" }
+stolas = { path = "../stolas", version = "0.2.0-rc.2", default-features = false }
+beleth = { path = "../beleth", version = "0.2.0-rc.2" }
+infernum-asmodeus = { path = "../asmodeus", version = "0.2.0-rc.2" }
+dantalion = { path = "../dantalion", version = "0.2.0-rc.2" }
+grimoire-loader = { path = "../grimoire-loader", version = "0.2.0-rc.2" }
+infernum-paimon = { path = "../paimon", version = "0.2.0-rc.2" }
+infernum-server = { path = "../infernum-server", version = "0.2.0-rc.2", optional = true }
 
 # Async
 tokio = { workspace = true }

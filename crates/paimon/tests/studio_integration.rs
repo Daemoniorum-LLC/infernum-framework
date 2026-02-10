@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use paimon::{
+use infernum_paimon::{
     dataset::{DatasetFormat, DatasetStats, IssueSeverity, SplitConfig},
     experiment::{Artifact, ArtifactType, HyperparamValue},
     // Agents

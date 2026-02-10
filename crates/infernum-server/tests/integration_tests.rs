@@ -428,7 +428,7 @@ fn typed_validation_router() -> axum::Router {
     axum::Router::new().route(
         "/v1/chat/completions",
         post(|Json(body): Json<serde_json::Value>| async move {
-            // Parse as ChatCompletionRequest (OpenAI-compatible format)
+            // Parse as ChatCompletionRequest
             let req: ChatCompletionRequest = match serde_json::from_value(body.clone()) {
                 Ok(r) => r,
                 Err(e) => {

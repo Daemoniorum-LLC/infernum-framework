@@ -1,14 +1,14 @@
 # infernum-server
 
-HTTP API server with OpenAI-compatible endpoints for the Infernum LLM inference framework.
+HTTP API server for the Infernum LLM inference framework.
 
 ## Overview
 
-`infernum-server` provides a production-ready HTTP server that exposes Infernum's LLM capabilities through OpenAI-compatible API endpoints. This allows you to use any OpenAI client library or tool with locally-running models.
+`infernum-server` provides a production-ready HTTP server that exposes Infernum's LLM capabilities through industry-standard `/v1/*` API endpoints. Works with any client that supports standard chat completion APIs.
 
 ## Features
 
-- **OpenAI-Compatible API**: Drop-in replacement for OpenAI's API
+- **Standard API**: Industry-standard `/v1/*` routes compatible with existing clients
 - **Streaming Responses**: Real-time token-by-token output via SSE
 - **Model Cache Management**: Download, convert, and manage local models
 - **HoloTensor Compression**: Convert models to compressed HoloTensor format
@@ -37,7 +37,7 @@ infernum server --port 8080
 
 ## API Endpoints
 
-### OpenAI-Compatible Endpoints
+### Chat & Inference Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|

@@ -1,5 +1,5 @@
 [package]
-name = "arbiter"
+name = "infernum-arbiter"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,7 +12,7 @@ description = "Unified GPU arbiter - coordinates Infernum (LLM) and Dantalion (D
 default = []
 
 [dependencies]
-infernum-core = { path = "../infernum-core", version = "0.2.0-rc.1" }
+infernum-core = { path = "../infernum-core", version = "0.2.0-rc.2" }
 
 # Async
 tokio = { workspace = true }

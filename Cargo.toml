@@ -18,7 +18,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0-rc.1"
+version = "0.2.0-rc.2"
 edition = "2021"
 rust-version = "1.91"
 authors = ["Daemoniorum Engineering <engineering@daemoniorum.com>"]
@@ -26,7 +26,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/Daemoniorum-LLC/infernum"
 homepage = "https://infernum.daemoniorum.com"
 readme = "README.md"
-description = "Blazingly fast LLM inference ecosystem"
+description = "Local LLM inference framework"
 keywords = ["llm", "inference", "ai", "ml", "gpu"]
 categories = ["science", "api-bindings", "command-line-utilities"]
 

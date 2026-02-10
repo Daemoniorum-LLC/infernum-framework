@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Property-based tests for tiered memory system
 
 #### Server (infernum-server)
-- **Tool calling / function calling** with OpenAI-compatible API
+- **Tool calling / function calling** with model-aware formatting
   - Streaming tool detection for SSE
   - Multi-model support
   - Validation and enforcement
@@ -72,7 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial release
 - Core inference engine with candle backend
-- OpenAI-compatible REST API
+- REST API with standard `/v1/*` endpoints
 - Streaming support via Server-Sent Events (SSE)
 - HuggingFace Hub integration for model downloads
 - Basic CLI with chat and serve commands

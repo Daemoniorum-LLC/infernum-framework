@@ -2,7 +2,7 @@
 
 > *"From the depths, intelligence rises"*
 
-**Blazingly fast local LLM inference CLI for running large language models on your machine.**
+**Local LLM inference CLI for running large language models on your machine.**
 
 [![Crates.io](https://img.shields.io/crates/v/infernum.svg)](https://crates.io/crates/infernum)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
@@ -23,7 +23,7 @@ infernum chat
 ## Features
 
 - **Local Inference**: Run LLMs entirely on your machine - no API keys, no cloud
-- **OpenAI Compatible API**: Drop-in replacement server at `localhost:8080`
+- **Standard API**: Industry-standard `/v1/*` server at `localhost:8080`
 - **Interactive Chat**: Full-featured CLI chat with history and session management
 - **Multi-Backend**: CPU, CUDA (NVIDIA), and Metal (Apple Silicon) support
 - **Smart Caching**: Models download once via HuggingFace Hub
@@ -72,7 +72,7 @@ Infernum is built from specialized components:
 - **beleth**: Agent framework for autonomous AI
 - **asmodeus**: Model fine-tuning and adaptation
 - **dantalion**: Observability and telemetry
-- **infernum-server**: OpenAI-compatible HTTP API
+- **infernum-server**: HTTP API server
 
 ## Documentation
 
