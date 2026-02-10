@@ -9,7 +9,7 @@ repository.workspace = true
 description = "Grimoire prompt system integration for Infernum"
 
 [dependencies]
-infernum-core = { path = "../infernum-core", version = "0.1.0" }
+infernum-core = { path = "../infernum-core", version = "0.2.0-rc.1" }
 
 # Async
 tokio = { workspace = true, features = ["fs"] }
@@ -19,6 +19,7 @@ futures = { workspace = true }
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 toml = { workspace = true }
 
 # Error handling
@@ -29,13 +30,16 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 
 # File watching
-notify = "7.0"
+notify = { workspace = true }
 
 # Utilities
 dashmap = { workspace = true }
 regex = { workspace = true }
-dirs = "5.0"
+dirs = "6.0"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
 tempfile = "3.14"
+
+[lints]
+workspace = true

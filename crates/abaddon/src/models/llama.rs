@@ -1,10 +1,36 @@
 //! Llama model architecture implementation using Candle.
 //!
 //! Supports Llama 2, Llama 3, Llama 3.1, and Llama 3.2 variants.
+//!
+//! This implementation supports pluggable KV cache strategies through the
+//! [`KvCache`] trait, allowing use of standard caches, quantized caches,
+//! or CUDA-accelerated caches.
 
-use candle_core::{DType, Device, IndexOp, Module, Result as CandleResult, Tensor, D};
+use candle_core::{DType, Device, Module, Result as CandleResult, Tensor, D};
 use candle_nn::{embedding, linear_no_bias, Embedding, Linear, VarBuilder};
 use serde::Deserialize;
+
+use crate::attention_cache::{attention_with_cache, CacheType, KvCache, KvCacheConfig};
+
+/// RoPE scaling configuration for extended context models.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct RopeScalingConfig {
+    /// Scaling factor.
+    #[serde(default)]
+    pub factor: Option<f64>,
+    /// High frequency factor (for llama3 rope).
+    #[serde(default)]
+    pub high_freq_factor: Option<f64>,
+    /// Low frequency factor (for llama3 rope).
+    #[serde(default)]
+    pub low_freq_factor: Option<f64>,
+    /// Original max position embeddings before scaling.
+    #[serde(default)]
+    pub original_max_position_embeddings: Option<usize>,
+    /// RoPE scaling type: "linear", "dynamic", "llama3", etc.
+    #[serde(default)]
+    pub rope_type: Option<String>,
+}
 
 /// Llama model configuration.
 #[derive(Debug, Clone, Deserialize)]
@@ -40,6 +66,9 @@ pub struct LlamaConfig {
     /// EOS token ID.
     #[serde(default)]
     pub eos_token_id: Option<u32>,
+    /// RoPE scaling configuration (for Llama 3.2+ extended context).
+    #[serde(default)]
+    pub rope_scaling: Option<RopeScalingConfig>,
 }
 
 fn default_rms_norm_eps() -> f64 {
@@ -101,10 +130,26 @@ impl RotaryEmbedding {
         let max_seq_len = config.max_position_embeddings;
         let theta = config.rope_theta;
 
+        // Compute base inverse frequencies
         let inv_freq: Vec<f32> = (0..head_dim)
             .step_by(2)
             .map(|i| 1.0 / theta.powf(i as f64 / head_dim as f64) as f32)
             .collect();
+
+        // Apply Llama3 RoPE scaling if configured
+        let inv_freq = if let Some(ref scaling) = config.rope_scaling {
+            if scaling.rope_type.as_deref() == Some("llama3") {
+                Self::apply_llama3_scaling(&inv_freq, scaling)
+            } else if let Some(factor) = scaling.factor {
+                // Linear scaling
+                inv_freq.iter().map(|f| f / factor as f32).collect()
+            } else {
+                inv_freq
+            }
+        } else {
+            inv_freq
+        };
+
         let inv_freq = Tensor::new(inv_freq.as_slice(), device)?;
 
         let positions: Vec<f32> = (0..max_seq_len).map(|p| p as f32).collect();
@@ -120,10 +165,45 @@ impl RotaryEmbedding {
         Ok(Self { cos, sin })
     }
 
+    /// Apply Llama3 RoPE scaling algorithm.
+    /// Based on: https://github.com/huggingface/transformers/blob/main/src/transformers/modeling_rope_utils.py
+    fn apply_llama3_scaling(inv_freq: &[f32], scaling: &RopeScalingConfig) -> Vec<f32> {
+        let factor = scaling.factor.unwrap_or(1.0) as f32;
+        let low_freq_factor = scaling.low_freq_factor.unwrap_or(1.0) as f32;
+        let high_freq_factor = scaling.high_freq_factor.unwrap_or(4.0) as f32;
+        let orig_max_pos = scaling.original_max_position_embeddings.unwrap_or(8192) as f32;
+
+        let low_freq_wavelen = orig_max_pos / low_freq_factor;
+        let high_freq_wavelen = orig_max_pos / high_freq_factor;
+
+        inv_freq
+            .iter()
+            .map(|&freq| {
+                let wavelen = 2.0 * std::f32::consts::PI / freq;
+                if wavelen > low_freq_wavelen {
+                    // Low frequency: scale down by factor
+                    freq / factor
+                } else if wavelen < high_freq_wavelen {
+                    // High frequency: keep original
+                    freq
+                } else {
+                    // Middle range: smooth interpolation
+                    let smooth = (orig_max_pos / wavelen - low_freq_factor)
+                        / (high_freq_factor - low_freq_factor);
+                    (1.0 - smooth) * freq / factor + smooth * freq
+                }
+            })
+            .collect()
+    }
+
     fn apply(&self, q: &Tensor, k: &Tensor, start_pos: usize) -> CandleResult<(Tensor, Tensor)> {
         let seq_len = q.dim(1)?;
         let cos = self.cos.narrow(0, start_pos, seq_len)?;
         let sin = self.sin.narrow(0, start_pos, seq_len)?;
+
+        // Double cos/sin to match head_dim (neox-style rotary)
+        let cos = Tensor::cat(&[&cos, &cos], D::Minus1)?;
+        let sin = Tensor::cat(&[&sin, &sin], D::Minus1)?;
 
         let q_embed = Self::apply_rotary(q, &cos, &sin)?;
         let k_embed = Self::apply_rotary(k, &cos, &sin)?;
@@ -131,25 +211,33 @@ impl RotaryEmbedding {
         Ok((q_embed, k_embed))
     }
 
+    /// Applies neox-style rotary embedding: x' = x * cos + rotate_half(x) * sin
+    /// where rotate_half splits the tensor in half and swaps/negates: [-x2, x1]
     fn apply_rotary(x: &Tensor, cos: &Tensor, sin: &Tensor) -> CandleResult<Tensor> {
-        let x_shape = x.dims();
-        let x = x.reshape((x_shape[0], x_shape[1], x_shape[2], x_shape[3] / 2, 2))?;
+        // x shape: (batch, seq, heads, head_dim)
+        // cos/sin shape: (seq, head_dim)
+        let cos = cos.unsqueeze(0)?.unsqueeze(2)?; // (1, seq, 1, head_dim)
+        let sin = sin.unsqueeze(0)?.unsqueeze(2)?; // (1, seq, 1, head_dim)
 
-        let x0 = x.i((.., .., .., .., 0))?;
-        let x1 = x.i((.., .., .., .., 1))?;
+        let x_cos = x.broadcast_mul(&cos)?;
+        let x_rot = Self::rotate_half(x)?;
+        let x_sin = x_rot.broadcast_mul(&sin)?;
 
-        let cos = cos.unsqueeze(0)?.unsqueeze(2)?;
-        let sin = sin.unsqueeze(0)?.unsqueeze(2)?;
+        x_cos + x_sin
+    }
 
-        let rotated_0 = (x0.broadcast_mul(&cos)? - x1.broadcast_mul(&sin)?)?;
-        let rotated_1 = (x0.broadcast_mul(&sin)? + x1.broadcast_mul(&cos)?)?;
-
-        let rotated = Tensor::stack(&[rotated_0, rotated_1], D::Minus1)?;
-        rotated.reshape(x_shape)
+    /// Rotates half the hidden dims: splits in half, negates second half, and swaps
+    /// [x0, x1, x2, x3, ..., xn/2, ..., xn-1] -> [-xn/2, ..., -xn-1, x0, x1, ..., xn/2-1]
+    fn rotate_half(x: &Tensor) -> CandleResult<Tensor> {
+        let last_dim = x.dim(D::Minus1)?;
+        let half = last_dim / 2;
+        let x1 = x.narrow(D::Minus1, 0, half)?;
+        let x2 = x.narrow(D::Minus1, half, half)?;
+        Tensor::cat(&[&x2.neg()?, &x1], D::Minus1)
     }
 }
 
-/// Self-attention layer.
+/// Self-attention layer with pluggable KV cache.
 struct Attention {
     q_proj: Linear,
     k_proj: Linear,
@@ -158,11 +246,21 @@ struct Attention {
     num_heads: usize,
     num_kv_heads: usize,
     head_dim: usize,
-    kv_cache: Option<(Tensor, Tensor)>,
+    /// KV cache supporting different backends (standard, quantized, CUDA).
+    kv_cache: Box<dyn KvCache>,
 }
 
 impl Attention {
+    #[allow(dead_code)]
     fn load(config: &LlamaConfig, vb: VarBuilder) -> CandleResult<Self> {
+        Self::load_with_cache_type(config, vb, CacheType::Standard)
+    }
+
+    fn load_with_cache_type(
+        config: &LlamaConfig,
+        vb: VarBuilder,
+        cache_type: CacheType,
+    ) -> CandleResult<Self> {
         let hidden_size = config.hidden_size;
         let num_heads = config.num_attention_heads;
         let num_kv_heads = config.num_kv_heads();
@@ -173,6 +271,10 @@ impl Attention {
         let v_proj = linear_no_bias(hidden_size, num_kv_heads * head_dim, vb.pp("v_proj"))?;
         let o_proj = linear_no_bias(num_heads * head_dim, hidden_size, vb.pp("o_proj"))?;
 
+        let cache_config =
+            KvCacheConfig::new(num_kv_heads, head_dim, vb.device().clone(), vb.dtype());
+        let kv_cache = cache_type.create(&cache_config)?;
+
         Ok(Self {
             q_proj,
             k_proj,
@@ -181,7 +283,7 @@ impl Attention {
             num_heads,
             num_kv_heads,
             head_dim,
-            kv_cache: None,
+            kv_cache,
         })
     }
 
@@ -211,34 +313,16 @@ impl Attention {
         let k = k.transpose(1, 2)?.contiguous()?;
         let v = v.transpose(1, 2)?.contiguous()?;
 
-        // KV cache handling
-        let (k, v) = match &self.kv_cache {
-            Some((prev_k, prev_v)) => {
-                let k = Tensor::cat(&[prev_k, &k], 2)?;
-                let v = Tensor::cat(&[prev_v, &v], 2)?;
-                (k, v)
-            },
-            None => (k, v),
-        };
-
-        self.kv_cache = Some((k.clone(), v.clone()));
-
-        // Repeat KV heads if using GQA
-        let k = Self::repeat_kv(k, self.num_heads / self.num_kv_heads)?;
-        let v = Self::repeat_kv(v, self.num_heads / self.num_kv_heads)?;
-
-        // Scaled dot-product attention
-        let scale = (self.head_dim as f64).sqrt();
-        let attn_weights = q.matmul(&k.transpose(D::Minus2, D::Minus1)?)?;
-        let attn_weights = (attn_weights / scale)?;
-
-        let attn_weights = match mask {
-            Some(m) => attn_weights.broadcast_add(m)?,
-            None => attn_weights,
-        };
-
-        let attn_weights = candle_nn::ops::softmax_last_dim(&attn_weights)?;
-        let attn_output = attn_weights.matmul(&v)?;
+        // Use the generic attention function which handles both standard and fused cache modes
+        let attn_output = attention_with_cache(
+            &q,
+            &k,
+            &v,
+            &mut *self.kv_cache,
+            self.num_heads,
+            self.num_kv_heads,
+            mask,
+        )?;
 
         // Reshape back
         let attn_output = attn_output.transpose(1, 2)?.reshape((
@@ -250,20 +334,18 @@ impl Attention {
         self.o_proj.forward(&attn_output)
     }
 
-    fn repeat_kv(x: Tensor, n_rep: usize) -> CandleResult<Tensor> {
-        if n_rep == 1 {
-            return Ok(x);
-        }
-        let (batch, num_kv_heads, seq_len, head_dim) = x.dims4()?;
-        let x = x
-            .unsqueeze(2)?
-            .expand((batch, num_kv_heads, n_rep, seq_len, head_dim))?
-            .reshape((batch, num_kv_heads * n_rep, seq_len, head_dim))?;
-        Ok(x)
+    fn clear_cache(&mut self) {
+        self.kv_cache.clear();
     }
 
-    fn clear_cache(&mut self) {
-        self.kv_cache = None;
+    /// Returns the current cache sequence length.
+    fn cache_len(&self) -> usize {
+        self.kv_cache.seq_len()
+    }
+
+    /// Returns the cache memory usage in bytes.
+    fn cache_memory_bytes(&self) -> usize {
+        self.kv_cache.memory_bytes()
     }
 }
 
@@ -310,8 +392,17 @@ struct DecoderLayer {
 }
 
 impl DecoderLayer {
+    #[allow(dead_code)]
     fn load(config: &LlamaConfig, vb: VarBuilder) -> CandleResult<Self> {
-        let self_attn = Attention::load(config, vb.pp("self_attn"))?;
+        Self::load_with_cache_type(config, vb, CacheType::Standard)
+    }
+
+    fn load_with_cache_type(
+        config: &LlamaConfig,
+        vb: VarBuilder,
+        cache_type: CacheType,
+    ) -> CandleResult<Self> {
+        let self_attn = Attention::load_with_cache_type(config, vb.pp("self_attn"), cache_type)?;
         let mlp = Mlp::load(config, vb.pp("mlp"))?;
         let input_layernorm = RmsNorm::load(
             config.hidden_size,
@@ -370,8 +461,32 @@ pub struct Llama {
 }
 
 impl Llama {
-    /// Loads a Llama model from the given variable builder.
+    /// Loads a Llama model from the given variable builder with default (standard) KV cache.
     pub fn load(config: LlamaConfig, vb: VarBuilder) -> CandleResult<Self> {
+        Self::load_with_cache_type(config, vb, CacheType::Standard)
+    }
+
+    /// Loads a Llama model with a specific KV cache type.
+    ///
+    /// # Arguments
+    /// * `config` - Model configuration
+    /// * `vb` - Variable builder with model weights
+    /// * `cache_type` - Type of KV cache to use (Standard, Quantized, or CudaQuantized)
+    ///
+    /// # Example
+    /// ```ignore
+    /// use abaddon::models::llama::Llama;
+    /// use abaddon::attention_cache::CacheType;
+    ///
+    /// // Use CUDA-accelerated INT8 quantized cache
+    /// let cache_type = CacheType::CudaQuantized { device_id: 0 };
+    /// let model = Llama::load_with_cache_type(config, vb, cache_type)?;
+    /// ```
+    pub fn load_with_cache_type(
+        config: LlamaConfig,
+        vb: VarBuilder,
+        cache_type: CacheType,
+    ) -> CandleResult<Self> {
         let device = vb.device().clone();
         let dtype = vb.dtype();
 
@@ -383,7 +498,11 @@ impl Llama {
 
         let mut layers = Vec::with_capacity(config.num_hidden_layers);
         for i in 0..config.num_hidden_layers {
-            let layer = DecoderLayer::load(&config, vb.pp(format!("model.layers.{}", i)))?;
+            let layer = DecoderLayer::load_with_cache_type(
+                &config,
+                vb.pp(format!("model.layers.{}", i)),
+                cache_type.clone(),
+            )?;
             layers.push(layer);
         }
 
@@ -490,5 +609,71 @@ impl Llama {
     /// Returns the dtype.
     pub fn dtype(&self) -> DType {
         self.dtype
+    }
+
+    /// Returns the total cache memory usage across all layers in bytes.
+    pub fn cache_memory_bytes(&self) -> usize {
+        self.layers
+            .iter()
+            .map(|l| l.self_attn.cache_memory_bytes())
+            .sum()
+    }
+
+    /// Returns the current cache sequence length.
+    ///
+    /// Returns 0 if cache is empty, otherwise returns the sequence length
+    /// from the first layer's cache.
+    pub fn cache_seq_len(&self) -> usize {
+        self.layers.first().map_or(0, |l| l.self_attn.cache_len())
+    }
+
+    /// Forward pass that returns hidden states for embedding extraction.
+    ///
+    /// # Arguments
+    /// * `input_ids` - Token IDs of shape (batch_size, seq_len)
+    ///
+    /// # Returns
+    /// Hidden states tensor of shape (batch_size, seq_len, hidden_size)
+    pub fn forward_embedding(&mut self, input_ids: &Tensor) -> CandleResult<Tensor> {
+        // Clear KV cache to avoid shape mismatches from previous generations
+        self.clear_cache();
+
+        let (_batch_size, seq_len) = input_ids.dims2()?;
+
+        // Embed tokens
+        let mut hidden_states = self.embed_tokens.forward(input_ids)?;
+
+        // Create causal mask (using 0 start_pos since we're not caching for embeddings)
+        let mask = if seq_len > 1 {
+            Some(Self::create_causal_mask(
+                seq_len,
+                0,
+                &self.device,
+                self.dtype,
+            )?)
+        } else {
+            None
+        };
+
+        // Forward through layers
+        for layer in &mut self.layers {
+            hidden_states = layer.forward(&hidden_states, &self.rotary, mask.as_ref(), 0)?;
+        }
+
+        // Final layer norm (return hidden states, not logits)
+        self.norm.forward(&hidden_states)
+    }
+
+    /// Extracts embeddings by mean pooling over the sequence dimension.
+    ///
+    /// # Arguments
+    /// * `input_ids` - Token IDs of shape (batch_size, seq_len)
+    ///
+    /// # Returns
+    /// Embedding tensor of shape (batch_size, hidden_size)
+    pub fn extract_embeddings(&mut self, input_ids: &Tensor) -> CandleResult<Tensor> {
+        let hidden_states = self.forward_embedding(input_ids)?;
+        // Mean pool over the sequence dimension (dim 1)
+        hidden_states.mean(1)
     }
 }

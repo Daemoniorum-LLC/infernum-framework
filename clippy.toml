@@ -1,0 +1,11 @@
+# Clippy configuration for Infernum Framework
+#
+# This file configures clippy lints at the workspace level.
+# See: https://rust-lang.github.io/rust-clippy/master/index.html
+
+# Allow precision loss casts (common in numeric code)
+# These are reviewed case-by-case but generally intentional
+too-large-for-stack = 200000
+
+# Configure doc comment linting
+doc-valid-idents = ["HuggingFace", "OpenAI", "CUDA", "ROCm", "WebGPU", "macOS", "iOS", "HoloTensor", "GGUF", "SafeTensors", "LoRA", "MLP", "KV", "GPU", "CPU", "VRAM", "API", "JSON", "SSE", "gRPC", "LLM", "RAG", "BF16", "FP16", "INT4", "INT8", "SVD", "PCA", "OODA", "FFI", "WSL", "NVMe", "SSD"]

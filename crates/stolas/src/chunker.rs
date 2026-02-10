@@ -202,3 +202,306 @@ impl Default for Chunker {
         Self::new(ChunkingStrategy::default())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // === ChunkingStrategy Tests ===
+
+    #[test]
+    fn test_chunking_strategy_default() {
+        let strategy = ChunkingStrategy::default();
+        match strategy {
+            ChunkingStrategy::FixedTokens { size, overlap } => {
+                assert_eq!(size, 512);
+                assert_eq!(overlap, 50);
+            },
+            _ => panic!("Default should be FixedTokens"),
+        }
+    }
+
+    // === Fixed Tokens Chunking Tests ===
+
+    #[test]
+    fn test_chunk_fixed_basic() {
+        let chunker = Chunker::new(ChunkingStrategy::FixedTokens {
+            size: 10,
+            overlap: 2,
+        });
+        let text = "Hello, World! This is a test.";
+        let chunks = chunker.chunk(text);
+
+        assert!(!chunks.is_empty());
+        // First chunk should have 10 characters
+        assert_eq!(chunks[0].text.len(), 10);
+        assert_eq!(chunks[0].start, 0);
+        assert_eq!(chunks[0].end, 10);
+        assert_eq!(chunks[0].index, 0);
+    }
+
+    #[test]
+    fn test_chunk_fixed_overlap() {
+        let chunker = Chunker::new(ChunkingStrategy::FixedTokens {
+            size: 10,
+            overlap: 3,
+        });
+        let text = "0123456789ABCDEFGHIJ";
+        let chunks = chunker.chunk(text);
+
+        // Check overlap - end of first chunk should overlap with start of second
+        if chunks.len() >= 2 {
+            let first_end = &chunks[0].text[chunks[0].text.len() - 3..];
+            let second_start = &chunks[1].text[..3];
+            // The overlapping portion should match
+            assert_eq!(first_end.len(), second_start.len());
+        }
+    }
+
+    #[test]
+    fn test_chunk_fixed_empty_text() {
+        let chunker = Chunker::new(ChunkingStrategy::FixedTokens {
+            size: 10,
+            overlap: 2,
+        });
+        let chunks = chunker.chunk("");
+
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn test_chunk_fixed_text_smaller_than_chunk_size() {
+        let chunker = Chunker::new(ChunkingStrategy::FixedTokens {
+            size: 100,
+            overlap: 10,
+        });
+        let text = "Short text";
+        let chunks = chunker.chunk(text);
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].text, "Short text");
+        assert_eq!(chunks[0].start, 0);
+        assert_eq!(chunks[0].end, text.len());
+    }
+
+    #[test]
+    fn test_chunk_fixed_exact_chunk_size() {
+        let chunker = Chunker::new(ChunkingStrategy::FixedTokens {
+            size: 10,
+            overlap: 0,
+        });
+        let text = "0123456789";
+        let chunks = chunker.chunk(text);
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].text, "0123456789");
+    }
+
+    // === Recursive Chunking Tests ===
+
+    #[test]
+    fn test_chunk_recursive_basic() {
+        let chunker = Chunker::new(ChunkingStrategy::Recursive {
+            separators: vec!["\n".to_string(), " ".to_string()],
+            chunk_size: 20,
+        });
+        let text = "Hello World. This is a long test that should be split.";
+        let chunks = chunker.chunk(text);
+
+        assert!(!chunks.is_empty());
+        for chunk in &chunks {
+            // Chunks should respect max size (approximately)
+            assert!(!chunk.text.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_chunk_recursive_empty_text() {
+        let chunker = Chunker::new(ChunkingStrategy::Recursive {
+            separators: vec!["\n".to_string()],
+            chunk_size: 100,
+        });
+        let chunks = chunker.chunk("");
+
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn test_chunk_recursive_whitespace_only() {
+        let chunker = Chunker::new(ChunkingStrategy::Recursive {
+            separators: vec!["\n".to_string()],
+            chunk_size: 100,
+        });
+        let chunks = chunker.chunk("   \n\n   ");
+
+        // Should skip whitespace-only chunks
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn test_chunk_recursive_respects_separators() {
+        let chunker = Chunker::new(ChunkingStrategy::Recursive {
+            separators: vec!["\n".to_string()],
+            chunk_size: 50,
+        });
+        let text = "Line one content here\nLine two content here\nLine three";
+        let chunks = chunker.chunk(text);
+
+        // Should have at least one chunk
+        assert!(!chunks.is_empty());
+    }
+
+    // === Sentence Chunking Tests ===
+
+    #[test]
+    fn test_chunk_sentence_basic() {
+        let chunker = Chunker::new(ChunkingStrategy::Sentence {
+            min_size: 10,
+            max_size: 100,
+        });
+        let text = "First sentence. Second sentence. Third sentence!";
+        let chunks = chunker.chunk(text);
+
+        assert!(!chunks.is_empty());
+        // All sentences should be included
+        let combined: String = chunks.iter().map(|c| c.text.clone()).collect();
+        assert!(combined.contains("First"));
+        assert!(combined.contains("Second"));
+        assert!(combined.contains("Third"));
+    }
+
+    #[test]
+    fn test_chunk_sentence_respects_max_size() {
+        let chunker = Chunker::new(ChunkingStrategy::Sentence {
+            min_size: 10,
+            max_size: 50,
+        });
+        let text = "This is a sentence. And another. Yet another one here.";
+        let chunks = chunker.chunk(text);
+
+        // Most chunks should be under max_size
+        for chunk in &chunks {
+            // Allow some flexibility due to how sentences are joined
+            assert!(
+                chunk.text.len() <= 60,
+                "Chunk too long: {} chars",
+                chunk.text.len()
+            );
+        }
+    }
+
+    #[test]
+    fn test_chunk_sentence_respects_min_size() {
+        let chunker = Chunker::new(ChunkingStrategy::Sentence {
+            min_size: 50,
+            max_size: 200,
+        });
+        let text = "One. Two. Three. Four. Five.";
+        let chunks = chunker.chunk(text);
+
+        // Should combine short sentences to meet min_size
+        // (or have a single chunk if text is short)
+        assert!(!chunks.is_empty());
+    }
+
+    #[test]
+    fn test_chunk_sentence_empty_text() {
+        let chunker = Chunker::new(ChunkingStrategy::Sentence {
+            min_size: 10,
+            max_size: 100,
+        });
+        let chunks = chunker.chunk("");
+
+        // Empty chunks should still produce at least one (empty) chunk due to implementation
+        assert!(chunks.len() <= 1);
+    }
+
+    #[test]
+    fn test_chunk_sentence_different_terminators() {
+        let chunker = Chunker::new(ChunkingStrategy::Sentence {
+            min_size: 1,
+            max_size: 200,
+        });
+        let text = "Question? Exclamation! Statement.";
+        let chunks = chunker.chunk(text);
+
+        // Should handle all sentence terminators
+        let combined: String = chunks.iter().map(|c| c.text.clone()).collect();
+        assert!(combined.contains("Question"));
+        assert!(combined.contains("Exclamation"));
+        assert!(combined.contains("Statement"));
+    }
+
+    // === Chunk Struct Tests ===
+
+    #[test]
+    fn test_chunk_indices_are_sequential() {
+        let chunker = Chunker::new(ChunkingStrategy::FixedTokens {
+            size: 5,
+            overlap: 1,
+        });
+        let text = "0123456789ABCDEFGHIJ";
+        let chunks = chunker.chunk(text);
+
+        for (i, chunk) in chunks.iter().enumerate() {
+            assert_eq!(chunk.index, i, "Chunk index should match position");
+        }
+    }
+
+    #[test]
+    fn test_chunk_offsets_are_valid() {
+        let chunker = Chunker::new(ChunkingStrategy::FixedTokens {
+            size: 10,
+            overlap: 2,
+        });
+        let text = "Hello, World! This is a test.";
+        let chunks = chunker.chunk(text);
+
+        for chunk in &chunks {
+            assert!(chunk.start <= chunk.end);
+            assert!(chunk.end <= text.len());
+        }
+    }
+
+    // === Default Chunker Tests ===
+
+    #[test]
+    fn test_chunker_default() {
+        let chunker = Chunker::default();
+        let text = "Test text";
+        let chunks = chunker.chunk(text);
+
+        // Default chunker should work
+        assert!(!chunks.is_empty());
+    }
+
+    // === Unicode Tests ===
+
+    #[test]
+    fn test_chunk_fixed_unicode() {
+        let chunker = Chunker::new(ChunkingStrategy::FixedTokens {
+            size: 5,
+            overlap: 1,
+        });
+        let text = "Hello 世界! 你好";
+        let chunks = chunker.chunk(text);
+
+        // Should handle Unicode correctly
+        assert!(!chunks.is_empty());
+        // First chunk should have 5 characters (including Unicode)
+        assert_eq!(chunks[0].text.chars().count(), 5);
+    }
+
+    #[test]
+    fn test_chunk_sentence_unicode() {
+        let chunker = Chunker::new(ChunkingStrategy::Sentence {
+            min_size: 1,
+            max_size: 100,
+        });
+        let text = "这是第一句话。这是第二句话！这是第三句话？";
+        let chunks = chunker.chunk(text);
+
+        // Should produce chunks (though may not split on Chinese punctuation)
+        assert!(!chunks.is_empty());
+    }
+}

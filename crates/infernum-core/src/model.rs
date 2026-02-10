@@ -36,6 +36,18 @@ pub enum ModelSource {
         /// Path to the GGUF file.
         path: PathBuf,
     },
+    /// HoloTensor compressed model (HCT format).
+    ///
+    /// HoloTensor models use holographic compression to enable 70B+ models
+    /// on 24GB VRAM via progressive quality reconstruction.
+    HoloTensor {
+        /// Path to the HCT model directory.
+        path: PathBuf,
+        /// Minimum quality threshold (0.0-1.0). Start generating at this quality.
+        min_quality: f32,
+        /// Target quality threshold (0.0-1.0). Improve to this during generation.
+        target_quality: f32,
+    },
 }
 
 impl ModelSource {
@@ -67,6 +79,38 @@ impl ModelSource {
     #[must_use]
     pub fn gguf(path: impl Into<PathBuf>) -> Self {
         Self::Gguf { path: path.into() }
+    }
+
+    /// Creates a HoloTensor source with default quality settings.
+    ///
+    /// Default: min_quality=0.7, target_quality=0.95
+    #[must_use]
+    pub fn holotensor(path: impl Into<PathBuf>) -> Self {
+        Self::HoloTensor {
+            path: path.into(),
+            min_quality: 0.7,
+            target_quality: 0.95,
+        }
+    }
+
+    /// Creates a HoloTensor source with custom quality settings.
+    #[must_use]
+    pub fn holotensor_with_quality(
+        path: impl Into<PathBuf>,
+        min_quality: f32,
+        target_quality: f32,
+    ) -> Self {
+        Self::HoloTensor {
+            path: path.into(),
+            min_quality: min_quality.clamp(0.5, 1.0),
+            target_quality: target_quality.clamp(min_quality, 1.0),
+        }
+    }
+
+    /// Returns `true` if this is a HoloTensor source.
+    #[must_use]
+    pub fn is_holotensor(&self) -> bool {
+        matches!(self, Self::HoloTensor { .. })
     }
 }
 
@@ -382,6 +426,311 @@ impl ModelMetadataBuilder {
             quantization: self.quantization,
             size_bytes: self.size_bytes,
             description: self.description,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==========================================================================
+    // ModelSource tests
+    // ==========================================================================
+
+    #[test]
+    fn test_model_source_huggingface() {
+        let source = ModelSource::huggingface("meta-llama/Llama-3.2-3B");
+
+        match source {
+            ModelSource::HuggingFace { repo_id, revision } => {
+                assert_eq!(repo_id, "meta-llama/Llama-3.2-3B");
+                assert!(revision.is_none());
+            },
+            _ => panic!("Expected HuggingFace source"),
+        }
+    }
+
+    #[test]
+    fn test_model_source_huggingface_rev() {
+        let source = ModelSource::huggingface_rev("microsoft/phi-3", "v1.0");
+
+        match source {
+            ModelSource::HuggingFace { repo_id, revision } => {
+                assert_eq!(repo_id, "microsoft/phi-3");
+                assert_eq!(revision, Some("v1.0".to_string()));
+            },
+            _ => panic!("Expected HuggingFace source"),
+        }
+    }
+
+    #[test]
+    fn test_model_source_local() {
+        let source = ModelSource::local("/models/llama");
+
+        match source {
+            ModelSource::LocalPath { path } => {
+                assert_eq!(path, PathBuf::from("/models/llama"));
+            },
+            _ => panic!("Expected LocalPath source"),
+        }
+    }
+
+    #[test]
+    fn test_model_source_gguf() {
+        let source = ModelSource::gguf("/models/model.gguf");
+
+        match source {
+            ModelSource::Gguf { path } => {
+                assert_eq!(path, PathBuf::from("/models/model.gguf"));
+            },
+            _ => panic!("Expected Gguf source"),
+        }
+    }
+
+    #[test]
+    fn test_model_source_s3() {
+        let source = ModelSource::S3 {
+            bucket: "my-bucket".to_string(),
+            key: "models/llama.bin".to_string(),
+            region: Some("us-west-2".to_string()),
+        };
+
+        match source {
+            ModelSource::S3 {
+                bucket,
+                key,
+                region,
+            } => {
+                assert_eq!(bucket, "my-bucket");
+                assert_eq!(key, "models/llama.bin");
+                assert_eq!(region, Some("us-west-2".to_string()));
+            },
+            _ => panic!("Expected S3 source"),
+        }
+    }
+
+    #[test]
+    fn test_model_source_serialization() {
+        let source = ModelSource::huggingface("test/model");
+        let json = serde_json::to_string(&source).expect("serialize");
+        assert!(json.contains("hugging_face"));
+        assert!(json.contains("test/model"));
+
+        let parsed: ModelSource = serde_json::from_str(&json).expect("deserialize");
+        match parsed {
+            ModelSource::HuggingFace { repo_id, .. } => {
+                assert_eq!(repo_id, "test/model");
+            },
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    // ==========================================================================
+    // ModelArchitecture tests
+    // ==========================================================================
+
+    #[test]
+    fn test_architecture_supports_vision() {
+        assert!(ModelArchitecture::LlavaNext.supports_vision());
+        assert!(ModelArchitecture::Qwen2VL.supports_vision());
+        assert!(ModelArchitecture::Pixtral.supports_vision());
+
+        assert!(!ModelArchitecture::Llama {
+            version: LlamaVersion::V3_2
+        }
+        .supports_vision());
+        assert!(!ModelArchitecture::Bert.supports_vision());
+        assert!(!ModelArchitecture::CodeLlama.supports_vision());
+    }
+
+    #[test]
+    fn test_architecture_is_embedding_model() {
+        assert!(ModelArchitecture::Bert.is_embedding_model());
+        assert!(ModelArchitecture::NomicEmbed.is_embedding_model());
+        assert!(ModelArchitecture::JinaEmbed.is_embedding_model());
+
+        assert!(!ModelArchitecture::Llama {
+            version: LlamaVersion::V3
+        }
+        .is_embedding_model());
+        assert!(!ModelArchitecture::LlavaNext.is_embedding_model());
+    }
+
+    #[test]
+    fn test_architecture_is_code_specialized() {
+        assert!(ModelArchitecture::CodeLlama.is_code_specialized());
+        assert!(ModelArchitecture::StarCoder2.is_code_specialized());
+        assert!(ModelArchitecture::DeepSeekCoder { version: 2 }.is_code_specialized());
+
+        assert!(!ModelArchitecture::Llama {
+            version: LlamaVersion::V2
+        }
+        .is_code_specialized());
+        assert!(!ModelArchitecture::Bert.is_code_specialized());
+    }
+
+    #[test]
+    fn test_llama_versions() {
+        let v2 = LlamaVersion::V2;
+        let v3 = LlamaVersion::V3;
+        let v3_1 = LlamaVersion::V3_1;
+        let v3_2 = LlamaVersion::V3_2;
+
+        assert_ne!(v2, v3);
+        assert_eq!(v3_1.clone(), v3_1);
+        assert_eq!(v3_2.clone(), v3_2);
+    }
+
+    #[test]
+    fn test_mistral_variants() {
+        assert_eq!(MistralVariant::Mistral7B, MistralVariant::Mistral7B);
+        assert_ne!(MistralVariant::Mistral7B, MistralVariant::Nemo);
+        assert_ne!(MistralVariant::Nemo, MistralVariant::Large);
+    }
+
+    #[test]
+    fn test_architecture_serialization() {
+        let arch = ModelArchitecture::Llama {
+            version: LlamaVersion::V3_2,
+        };
+        let json = serde_json::to_string(&arch).expect("serialize");
+        assert!(json.contains("llama"));
+
+        let parsed: ModelArchitecture = serde_json::from_str(&json).expect("deserialize");
+        match parsed {
+            ModelArchitecture::Llama { version } => {
+                assert_eq!(version, LlamaVersion::V3_2);
+            },
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    // ==========================================================================
+    // ModelMetadataBuilder tests
+    // ==========================================================================
+
+    #[test]
+    fn test_model_metadata_builder_basic() {
+        let metadata = ModelMetadata::builder(
+            "test-model",
+            ModelArchitecture::Llama {
+                version: LlamaVersion::V3_2,
+            },
+        )
+        .source(ModelSource::huggingface("test/model"))
+        .build();
+
+        assert_eq!(metadata.id.0, "test-model");
+        assert_eq!(metadata.context_length, 4096); // default
+        assert_eq!(metadata.vocab_size, 32000); // default
+    }
+
+    #[test]
+    fn test_model_metadata_builder_full() {
+        let metadata = ModelMetadata::builder(
+            "custom-model",
+            ModelArchitecture::Mistral {
+                variant: MistralVariant::Nemo,
+            },
+        )
+        .source(ModelSource::local("/models/custom"))
+        .context_length(131072)
+        .vocab_size(128256)
+        .hidden_size(8192)
+        .num_layers(80)
+        .num_attention_heads(64)
+        .num_kv_heads(8)
+        .quantization(QuantizationType::GgufQ4KM)
+        .size_bytes(4_000_000_000)
+        .description("Custom fine-tuned model")
+        .build();
+
+        assert_eq!(metadata.id.0, "custom-model");
+        assert_eq!(metadata.context_length, 131072);
+        assert_eq!(metadata.vocab_size, 128256);
+        assert_eq!(metadata.hidden_size, 8192);
+        assert_eq!(metadata.num_layers, 80);
+        assert_eq!(metadata.num_attention_heads, 64);
+        assert_eq!(metadata.num_kv_heads, Some(8));
+        assert_eq!(metadata.quantization, Some(QuantizationType::GgufQ4KM));
+        assert_eq!(metadata.size_bytes, Some(4_000_000_000));
+        assert_eq!(
+            metadata.description,
+            Some("Custom fine-tuned model".to_string())
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "source must be set")]
+    fn test_model_metadata_builder_no_source_panics() {
+        let _metadata = ModelMetadata::builder("test", ModelArchitecture::Bert).build();
+    }
+
+    #[test]
+    fn test_model_metadata_serialization() {
+        let metadata = ModelMetadata::builder(
+            "serialized-model",
+            ModelArchitecture::Phi {
+                version: PhiVersion::V4,
+            },
+        )
+        .source(ModelSource::huggingface("microsoft/phi-4"))
+        .context_length(8192)
+        .build();
+
+        let json = serde_json::to_string(&metadata).expect("serialize");
+        assert!(json.contains("serialized-model"));
+        assert!(json.contains("phi"));
+
+        let parsed: ModelMetadata = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed.id.0, "serialized-model");
+        assert_eq!(parsed.context_length, 8192);
+    }
+
+    // ==========================================================================
+    // Version enum tests
+    // ==========================================================================
+
+    #[test]
+    fn test_qwen_versions() {
+        assert_eq!(QwenVersion::V2, QwenVersion::V2);
+        assert_ne!(QwenVersion::V2, QwenVersion::V2_5);
+    }
+
+    #[test]
+    fn test_phi_versions() {
+        assert_eq!(PhiVersion::V3, PhiVersion::V3);
+        assert_ne!(PhiVersion::V3, PhiVersion::V3_5);
+        assert_ne!(PhiVersion::V3_5, PhiVersion::V4);
+    }
+
+    #[test]
+    fn test_gemma_versions() {
+        assert_eq!(GemmaVersion::V1, GemmaVersion::V1);
+        assert_ne!(GemmaVersion::V1, GemmaVersion::V2);
+    }
+
+    #[test]
+    fn test_architecture_debug() {
+        let arch = ModelArchitecture::Mixtral { num_experts: 8 };
+        let debug_str = format!("{:?}", arch);
+        assert!(debug_str.contains("Mixtral"));
+        assert!(debug_str.contains("8"));
+    }
+
+    #[test]
+    fn test_architecture_clone() {
+        let arch = ModelArchitecture::DeepSeek { version: 2 };
+        let cloned = arch.clone();
+        match (arch, cloned) {
+            (
+                ModelArchitecture::DeepSeek { version: v1 },
+                ModelArchitecture::DeepSeek { version: v2 },
+            ) => {
+                assert_eq!(v1, v2);
+            },
+            _ => panic!("Clone failed"),
         }
     }
 }

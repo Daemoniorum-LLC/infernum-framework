@@ -80,6 +80,8 @@ pub struct SchedulerConfig {
     pub continuous_batching: bool,
     /// Maximum queue size before rejecting requests.
     pub max_queue_size: usize,
+    /// Enable thermal-aware batch sizing.
+    pub thermal_aware: bool,
 }
 
 impl Default for SchedulerConfig {
@@ -90,7 +92,17 @@ impl Default for SchedulerConfig {
             max_wait_time: Duration::from_millis(50),
             continuous_batching: true,
             max_queue_size: 1000,
+            thermal_aware: true,
         }
+    }
+}
+
+impl SchedulerConfig {
+    /// Creates a config with thermal awareness disabled.
+    #[must_use]
+    pub fn without_thermal_aware(mut self) -> Self {
+        self.thermal_aware = false;
+        self
     }
 }
 
@@ -109,6 +121,10 @@ pub struct SchedulerStats {
     pub rejected_requests: u64,
     /// Current queue depth.
     pub current_queue_depth: usize,
+    /// Number of batches that were thermally throttled.
+    pub thermal_throttled_batches: u64,
+    /// Last effective batch size limit (after thermal adjustment).
+    pub last_effective_batch_limit: usize,
 }
 
 /// Scheduler for batching requests with priority queue support.
@@ -188,24 +204,40 @@ impl BatchScheduler {
 
     /// Dequeues a batch of requests ready for processing.
     pub fn dequeue_batch(&self) -> Vec<GenerateRequest> {
+        self.dequeue_batch_with_limit(self.config.max_batch_size)
+    }
+
+    /// Dequeues a batch with a dynamic batch size limit (for thermal throttling).
+    ///
+    /// This allows the thermal manager to reduce batch sizes when temperatures are elevated.
+    pub fn dequeue_batch_with_limit(&self, effective_max_batch: usize) -> Vec<GenerateRequest> {
         let mut queue = self.queue.lock();
         let mut batch = Vec::new();
         let mut total_tokens = 0;
         let _now = Instant::now(); // Reserved for deadline tracking
         let mut to_requeue = Vec::new();
 
+        // Track if we're using a reduced batch size
+        let is_throttled = effective_max_batch < self.config.max_batch_size;
+
         // Pop requests from the priority queue
         while let Some(queued) = queue.pop() {
             let request_tokens = queued.estimated_prompt_tokens + queued.max_tokens as usize;
 
-            // Check batch size limit
-            if batch.len() >= self.config.max_batch_size {
+            // Check batch size limit (using effective limit for thermal throttling)
+            if batch.len() >= effective_max_batch {
                 to_requeue.push(queued);
                 break;
             }
 
-            // Check token limit
-            if total_tokens + request_tokens > self.config.max_batch_tokens && !batch.is_empty() {
+            // Check token limit (also scale down if thermally throttled)
+            let effective_max_tokens = if is_throttled {
+                (self.config.max_batch_tokens * effective_max_batch) / self.config.max_batch_size
+            } else {
+                self.config.max_batch_tokens
+            };
+
+            if total_tokens + request_tokens > effective_max_tokens && !batch.is_empty() {
                 to_requeue.push(queued);
                 break;
             }
@@ -245,6 +277,10 @@ impl BatchScheduler {
             stats.avg_batch_size =
                 (stats.avg_batch_size * (total_batches - 1.0) + batch.len() as f64) / total_batches;
             stats.current_queue_depth = queue.len();
+            stats.last_effective_batch_limit = effective_max_batch;
+            if is_throttled {
+                stats.thermal_throttled_batches += 1;
+            }
         }
 
         batch

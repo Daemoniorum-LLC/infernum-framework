@@ -1,0 +1,41 @@
+[package]
+name = "legion"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Holographic agent swarm - collective intelligence through distributed cognition"
+
+[features]
+default = []
+beleth = []
+
+[dependencies]
+infernum-core = { path = "../infernum-core", version = "0.2.0-rc.1" }
+
+# Async
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+
+# Concurrency
+parking_lot = { workspace = true }
+crossbeam = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[lints]
+workspace = true

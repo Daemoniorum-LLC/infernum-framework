@@ -14,22 +14,30 @@ name = "infernum"
 path = "src/main.rs"
 
 [features]
-default = ["server"]
+# Note: cuda not in default - requires explicit opt-in for GPU support
+default = ["server", "llama-cpp"]
 server = ["infernum-server"]
-# Note: GPU features require abaddon/asmodeus built with GPU support
-cuda = []
-metal = []
+# GPU features - propagate to abaddon
+cuda = ["abaddon/cuda"]
+metal = ["abaddon/metal"]
+haagenti-gpu = ["cuda", "abaddon/haagenti-gpu"]
+# llama.cpp backend (high-performance GGUF inference)
+llama-cpp = ["abaddon/llama-cpp"]
+llama-cpp-cuda = ["llama-cpp", "abaddon/llama-cpp-cuda"]
+llama-cpp-metal = ["llama-cpp", "abaddon/llama-cpp-metal"]
+llama-cpp-vulkan = ["llama-cpp", "abaddon/llama-cpp-vulkan"]
 
 [dependencies]
-infernum-core = { path = "../infernum-core", version = "0.1.0" }
-abaddon = { path = "../abaddon", version = "0.1.0" }
-malphas = { path = "../malphas", version = "0.1.0" }
-stolas = { path = "../stolas", version = "0.1.0", default-features = false }
-beleth = { path = "../beleth", version = "0.1.0" }
-asmodeus = { path = "../asmodeus", version = "0.1.0" }
-dantalion = { path = "../dantalion", version = "0.1.0" }
-grimoire-loader = { path = "../grimoire-loader", version = "0.1.0" }
-infernum-server = { path = "../infernum-server", version = "0.1.0", optional = true }
+infernum-core = { path = "../infernum-core", version = "0.2.0-rc.1" }
+abaddon = { path = "../abaddon", version = "0.2.0-rc.1" }
+malphas = { path = "../malphas", version = "0.2.0-rc.1" }
+stolas = { path = "../stolas", version = "0.2.0-rc.1", default-features = false }
+beleth = { path = "../beleth", version = "0.2.0-rc.1" }
+asmodeus = { path = "../asmodeus", version = "0.2.0-rc.1" }
+dantalion = { path = "../dantalion", version = "0.2.0-rc.1" }
+grimoire-loader = { path = "../grimoire-loader", version = "0.2.0-rc.1" }
+paimon = { path = "../paimon", version = "0.2.0-rc.1" }
+infernum-server = { path = "../infernum-server", version = "0.2.0-rc.1", optional = true }
 
 # Async
 tokio = { workspace = true }
@@ -38,10 +46,15 @@ futures = { workspace = true }
 
 # Model management
 hf-hub = { workspace = true }
-dirs = "5.0"
+dirs = "6.0"
+
+# ML
+candle-core = { workspace = true }
+safetensors = { workspace = true }
 
 # CLI
 clap = { workspace = true }
+clap_complete = "4.5"
 dialoguer = { workspace = true }
 indicatif = { workspace = true }
 console = { workspace = true }
@@ -53,6 +66,7 @@ figment = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
+chrono = { workspace = true }
 
 # Error handling
 color-eyre = { workspace = true }
@@ -69,3 +83,7 @@ tracing-subscriber = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "macros"] }
 assert_cmd = "2.0"
 predicates = "3.1"
+tempfile = "3.19"
+
+[lints]
+workspace = true

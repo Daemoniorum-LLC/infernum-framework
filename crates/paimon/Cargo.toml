@@ -1,0 +1,52 @@
+[package]
+name = "paimon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "LLM Studio - Teaches arts, sciences, and gives good familiars"
+
+[dependencies]
+# Internal crates
+infernum-core = { path = "../infernum-core", version = "0.2.0-rc.1" }
+beleth = { path = "../beleth", version = "0.2.0-rc.1" }
+asmodeus = { path = "../asmodeus", version = "0.2.0-rc.1" }
+stolas = { path = "../stolas", version = "0.2.0-rc.1", default-features = false }
+dantalion = { path = "../dantalion", version = "0.2.0-rc.1" }
+abaddon = { path = "../abaddon", version = "0.2.0-rc.1" }
+
+# Async
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Observability
+tracing = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+chrono = { workspace = true }
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+dirs = "6.0"
+
+# Database
+rusqlite = { version = "0.38", features = ["bundled"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+tempfile = "3.14"
+
+[lints]
+workspace = true

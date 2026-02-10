@@ -7,6 +7,8 @@ use hf_hub::{Repo, RepoType};
 use infernum_core::{ModelSource, Result};
 use tracing::{debug, info, warn};
 
+use crate::models::llama::RopeScalingConfig;
+
 /// Model loader for different sources.
 pub struct ModelLoader {
     cache_dir: PathBuf,
@@ -58,6 +60,11 @@ impl ModelLoader {
                 key,
                 region,
             } => self.resolve_s3(bucket, key, region.as_deref()),
+            ModelSource::HoloTensor {
+                path,
+                min_quality,
+                target_quality,
+            } => self.resolve_holotensor(path, *min_quality, *target_quality),
         }
     }
 
@@ -286,13 +293,373 @@ impl ModelLoader {
         })
     }
 
-    /// Resolves an S3 model.
-    fn resolve_s3(&self, bucket: &str, key: &str, _region: Option<&str>) -> Result<ModelFiles> {
-        info!(bucket, key, "S3 model resolution not yet implemented");
+    /// Resolves a HoloTensor HCT model directory with progressive quality settings.
+    fn resolve_holotensor(
+        &self,
+        path: &Path,
+        min_quality: f32,
+        target_quality: f32,
+    ) -> Result<ModelFiles> {
+        debug!(
+            ?path,
+            min_quality, target_quality, "Resolving HoloTensor model with progressive quality"
+        );
+
+        if !path.exists() {
+            return Err(infernum_core::Error::ModelNotFound {
+                model_id: path.display().to_string(),
+            });
+        }
+
+        if !path.is_dir() {
+            return Err(infernum_core::Error::ModelLoad {
+                message: format!("HoloTensor path must be a directory: {}", path.display()),
+            });
+        }
+
+        // Look for HCT files in the directory
+        let hct_files: Vec<PathBuf> = std::fs::read_dir(path)?
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let path = entry.path();
+                if path.extension().map(|e| e == "hct").unwrap_or(false) {
+                    Some(path)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if hct_files.is_empty() {
+            return Err(infernum_core::Error::ModelLoad {
+                message: format!("No .hct files found in {}", path.display()),
+            });
+        }
+
+        // Look for config.json (required for model architecture info)
+        let config = path.join("config.json");
+        if !config.exists() {
+            return Err(infernum_core::Error::ModelLoad {
+                message: format!(
+                    "config.json not found in HoloTensor directory: {}",
+                    path.display()
+                ),
+            });
+        }
+
+        // Check if eager HCT loading is requested (for models that fit in VRAM)
+        // INFERNUM_HCT_EAGER=1 uses fast sequential loading instead of lazy layer swapping
+        let use_eager_hct = std::env::var("INFERNUM_HCT_EAGER")
+            .map(|v| v == "1" || v.to_lowercase() == "true")
+            .unwrap_or(false);
+
+        if use_eager_hct {
+            info!(
+                directory = %path.display(),
+                file_count = hct_files.len(),
+                "Using eager HCT loading (INFERNUM_HCT_EAGER=1) - fast sequential decompression"
+            );
+
+            Ok(ModelFiles {
+                config,
+                weights: WeightFiles::Hct {
+                    directory: path.to_path_buf(),
+                    files: hct_files,
+                },
+                tokenizer: Some(path.join("tokenizer.json")).filter(|p| p.exists()),
+                tokenizer_config: Some(path.join("tokenizer_config.json")).filter(|p| p.exists()),
+            })
+        } else {
+            // Use progressive HoloTensor loading for tiered memory management
+            // VRAM budget: 22GB (2GB headroom on 24GB RTX cards)
+            // RAM budget: 64GB
+            let vram_budget = 22 * 1024 * 1024 * 1024;
+            let ram_budget = 64 * 1024 * 1024 * 1024;
+
+            info!(
+                directory = %path.display(),
+                file_count = hct_files.len(),
+                min_quality = %min_quality,
+                target_quality = %target_quality,
+                vram_budget_gb = vram_budget / (1024 * 1024 * 1024),
+                ram_budget_gb = ram_budget / (1024 * 1024 * 1024),
+                "Configured HoloTensor progressive loading"
+            );
+
+            Ok(ModelFiles {
+                config,
+                weights: WeightFiles::HoloTensor {
+                    directory: path.to_path_buf(),
+                    min_quality,
+                    target_quality,
+                    vram_budget,
+                    ram_budget,
+                },
+                tokenizer: Some(path.join("tokenizer.json")).filter(|p| p.exists()),
+                tokenizer_config: Some(path.join("tokenizer_config.json")).filter(|p| p.exists()),
+            })
+        }
+    }
+
+    /// Resolves an S3 model by downloading to local cache.
+    ///
+    /// Supports both public S3 buckets (via HTTPS) and authenticated access
+    /// via AWS credentials in environment variables.
+    fn resolve_s3(&self, bucket: &str, key: &str, region: Option<&str>) -> Result<ModelFiles> {
+        let region = region.unwrap_or("us-east-1");
+        info!(bucket, key, region, "Resolving S3 model");
+
+        // Create a cache directory for this S3 path
+        let cache_key = format!("s3/{}/{}", bucket, key.replace('/', "_"));
+        let model_cache_dir = self.cache_dir.join(&cache_key);
+        std::fs::create_dir_all(&model_cache_dir)?;
+
+        // Determine if we're loading a single file or a directory prefix
+        if key.ends_with(".gguf") {
+            // Single GGUF file
+            let local_path = model_cache_dir.join(
+                Path::new(key)
+                    .file_name()
+                    .unwrap_or_else(|| std::ffi::OsStr::new("model.gguf")),
+            );
+
+            if !local_path.exists() {
+                self.download_s3_file(bucket, key, region, &local_path)?;
+            } else {
+                debug!(?local_path, "Using cached S3 file");
+            }
+
+            return self.resolve_gguf(&local_path);
+        }
+
+        // Directory-style prefix - download standard model files
+        // Download config.json (required)
+        let config_key = format!("{}/config.json", key.trim_end_matches('/'));
+        let config_path = model_cache_dir.join("config.json");
+
+        if !config_path.exists() {
+            self.download_s3_file(bucket, &config_key, region, &config_path)?;
+        }
+
+        // Download optional tokenizer files
+        let tokenizer_key = format!("{}/tokenizer.json", key.trim_end_matches('/'));
+        let tokenizer_path = model_cache_dir.join("tokenizer.json");
+        let tokenizer = if !tokenizer_path.exists() {
+            self.download_s3_file(bucket, &tokenizer_key, region, &tokenizer_path)
+                .ok()
+                .map(|_| tokenizer_path.clone())
+        } else {
+            Some(tokenizer_path)
+        };
+
+        let tokenizer_config_key = format!("{}/tokenizer_config.json", key.trim_end_matches('/'));
+        let tokenizer_config_path = model_cache_dir.join("tokenizer_config.json");
+        let tokenizer_config = if !tokenizer_config_path.exists() {
+            self.download_s3_file(
+                bucket,
+                &tokenizer_config_key,
+                region,
+                &tokenizer_config_path,
+            )
+            .ok()
+            .map(|_| tokenizer_config_path.clone())
+        } else {
+            Some(tokenizer_config_path)
+        };
+
+        // Try to download weight files in order of preference
+        let weights = self.download_s3_weights(bucket, key, region, &model_cache_dir)?;
+
+        Ok(ModelFiles {
+            config: config_path,
+            weights,
+            tokenizer,
+            tokenizer_config,
+        })
+    }
+
+    /// Downloads a single file from S3.
+    fn download_s3_file(
+        &self,
+        bucket: &str,
+        key: &str,
+        region: &str,
+        local_path: &Path,
+    ) -> Result<()> {
+        // Construct S3 URL (works for public buckets)
+        // Format: https://{bucket}.s3.{region}.amazonaws.com/{key}
+        // Or path-style: https://s3.{region}.amazonaws.com/{bucket}/{key}
+        let url = format!("https://{}.s3.{}.amazonaws.com/{}", bucket, region, key);
+
+        info!(url = %url, "Downloading from S3");
+
+        // Use blocking HTTP request with timeout via agent config
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(300)))
+            .build()
+            .new_agent();
+        let response = agent
+            .get(&url)
+            .call()
+            .map_err(|e: ureq::Error| {
+                // Check if it's an auth error
+                let msg = if e.to_string().contains("403") {
+                    format!(
+                        "S3 access denied for s3://{}/{}. Ensure the bucket is public or AWS credentials are configured.",
+                        bucket, key
+                    )
+                } else if e.to_string().contains("404") {
+                    format!("S3 object not found: s3://{}/{}", bucket, key)
+                } else {
+                    format!("Failed to download from S3: {}", e)
+                };
+                infernum_core::Error::ModelLoad { message: msg }
+            })?;
+
+        // Create parent directory if needed
+        if let Some(parent) = local_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        // Stream the response to file
+        let mut file = std::fs::File::create(local_path)?;
+        let mut reader = response.into_body().into_reader();
+        std::io::copy(&mut reader, &mut file).map_err(|e| infernum_core::Error::ModelLoad {
+            message: format!("Failed to write S3 file: {}", e),
+        })?;
+
+        debug!(?local_path, "Downloaded S3 file");
+        Ok(())
+    }
+
+    /// Downloads weight files from S3.
+    fn download_s3_weights(
+        &self,
+        bucket: &str,
+        key: &str,
+        region: &str,
+        cache_dir: &Path,
+    ) -> Result<WeightFiles> {
+        let key = key.trim_end_matches('/');
+
+        // Try single safetensors
+        let st_key = format!("{}/model.safetensors", key);
+        let st_path = cache_dir.join("model.safetensors");
+        if self
+            .download_s3_file(bucket, &st_key, region, &st_path)
+            .is_ok()
+        {
+            return Ok(WeightFiles::SingleSafetensors(st_path));
+        }
+
+        // Try sharded safetensors - first get the index
+        let st_index_key = format!("{}/model.safetensors.index.json", key);
+        let st_index_path = cache_dir.join("model.safetensors.index.json");
+        if self
+            .download_s3_file(bucket, &st_index_key, region, &st_index_path)
+            .is_ok()
+        {
+            let shards =
+                self.download_s3_shards_from_index(bucket, key, region, &st_index_path, cache_dir)?;
+            return Ok(WeightFiles::ShardedSafetensors {
+                index: st_index_path,
+                shards,
+            });
+        }
+
+        // Try single PyTorch file
+        let pt_key = format!("{}/pytorch_model.bin", key);
+        let pt_path = cache_dir.join("pytorch_model.bin");
+        if self
+            .download_s3_file(bucket, &pt_key, region, &pt_path)
+            .is_ok()
+        {
+            warn!("Using PyTorch format from S3 - safetensors preferred");
+            return Ok(WeightFiles::PyTorch(pt_path));
+        }
+
+        // Try sharded PyTorch
+        let pt_index_key = format!("{}/pytorch_model.bin.index.json", key);
+        let pt_index_path = cache_dir.join("pytorch_model.bin.index.json");
+        if self
+            .download_s3_file(bucket, &pt_index_key, region, &pt_index_path)
+            .is_ok()
+        {
+            let shards =
+                self.download_s3_shards_from_index(bucket, key, region, &pt_index_path, cache_dir)?;
+            return Ok(WeightFiles::ShardedPyTorch {
+                index: pt_index_path,
+                shards,
+            });
+        }
 
         Err(infernum_core::Error::ModelLoad {
-            message: "S3 model loading not yet implemented".to_string(),
+            message: format!("No supported weight files found in s3://{}/{}", bucket, key),
         })
+    }
+
+    /// Downloads shards listed in an index file from S3.
+    fn download_s3_shards_from_index(
+        &self,
+        bucket: &str,
+        key: &str,
+        region: &str,
+        index_path: &Path,
+        cache_dir: &Path,
+    ) -> Result<Vec<PathBuf>> {
+        let key = key.trim_end_matches('/');
+
+        let index_content =
+            std::fs::read_to_string(index_path).map_err(|e| infernum_core::Error::ModelLoad {
+                message: format!("Failed to read index: {}", e),
+            })?;
+
+        let index: serde_json::Value =
+            serde_json::from_str(&index_content).map_err(|e| infernum_core::Error::ModelLoad {
+                message: format!("Failed to parse index: {}", e),
+            })?;
+
+        let weight_map = index
+            .get("weight_map")
+            .and_then(|w| w.as_object())
+            .ok_or_else(|| infernum_core::Error::ModelLoad {
+                message: "Invalid index: missing weight_map".to_string(),
+            })?;
+
+        // Get unique shard names
+        let mut shard_names: Vec<String> = weight_map
+            .values()
+            .filter_map(|v| v.as_str())
+            .map(String::from)
+            .collect();
+        shard_names.sort();
+        shard_names.dedup();
+
+        info!(
+            num_shards = shard_names.len(),
+            "Downloading S3 model shards"
+        );
+
+        let mut shard_paths = Vec::new();
+        for (i, shard_name) in shard_names.iter().enumerate() {
+            let shard_key = format!("{}/{}", key, shard_name);
+            let shard_path = cache_dir.join(shard_name);
+
+            if !shard_path.exists() {
+                debug!(
+                    shard = %shard_name,
+                    progress = format!("{}/{}", i + 1, shard_names.len()),
+                    "Downloading shard from S3"
+                );
+                self.download_s3_file(bucket, &shard_key, region, &shard_path)?;
+            } else {
+                debug!(shard = %shard_name, "Using cached shard");
+            }
+
+            shard_paths.push(shard_path);
+        }
+
+        Ok(shard_paths)
     }
 
     /// Returns the cache directory.
@@ -350,6 +717,29 @@ pub enum WeightFiles {
     },
     /// GGUF file (self-contained).
     Gguf(PathBuf),
+    /// HCT compressed tensor directory.
+    Hct {
+        /// Directory containing .hct files.
+        directory: PathBuf,
+        /// List of .hct files found.
+        files: Vec<PathBuf>,
+    },
+    /// HoloTensor progressive loading (for 405B+ models).
+    ///
+    /// Uses tiered memory management with VRAM/RAM/Disk placement
+    /// and background quality improvement.
+    HoloTensor {
+        /// Directory containing .hct files.
+        directory: PathBuf,
+        /// Minimum quality for initial load (0.0-1.0).
+        min_quality: f32,
+        /// Target quality for background improvement (0.0-1.0).
+        target_quality: f32,
+        /// VRAM budget in bytes.
+        vram_budget: u64,
+        /// RAM budget in bytes.
+        ram_budget: u64,
+    },
 }
 
 impl WeightFiles {
@@ -364,6 +754,8 @@ impl WeightFiles {
             Self::PyTorch(p) => vec![p.as_path()],
             Self::ShardedPyTorch { shards, .. } => shards.iter().map(PathBuf::as_path).collect(),
             Self::Gguf(p) => vec![p.as_path()],
+            Self::Hct { files, .. } => files.iter().map(PathBuf::as_path).collect(),
+            Self::HoloTensor { directory, .. } => vec![directory.as_path()],
         }
     }
 
@@ -381,6 +773,12 @@ impl WeightFiles {
     pub fn is_gguf(&self) -> bool {
         matches!(self, Self::Gguf(_))
     }
+
+    /// Returns true if this is an HCT compressed format.
+    #[must_use]
+    pub fn is_hct(&self) -> bool {
+        matches!(self, Self::Hct { .. })
+    }
 }
 
 /// Detects the model format from file extension.
@@ -392,6 +790,8 @@ pub enum ModelFormat {
     Gguf,
     /// PyTorch format.
     PyTorch,
+    /// HCT compressed tensor format.
+    Hct,
     /// Unknown format.
     Unknown,
 }
@@ -404,6 +804,7 @@ impl ModelFormat {
             Some("safetensors") => Self::SafeTensors,
             Some("gguf") => Self::Gguf,
             Some("pt") | Some("pth") | Some("bin") => Self::PyTorch,
+            Some("hct") => Self::Hct,
             _ => Self::Unknown,
         }
     }
@@ -455,6 +856,10 @@ pub struct ModelConfig {
     /// Rope theta.
     #[serde(default)]
     pub rope_theta: Option<f64>,
+
+    /// RoPE scaling configuration (for Llama 3.2+ extended context).
+    #[serde(default)]
+    pub rope_scaling: Option<RopeScalingConfig>,
 
     /// Hidden activation function.
     #[serde(default)]
@@ -521,5 +926,365 @@ impl ModelConfig {
                 .collect(),
             _ => Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==========================================================================
+    // WeightFiles tests
+    // ==========================================================================
+
+    #[test]
+    fn test_weight_files_single_safetensors_paths() {
+        let path = PathBuf::from("/models/model.safetensors");
+        let weights = WeightFiles::SingleSafetensors(path.clone());
+
+        let paths = weights.paths();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0], path.as_path());
+    }
+
+    #[test]
+    fn test_weight_files_sharded_safetensors_paths() {
+        let shards = vec![
+            PathBuf::from("/models/model-00001.safetensors"),
+            PathBuf::from("/models/model-00002.safetensors"),
+        ];
+        let weights = WeightFiles::ShardedSafetensors {
+            index: PathBuf::from("/models/model.safetensors.index.json"),
+            shards: shards.clone(),
+        };
+
+        let paths = weights.paths();
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0], shards[0].as_path());
+        assert_eq!(paths[1], shards[1].as_path());
+    }
+
+    #[test]
+    fn test_weight_files_pytorch_paths() {
+        let path = PathBuf::from("/models/pytorch_model.bin");
+        let weights = WeightFiles::PyTorch(path.clone());
+
+        let paths = weights.paths();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0], path.as_path());
+    }
+
+    #[test]
+    fn test_weight_files_sharded_pytorch_paths() {
+        let shards = vec![
+            PathBuf::from("/models/pytorch_model-00001.bin"),
+            PathBuf::from("/models/pytorch_model-00002.bin"),
+        ];
+        let weights = WeightFiles::ShardedPyTorch {
+            index: PathBuf::from("/models/pytorch_model.bin.index.json"),
+            shards: shards.clone(),
+        };
+
+        let paths = weights.paths();
+        assert_eq!(paths.len(), 2);
+    }
+
+    #[test]
+    fn test_weight_files_gguf_paths() {
+        let path = PathBuf::from("/models/model.gguf");
+        let weights = WeightFiles::Gguf(path.clone());
+
+        let paths = weights.paths();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0], path.as_path());
+    }
+
+    #[test]
+    fn test_weight_files_is_safetensors() {
+        assert!(WeightFiles::SingleSafetensors(PathBuf::new()).is_safetensors());
+        assert!(WeightFiles::ShardedSafetensors {
+            index: PathBuf::new(),
+            shards: vec![]
+        }
+        .is_safetensors());
+        assert!(!WeightFiles::PyTorch(PathBuf::new()).is_safetensors());
+        assert!(!WeightFiles::Gguf(PathBuf::new()).is_safetensors());
+    }
+
+    #[test]
+    fn test_weight_files_is_gguf() {
+        assert!(WeightFiles::Gguf(PathBuf::new()).is_gguf());
+        assert!(!WeightFiles::SingleSafetensors(PathBuf::new()).is_gguf());
+        assert!(!WeightFiles::PyTorch(PathBuf::new()).is_gguf());
+    }
+
+    // ==========================================================================
+    // ModelFormat tests
+    // ==========================================================================
+
+    #[test]
+    fn test_model_format_from_safetensors() {
+        let format = ModelFormat::from_path(Path::new("model.safetensors"));
+        assert_eq!(format, ModelFormat::SafeTensors);
+    }
+
+    #[test]
+    fn test_model_format_from_gguf() {
+        let format = ModelFormat::from_path(Path::new("model.gguf"));
+        assert_eq!(format, ModelFormat::Gguf);
+    }
+
+    #[test]
+    fn test_model_format_from_pytorch_bin() {
+        let format = ModelFormat::from_path(Path::new("pytorch_model.bin"));
+        assert_eq!(format, ModelFormat::PyTorch);
+    }
+
+    #[test]
+    fn test_model_format_from_pytorch_pt() {
+        let format = ModelFormat::from_path(Path::new("model.pt"));
+        assert_eq!(format, ModelFormat::PyTorch);
+    }
+
+    #[test]
+    fn test_model_format_from_pytorch_pth() {
+        let format = ModelFormat::from_path(Path::new("model.pth"));
+        assert_eq!(format, ModelFormat::PyTorch);
+    }
+
+    #[test]
+    fn test_model_format_unknown() {
+        let format = ModelFormat::from_path(Path::new("model.unknown"));
+        assert_eq!(format, ModelFormat::Unknown);
+
+        let format = ModelFormat::from_path(Path::new("model"));
+        assert_eq!(format, ModelFormat::Unknown);
+    }
+
+    #[test]
+    fn test_model_format_with_path() {
+        let format = ModelFormat::from_path(Path::new("/path/to/models/llama.gguf"));
+        assert_eq!(format, ModelFormat::Gguf);
+    }
+
+    // ==========================================================================
+    // ModelConfig tests
+    // ==========================================================================
+
+    #[test]
+    fn test_model_config_deserialize_minimal() {
+        let json = r#"{}"#;
+        let config: ModelConfig = serde_json::from_str(json).expect("deserialize");
+
+        assert!(config.model_type.is_none());
+        assert!(config.hidden_size.is_none());
+        assert!(config.architecture().is_none());
+    }
+
+    #[test]
+    fn test_model_config_deserialize_llama() {
+        let json = r#"{
+            "model_type": "llama",
+            "hidden_size": 4096,
+            "intermediate_size": 11008,
+            "num_hidden_layers": 32,
+            "num_attention_heads": 32,
+            "num_key_value_heads": 32,
+            "vocab_size": 32000,
+            "max_position_embeddings": 4096,
+            "rms_norm_eps": 1e-6,
+            "rope_theta": 10000.0,
+            "hidden_act": "silu",
+            "bos_token_id": 1,
+            "eos_token_id": 2
+        }"#;
+
+        let config: ModelConfig = serde_json::from_str(json).expect("deserialize");
+
+        assert_eq!(config.model_type, Some("llama".to_string()));
+        assert_eq!(config.hidden_size, Some(4096));
+        assert_eq!(config.intermediate_size, Some(11008));
+        assert_eq!(config.num_hidden_layers, Some(32));
+        assert_eq!(config.num_attention_heads, Some(32));
+        assert_eq!(config.num_key_value_heads, Some(32));
+        assert_eq!(config.vocab_size, Some(32000));
+        assert_eq!(config.max_position_embeddings, Some(4096));
+        assert!((config.rms_norm_eps.unwrap() - 1e-6).abs() < 1e-10);
+        assert!((config.rope_theta.unwrap() - 10000.0).abs() < 0.01);
+        assert_eq!(config.hidden_act, Some("silu".to_string()));
+        assert_eq!(config.bos_token_id, Some(1));
+    }
+
+    #[test]
+    fn test_model_config_architecture_from_model_type() {
+        let config = ModelConfig {
+            model_type: Some("llama".to_string()),
+            architectures: None,
+            hidden_size: None,
+            intermediate_size: None,
+            num_hidden_layers: None,
+            num_attention_heads: None,
+            num_key_value_heads: None,
+            vocab_size: None,
+            max_position_embeddings: None,
+            rms_norm_eps: None,
+            rope_theta: None,
+            rope_scaling: None,
+            hidden_act: None,
+            torch_dtype: None,
+            tie_word_embeddings: None,
+            bos_token_id: None,
+            eos_token_id: None,
+            pad_token_id: None,
+        };
+
+        assert_eq!(config.architecture(), Some("llama"));
+    }
+
+    #[test]
+    fn test_model_config_architecture_from_architectures() {
+        let config = ModelConfig {
+            model_type: None,
+            architectures: Some(vec!["LlamaForCausalLM".to_string()]),
+            hidden_size: None,
+            intermediate_size: None,
+            num_hidden_layers: None,
+            num_attention_heads: None,
+            num_key_value_heads: None,
+            vocab_size: None,
+            max_position_embeddings: None,
+            rms_norm_eps: None,
+            rope_theta: None,
+            rope_scaling: None,
+            hidden_act: None,
+            torch_dtype: None,
+            tie_word_embeddings: None,
+            bos_token_id: None,
+            eos_token_id: None,
+            pad_token_id: None,
+        };
+
+        assert_eq!(config.architecture(), Some("LlamaForCausalLM"));
+    }
+
+    #[test]
+    fn test_model_config_architecture_prefers_model_type() {
+        let config = ModelConfig {
+            model_type: Some("llama".to_string()),
+            architectures: Some(vec!["LlamaForCausalLM".to_string()]),
+            hidden_size: None,
+            intermediate_size: None,
+            num_hidden_layers: None,
+            num_attention_heads: None,
+            num_key_value_heads: None,
+            vocab_size: None,
+            max_position_embeddings: None,
+            rms_norm_eps: None,
+            rope_theta: None,
+            rope_scaling: None,
+            hidden_act: None,
+            torch_dtype: None,
+            tie_word_embeddings: None,
+            bos_token_id: None,
+            eos_token_id: None,
+            pad_token_id: None,
+        };
+
+        assert_eq!(config.architecture(), Some("llama"));
+    }
+
+    #[test]
+    fn test_model_config_eos_token_ids_single() {
+        let json = r#"{"eos_token_id": 2}"#;
+        let config: ModelConfig = serde_json::from_str(json).expect("deserialize");
+
+        let eos_ids = config.eos_token_ids();
+        assert_eq!(eos_ids, vec![2]);
+    }
+
+    #[test]
+    fn test_model_config_eos_token_ids_array() {
+        let json = r#"{"eos_token_id": [2, 128001, 128009]}"#;
+        let config: ModelConfig = serde_json::from_str(json).expect("deserialize");
+
+        let eos_ids = config.eos_token_ids();
+        assert_eq!(eos_ids, vec![2, 128001, 128009]);
+    }
+
+    #[test]
+    fn test_model_config_eos_token_ids_missing() {
+        let json = r#"{}"#;
+        let config: ModelConfig = serde_json::from_str(json).expect("deserialize");
+
+        let eos_ids = config.eos_token_ids();
+        assert!(eos_ids.is_empty());
+    }
+
+    #[test]
+    fn test_model_config_gqa() {
+        // Test Grouped Query Attention config (e.g., Llama 2 70B)
+        let json = r#"{
+            "model_type": "llama",
+            "num_attention_heads": 64,
+            "num_key_value_heads": 8
+        }"#;
+
+        let config: ModelConfig = serde_json::from_str(json).expect("deserialize");
+
+        assert_eq!(config.num_attention_heads, Some(64));
+        assert_eq!(config.num_key_value_heads, Some(8));
+        // GQA ratio would be 64/8 = 8
+    }
+
+    #[test]
+    fn test_model_config_qwen2() {
+        let json = r#"{
+            "model_type": "qwen2",
+            "hidden_size": 3584,
+            "intermediate_size": 18944,
+            "num_hidden_layers": 28,
+            "num_attention_heads": 28,
+            "num_key_value_heads": 4,
+            "vocab_size": 152064,
+            "max_position_embeddings": 131072,
+            "rope_theta": 1000000.0
+        }"#;
+
+        let config: ModelConfig = serde_json::from_str(json).expect("deserialize");
+
+        assert_eq!(config.architecture(), Some("qwen2"));
+        assert_eq!(config.hidden_size, Some(3584));
+        assert!((config.rope_theta.unwrap() - 1_000_000.0).abs() < 0.01);
+    }
+
+    // ==========================================================================
+    // ModelFiles tests
+    // ==========================================================================
+
+    #[test]
+    fn test_model_files_debug() {
+        let files = ModelFiles {
+            config: PathBuf::from("/models/config.json"),
+            weights: WeightFiles::Gguf(PathBuf::from("/models/model.gguf")),
+            tokenizer: None,
+            tokenizer_config: None,
+        };
+
+        let debug = format!("{:?}", files);
+        assert!(debug.contains("ModelFiles"));
+        assert!(debug.contains("config.json"));
+    }
+
+    #[test]
+    fn test_model_files_with_tokenizer() {
+        let files = ModelFiles {
+            config: PathBuf::from("/models/config.json"),
+            weights: WeightFiles::SingleSafetensors(PathBuf::from("/models/model.safetensors")),
+            tokenizer: Some(PathBuf::from("/models/tokenizer.json")),
+            tokenizer_config: Some(PathBuf::from("/models/tokenizer_config.json")),
+        };
+
+        assert!(files.tokenizer.is_some());
+        assert!(files.tokenizer_config.is_some());
     }
 }
