@@ -2,7 +2,7 @@
 //!
 //! This module provides quantization algorithms to convert FP16/FP32 weights
 //! to INT4/INT8 format. The quantized weights are compatible with the
-//! dequantization kernels in [`gpu_dequant`].
+//! dequantization kernels in the `gpu_dequant` module.
 //!
 //! ## Quantization Formats
 //!

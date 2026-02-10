@@ -7,7 +7,7 @@
 //!
 //! - [`StandardCache`]: Full-precision BF16/FP16 cache
 //! - [`QuantizedCache`]: INT8 quantized cache with CPU dequantization
-//! - [`CudaQuantizedCache`]: INT8 cache with fused CUDA attention kernels (requires `cuda` feature)
+//! - `CudaQuantizedCache`: INT8 cache with fused CUDA attention kernels (requires `cuda` feature)
 //!
 //! ## Usage
 //!

@@ -282,7 +282,7 @@ pub struct SentenceEmbedder {
 /// Pooling strategy for multi-token embeddings.
 #[derive(Debug, Clone, Copy, Default)]
 pub enum PoolingStrategy {
-    /// Use the [CLS] token embedding.
+    /// Use the `[CLS]` token embedding.
     Cls,
     /// Average all token embeddings.
     #[default]

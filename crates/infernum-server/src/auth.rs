@@ -468,7 +468,7 @@ impl ApiKey {
     /// Creates a hashed version of this key for secure storage.
     ///
     /// Returns a new `ApiKey` with the `key_hash` field set and the
-    /// plaintext key replaced with "[HASHED]".
+    /// plaintext key replaced with `"[HASHED]"`.
     #[must_use]
     pub fn hashed(mut self) -> Self {
         self.key_hash = Some(self.hash_key());

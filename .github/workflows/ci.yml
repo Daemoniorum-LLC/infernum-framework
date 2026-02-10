@@ -59,16 +59,23 @@ jobs:
         include:
           - os: ubuntu-latest
             features: "--features llama-cpp,holotensor,integration-tests"
+            # Test full workspace on Linux
+            exclude_crates: ""
           - os: macos-latest
             features: "--features llama-cpp,holotensor,metal,integration-tests"
+            # Exclude infernum-server on macOS due to arcanum-primitives SIMD bug on ARM
+            # See: arcanum-primitives 0.1.2 uses x86_64-only SIMD intrinsics unconditionally
+            exclude_crates: "--exclude infernum-server"
           - os: windows-latest
             features: "--features llama-cpp,holotensor,integration-tests"
+            # Test full workspace on Windows
+            exclude_crates: ""
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
-        run: cargo test --workspace ${{ matrix.features }}
+        run: cargo test --workspace ${{ matrix.features }} ${{ matrix.exclude_crates }}
 
   docs:
     name: Documentation

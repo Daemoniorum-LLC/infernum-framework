@@ -1,4 +1,4 @@
-//! Multi-agent supervisor — orchestrates concurrent [`LoopExecutor`] instances.
+//! Multi-agent supervisor — orchestrates concurrent [`super::LoopExecutor`] instances.
 //!
 //! The supervisor decomposes a complex objective into subtasks, manages their
 //! lifecycle (spawn, monitor, reroute, aggregate), and enforces global resource
