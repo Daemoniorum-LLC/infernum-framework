@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main]  # Only on merge to main
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop]  # PRs to main or develop
 
 env:
   CARGO_TERM_COLOR: always
