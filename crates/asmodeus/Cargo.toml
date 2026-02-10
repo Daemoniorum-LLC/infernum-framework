@@ -13,9 +13,9 @@ default = []
 cuda = ["abaddon/cuda"]
 
 [dependencies]
-infernum-core = { path = "../infernum-core", version = "0.2.0-rc.1" }
-abaddon = { path = "../abaddon", version = "0.2.0-rc.1" }
-dantalion = { path = "../dantalion", version = "0.2.0-rc.1" }
+infernum-core = { path = "../infernum-core", version = "0.2.0-rc.2" }
+abaddon = { path = "../abaddon", version = "0.2.0-rc.2" }
+dantalion = { path = "../dantalion", version = "0.2.0-rc.2" }
 
 # Async
 tokio = { workspace = true }
@@ -46,7 +46,7 @@ indicatif = { workspace = true }
 parking_lot = { workspace = true }
 
 # Sigil/Jormungandr
-stolas = { path = "../stolas", version = "0.2.0-rc.1" }
+stolas = { path = "../stolas", version = "0.2.0-rc.2" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

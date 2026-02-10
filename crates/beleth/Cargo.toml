@@ -9,12 +9,12 @@ repository.workspace = true
 description = "Autonomous agent framework - The King commands legions"
 
 [dependencies]
-infernum-core = { path = "../infernum-core", version = "0.2.0-rc.1" }
-abaddon = { path = "../abaddon", version = "0.2.0-rc.1" }
-malphas = { path = "../malphas", version = "0.2.0-rc.1" }
-stolas = { path = "../stolas", version = "0.2.0-rc.1", default-features = false }
-dantalion = { path = "../dantalion", version = "0.2.0-rc.1" }
-grimoire-loader = { path = "../grimoire-loader", version = "0.2.0-rc.1" }
+infernum-core = { path = "../infernum-core", version = "0.2.0-rc.2" }
+abaddon = { path = "../abaddon", version = "0.2.0-rc.2" }
+malphas = { path = "../malphas", version = "0.2.0-rc.2" }
+stolas = { path = "../stolas", version = "0.2.0-rc.2", default-features = false }
+dantalion = { path = "../dantalion", version = "0.2.0-rc.2" }
+grimoire-loader = { path = "../grimoire-loader", version = "0.2.0-rc.2" }
 
 # Async
 tokio = { workspace = true }
