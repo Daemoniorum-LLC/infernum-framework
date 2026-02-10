@@ -149,7 +149,9 @@ impl HttpEngine {
             .map_err(|e| HttpEngineError::Connection(e.to_string()))?;
 
         if !resp.status().is_success() {
-            return Err(HttpEngineError::Connection("Server not healthy".to_string()));
+            return Err(HttpEngineError::Connection(
+                "Server not healthy".to_string(),
+            ));
         }
 
         info!("Connected to Infernum at {}", self.base_url);

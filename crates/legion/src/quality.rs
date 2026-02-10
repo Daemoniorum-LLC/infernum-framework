@@ -42,48 +42,48 @@ impl FrequencyBand {
     /// Returns the frequency range for this band as (min, max).
     pub fn frequency_range(&self) -> (f32, f32) {
         match self {
-            FrequencyBand::Anima => (0.0, 0.0),       // DC component
-            FrequencyBand::Strategic => (0.0, 0.1),   // Ultra-low
-            FrequencyBand::Tactical => (0.1, 0.3),    // Low
-            FrequencyBand::Operational => (0.3, 0.6), // Mid
+            FrequencyBand::Anima => (0.0, 0.0),        // DC component
+            FrequencyBand::Strategic => (0.0, 0.1),    // Ultra-low
+            FrequencyBand::Tactical => (0.1, 0.3),     // Low
+            FrequencyBand::Operational => (0.3, 0.6),  // Mid
             FrequencyBand::Verification => (0.6, 0.9), // High
-            FrequencyBand::Reflective => (0.9, 1.0),  // Ultra-high
+            FrequencyBand::Reflective => (0.9, 1.0),   // Ultra-high
         }
     }
 
     /// Returns the emphasis weight for this band in consensus.
     pub fn emphasis(&self) -> f32 {
         match self {
-            FrequencyBand::Anima => 1.0,       // Core identity always full weight
-            FrequencyBand::Strategic => 0.9,   // Strategy high weight
-            FrequencyBand::Tactical => 0.85,   // Tactics moderate-high
-            FrequencyBand::Operational => 1.0, // Primary work full weight
+            FrequencyBand::Anima => 1.0,        // Core identity always full weight
+            FrequencyBand::Strategic => 0.9,    // Strategy high weight
+            FrequencyBand::Tactical => 0.85,    // Tactics moderate-high
+            FrequencyBand::Operational => 1.0,  // Primary work full weight
             FrequencyBand::Verification => 0.8, // Verification slightly lower
-            FrequencyBand::Reflective => 0.6,  // Meta-cognition background
+            FrequencyBand::Reflective => 0.6,   // Meta-cognition background
         }
     }
 
     /// Returns the context fraction (legacy compatibility).
     pub fn context_fraction(&self) -> f32 {
         match self {
-            FrequencyBand::Anima => 0.10,      // Core only
-            FrequencyBand::Strategic => 0.25,  // Broad strokes
-            FrequencyBand::Tactical => 0.50,   // Half context
-            FrequencyBand::Operational => 0.75, // Most context
+            FrequencyBand::Anima => 0.10,        // Core only
+            FrequencyBand::Strategic => 0.25,    // Broad strokes
+            FrequencyBand::Tactical => 0.50,     // Half context
+            FrequencyBand::Operational => 0.75,  // Most context
             FrequencyBand::Verification => 0.90, // Nearly all
-            FrequencyBand::Reflective => 1.00, // Full context
+            FrequencyBand::Reflective => 1.00,   // Full context
         }
     }
 
     /// Returns typical response time multiplier.
     pub fn time_multiplier(&self) -> f32 {
         match self {
-            FrequencyBand::Anima => 0.1,       // Instant
-            FrequencyBand::Strategic => 0.25,  // Fast
-            FrequencyBand::Tactical => 0.5,    // Moderate
-            FrequencyBand::Operational => 1.0, // Normal
+            FrequencyBand::Anima => 0.1,         // Instant
+            FrequencyBand::Strategic => 0.25,    // Fast
+            FrequencyBand::Tactical => 0.5,      // Moderate
+            FrequencyBand::Operational => 1.0,   // Normal
             FrequencyBand::Verification => 1.25, // Slightly slower
-            FrequencyBand::Reflective => 1.5,  // Slowest
+            FrequencyBand::Reflective => 1.5,    // Slowest
         }
     }
 
@@ -484,11 +484,19 @@ mod tests {
 
         // First fragment gives 60% quality
         let q1 = curve.predict(1, 10);
-        assert!(q1 > 0.55 && q1 < 0.65, "First fragment should give ~60% quality, got {}", q1);
+        assert!(
+            q1 > 0.55 && q1 < 0.65,
+            "First fragment should give ~60% quality, got {}",
+            q1
+        );
 
         // All fragments give 100%
         let qall = curve.predict(10, 10);
-        assert!(qall > 0.95, "All fragments should give ~100% quality, got {}", qall);
+        assert!(
+            qall > 0.95,
+            "All fragments should give ~100% quality, got {}",
+            qall
+        );
     }
 
     #[test]
@@ -497,11 +505,19 @@ mod tests {
 
         // With sufficient_fragments = 4, using n=4 gives near-complete quality
         let q_all = curve.predict(4, 4);
-        assert!(q_all > 0.95, "4/4 fragments should give >95% quality, got {}", q_all);
+        assert!(
+            q_all > 0.95,
+            "4/4 fragments should give >95% quality, got {}",
+            q_all
+        );
 
         // Half gives decent quality
         let q_half = curve.predict(2, 4);
-        assert!(q_half > 0.50, "2/4 fragments should give >50% quality, got {}", q_half);
+        assert!(
+            q_half > 0.50,
+            "2/4 fragments should give >50% quality, got {}",
+            q_half
+        );
     }
 
     #[test]

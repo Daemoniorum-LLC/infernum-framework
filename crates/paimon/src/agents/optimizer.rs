@@ -12,9 +12,9 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tracing::{info, info_span, warn};
 
-use crate::dataset::{Dataset, DatasetStats};
-use crate::llm::{LlmClient, GenerateRequest, Message};
 use super::{AgentError, Result};
+use crate::dataset::{Dataset, DatasetStats};
+use crate::llm::{GenerateRequest, LlmClient, Message};
 
 /// System prompt for the Hyperparameter Optimizer agent.
 const OPTIMIZER_SYSTEM_PROMPT: &str = r#"You are an expert ML Hyperparameter Optimizer specializing in LLM fine-tuning.
@@ -80,7 +80,8 @@ impl HyperparamOptimizerAgent {
             dataset = %dataset.name,
             examples = dataset.len(),
             model = %base_model
-        ).entered();
+        )
+        .entered();
 
         info!("Analyzing dataset for hyperparameter suggestions");
 
@@ -90,7 +91,7 @@ impl HyperparamOptimizerAgent {
                 Ok(suggestion) => return Ok(suggestion),
                 Err(e) => {
                     warn!("LLM suggestion failed, falling back to heuristics: {}", e);
-                }
+                },
             }
         }
 
@@ -114,7 +115,9 @@ impl HyperparamOptimizerAgent {
         .with_temperature(0.3)
         .with_max_tokens(1024);
 
-        let response = llm.generate(request).await
+        let response = llm
+            .generate(request)
+            .await
             .map_err(|e| AgentError::Llm(format!("LLM request failed: {}", e)))?;
 
         self.parse_suggestion_response(&response.content, &dataset.stats)
@@ -130,11 +133,20 @@ impl HyperparamOptimizerAgent {
 
         prompt.push_str(&format!("Dataset: {}\n", dataset.name));
         prompt.push_str(&format!("Examples: {}\n", stats.example_count));
-        prompt.push_str(&format!("Average input length: {:.0} chars\n", stats.avg_input_len));
-        prompt.push_str(&format!("Average output length: {:.0} chars\n", stats.avg_output_len));
+        prompt.push_str(&format!(
+            "Average input length: {:.0} chars\n",
+            stats.avg_input_len
+        ));
+        prompt.push_str(&format!(
+            "Average output length: {:.0} chars\n",
+            stats.avg_output_len
+        ));
         prompt.push_str(&format!("Total characters: {}\n", stats.total_chars));
         prompt.push_str(&format!("Synthetic examples: {}\n", stats.synthetic_count));
-        prompt.push_str(&format!("With system prompts: {}\n", stats.with_system_count));
+        prompt.push_str(&format!(
+            "With system prompts: {}\n",
+            stats.with_system_count
+        ));
 
         prompt.push_str("\nProvide your hyperparameter suggestions as JSON.");
         prompt
@@ -170,7 +182,9 @@ impl HyperparamOptimizerAgent {
         };
 
         // Build LoRA config from LLM response
-        let lora_config = if approach != TrainingApproach::FewShot && approach != TrainingApproach::FullFineTuning {
+        let lora_config = if approach != TrainingApproach::FewShot
+            && approach != TrainingApproach::FullFineTuning
+        {
             Some(LoRAConfig {
                 rank: parsed.lora_rank.unwrap_or(16),
                 alpha: parsed.lora_alpha.unwrap_or(32),
@@ -258,7 +272,12 @@ impl HyperparamOptimizerAgent {
         dataset_size: usize,
         epochs: u32,
     ) -> Result<LRScheduleSuggestion> {
-        let _span = info_span!("optimizer.lr_schedule", size = dataset_size, epochs = epochs).entered();
+        let _span = info_span!(
+            "optimizer.lr_schedule",
+            size = dataset_size,
+            epochs = epochs
+        )
+        .entered();
 
         let schedule = if epochs > 5 {
             LRScheduleType::CosineAnnealing
@@ -274,7 +293,9 @@ impl HyperparamOptimizerAgent {
             min_lr_ratio: 0.1,
             reasoning: format!(
                 "For {} examples over {} epochs, {} schedule provides optimal convergence",
-                dataset_size, epochs, schedule.name()
+                dataset_size,
+                epochs,
+                schedule.name()
             ),
         })
     }
@@ -297,22 +318,26 @@ impl HyperparamOptimizerAgent {
                 let metric_key = exp.primary_metric.clone();
                 let current_best = best_configs.get(&metric_key);
 
-                if current_best.is_none() || exp.metric_value > current_best.map_or(0.0, |c| c.achieved_metric) {
-                    best_configs.insert(metric_key, HyperparamConfig {
-                        learning_rate: exp.config.learning_rate,
-                        batch_size: exp.config.batch_size,
-                        epochs: exp.config.epochs,
-                        achieved_metric: exp.metric_value,
-                    });
+                if current_best.is_none()
+                    || exp.metric_value > current_best.map_or(0.0, |c| c.achieved_metric)
+                {
+                    best_configs.insert(
+                        metric_key,
+                        HyperparamConfig {
+                            learning_rate: exp.config.learning_rate,
+                            batch_size: exp.config.batch_size,
+                            epochs: exp.config.epochs,
+                            achieved_metric: exp.metric_value,
+                        },
+                    );
                 }
             }
         }
 
         // Generate insights
         if !best_configs.is_empty() {
-            let avg_lr: f64 = best_configs.values()
-                .map(|c| c.learning_rate)
-                .sum::<f64>() / best_configs.len() as f64;
+            let avg_lr: f64 = best_configs.values().map(|c| c.learning_rate).sum::<f64>()
+                / best_configs.len() as f64;
 
             insights.push(format!(
                 "Successful experiments averaged {:.2e} learning rate",
@@ -321,12 +346,11 @@ impl HyperparamOptimizerAgent {
         }
 
         // Analyze failure patterns
-        let failures: Vec<_> = experiments.iter()
-            .filter(|e| !e.success)
-            .collect();
+        let failures: Vec<_> = experiments.iter().filter(|e| !e.success).collect();
 
         if !failures.is_empty() {
-            let high_lr_failures = failures.iter()
+            let high_lr_failures = failures
+                .iter()
                 .filter(|e| e.config.learning_rate > 1e-3)
                 .count();
 
@@ -686,10 +710,12 @@ mod tests {
 
     fn sample_dataset() -> Dataset {
         let examples: Vec<Example> = (0..500)
-            .map(|i| Example::new(
-                format!("Question {}: What is the answer?", i),
-                format!("The answer to question {} is 42.", i),
-            ))
+            .map(|i| {
+                Example::new(
+                    format!("Question {}: What is the answer?", i),
+                    format!("The answer to question {} is 42.", i),
+                )
+            })
             .collect();
 
         Dataset::new(DatasetConfig::new("test"), examples)
@@ -700,7 +726,10 @@ mod tests {
         let optimizer = HyperparamOptimizerAgent::new(None);
         let dataset = sample_dataset();
 
-        let suggestion = optimizer.suggest_hyperparams(&dataset, "llama-7b").await.expect("suggest");
+        let suggestion = optimizer
+            .suggest_hyperparams(&dataset, "llama-7b")
+            .await
+            .expect("suggest");
 
         assert!(suggestion.learning_rate > 0.0);
         assert!(suggestion.batch_size > 0);
@@ -713,7 +742,10 @@ mod tests {
     async fn test_suggest_lr_schedule() {
         let optimizer = HyperparamOptimizerAgent::new(None);
 
-        let suggestion = optimizer.suggest_lr_schedule(5000, 3).await.expect("schedule");
+        let suggestion = optimizer
+            .suggest_lr_schedule(5000, 3)
+            .await
+            .expect("schedule");
 
         assert!(suggestion.warmup_steps > 0);
     }
@@ -747,7 +779,10 @@ mod tests {
             },
         ];
 
-        let insights = optimizer.learn_from_experiments(&experiments).await.expect("learn");
+        let insights = optimizer
+            .learn_from_experiments(&experiments)
+            .await
+            .expect("learn");
 
         assert_eq!(insights.total_experiments, 2);
         assert_eq!(insights.successful_experiments, 1);
@@ -777,7 +812,10 @@ mod tests {
         assert!(optimizer.has_llm());
 
         let dataset = sample_dataset();
-        let suggestion = optimizer.suggest_hyperparams(&dataset, "llama-7b").await.expect("suggest");
+        let suggestion = optimizer
+            .suggest_hyperparams(&dataset, "llama-7b")
+            .await
+            .expect("suggest");
 
         assert_eq!(suggestion.approach, TrainingApproach::LoRA);
         assert!((suggestion.learning_rate - 0.0002).abs() < 0.0001);
@@ -806,7 +844,10 @@ mod tests {
 
         let optimizer = HyperparamOptimizerAgent::with_llm(llm);
         let dataset = sample_dataset();
-        let suggestion = optimizer.suggest_hyperparams(&dataset, "llama-7b").await.expect("suggest");
+        let suggestion = optimizer
+            .suggest_hyperparams(&dataset, "llama-7b")
+            .await
+            .expect("suggest");
 
         assert_eq!(suggestion.approach, TrainingApproach::FullFineTuning);
         assert!(suggestion.lora_config.is_none());
@@ -824,7 +865,10 @@ mod tests {
         let dataset = sample_dataset();
 
         // Should fall back to heuristic suggestions
-        let suggestion = optimizer.suggest_hyperparams(&dataset, "llama-7b").await.expect("suggest");
+        let suggestion = optimizer
+            .suggest_hyperparams(&dataset, "llama-7b")
+            .await
+            .expect("suggest");
 
         assert!(suggestion.learning_rate > 0.0);
         assert!(suggestion.batch_size > 0);
@@ -837,7 +881,10 @@ mod tests {
         assert!(!optimizer.has_llm());
 
         let dataset = sample_dataset();
-        let suggestion = optimizer.suggest_hyperparams(&dataset, "llama-7b").await.expect("suggest");
+        let suggestion = optimizer
+            .suggest_hyperparams(&dataset, "llama-7b")
+            .await
+            .expect("suggest");
 
         assert!(suggestion.learning_rate > 0.0);
         assert!(suggestion.batch_size > 0);

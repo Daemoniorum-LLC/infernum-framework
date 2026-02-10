@@ -22,9 +22,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use abaddon::holotensor::{
-    HoloModelMetadata,
     memory::FragmentId,
-    provider::{ProviderBuilder, WeightType, QualityMetrics},
+    provider::{ProviderBuilder, QualityMetrics, WeightType},
+    HoloModelMetadata,
 };
 use haagenti::holotensor::HolographicEncoding;
 
@@ -36,7 +36,7 @@ fn main() {
     // Hardware configuration
     println!("🖥️  Hardware Configuration:");
     let vram_bytes = 24 * 1024 * 1024 * 1024; // RTX 4500 Ada
-    let ram_bytes = 80 * 1024 * 1024 * 1024;  // Available RAM
+    let ram_bytes = 80 * 1024 * 1024 * 1024; // Available RAM
 
     println!("   VRAM budget: {} GB", vram_bytes / (1024 * 1024 * 1024));
     println!("   RAM budget: {} GB", ram_bytes / (1024 * 1024 * 1024));
@@ -48,7 +48,7 @@ fn main() {
     let mut provider = ProviderBuilder::new()
         .with_vram_budget(vram_bytes)
         .with_ram_budget(ram_bytes)
-        .with_min_quality(0.7)   // 70% = sqrt(16/32) - first 16 fragments
+        .with_min_quality(0.7) // 70% = sqrt(16/32) - first 16 fragments
         .with_target_quality(0.95) // 95% = sqrt(29/32) - 29 fragments
         .with_max_streams(8)
         .build();
@@ -63,7 +63,7 @@ fn main() {
         num_layers: 126,
         hidden_size: 16384,
         num_heads: 128,
-        num_kv_heads: 8, // GQA
+        num_kv_heads: 8,                // GQA
         original_size: 810_000_000_000, // 810GB F16
         hct_size: 465_000_000_000,      // 465GB FP8 on disk
         verified_quality: 0.98,
@@ -74,7 +74,10 @@ fn main() {
     println!("✓ Provider configured:");
     println!("   Model: {}", metadata.model_id);
     println!("   Layers: {}", metadata.num_layers);
-    println!("   Parameters: {}B", metadata.total_parameters / 1_000_000_000);
+    println!(
+        "   Parameters: {}B",
+        metadata.total_parameters / 1_000_000_000
+    );
     println!("   Fragments per tensor: {}", metadata.total_fragments);
     println!("   Encoding: {:?}", metadata.encoding);
     println!();
@@ -87,7 +90,10 @@ fn main() {
 
     let test_fragments = vec![1, 5, 16, 23, 29, 32];
     for count in test_fragments {
-        let quality = QualityMetrics::quality_from_fragments_default(count, metadata.total_fragments as usize);
+        let quality = QualityMetrics::quality_from_fragments_default(
+            count,
+            metadata.total_fragments as usize,
+        );
         let status = if count < 16 {
             "Too low"
         } else if count == 16 {
@@ -100,8 +106,13 @@ fn main() {
             "Perfect"
         };
 
-        println!("   {:2}/{:2}       {:.0}%       {}",
-            count, metadata.total_fragments, quality * 100.0, status);
+        println!(
+            "   {:2}/{:2}       {:.0}%       {}",
+            count,
+            metadata.total_fragments,
+            quality * 100.0,
+            status
+        );
     }
 
     println!();
@@ -138,10 +149,14 @@ fn main() {
     // Memory statistics explanation
     println!("📊 Memory Management:");
     let mem_stats = provider.memory_stats();
-    println!("   VRAM budget: {} GB (fragments promoted here for active layers)",
-        vram_bytes / (1024 * 1024 * 1024));
-    println!("   RAM budget: {} GB (warm cache for upcoming layers)",
-        ram_bytes / (1024 * 1024 * 1024));
+    println!(
+        "   VRAM budget: {} GB (fragments promoted here for active layers)",
+        vram_bytes / (1024 * 1024 * 1024)
+    );
+    println!(
+        "   RAM budget: {} GB (warm cache for upcoming layers)",
+        ram_bytes / (1024 * 1024 * 1024)
+    );
     println!("   Disk: 465 GB HoloTensor (loaded on demand)");
     println!();
     println!("   LRU eviction kicks in when VRAM full");
@@ -153,8 +168,14 @@ fn main() {
     let stream_stats = provider.stream_stats();
     println!("   Requests submitted: {}", stream_stats.requests_submitted);
     println!("   Requests completed: {}", stream_stats.requests_completed);
-    println!("   Bytes transferred: {} MB", stream_stats.bytes_transferred / (1024 * 1024));
-    println!("   Avg speed: {:.1} MB/s", stream_stats.avg_speed_bps / (1024.0 * 1024.0));
+    println!(
+        "   Bytes transferred: {} MB",
+        stream_stats.bytes_transferred / (1024 * 1024)
+    );
+    println!(
+        "   Avg speed: {:.1} MB/s",
+        stream_stats.avg_speed_bps / (1024.0 * 1024.0)
+    );
     println!("   Queue depth: {}", stream_stats.queue_depth);
 
     println!();

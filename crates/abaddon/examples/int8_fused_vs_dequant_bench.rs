@@ -46,10 +46,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ];
 
         println!("{}", "=".repeat(80));
-        println!("{:<25} {:>12} {:>12} {:>12} {:>12}",
-            "Config", "Fused QK", "Fused AV", "Dequant", "Speedup");
-        println!("{:<25} {:>12} {:>12} {:>12} {:>12}",
-            "", "(ms)", "(ms)", "(ms)", "");
+        println!(
+            "{:<25} {:>12} {:>12} {:>12} {:>12}",
+            "Config", "Fused QK", "Fused AV", "Dequant", "Speedup"
+        );
+        println!(
+            "{:<25} {:>12} {:>12} {:>12} {:>12}",
+            "", "(ms)", "(ms)", "(ms)", ""
+        );
         println!("{}", "=".repeat(80));
 
         for (name, batch, num_heads, num_kv_heads, q_len, kv_len, head_dim) in configs {
@@ -64,8 +68,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Q in BF16 (random data)
             let q_data: Vec<u16> = (0..q_size).map(|i| ((i % 256) as u16) << 8).collect();
             // K/V quantized in U8
-            let k_quant: Vec<u8> = (0..k_size).map(|i| 128u8.wrapping_add((i % 64) as u8)).collect();
-            let v_quant: Vec<u8> = (0..k_size).map(|i| 128u8.wrapping_add((i % 32) as u8)).collect();
+            let k_quant: Vec<u8> = (0..k_size)
+                .map(|i| 128u8.wrapping_add((i % 64) as u8))
+                .collect();
+            let v_quant: Vec<u8> = (0..k_size)
+                .map(|i| 128u8.wrapping_add((i % 32) as u8))
+                .collect();
             // Scales in BF16 (1.0)
             let scales: Vec<u16> = vec![0x3F80u16; scale_size];
             // Uniform attention weights
@@ -80,13 +88,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Warmup
             let _ = ctx.fused_qk_attention(
-                &d_q, &d_k_quant, &d_scales,
-                batch, num_heads, num_kv_heads, q_len, kv_len, head_dim,
+                &d_q,
+                &d_k_quant,
+                &d_scales,
+                batch,
+                num_heads,
+                num_kv_heads,
+                q_len,
+                kv_len,
+                head_dim,
                 attn_scale,
             )?;
             let _ = ctx.fused_attn_v(
-                &d_attn_weights, &d_v_quant, &d_scales,
-                batch, num_heads, num_kv_heads, q_len, kv_len, head_dim,
+                &d_attn_weights,
+                &d_v_quant,
+                &d_scales,
+                batch,
+                num_heads,
+                num_kv_heads,
+                q_len,
+                kv_len,
+                head_dim,
             )?;
             let _ = ctx.dequant_int8_to_bf16(&d_k_quant, &d_scales, head_dim)?;
             device.synchronize()?;
@@ -96,8 +118,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let start = Instant::now();
             for _ in 0..iterations {
                 let _ = ctx.fused_qk_attention(
-                    &d_q, &d_k_quant, &d_scales,
-                    batch, num_heads, num_kv_heads, q_len, kv_len, head_dim,
+                    &d_q,
+                    &d_k_quant,
+                    &d_scales,
+                    batch,
+                    num_heads,
+                    num_kv_heads,
+                    q_len,
+                    kv_len,
+                    head_dim,
                     attn_scale,
                 )?;
             }
@@ -108,8 +137,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let start = Instant::now();
             for _ in 0..iterations {
                 let _ = ctx.fused_attn_v(
-                    &d_attn_weights, &d_v_quant, &d_scales,
-                    batch, num_heads, num_kv_heads, q_len, kv_len, head_dim,
+                    &d_attn_weights,
+                    &d_v_quant,
+                    &d_scales,
+                    batch,
+                    num_heads,
+                    num_kv_heads,
+                    q_len,
+                    kv_len,
+                    head_dim,
                 )?;
             }
             device.synchronize()?;
@@ -128,8 +164,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Note: This doesn't include the actual matmul time for fair comparison
             let fused_total = fused_qk_ms + fused_av_ms;
 
-            println!("{:<25} {:>12.3} {:>12.3} {:>12.3} {:>12}",
-                name, fused_qk_ms, fused_av_ms, dequant_ms,
+            println!(
+                "{:<25} {:>12.3} {:>12.3} {:>12.3} {:>12}",
+                name,
+                fused_qk_ms,
+                fused_av_ms,
+                dequant_ms,
                 format!("{:.2}x", dequant_ms / fused_total * 2.0)
             );
         }
@@ -147,8 +187,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let int8_kv = 2 * num_layers * num_kv_heads * kv_len * head_dim * 1  // K+V, 1 byte
             + 2 * num_layers * num_kv_heads * kv_len * 2; // scales, 2 bytes
 
-        println!("  BF16 K+V cache: {:.1} MB", bf16_kv as f64 / 1024.0 / 1024.0);
-        println!("  INT8 K+V cache: {:.1} MB ({:.2}x smaller)",
+        println!(
+            "  BF16 K+V cache: {:.1} MB",
+            bf16_kv as f64 / 1024.0 / 1024.0
+        );
+        println!(
+            "  INT8 K+V cache: {:.1} MB ({:.2}x smaller)",
             int8_kv as f64 / 1024.0 / 1024.0,
             bf16_kv as f64 / int8_kv as f64
         );

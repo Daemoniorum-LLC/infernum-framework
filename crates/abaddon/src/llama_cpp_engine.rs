@@ -45,15 +45,14 @@ use std::time::Instant;
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
+use infernum_core::model::{LlamaVersion, MistralVariant, PhiVersion, QwenVersion};
+use infernum_core::response::{Choice, EmbedResponse, GenerateResponse};
+use infernum_core::streaming::{StreamChoice, StreamChunk, StreamDelta};
 use infernum_core::{
-    EmbedRequest, GenerateRequest, SamplingParams,
-    ModelArchitecture, ModelMetadata, ModelSource, PromptInput,
-    Result, TokenStream, Message, Role, ModelId, QuantizationType,
-    FinishReason, Usage,
+    EmbedRequest, FinishReason, GenerateRequest, Message, ModelArchitecture, ModelId,
+    ModelMetadata, ModelSource, PromptInput, QuantizationType, Result, Role, SamplingParams,
+    TokenStream, Usage,
 };
-use infernum_core::model::{QwenVersion, LlamaVersion, MistralVariant, PhiVersion};
-use infernum_core::response::{GenerateResponse, Choice, EmbedResponse};
-use infernum_core::streaming::{StreamChunk, StreamChoice, StreamDelta};
 
 use crate::engine::InferenceEngine;
 use crate::gguf::GgufLoader;
@@ -205,20 +204,20 @@ impl ChatTemplate {
         match self {
             ChatTemplate::ChatML => {
                 format!("<|im_start|>system\n{content}<|im_end|>\n")
-            }
+            },
             ChatTemplate::Llama3 => {
                 format!("<|start_header_id|>system<|end_header_id|>\n\n{content}<|eot_id|>")
-            }
+            },
             ChatTemplate::Mistral => {
                 // Mistral doesn't have a dedicated system token, prepend to first user message
                 String::new()
-            }
+            },
             ChatTemplate::Phi3 => {
                 format!("<|system|>\n{content}<|end|>\n")
-            }
+            },
             ChatTemplate::Raw => {
                 format!("System: {content}\n\n")
-            }
+            },
         }
     }
 
@@ -227,19 +226,19 @@ impl ChatTemplate {
         match self {
             ChatTemplate::ChatML => {
                 format!("<|im_start|>user\n{content}<|im_end|>\n")
-            }
+            },
             ChatTemplate::Llama3 => {
                 format!("<|start_header_id|>user<|end_header_id|>\n\n{content}<|eot_id|>")
-            }
+            },
             ChatTemplate::Mistral => {
                 format!("[INST] {content} [/INST]")
-            }
+            },
             ChatTemplate::Phi3 => {
                 format!("<|user|>\n{content}<|end|>\n")
-            }
+            },
             ChatTemplate::Raw => {
                 format!("User: {content}\n\n")
-            }
+            },
         }
     }
 
@@ -248,19 +247,19 @@ impl ChatTemplate {
         match self {
             ChatTemplate::ChatML => {
                 format!("<|im_start|>assistant\n{content}<|im_end|>\n")
-            }
+            },
             ChatTemplate::Llama3 => {
                 format!("<|start_header_id|>assistant<|end_header_id|>\n\n{content}<|eot_id|>")
-            }
+            },
             ChatTemplate::Mistral => {
                 format!("{content}</s>")
-            }
+            },
             ChatTemplate::Phi3 => {
                 format!("<|assistant|>\n{content}<|end|>\n")
-            }
+            },
             ChatTemplate::Raw => {
                 format!("Assistant: {content}\n\n")
-            }
+            },
         }
     }
 
@@ -512,16 +511,21 @@ impl LlamaCppEngine {
             // LlamaParams has public fields, not builder methods
             let mut params = llama_cpp::LlamaParams::default();
             // Use 999 as "all layers" since u32::MAX causes issues with some CUDA backends
-            params.n_gpu_layers = if n_gpu_layers < 0 { 999 } else { n_gpu_layers as u32 };
+            params.n_gpu_layers = if n_gpu_layers < 0 {
+                999
+            } else {
+                n_gpu_layers as u32
+            };
             params.use_mmap = use_mmap;
             params.use_mlock = use_mlock;
             params.main_gpu = main_gpu as u32;
             params.split_mode = split_mode.into();
 
-            LlamaModel::load_from_file(&model_path, params)
-                .map_err(|e| infernum_core::Error::ModelLoad {
+            LlamaModel::load_from_file(&model_path, params).map_err(|e| {
+                infernum_core::Error::ModelLoad {
                     message: format!("llama.cpp model load failed: {e}"),
-                })
+                }
+            })
         })
         .await
         .map_err(|e| infernum_core::Error::ModelLoad {
@@ -540,31 +544,45 @@ impl LlamaCppEngine {
 
         // Map architecture string to enum
         let architecture = match gguf_meta.architecture.to_lowercase().as_str() {
-            "qwen2" | "qwen" => ModelArchitecture::Qwen { version: QwenVersion::V2_5 },
-            "llama" => ModelArchitecture::Llama { version: LlamaVersion::V3_2 },
-            "mistral" => ModelArchitecture::Mistral { variant: MistralVariant::Mistral7B },
-            "phi" | "phi3" => ModelArchitecture::Phi { version: PhiVersion::V3 },
-            _ => ModelArchitecture::Llama { version: LlamaVersion::V3_2 },
+            "qwen2" | "qwen" => ModelArchitecture::Qwen {
+                version: QwenVersion::V2_5,
+            },
+            "llama" => ModelArchitecture::Llama {
+                version: LlamaVersion::V3_2,
+            },
+            "mistral" => ModelArchitecture::Mistral {
+                variant: MistralVariant::Mistral7B,
+            },
+            "phi" | "phi3" => ModelArchitecture::Phi {
+                version: PhiVersion::V3,
+            },
+            _ => ModelArchitecture::Llama {
+                version: LlamaVersion::V3_2,
+            },
         };
 
         // Map quantization string to enum
         let quantization = parse_quantization_type(&gguf_meta.quantization_type);
 
-        let model_id = ModelId(gguf_meta.name.clone().unwrap_or_else(|| "unknown".to_string()));
+        let model_id = ModelId(
+            gguf_meta
+                .name
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
+        );
 
-        let metadata = ModelMetadata::builder(
-            model_id.clone(),
-            architecture,
-        )
-        .source(ModelSource::Gguf { path: config.model_path.clone() })
-        .context_length(gguf_meta.context_length as u32)
-        .vocab_size(gguf_meta.vocab_size as u32)
-        .hidden_size(gguf_meta.hidden_size as u32)
-        .num_layers(gguf_meta.num_layers as u32)
-        .num_attention_heads(gguf_meta.num_attention_heads as u32)
-        .num_kv_heads(gguf_meta.num_kv_heads as u32)
-        .quantization(quantization)
-        .build();
+        let metadata = ModelMetadata::builder(model_id.clone(), architecture)
+            .source(ModelSource::Gguf {
+                path: config.model_path.clone(),
+            })
+            .context_length(gguf_meta.context_length as u32)
+            .vocab_size(gguf_meta.vocab_size as u32)
+            .hidden_size(gguf_meta.hidden_size as u32)
+            .num_layers(gguf_meta.num_layers as u32)
+            .num_attention_heads(gguf_meta.num_attention_heads as u32)
+            .num_kv_heads(gguf_meta.num_kv_heads as u32)
+            .quantization(quantization)
+            .build();
 
         // Detect chat template from architecture
         let chat_template = ChatTemplate::from_architecture(&gguf_meta.architecture);
@@ -607,14 +625,15 @@ impl LlamaCppEngine {
                     tool_call_id: None,
                 }];
                 Ok(Self::format_chat_messages(&messages, self.chat_template))
-            }
-            PromptInput::Messages(messages) => Ok(Self::format_chat_messages(messages, self.chat_template)),
-            PromptInput::Tokens(_) => {
-                Err(infernum_core::Error::InvalidConfig {
-                    message: "Pre-tokenized input (PromptInput::Tokens) is not supported by the \
-                             llama.cpp backend. Use PromptInput::Text or PromptInput::Messages.".to_string(),
-                })
-            }
+            },
+            PromptInput::Messages(messages) => {
+                Ok(Self::format_chat_messages(messages, self.chat_template))
+            },
+            PromptInput::Tokens(_) => Err(infernum_core::Error::InvalidConfig {
+                message: "Pre-tokenized input (PromptInput::Tokens) is not supported by the \
+                             llama.cpp backend. Use PromptInput::Text or PromptInput::Messages."
+                    .to_string(),
+            }),
         }
     }
 
@@ -637,7 +656,7 @@ impl LlamaCppEngine {
                     } else {
                         prompt.push_str(&template.format_system(&msg.content));
                     }
-                }
+                },
                 Role::User => {
                     // For Mistral, prepend system content to first user message
                     let content = if let Some(sys) = system_content.take() {
@@ -646,15 +665,15 @@ impl LlamaCppEngine {
                         msg.content.clone()
                     };
                     prompt.push_str(&template.format_user(&content));
-                }
+                },
                 Role::Assistant => {
                     prompt.push_str(&template.format_assistant(&msg.content));
-                }
+                },
                 Role::Tool => {
                     // Tool results formatted as user messages with tool context
                     let content = format!("[Tool Result]\n{}", msg.content);
                     prompt.push_str(&template.format_user(&content));
-                }
+                },
             }
         }
 
@@ -695,13 +714,15 @@ impl InferenceEngine for LlamaCppEngine {
             let mut session_params = SessionParams::default();
             session_params.n_ctx = context_size as u32;
 
-            let mut session = model.create_session(session_params)
-                .map_err(|e| infernum_core::Error::Internal {
+            let mut session = model.create_session(session_params).map_err(|e| {
+                infernum_core::Error::Internal {
                     message: format!("Failed to create session: {e}"),
-                })?;
+                }
+            })?;
 
             // Process prompt
-            session.advance_context(&prompt)
+            session
+                .advance_context(&prompt)
                 .map_err(|e| infernum_core::Error::Internal {
                     message: format!("Failed to process prompt: {e}"),
                 })?;
@@ -716,7 +737,8 @@ impl InferenceEngine for LlamaCppEngine {
 
             // Build sampler with user's sampling parameters
             let sampler = build_sampler(&sampling);
-            let completions = session.start_completing_with(sampler, max_tokens)
+            let completions = session
+                .start_completing_with(sampler, max_tokens)
                 .map_err(|e| infernum_core::Error::Internal {
                     message: format!("Failed to start completion: {e}"),
                 })?;
@@ -768,7 +790,8 @@ impl InferenceEngine for LlamaCppEngine {
                 .unwrap_or(0);
 
             // Use model tokenizer for accurate prompt token count
-            let prompt_tokens = model.tokenize_bytes(prompt.as_bytes(), false, false)
+            let prompt_tokens = model
+                .tokenize_bytes(prompt.as_bytes(), false, false)
                 .map(|tokens| tokens.len() as u32)
                 .unwrap_or_else(|_| (prompt.len() / 4) as u32); // Fallback to heuristic
             let completion_tokens = tokens_generated as u32;
@@ -824,12 +847,14 @@ impl InferenceEngine for LlamaCppEngine {
             session_params.n_ctx = context_size as u32;
 
             let result = (|| -> Result<()> {
-                let mut session = model.create_session(session_params)
-                    .map_err(|e| infernum_core::Error::Internal {
+                let mut session = model.create_session(session_params).map_err(|e| {
+                    infernum_core::Error::Internal {
                         message: format!("Failed to create session: {e}"),
-                    })?;
+                    }
+                })?;
 
-                session.advance_context(&prompt)
+                session
+                    .advance_context(&prompt)
                     .map_err(|e| infernum_core::Error::Internal {
                         message: format!("Failed to process prompt: {e}"),
                     })?;
@@ -839,15 +864,18 @@ impl InferenceEngine for LlamaCppEngine {
 
                 // Build sampler with user's sampling parameters
                 let sampler = build_sampler(&sampling);
-                let completions = session.start_completing_with(sampler, max_tokens)
-                    .map_err(|e| infernum_core::Error::Internal {
-                        message: format!("Failed to start completion: {e}"),
-                    })?;
+                let completions =
+                    session
+                        .start_completing_with(sampler, max_tokens)
+                        .map_err(|e| infernum_core::Error::Internal {
+                            message: format!("Failed to start completion: {e}"),
+                        })?;
 
                 // Track token count and accumulated text for stop sequence detection
                 let mut tokens_generated = 0u32;
                 // Use model tokenizer for accurate prompt token count
-                let prompt_tokens = model.tokenize_bytes(prompt.as_bytes(), false, false)
+                let prompt_tokens = model
+                    .tokenize_bytes(prompt.as_bytes(), false, false)
                     .map(|tokens| tokens.len() as u32)
                     .unwrap_or_else(|_| (prompt.len() / 4) as u32); // Fallback to heuristic
                 let mut accumulated_text = String::new();
@@ -859,10 +887,12 @@ impl InferenceEngine for LlamaCppEngine {
 
                     // Check for stop sequences
                     if !stop_sequences.is_empty() {
-                        if let Some(stop) = check_stop_sequences(&accumulated_text, &stop_sequences) {
+                        if let Some(stop) = check_stop_sequences(&accumulated_text, &stop_sequences)
+                        {
                             hit_stop_sequence = true;
                             // Send the text before the stop sequence
-                            let text_before_stop = token_text.strip_suffix(stop).unwrap_or(&token_text);
+                            let text_before_stop =
+                                token_text.strip_suffix(stop).unwrap_or(&token_text);
                             if !text_before_stop.is_empty() {
                                 let chunk = StreamChunk {
                                     request_id: request_id.clone(),
@@ -934,7 +964,10 @@ impl InferenceEngine for LlamaCppEngine {
         Ok(TokenStream::new(stream))
     }
 
-    async fn generate_batch(&self, requests: Vec<GenerateRequest>) -> Vec<Result<GenerateResponse>> {
+    async fn generate_batch(
+        &self,
+        requests: Vec<GenerateRequest>,
+    ) -> Vec<Result<GenerateResponse>> {
         use futures::future::join_all;
 
         let batch_size = requests.len();
@@ -983,7 +1016,8 @@ impl InferenceEngine for LlamaCppEngine {
         // TODO(#TBD): Implement proper embedding support once llama_cpp API is verified
         Err(infernum_core::Error::Internal {
             message: "Embedding support for llama.cpp backend is not yet implemented. \
-                     Use the Candle backend for embeddings.".to_string(),
+                     Use the Candle backend for embeddings."
+                .to_string(),
         })
     }
 
@@ -1021,8 +1055,8 @@ fn parse_quantization_type(quant_str: &str) -> QuantizationType {
 /// The stages are applied in order: grammar → repetition penalty → temperature → top_k → top_p → min_p.
 #[cfg(feature = "llama-cpp")]
 fn build_sampler(params: &SamplingParams) -> llama_cpp::standard_sampler::StandardSampler {
-    use llama_cpp::standard_sampler::{SamplerStage, StandardSampler};
     use llama_cpp::grammar::LlamaGrammar;
+    use llama_cpp::standard_sampler::{SamplerStage, StandardSampler};
 
     // Warn about unsupported seed parameter
     if params.seed.is_some() {
@@ -1047,13 +1081,13 @@ fn build_sampler(params: &SamplingParams) -> llama_cpp::standard_sampler::Standa
                 // Grammar starts at the end of context (None = current position)
                 stages.push(SamplerStage::from_grammar(grammar, None));
                 tracing::debug!("Grammar constraint enabled");
-            }
+            },
             Err(e) => {
                 tracing::warn!(
                     error = %e,
                     "Failed to parse grammar constraint, continuing without it"
                 );
-            }
+            },
         }
     }
 
@@ -1065,7 +1099,10 @@ fn build_sampler(params: &SamplingParams) -> llama_cpp::standard_sampler::Standa
     }
 
     // 1. Repetition penalty (applied first to raw logits, after grammar)
-    if params.repetition_penalty != 1.0 || params.frequency_penalty != 0.0 || params.presence_penalty != 0.0 {
+    if params.repetition_penalty != 1.0
+        || params.frequency_penalty != 0.0
+        || params.presence_penalty != 0.0
+    {
         stages.push(SamplerStage::RepetitionPenalty {
             repetition_penalty: params.repetition_penalty,
             frequency_penalty: params.frequency_penalty,
@@ -1136,7 +1173,8 @@ impl LlamaCppEngine {
     /// Always returns an error when llama-cpp feature is disabled.
     pub async fn load(_config: LlamaCppConfig) -> Result<Self> {
         Err(infernum_core::Error::InvalidConfig {
-            message: "llama-cpp feature is not enabled. Rebuild with --features llama-cpp-cuda".to_string(),
+            message: "llama-cpp feature is not enabled. Rebuild with --features llama-cpp-cuda"
+                .to_string(),
         })
     }
 }
@@ -1206,8 +1244,14 @@ mod tests {
 
     #[test]
     fn test_parse_quantization() {
-        assert_eq!(parse_quantization_type("Q4_K_M"), QuantizationType::GgufQ4KM);
-        assert_eq!(parse_quantization_type("q5_k_m"), QuantizationType::GgufQ5KM);
+        assert_eq!(
+            parse_quantization_type("Q4_K_M"),
+            QuantizationType::GgufQ4KM
+        );
+        assert_eq!(
+            parse_quantization_type("q5_k_m"),
+            QuantizationType::GgufQ5KM
+        );
         assert_eq!(parse_quantization_type("Q8_0"), QuantizationType::GgufQ8_0);
         assert_eq!(parse_quantization_type("F16"), QuantizationType::None);
     }
@@ -1215,10 +1259,7 @@ mod tests {
     #[cfg(feature = "llama-cpp")]
     #[test]
     fn test_format_chat_messages_chatml() {
-        let messages = vec![
-            Message::system("You are helpful."),
-            Message::user("Hello!"),
-        ];
+        let messages = vec![Message::system("You are helpful."), Message::user("Hello!")];
 
         let prompt = LlamaCppEngine::format_chat_messages(&messages, ChatTemplate::ChatML);
         assert!(prompt.contains("<|im_start|>system"));
@@ -1231,10 +1272,7 @@ mod tests {
     #[cfg(feature = "llama-cpp")]
     #[test]
     fn test_format_chat_messages_llama3() {
-        let messages = vec![
-            Message::system("You are helpful."),
-            Message::user("Hello!"),
-        ];
+        let messages = vec![Message::system("You are helpful."), Message::user("Hello!")];
 
         let prompt = LlamaCppEngine::format_chat_messages(&messages, ChatTemplate::Llama3);
         assert!(prompt.contains("<|begin_of_text|>"));
@@ -1248,10 +1286,7 @@ mod tests {
     #[cfg(feature = "llama-cpp")]
     #[test]
     fn test_format_chat_messages_mistral() {
-        let messages = vec![
-            Message::system("You are helpful."),
-            Message::user("Hello!"),
-        ];
+        let messages = vec![Message::system("You are helpful."), Message::user("Hello!")];
 
         let prompt = LlamaCppEngine::format_chat_messages(&messages, ChatTemplate::Mistral);
         // Mistral prepends system to first user message
@@ -1262,25 +1297,55 @@ mod tests {
 
     #[test]
     fn test_chat_template_from_architecture() {
-        assert_eq!(ChatTemplate::from_architecture("llama"), ChatTemplate::Llama3);
-        assert_eq!(ChatTemplate::from_architecture("Llama-3.2"), ChatTemplate::Llama3);
-        assert_eq!(ChatTemplate::from_architecture("qwen2"), ChatTemplate::ChatML);
-        assert_eq!(ChatTemplate::from_architecture("Qwen"), ChatTemplate::ChatML);
-        assert_eq!(ChatTemplate::from_architecture("mistral"), ChatTemplate::Mistral);
+        assert_eq!(
+            ChatTemplate::from_architecture("llama"),
+            ChatTemplate::Llama3
+        );
+        assert_eq!(
+            ChatTemplate::from_architecture("Llama-3.2"),
+            ChatTemplate::Llama3
+        );
+        assert_eq!(
+            ChatTemplate::from_architecture("qwen2"),
+            ChatTemplate::ChatML
+        );
+        assert_eq!(
+            ChatTemplate::from_architecture("Qwen"),
+            ChatTemplate::ChatML
+        );
+        assert_eq!(
+            ChatTemplate::from_architecture("mistral"),
+            ChatTemplate::Mistral
+        );
         assert_eq!(ChatTemplate::from_architecture("phi3"), ChatTemplate::Phi3);
-        assert_eq!(ChatTemplate::from_architecture("unknown"), ChatTemplate::ChatML);
+        assert_eq!(
+            ChatTemplate::from_architecture("unknown"),
+            ChatTemplate::ChatML
+        );
     }
 
     #[test]
     fn test_backend_type_from_str() {
         assert_eq!(BackendType::from_str("auto"), Some(BackendType::Auto));
-        assert_eq!(BackendType::from_str("llama-cpp"), Some(BackendType::LlamaCpp));
-        assert_eq!(BackendType::from_str("llamacpp"), Some(BackendType::LlamaCpp));
-        assert_eq!(BackendType::from_str("llama_cpp"), Some(BackendType::LlamaCpp));
+        assert_eq!(
+            BackendType::from_str("llama-cpp"),
+            Some(BackendType::LlamaCpp)
+        );
+        assert_eq!(
+            BackendType::from_str("llamacpp"),
+            Some(BackendType::LlamaCpp)
+        );
+        assert_eq!(
+            BackendType::from_str("llama_cpp"),
+            Some(BackendType::LlamaCpp)
+        );
         assert_eq!(BackendType::from_str("gguf"), Some(BackendType::LlamaCpp));
         assert_eq!(BackendType::from_str("candle"), Some(BackendType::Candle));
         assert_eq!(BackendType::from_str("hct"), Some(BackendType::Candle));
-        assert_eq!(BackendType::from_str("holotensor"), Some(BackendType::Candle));
+        assert_eq!(
+            BackendType::from_str("holotensor"),
+            Some(BackendType::Candle)
+        );
         assert_eq!(BackendType::from_str("invalid"), None);
     }
 
@@ -1289,11 +1354,20 @@ mod tests {
         use std::path::Path;
 
         // GGUF files should use LlamaCpp
-        assert_eq!(BackendType::detect_from_path(Path::new("/path/to/model.gguf")), BackendType::LlamaCpp);
-        assert_eq!(BackendType::detect_from_path(Path::new("model.GGUF")), BackendType::LlamaCpp);
+        assert_eq!(
+            BackendType::detect_from_path(Path::new("/path/to/model.gguf")),
+            BackendType::LlamaCpp
+        );
+        assert_eq!(
+            BackendType::detect_from_path(Path::new("model.GGUF")),
+            BackendType::LlamaCpp
+        );
 
         // Unknown paths default to Candle
-        assert_eq!(BackendType::detect_from_path(Path::new("/some/random/path")), BackendType::Candle);
+        assert_eq!(
+            BackendType::detect_from_path(Path::new("/some/random/path")),
+            BackendType::Candle
+        );
     }
 
     #[test]
@@ -1324,7 +1398,10 @@ mod tests {
 
         // Should match when text ends with stop sequence
         assert_eq!(check_stop_sequences("Hello worldEND", &stops), Some("END"));
-        assert_eq!(check_stop_sequences("Hello world\n\n", &stops), Some("\n\n"));
+        assert_eq!(
+            check_stop_sequences("Hello world\n\n", &stops),
+            Some("\n\n")
+        );
 
         // Should not match partial or no match
         assert_eq!(check_stop_sequences("Hello world", &stops), None);
@@ -1402,8 +1479,7 @@ mod tests {
     fn test_build_sampler_greedy_with_grammar() {
         use infernum_core::GrammarConstraint;
 
-        let params = SamplingParams::greedy()
-            .with_grammar(GrammarConstraint::Json);
+        let params = SamplingParams::greedy().with_grammar(GrammarConstraint::Json);
 
         // Greedy with grammar should still work (creates minimal sampler with grammar)
         let _sampler = build_sampler(&params);
@@ -1415,8 +1491,7 @@ mod tests {
         use infernum_core::GrammarConstraint;
 
         let grammar = r#"root ::= "yes" | "no""#;
-        let params = SamplingParams::default()
-            .with_grammar(GrammarConstraint::gbnf(grammar));
+        let params = SamplingParams::default().with_grammar(GrammarConstraint::gbnf(grammar));
 
         // Should not panic
         let _sampler = build_sampler(&params);

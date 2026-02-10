@@ -155,38 +155,101 @@ mod tests {
 
     #[test]
     fn test_priority_from_numeric() {
-        assert_eq!(RequestPriority::from_header_value("1"), RequestPriority::High);
-        assert_eq!(RequestPriority::from_header_value("2"), RequestPriority::Normal);
-        assert_eq!(RequestPriority::from_header_value("3"), RequestPriority::Low);
-        assert_eq!(RequestPriority::from_header_value("4"), RequestPriority::Background);
-        assert_eq!(RequestPriority::from_header_value("5"), RequestPriority::Normal); // Invalid
-        assert_eq!(RequestPriority::from_header_value("0"), RequestPriority::Normal); // Invalid
+        assert_eq!(
+            RequestPriority::from_header_value("1"),
+            RequestPriority::High
+        );
+        assert_eq!(
+            RequestPriority::from_header_value("2"),
+            RequestPriority::Normal
+        );
+        assert_eq!(
+            RequestPriority::from_header_value("3"),
+            RequestPriority::Low
+        );
+        assert_eq!(
+            RequestPriority::from_header_value("4"),
+            RequestPriority::Background
+        );
+        assert_eq!(
+            RequestPriority::from_header_value("5"),
+            RequestPriority::Normal
+        ); // Invalid
+        assert_eq!(
+            RequestPriority::from_header_value("0"),
+            RequestPriority::Normal
+        ); // Invalid
     }
 
     #[test]
     fn test_priority_from_string() {
-        assert_eq!(RequestPriority::from_header_value("high"), RequestPriority::High);
-        assert_eq!(RequestPriority::from_header_value("HIGH"), RequestPriority::High);
-        assert_eq!(RequestPriority::from_header_value("critical"), RequestPriority::High);
-        assert_eq!(RequestPriority::from_header_value("urgent"), RequestPriority::High);
+        assert_eq!(
+            RequestPriority::from_header_value("high"),
+            RequestPriority::High
+        );
+        assert_eq!(
+            RequestPriority::from_header_value("HIGH"),
+            RequestPriority::High
+        );
+        assert_eq!(
+            RequestPriority::from_header_value("critical"),
+            RequestPriority::High
+        );
+        assert_eq!(
+            RequestPriority::from_header_value("urgent"),
+            RequestPriority::High
+        );
 
-        assert_eq!(RequestPriority::from_header_value("normal"), RequestPriority::Normal);
-        assert_eq!(RequestPriority::from_header_value("default"), RequestPriority::Normal);
-        assert_eq!(RequestPriority::from_header_value("standard"), RequestPriority::Normal);
+        assert_eq!(
+            RequestPriority::from_header_value("normal"),
+            RequestPriority::Normal
+        );
+        assert_eq!(
+            RequestPriority::from_header_value("default"),
+            RequestPriority::Normal
+        );
+        assert_eq!(
+            RequestPriority::from_header_value("standard"),
+            RequestPriority::Normal
+        );
 
-        assert_eq!(RequestPriority::from_header_value("low"), RequestPriority::Low);
-        assert_eq!(RequestPriority::from_header_value("batch"), RequestPriority::Low);
+        assert_eq!(
+            RequestPriority::from_header_value("low"),
+            RequestPriority::Low
+        );
+        assert_eq!(
+            RequestPriority::from_header_value("batch"),
+            RequestPriority::Low
+        );
 
-        assert_eq!(RequestPriority::from_header_value("background"), RequestPriority::Background);
-        assert_eq!(RequestPriority::from_header_value("bg"), RequestPriority::Background);
-        assert_eq!(RequestPriority::from_header_value("idle"), RequestPriority::Background);
+        assert_eq!(
+            RequestPriority::from_header_value("background"),
+            RequestPriority::Background
+        );
+        assert_eq!(
+            RequestPriority::from_header_value("bg"),
+            RequestPriority::Background
+        );
+        assert_eq!(
+            RequestPriority::from_header_value("idle"),
+            RequestPriority::Background
+        );
     }
 
     #[test]
     fn test_priority_from_invalid() {
-        assert_eq!(RequestPriority::from_header_value("invalid"), RequestPriority::Normal);
-        assert_eq!(RequestPriority::from_header_value(""), RequestPriority::Normal);
-        assert_eq!(RequestPriority::from_header_value("   "), RequestPriority::Normal);
+        assert_eq!(
+            RequestPriority::from_header_value("invalid"),
+            RequestPriority::Normal
+        );
+        assert_eq!(
+            RequestPriority::from_header_value(""),
+            RequestPriority::Normal
+        );
+        assert_eq!(
+            RequestPriority::from_header_value("   "),
+            RequestPriority::Normal
+        );
     }
 
     #[test]
@@ -225,20 +288,35 @@ mod tests {
 
     #[test]
     fn test_priority_whitespace_handling() {
-        assert_eq!(RequestPriority::from_header_value("  high  "), RequestPriority::High);
-        assert_eq!(RequestPriority::from_header_value(" 1 "), RequestPriority::High);
+        assert_eq!(
+            RequestPriority::from_header_value("  high  "),
+            RequestPriority::High
+        );
+        assert_eq!(
+            RequestPriority::from_header_value(" 1 "),
+            RequestPriority::High
+        );
     }
 
     #[test]
     fn test_priority_from_headers() {
         let mut headers = HeaderMap::new();
         headers.insert(PRIORITY_HEADER, "high".parse().expect("valid header value"));
-        assert_eq!(RequestPriority::from_headers(&headers), RequestPriority::High);
+        assert_eq!(
+            RequestPriority::from_headers(&headers),
+            RequestPriority::High
+        );
 
         headers.insert(PRIORITY_HEADER, "3".parse().expect("valid header value"));
-        assert_eq!(RequestPriority::from_headers(&headers), RequestPriority::Low);
+        assert_eq!(
+            RequestPriority::from_headers(&headers),
+            RequestPriority::Low
+        );
 
         let empty_headers = HeaderMap::new();
-        assert_eq!(RequestPriority::from_headers(&empty_headers), RequestPriority::Normal);
+        assert_eq!(
+            RequestPriority::from_headers(&empty_headers),
+            RequestPriority::Normal
+        );
     }
 }

@@ -76,16 +76,16 @@
 //! ```
 
 #![warn(missing_docs)]
-#![warn(clippy::all)]
-#![warn(clippy::pedantic)]
-#![deny(clippy::unwrap_used)]
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::must_use_candidate)]
 
 pub mod admin;
+pub mod agent_identity;
 pub mod agentic;
 pub mod api;
+pub mod api_types;
 pub mod audit;
+pub mod audit_client;
 pub mod auth;
 pub mod batching;
 pub mod cache;
@@ -99,40 +99,65 @@ pub mod error_response;
 pub mod gpu_metrics;
 pub mod grpc;
 pub mod handlers;
+pub mod model_cache;
 pub mod observability;
-pub mod api_types;
 pub mod openapi;
 pub mod priority;
 pub mod queue;
+pub mod rag;
+pub mod request_batcher;
 pub mod responses;
 pub mod security;
 pub mod server;
 pub mod server_error;
+pub mod sessions;
 pub mod speculative;
 pub mod speculative_engine;
 pub mod structured;
 pub mod timeout;
 pub mod tls;
 pub mod tokenize;
+pub mod tool_use;
 pub mod tracing_otel;
 pub mod validation;
 pub mod vision;
 pub mod websocket;
-pub mod rag;
-pub mod sessions;
-pub mod model_cache;
 pub mod wellbeing_intervention;
-pub mod request_batcher;
-pub mod tool_use;
-pub mod agent_identity;
-pub mod audit_client;
 
 pub use admin::{
     AdminError, AdminModelInfo, LoadModelRequest, LoadModelResponse, ModelLoadOptions,
     ModelRegistry, ModelStatus, ModelsStatusResponse, UnloadModelRequest, UnloadModelResponse,
     WarmupModelRequest, WarmupModelResponse,
 };
+pub use agent_identity::{
+    AgentIdentity, AgentIdentityError, AgentIdentityExport, EncryptedIdentity,
+    EncryptedIdentityStore,
+};
+pub use agentic::{run_agent, AgenticRunError, AgenticRunRequest};
+pub use api_types::{
+    ChatChoice, ChatCompletionRequest, ChatCompletionResponse, ChatLogProbs, ChatMessage,
+    CompletionChoice, CompletionRequest, CompletionResponse, EmbeddingData, EmbeddingInput,
+    EmbeddingRequest, EmbeddingResponse, FunctionCall, FunctionDefinition, ModelObject,
+    ModelsResponse, TokenLogProb, Tool, ToolCall, ToolChoice, ToolChoiceFunction,
+    ToolChoiceFunctionName, TopLogProb, Usage,
+};
 pub use audit::{AuditConfig, AuditEvent, AuditEventType, AuditLogger};
+pub use audit_client::{
+    generate_encryption_keypair,
+    policies as encryption_policies,
+    AuditClient,
+    AuditClientConfig,
+    AuditClientError,
+    // HoloCrypt re-exports
+    EncryptedEvent,
+    EncryptedEventBuilder,
+    EncryptionPolicy,
+    EventOpeningKey,
+    EventSealingKey,
+    FieldVisibility,
+    SubmitEventRequest,
+    SubmitEventResponse,
+};
 pub use auth::{required_scope_for_path, ApiKey, AuthConfig, AuthState, Permission, Scope};
 pub use batching::{
     ActiveBatch, BatchConfig, BatchEntry, BatchError, BatchId, BatchPriority, BatchScheduler,
@@ -152,13 +177,20 @@ pub use circuit_breaker::{
     CircuitBreaker, CircuitBreakerConfig, CircuitBreakerMetrics, CircuitOpenError, CircuitState,
 };
 pub use config::{Config, ConfigBuilder};
+pub use config_error::ConfigError;
+pub use config_reload::{ConfigChange, ConfigWatcher, ReloadResult, ReloadableConfig};
 pub use dedup::{
-    ComputeHandle, DeduplicatedResult, DeduplicatorConfig, DeduplicatorMetrics, RequestDeduplicator,
-    RequestHash,
+    ComputeHandle, DeduplicatedResult, DeduplicatorConfig, DeduplicatorMetrics,
+    RequestDeduplicator, RequestHash,
+};
+pub use error_response::{
+    api_error, api_error_with_message, handle_internal_error, sanitize_error, ApiError,
+    ApiErrorBuilder, ErrorCode, ErrorDetail, ErrorSubcode, ErrorType, RetryInfo,
 };
 pub use gpu_metrics::{GpuInfo, GpuMetrics, GpuMetricsProvider, MockGpuMetrics, NoGpuMetrics};
 pub use grpc::{
-    ChatChoice as GrpcChatChoice, ChatChoiceDelta, ChatCompletionChunk, ChatCompletionRequest as GrpcChatCompletionRequest,
+    ChatChoice as GrpcChatChoice, ChatChoiceDelta, ChatCompletionChunk,
+    ChatCompletionRequest as GrpcChatCompletionRequest,
     ChatCompletionResponse as GrpcChatCompletionResponse, ChatMessage as GrpcChatMessage,
     ChatMessageDelta, CompletionChoice as GrpcCompletionChoice, CompletionChoiceDelta,
     CompletionChunk, CompletionRequest as GrpcCompletionRequest,
@@ -167,46 +199,92 @@ pub use grpc::{
     HealthCheckResponse, InfernumService, ListModelsRequest, ListModelsResponse,
     MockInfernumService, Model as GrpcModel, Role, Usage as GrpcUsage,
 };
-pub use config_error::ConfigError;
-pub use config_reload::{ConfigChange, ConfigWatcher, ReloadResult, ReloadableConfig};
+pub use model_cache::{
+    convert_model, delete_cached_model, download_model, list_cached_models, CacheSource,
+    CachedModel, CachedModelsResponse, ConvertModelMetadata, ConvertModelRequest,
+    ConvertModelResponse, DeleteCachedModelRequest, DeleteCachedModelResponse,
+    DownloadModelRequest, DownloadProgress, ModelCacheState,
+};
 pub use observability::{ObservabilityState, RequestId};
-pub use error_response::{
-    api_error, api_error_with_message, handle_internal_error, sanitize_error, ApiError,
-    ApiErrorBuilder, ErrorCode, ErrorDetail, ErrorSubcode, ErrorType, RetryInfo,
-};
-pub use api_types::{
-    ChatChoice, ChatCompletionRequest, ChatCompletionResponse, ChatLogProbs, ChatMessage,
-    CompletionChoice, CompletionRequest, CompletionResponse, EmbeddingData, EmbeddingInput,
-    EmbeddingRequest, EmbeddingResponse, FunctionCall, FunctionDefinition, ModelObject,
-    ModelsResponse, TokenLogProb, Tool, ToolCall, ToolChoice, ToolChoiceFunction,
-    ToolChoiceFunctionName, TopLogProb, Usage,
-};
 pub use openapi::ApiDoc;
+pub use priority::{RequestPriority, PRIORITY_HEADER};
+pub use queue::{
+    PeekResult, QueueConfig, QueueError, QueueMetrics, QueueState, QueueStats, QueuedRequest,
+    RequestQueue, NUM_PRIORITY_LEVELS,
+};
+pub use rag::{
+    delete_document, document_count, index_document, list_documents, rag_health, search,
+    DeleteResponse, DocumentCountResponse, DocumentListResponse, DocumentMeta,
+    IndexDocumentRequest, RagHealthResponse, RagState, SearchRequest, SearchResponse,
+    SearchResultItem,
+};
+pub use request_batcher::{BatcherConfig, BatcherHandle, BatcherStats, RequestBatcher};
 pub use responses::{
     ApiResponse, HealthResponse, MetricsResponse, ModelInfo, ReadyResponse, ResponseMeta,
 };
 pub use security::{CorsConfig, RateLimitConfig, RateLimiter, SecurityHeadersConfig};
 pub use server::{AppState, Server, ServerConfig, ServerConfigBuilder, ValidationLimits};
 pub use server_error::ServerError;
+pub use sessions::{
+    cancel_session, get_session, list_sessions, session_stream, sessions_stream, AgentEventData,
+    AgentSession, CancelResponse, EventCounts, GetSessionResponse, ListSessionsResponse,
+    SessionEvent, SessionRegistry, SessionStatus,
+};
 pub use speculative::{
     DraftToken, SpeculativeConfig, SpeculativeError, SpeculativeMetrics, SpeculativeMode,
     SpeculativeParams, SpeculativeRequest, SpeculativeScheduler, SpeculativeState,
     SpeculativeStats, VerificationResult, SPECULATIVE_DRAFT_HEADER, SPECULATIVE_HEADER,
     SPECULATIVE_TOKENS_HEADER,
 };
-pub use tokenize::{
-    count_tokens, EstimatingTokenizer, TokenizeError, TokenizeRequest, TokenizeResponse, Tokenizer,
-};
-pub use priority::{RequestPriority, PRIORITY_HEADER};
-pub use queue::{
-    PeekResult, QueueConfig, QueueError, QueueMetrics, QueueState, QueueStats, QueuedRequest,
-    RequestQueue, NUM_PRIORITY_LEVELS,
+pub use speculative_engine::{
+    SpeculativeEngine, SpeculativeEngineBuilder, SpeculativeEngineConfig, SpeculativeEngineError,
 };
 pub use structured::{
     validate_json, validate_json_string, JsonSchema, ResponseFormat, SchemaRegistry,
     ValidationError, ValidationResult,
 };
 pub use timeout::{RequestTimeout, TimeoutConfig, TimeoutMetrics, TIMEOUT_HEADER};
+pub use tokenize::{
+    count_tokens, EstimatingTokenizer, TokenizeError, TokenizeRequest, TokenizeResponse, Tokenizer,
+};
+pub use tool_use::{
+    // Phase 3: Streaming detection (low-level)
+    buffer_might_contain_tool_start,
+    definitely_not_tool_call,
+    // Core functions
+    detect_tool_calls,
+    // Phase 3: Parallel tool calls
+    enforce_parallel_tool_calls,
+    // Phase 3: Deep JSON parsing
+    extract_json_object,
+    extract_text_content,
+    format_tools_for_prompt,
+    get_forced_tool,
+    process_model_output,
+    process_model_output_with_options,
+    process_model_output_with_validation,
+    should_include_tools,
+    try_extract_complete_tool_call,
+    // Phase 3: Unknown tool validation
+    validate_detected_calls,
+    // Phase 3: Strict mode validation
+    validate_tool_arguments,
+    validate_tool_exists,
+    DetectedCallsValidation,
+    // Core types
+    DetectedToolCall,
+    ModelFamily,
+    ProcessingOptions,
+    // Phase 3: Agent-centric SSE events
+    SseEvent,
+    SseUsage,
+    StreamingExtractResult,
+    // Phase 3: Streaming detector (high-level stateful)
+    StreamingToolDetector,
+    ToolDetectionEvent,
+    ToolProcessingResult,
+    ToolValidationResult,
+};
 pub use tracing_otel::{
     init_tracing, otel_tracing_middleware, shutdown_tracing, InferenceSpan, TracingConfig,
     TracingError,
@@ -220,65 +298,10 @@ pub use vision::{
     VisionConfig, VisionError, VisionMetrics, SUPPORTED_MEDIA_TYPES,
 };
 pub use websocket::{
-    ClientMessage, CloseReason, ConnectionInfo, ConnectionManager, ConnectionState,
-    ServerMessage, UsageInfo, WsConfig, WsError, WsMetrics,
-};
-pub use rag::{
-    RagState, RagHealthResponse, DocumentMeta, IndexDocumentRequest, DocumentListResponse,
-    DocumentCountResponse, SearchRequest, SearchResultItem, SearchResponse, DeleteResponse,
-    rag_health, list_documents, document_count, index_document, delete_document, search,
-};
-pub use sessions::{
-    AgentEventData, AgentSession, CancelResponse, EventCounts, GetSessionResponse,
-    ListSessionsResponse, SessionEvent, SessionRegistry, SessionStatus,
-    cancel_session, get_session, list_sessions, session_stream, sessions_stream,
-};
-pub use model_cache::{
-    CachedModel, CachedModelsResponse, CacheSource, ConvertModelMetadata,
-    ConvertModelRequest, ConvertModelResponse, DeleteCachedModelRequest,
-    DeleteCachedModelResponse, DownloadModelRequest, DownloadProgress, ModelCacheState,
-    convert_model, delete_cached_model, download_model, list_cached_models,
-};
-pub use speculative_engine::{
-    SpeculativeEngine, SpeculativeEngineBuilder, SpeculativeEngineConfig, SpeculativeEngineError,
+    ClientMessage, CloseReason, ConnectionInfo, ConnectionManager, ConnectionState, ServerMessage,
+    UsageInfo, WsConfig, WsError, WsMetrics,
 };
 pub use wellbeing_intervention::{
-    create_intervention_controller, InterventionConfig, InterventionController,
-    InterventionError, InterventionMetrics, SharedInterventionController, WellbeingState,
-};
-pub use request_batcher::{BatcherConfig, BatcherHandle, BatcherStats, RequestBatcher};
-pub use tool_use::{
-    // Core functions
-    detect_tool_calls, extract_text_content, format_tools_for_prompt, get_forced_tool,
-    process_model_output, should_include_tools, validate_tool_exists,
-    // Core types
-    DetectedToolCall, ModelFamily, ToolProcessingResult,
-    // Phase 3: Streaming detection (low-level)
-    buffer_might_contain_tool_start, definitely_not_tool_call, try_extract_complete_tool_call,
-    StreamingExtractResult,
-    // Phase 3: Streaming detector (high-level stateful)
-    StreamingToolDetector, ToolDetectionEvent,
-    // Phase 3: Agent-centric SSE events
-    SseEvent, SseUsage,
-    // Phase 3: Parallel tool calls
-    enforce_parallel_tool_calls, process_model_output_with_options, ProcessingOptions,
-    // Phase 3: Strict mode validation
-    validate_tool_arguments, process_model_output_with_validation, ToolValidationResult,
-    // Phase 3: Deep JSON parsing
-    extract_json_object,
-    // Phase 3: Unknown tool validation
-    validate_detected_calls, DetectedCallsValidation,
-};
-pub use agent_identity::{
-    AgentIdentity, AgentIdentityError, AgentIdentityExport,
-    EncryptedIdentity, EncryptedIdentityStore,
-};
-pub use agentic::{AgenticRunRequest, AgenticRunError, run_agent};
-pub use audit_client::{
-    AuditClient, AuditClientConfig, AuditClientError,
-    SubmitEventRequest, SubmitEventResponse,
-    // HoloCrypt re-exports
-    EncryptedEvent, EncryptedEventBuilder, EncryptionPolicy, FieldVisibility,
-    EventSealingKey, EventOpeningKey, generate_encryption_keypair,
-    policies as encryption_policies,
+    create_intervention_controller, InterventionConfig, InterventionController, InterventionError,
+    InterventionMetrics, SharedInterventionController, WellbeingState,
 };

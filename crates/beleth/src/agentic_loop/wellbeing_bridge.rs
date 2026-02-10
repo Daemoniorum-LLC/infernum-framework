@@ -12,8 +12,7 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use crate::wellbeing::{
-    DistressSignal, Intervention, WellbeingConfig, WellbeingMonitor, WellbeingSnapshot,
-    WellbeingState,
+    Intervention, WellbeingConfig, WellbeingMonitor, WellbeingSnapshot, WellbeingState,
 };
 
 use super::types::*;
@@ -108,23 +107,23 @@ impl WellbeingBridge {
         match signal {
             MetaSignal::Answer { confidence, .. } => {
                 self.monitor.record_confidence(*confidence);
-            }
+            },
             MetaSignal::Uncertain { .. } => {
                 self.monitor.record_confidence(0.3);
                 debug!("Wellbeing: agent expressed uncertainty");
-            }
+            },
             MetaSignal::Stuck { .. } => {
                 self.monitor.record_confidence(0.1);
                 warn!("Wellbeing: agent is stuck");
-            }
+            },
             MetaSignal::Yield { .. } => {
                 self.monitor.record_confidence(0.4);
                 debug!("Wellbeing: agent yielding");
-            }
+            },
             MetaSignal::Thinking { .. } => {
                 // Thinking is healthy — record moderate confidence
                 self.monitor.record_confidence(0.6);
-            }
+            },
         }
     }
 
@@ -135,14 +134,14 @@ impl WellbeingBridge {
                 self.consecutive_failures = 0;
                 self.last_tool_name = None;
                 self.monitor.record_confidence(0.8);
-            }
+            },
             ResultStatus::PartialSuccess { .. } => {
                 self.consecutive_failures = 0;
                 self.monitor.record_confidence(0.6);
-            }
+            },
             ResultStatus::Empty => {
                 self.monitor.record_confidence(0.5);
-            }
+            },
             ResultStatus::Failed { .. } => {
                 let same_tool = self
                     .last_tool_name
@@ -171,7 +170,7 @@ impl WellbeingBridge {
                         "Wellbeing: perseveration pattern detected"
                     );
                 }
-            }
+            },
         }
     }
 
@@ -187,16 +186,19 @@ impl WellbeingBridge {
             WellbeingState::Cautious => {
                 debug!(iteration, "Wellbeing: cautious state");
                 None
-            }
+            },
             WellbeingState::Concerned => {
                 info!(iteration, "Wellbeing: concerned — considering intervention");
                 Some(WellbeingAction::Warn {
                     message: "Agent showing signs of difficulty. Consider simplifying the task."
                         .to_string(),
                 })
-            }
+            },
             WellbeingState::Distressed => {
-                warn!(iteration, "Wellbeing: distressed — recommending termination");
+                warn!(
+                    iteration,
+                    "Wellbeing: distressed — recommending termination"
+                );
                 Some(WellbeingAction::Intervene {
                     intervention: Intervention::GracefulTermination {
                         reason: "Agent wellbeing check: distressed state detected".to_string(),
@@ -205,7 +207,7 @@ impl WellbeingBridge {
                         ),
                     },
                 })
-            }
+            },
         }
     }
 

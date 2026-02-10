@@ -520,7 +520,11 @@ impl SerializableConversation {
         Self {
             id: id.into(),
             title: None,
-            messages: memory.messages().iter().map(SerializableMessage::from).collect(),
+            messages: memory
+                .messages()
+                .iter()
+                .map(SerializableMessage::from)
+                .collect(),
             summaries: memory.summaries().to_vec(),
             created_at: now,
             updated_at: now,
@@ -632,7 +636,10 @@ impl FileConversationStore {
         // Create directory if it doesn't exist
         if !base_dir.exists() {
             std::fs::create_dir_all(&base_dir).map_err(|e| {
-                infernum_core::Error::internal(format!("Failed to create conversation directory: {}", e))
+                infernum_core::Error::internal(format!(
+                    "Failed to create conversation directory: {}",
+                    e
+                ))
             })?;
         }
 
@@ -678,9 +685,10 @@ impl ConversationStore for FileConversationStore {
             infernum_core::Error::internal(format!("Failed to read conversation file: {}", e))
         })?;
 
-        let conversation: SerializableConversation = serde_json::from_str(&contents).map_err(|e| {
-            infernum_core::Error::internal(format!("Failed to parse conversation: {}", e))
-        })?;
+        let conversation: SerializableConversation =
+            serde_json::from_str(&contents).map_err(|e| {
+                infernum_core::Error::internal(format!("Failed to parse conversation: {}", e))
+            })?;
 
         tracing::debug!(
             conversation_id = %id,
@@ -764,7 +772,11 @@ impl PersistentConversation {
     }
 
     /// Creates with a custom memory configuration.
-    pub fn with_memory(id: impl Into<String>, memory: AgentMemory, store: Arc<dyn ConversationStore>) -> Self {
+    pub fn with_memory(
+        id: impl Into<String>,
+        memory: AgentMemory,
+        store: Arc<dyn ConversationStore>,
+    ) -> Self {
         Self {
             id: id.into(),
             memory,
@@ -776,7 +788,10 @@ impl PersistentConversation {
     }
 
     /// Loads an existing conversation or creates a new one.
-    pub async fn load_or_create(id: impl Into<String>, store: Arc<dyn ConversationStore>) -> Result<Self> {
+    pub async fn load_or_create(
+        id: impl Into<String>,
+        store: Arc<dyn ConversationStore>,
+    ) -> Result<Self> {
         let id = id.into();
 
         if let Some(saved) = store.load(&id).await? {
@@ -935,7 +950,10 @@ impl ConversationManager {
     }
 
     /// Creates or loads a conversation.
-    pub async fn get_or_create(&self, id: impl Into<String>) -> Result<Arc<RwLock<PersistentConversation>>> {
+    pub async fn get_or_create(
+        &self,
+        id: impl Into<String>,
+    ) -> Result<Arc<RwLock<PersistentConversation>>> {
         let id = id.into();
 
         // Check if already active
@@ -947,7 +965,8 @@ impl ConversationManager {
         }
 
         // Load or create
-        let conversation = PersistentConversation::load_or_create(&id, Arc::clone(&self.store)).await?;
+        let conversation =
+            PersistentConversation::load_or_create(&id, Arc::clone(&self.store)).await?;
         let conversation = Arc::new(RwLock::new(conversation));
 
         // Store in active conversations
@@ -1039,7 +1058,10 @@ mod tests {
     fn test_summarization_strategy_clone() {
         let strategy = SummarizationStrategy::SlidingWindow { keep_recent: 5 };
         let cloned = strategy;
-        assert!(matches!(cloned, SummarizationStrategy::SlidingWindow { keep_recent: 5 }));
+        assert!(matches!(
+            cloned,
+            SummarizationStrategy::SlidingWindow { keep_recent: 5 }
+        ));
     }
 
     // ==========================================================================
@@ -1135,15 +1157,13 @@ mod tests {
 
     #[test]
     fn test_memory_with_strategy() {
-        let memory = AgentMemory::new()
-            .with_strategy(SummarizationStrategy::Summarize);
+        let memory = AgentMemory::new().with_strategy(SummarizationStrategy::Summarize);
         assert!(memory.is_empty());
     }
 
     #[test]
     fn test_memory_with_summarize_batch_size() {
-        let memory = AgentMemory::new()
-            .with_summarize_batch_size(20);
+        let memory = AgentMemory::new().with_summarize_batch_size(20);
         assert!(memory.is_empty());
     }
 
@@ -1231,7 +1251,10 @@ mod tests {
         }
 
         // System should be preserved
-        assert!(memory.messages().iter().any(|m| matches!(m.role, Role::System)));
+        assert!(memory
+            .messages()
+            .iter()
+            .any(|m| matches!(m.role, Role::System)));
     }
 
     // ==========================================================================
@@ -1448,8 +1471,7 @@ mod tests {
 
     #[test]
     fn test_serializable_conversation_with_title() {
-        let conv = SerializableConversation::new("id")
-            .with_title("My Conversation");
+        let conv = SerializableConversation::new("id").with_title("My Conversation");
 
         assert_eq!(conv.title, Some("My Conversation".to_string()));
     }
@@ -1481,14 +1503,12 @@ mod tests {
         let conv = SerializableConversation {
             id: "test".to_string(),
             title: None,
-            messages: vec![
-                SerializableMessage {
-                    role: "user".to_string(),
-                    content: "Restored".to_string(),
-                    name: None,
-                    tool_call_id: None,
-                },
-            ],
+            messages: vec![SerializableMessage {
+                role: "user".to_string(),
+                content: "Restored".to_string(),
+                name: None,
+                tool_call_id: None,
+            }],
             summaries: vec![],
             created_at: 0,
             updated_at: 0,
@@ -1521,8 +1541,7 @@ mod tests {
     #[tokio::test]
     async fn test_memory_store_save_and_load() {
         let store = MemoryConversationStore::new();
-        let conv = SerializableConversation::new("test-1")
-            .with_title("Test Conversation");
+        let conv = SerializableConversation::new("test-1").with_title("Test Conversation");
 
         store.save(&conv).await.expect("save");
 
@@ -1542,9 +1561,18 @@ mod tests {
     async fn test_memory_store_list() {
         let store = MemoryConversationStore::new();
 
-        store.save(&SerializableConversation::new("a")).await.expect("save");
-        store.save(&SerializableConversation::new("b")).await.expect("save");
-        store.save(&SerializableConversation::new("c")).await.expect("save");
+        store
+            .save(&SerializableConversation::new("a"))
+            .await
+            .expect("save");
+        store
+            .save(&SerializableConversation::new("b"))
+            .await
+            .expect("save");
+        store
+            .save(&SerializableConversation::new("c"))
+            .await
+            .expect("save");
 
         let list = store.list().await.expect("list");
         assert_eq!(list.len(), 3);
@@ -1554,7 +1582,10 @@ mod tests {
     async fn test_memory_store_delete() {
         let store = MemoryConversationStore::new();
 
-        store.save(&SerializableConversation::new("to-delete")).await.expect("save");
+        store
+            .save(&SerializableConversation::new("to-delete"))
+            .await
+            .expect("save");
         assert!(store.exists("to-delete").await.expect("exists"));
 
         let deleted = store.delete("to-delete").await.expect("delete");
@@ -1576,7 +1607,10 @@ mod tests {
 
         assert!(!store.exists("test").await.expect("exists"));
 
-        store.save(&SerializableConversation::new("test")).await.expect("save");
+        store
+            .save(&SerializableConversation::new("test"))
+            .await
+            .expect("save");
 
         assert!(store.exists("test").await.expect("exists"));
     }
@@ -1590,8 +1624,7 @@ mod tests {
         let temp = TempDir::new().expect("temp dir");
         let store = FileConversationStore::new(temp.path()).expect("create store");
 
-        let conv = SerializableConversation::new("file-test")
-            .with_title("File Test");
+        let conv = SerializableConversation::new("file-test").with_title("File Test");
 
         store.save(&conv).await.expect("save");
 
@@ -1614,8 +1647,14 @@ mod tests {
         let temp = TempDir::new().expect("temp dir");
         let store = FileConversationStore::new(temp.path()).expect("create store");
 
-        store.save(&SerializableConversation::new("conv-1")).await.expect("save");
-        store.save(&SerializableConversation::new("conv-2")).await.expect("save");
+        store
+            .save(&SerializableConversation::new("conv-1"))
+            .await
+            .expect("save");
+        store
+            .save(&SerializableConversation::new("conv-2"))
+            .await
+            .expect("save");
 
         let list = store.list().await.expect("list");
         assert_eq!(list.len(), 2);
@@ -1626,7 +1665,10 @@ mod tests {
         let temp = TempDir::new().expect("temp dir");
         let store = FileConversationStore::new(temp.path()).expect("create store");
 
-        store.save(&SerializableConversation::new("delete-me")).await.expect("save");
+        store
+            .save(&SerializableConversation::new("delete-me"))
+            .await
+            .expect("save");
 
         let deleted = store.delete("delete-me").await.expect("delete");
         assert!(deleted);
@@ -1641,7 +1683,10 @@ mod tests {
 
         assert!(!store.exists("test").await.expect("exists"));
 
-        store.save(&SerializableConversation::new("test")).await.expect("save");
+        store
+            .save(&SerializableConversation::new("test"))
+            .await
+            .expect("save");
 
         assert!(store.exists("test").await.expect("exists"));
     }
@@ -1671,8 +1716,7 @@ mod tests {
     #[test]
     fn test_persistent_conversation_with_auto_save() {
         let store = Arc::new(MemoryConversationStore::new());
-        let conv = PersistentConversation::new("id", store)
-            .with_auto_save(false);
+        let conv = PersistentConversation::new("id", store).with_auto_save(false);
 
         assert_eq!(conv.id(), "id");
     }
@@ -1680,8 +1724,7 @@ mod tests {
     #[test]
     fn test_persistent_conversation_with_title() {
         let store = Arc::new(MemoryConversationStore::new());
-        let conv = PersistentConversation::new("id", store)
-            .with_title("My Title");
+        let conv = PersistentConversation::new("id", store).with_title("My Title");
 
         assert_eq!(conv.title(), Some("My Title"));
     }
@@ -1725,7 +1768,9 @@ mod tests {
         // Save a conversation first
         {
             let mut conv = PersistentConversation::new("existing", Arc::clone(&store));
-            conv.add_message(Message::user("Saved message")).await.expect("add");
+            conv.add_message(Message::user("Saved message"))
+                .await
+                .expect("add");
             conv.save().await.expect("save");
         }
 
@@ -1743,7 +1788,9 @@ mod tests {
         let store: Arc<dyn ConversationStore> = Arc::new(MemoryConversationStore::new());
         let mut conv = PersistentConversation::new("reload-test", Arc::clone(&store));
 
-        conv.add_message(Message::user("Original")).await.expect("add");
+        conv.add_message(Message::user("Original"))
+            .await
+            .expect("add");
         conv.save().await.expect("save");
 
         // Modify and reload
@@ -1758,10 +1805,12 @@ mod tests {
     #[tokio::test]
     async fn test_persistent_conversation_clear() {
         let store: Arc<dyn ConversationStore> = Arc::new(MemoryConversationStore::new());
-        let mut conv = PersistentConversation::new("clear-test", Arc::clone(&store))
-            .with_auto_save(false);
+        let mut conv =
+            PersistentConversation::new("clear-test", Arc::clone(&store)).with_auto_save(false);
 
-        conv.add_message(Message::user("Message")).await.expect("add");
+        conv.add_message(Message::user("Message"))
+            .await
+            .expect("add");
         assert!(!conv.is_empty());
 
         conv.clear(false).await.expect("clear");
@@ -1781,8 +1830,7 @@ mod tests {
     #[tokio::test]
     async fn test_conversation_manager_with_file_store() {
         let temp = TempDir::new().expect("temp dir");
-        let manager = ConversationManager::with_file_store(temp.path())
-            .expect("create manager");
+        let manager = ConversationManager::with_file_store(temp.path()).expect("create manager");
         assert_eq!(manager.active_count(), 0);
     }
 
@@ -1790,7 +1838,10 @@ mod tests {
     async fn test_conversation_manager_get_or_create() {
         let manager = ConversationManager::with_memory_store();
 
-        let conv = manager.get_or_create("test-conv").await.expect("get or create");
+        let conv = manager
+            .get_or_create("test-conv")
+            .await
+            .expect("get or create");
         assert_eq!(manager.active_count(), 1);
 
         let conv_read = conv.read();
@@ -1865,7 +1916,9 @@ mod tests {
         {
             let conv = manager.get_or_create("save-test").await.expect("create");
             let mut w = conv.write();
-            w.add_message(Message::user("To be saved")).await.expect("add");
+            w.add_message(Message::user("To be saved"))
+                .await
+                .expect("add");
         }
 
         manager.save_all().await.expect("save all");

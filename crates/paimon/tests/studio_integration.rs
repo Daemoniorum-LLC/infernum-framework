@@ -7,22 +7,37 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use paimon::{
-    // Studio
-    Studio, StudioConfig,
-    // Dataset
-    Dataset, DatasetConfig, DatasetManager, Example,
-    dataset::{DatasetFormat, DatasetStats, SplitConfig, IssueSeverity},
-    // Experiment
-    Experiment, ExperimentConfig, ExperimentTracker, Run, RunStatus,
-    experiment::{HyperparamValue, Artifact, ArtifactType},
-    // Prompt
-    PromptStudio, PromptTemplate,
-    // Registry
-    Model, ModelMetadata, ModelRegistry, ModelStage,
+    dataset::{DatasetFormat, DatasetStats, IssueSeverity, SplitConfig},
+    experiment::{Artifact, ArtifactType, HyperparamValue},
     // Agents
-    DataCuratorAgent, TrainingCoachAgent, EvalAnalystAgent, HyperparamOptimizerAgent,
+    DataCuratorAgent,
+    // Dataset
+    Dataset,
+    DatasetConfig,
+    DatasetManager,
+    EvalAnalystAgent,
+    Example,
+    // Experiment
+    Experiment,
+    ExperimentConfig,
+    ExperimentTracker,
+    HyperparamOptimizerAgent,
+    // Registry
+    Model,
+    ModelMetadata,
+    ModelRegistry,
+    ModelStage,
+    // Prompt
+    PromptStudio,
+    PromptTemplate,
+    Run,
+    RunStatus,
+    // Studio
+    Studio,
+    StudioConfig,
     // Persistence
     StudioDatabase,
+    TrainingCoachAgent,
 };
 use tempfile::TempDir;
 
@@ -47,8 +62,7 @@ async fn test_studio_creation_with_defaults() {
 #[tokio::test]
 async fn test_studio_without_agents() {
     let temp = TempDir::new().expect("temp dir");
-    let config = StudioConfig::with_base_dir(temp.path().to_path_buf())
-        .without_agents();
+    let config = StudioConfig::with_base_dir(temp.path().to_path_buf()).without_agents();
 
     let studio = Studio::new(config).await.expect("create studio");
 
@@ -60,8 +74,8 @@ async fn test_studio_without_agents() {
 #[tokio::test]
 async fn test_studio_with_agent_model() {
     let temp = TempDir::new().expect("temp dir");
-    let config = StudioConfig::with_base_dir(temp.path().to_path_buf())
-        .with_agent_model("qwen-2.5-7b");
+    let config =
+        StudioConfig::with_base_dir(temp.path().to_path_buf()).with_agent_model("qwen-2.5-7b");
 
     let studio = Studio::new(config).await.expect("create studio");
 
@@ -149,7 +163,9 @@ async fn test_dataset_validation() {
     let validation = dataset.validation.expect("validation");
     assert!(!validation.passed); // Should fail due to empty input
 
-    let errors: Vec<_> = validation.issues.iter()
+    let errors: Vec<_> = validation
+        .issues
+        .iter()
         .filter(|i| i.severity == IssueSeverity::Error)
         .collect();
     assert!(!errors.is_empty());
@@ -210,7 +226,10 @@ async fn test_dataset_filter() {
     let math_only = dataset.filter(|e| e.input.starts_with("math:"));
 
     assert_eq!(math_only.len(), 2);
-    assert!(math_only.examples.iter().all(|e| e.input.starts_with("math:")));
+    assert!(math_only
+        .examples
+        .iter()
+        .all(|e| e.input.starts_with("math:")));
 }
 
 #[tokio::test]
@@ -286,24 +305,32 @@ async fn test_run_lifecycle() {
     let experiment = tracker.create_experiment(config).await.expect("create");
 
     // Start run
-    let run = tracker.start_run(&experiment.id, Some("run-1".to_string())).expect("start");
+    let run = tracker
+        .start_run(&experiment.id, Some("run-1".to_string()))
+        .expect("start");
     assert_eq!(run.status, RunStatus::Running);
 
     // Log metrics
     let mut metrics = HashMap::new();
     metrics.insert("loss".to_string(), 1.5);
     metrics.insert("accuracy".to_string(), 0.6);
-    tracker.log_metrics(&experiment.id, &run.id, 1, metrics.clone()).expect("log 1");
+    tracker
+        .log_metrics(&experiment.id, &run.id, 1, metrics.clone())
+        .expect("log 1");
 
     metrics.insert("loss".to_string(), 0.8);
     metrics.insert("accuracy".to_string(), 0.75);
-    tracker.log_metrics(&experiment.id, &run.id, 2, metrics.clone()).expect("log 2");
+    tracker
+        .log_metrics(&experiment.id, &run.id, 2, metrics.clone())
+        .expect("log 2");
 
     // Complete run
     let mut final_metrics = HashMap::new();
     final_metrics.insert("loss".to_string(), 0.3);
     final_metrics.insert("accuracy".to_string(), 0.92);
-    tracker.complete_run(&experiment.id, &run.id, final_metrics).expect("complete");
+    tracker
+        .complete_run(&experiment.id, &run.id, final_metrics)
+        .expect("complete");
 
     // Verify
     let exp = tracker.get_experiment(&experiment.id).await.expect("get");
@@ -322,13 +349,18 @@ async fn test_run_failure() {
     let experiment = tracker.create_experiment(config).await.expect("create");
 
     let run = tracker.start_run(&experiment.id, None).expect("start");
-    tracker.fail_run(&experiment.id, &run.id, "Out of GPU memory").expect("fail");
+    tracker
+        .fail_run(&experiment.id, &run.id, "Out of GPU memory")
+        .expect("fail");
 
     let exp = tracker.get_experiment(&experiment.id).await.expect("get");
     let failed_run = exp.get_run(&run.id).expect("get run");
 
     assert_eq!(failed_run.status, RunStatus::Failed);
-    assert_eq!(failed_run.error_message, Some("Out of GPU memory".to_string()));
+    assert_eq!(
+        failed_run.error_message,
+        Some("Out of GPU memory".to_string())
+    );
 }
 
 #[tokio::test]
@@ -368,7 +400,9 @@ async fn test_run_artifacts() {
         .with_size(1024 * 1024 * 100)
         .with_metadata("format", "safetensors");
 
-    tracker.add_artifact(&experiment.id, &run.id, checkpoint).expect("add artifact");
+    tracker
+        .add_artifact(&experiment.id, &run.id, checkpoint)
+        .expect("add artifact");
 
     let exp = tracker.get_experiment(&experiment.id).await.expect("get");
     let run = exp.get_run(&run.id).expect("get run");
@@ -405,20 +439,28 @@ async fn test_run_comparison() {
     let config1 = ExperimentConfig::new("exp-1", "llama-7b", "dataset");
     let exp1 = tracker.create_experiment(config1).await.expect("create 1");
 
-    let run1 = tracker.start_run(&exp1.id, Some("run-1".to_string())).expect("start 1");
+    let run1 = tracker
+        .start_run(&exp1.id, Some("run-1".to_string()))
+        .expect("start 1");
     let mut metrics1 = HashMap::new();
     metrics1.insert("loss".to_string(), 0.25);
     metrics1.insert("accuracy".to_string(), 0.88);
-    tracker.complete_run(&exp1.id, &run1.id, metrics1).expect("complete 1");
+    tracker
+        .complete_run(&exp1.id, &run1.id, metrics1)
+        .expect("complete 1");
 
     let config2 = ExperimentConfig::new("exp-2", "llama-13b", "dataset");
     let exp2 = tracker.create_experiment(config2).await.expect("create 2");
 
-    let run2 = tracker.start_run(&exp2.id, Some("run-2".to_string())).expect("start 2");
+    let run2 = tracker
+        .start_run(&exp2.id, Some("run-2".to_string()))
+        .expect("start 2");
     let mut metrics2 = HashMap::new();
     metrics2.insert("loss".to_string(), 0.18);
     metrics2.insert("accuracy".to_string(), 0.92);
-    tracker.complete_run(&exp2.id, &run2.id, metrics2).expect("complete 2");
+    tracker
+        .complete_run(&exp2.id, &run2.id, metrics2)
+        .expect("complete 2");
 
     // Compare runs
     let comparison = tracker.compare_runs(&[
@@ -447,10 +489,7 @@ async fn test_prompt_template_versioning() {
         .with_tags(vec!["code".to_string(), "review".to_string()]);
 
     // Create first version
-    template.create_version(
-        "Review this code:\n{{code}}",
-        "Initial version"
-    );
+    template.create_version("Review this code:\n{{code}}", "Initial version");
 
     assert_eq!(template.versions.len(), 1);
     assert!(template.active_version_id.is_some());
@@ -458,7 +497,7 @@ async fn test_prompt_template_versioning() {
     // Create second version
     template.create_version(
         "Please review the following {{language}} code and provide feedback:\n```\n{{code}}\n```",
-        "Added language support"
+        "Added language support",
     );
 
     assert_eq!(template.versions.len(), 2);
@@ -478,10 +517,7 @@ async fn test_prompt_template_versioning() {
 #[tokio::test]
 async fn test_prompt_variable_rendering() {
     let mut template = PromptTemplate::new("greeting");
-    template.create_version(
-        "Hello {{name}}! Welcome to {{company}}.",
-        "Initial"
-    );
+    template.create_version("Hello {{name}}! Welcome to {{company}}.", "Initial");
 
     let mut vars = HashMap::new();
     vars.insert("name".to_string(), "Alice".to_string());
@@ -496,7 +532,7 @@ async fn test_prompt_variable_extraction() {
     let mut template = PromptTemplate::new("complex");
     template.create_version(
         "System: {{system_prompt}}\nUser: {{user_input}}\nContext: {{context}}",
-        "Multi-variable template"
+        "Multi-variable template",
     );
 
     let variables = template.variables();
@@ -516,8 +552,10 @@ async fn test_prompt_studio_crud() {
     assert!(!template.id.is_empty());
 
     // Add version
-    studio.add_version(&template.id, "Answer the question: {{question}}", "v1")
-        .await.expect("add version");
+    studio
+        .add_version(&template.id, "Answer the question: {{question}}", "v1")
+        .await
+        .expect("add version");
 
     // Count
     assert_eq!(studio.count().await, 1);
@@ -542,13 +580,20 @@ async fn test_prompt_studio_versioning() {
     let studio = PromptStudio::new(temp.path().to_path_buf());
 
     // Create template
-    let template = studio.create_template("versioned-prompt").await.expect("create");
+    let template = studio
+        .create_template("versioned-prompt")
+        .await
+        .expect("create");
 
     // Add multiple versions
-    studio.add_version(&template.id, "Version 1 content", "Initial")
-        .await.expect("add v1");
-    studio.add_version(&template.id, "Version 2 content", "Updated")
-        .await.expect("add v2");
+    studio
+        .add_version(&template.id, "Version 1 content", "Initial")
+        .await
+        .expect("add v1");
+    studio
+        .add_version(&template.id, "Version 2 content", "Updated")
+        .await
+        .expect("add v2");
 
     // Get and verify
     let retrieved = studio.get_template(&template.id).await.expect("get");
@@ -566,10 +611,14 @@ async fn test_model_registration() {
     let temp = TempDir::new().expect("temp dir");
     let registry = ModelRegistry::new(temp.path().to_path_buf());
 
-    let model = Model::new("llama-finetuned", "meta-llama/Llama-3.2-3B", "text-generation")
-        .with_description("Fine-tuned Llama model for code")
-        .with_owner("team-ml")
-        .with_tags(vec!["llama".to_string(), "code".to_string()]);
+    let model = Model::new(
+        "llama-finetuned",
+        "meta-llama/Llama-3.2-3B",
+        "text-generation",
+    )
+    .with_description("Fine-tuned Llama model for code")
+    .with_owner("team-ml")
+    .with_tags(vec!["llama".to_string(), "code".to_string()]);
 
     let model_id = registry.register_model(model).expect("register");
 
@@ -590,16 +639,18 @@ async fn test_model_versioning() {
     let model_id = registry.register_model(model).expect("register");
 
     // Add version 1
-    let metadata1 = ModelMetadata::new()
-        .with_format("safetensors");
+    let metadata1 = ModelMetadata::new().with_format("safetensors");
 
-    registry.create_version(&model_id, metadata1).expect("add v1");
+    registry
+        .create_version(&model_id, metadata1)
+        .expect("add v1");
 
     // Add version 2
-    let metadata2 = ModelMetadata::new()
-        .with_format("gguf");
+    let metadata2 = ModelMetadata::new().with_format("gguf");
 
-    registry.create_version(&model_id, metadata2).expect("add v2");
+    registry
+        .create_version(&model_id, metadata2)
+        .expect("add v2");
 
     // Check versions
     let model = registry.get_model(&model_id).expect("get");
@@ -618,17 +669,23 @@ async fn test_model_stage_transitions() {
     let model_id = registry.register_model(model).expect("register");
 
     let metadata = ModelMetadata::new();
-    registry.create_version(&model_id, metadata).expect("add version");
+    registry
+        .create_version(&model_id, metadata)
+        .expect("add version");
 
     // Transition: Development -> Staging
-    registry.transition_stage(&model_id, 1, ModelStage::Staging, None).expect("to staging");
+    registry
+        .transition_stage(&model_id, 1, ModelStage::Staging, None)
+        .expect("to staging");
 
     let model = registry.get_model(&model_id).expect("get");
     let v1 = model.get_version(1).expect("v1");
     assert_eq!(v1.stage, ModelStage::Staging);
 
     // Transition: Staging -> Production
-    registry.transition_stage(&model_id, 1, ModelStage::Production, None).expect("to prod");
+    registry
+        .transition_stage(&model_id, 1, ModelStage::Production, None)
+        .expect("to prod");
 
     let model = registry.get_model(&model_id).expect("get");
     let v1 = model.get_version(1).expect("v1");
@@ -658,15 +715,14 @@ async fn test_model_registry_search() {
     assert_eq!(all.len(), 3);
 
     // Filter by tag
-    let llama_models: Vec<_> = all.iter()
+    let llama_models: Vec<_> = all
+        .iter()
         .filter(|m| m.tags.contains(&"llama".to_string()))
         .collect();
     assert_eq!(llama_models.len(), 2);
 
     // Filter by task
-    let chat_models: Vec<_> = all.iter()
-        .filter(|m| m.task_type == "chat")
-        .collect();
+    let chat_models: Vec<_> = all.iter().filter(|m| m.task_type == "chat").collect();
     assert_eq!(chat_models.len(), 2);
 }
 
@@ -685,33 +741,32 @@ async fn test_database_persistence_workflow() {
     {
         let db = Arc::new(StudioDatabase::new(&db_path).expect("create db"));
 
-        let dataset_manager = DatasetManager::with_database(
-            temp.path().join("datasets"),
-            db.clone()
-        );
+        let dataset_manager =
+            DatasetManager::with_database(temp.path().join("datasets"), db.clone());
 
         let examples = vec![Example::new("input", "output")];
         let config = DatasetConfig::new("persistent-dataset");
-        let dataset = dataset_manager.create(config, examples).await.expect("create");
+        let dataset = dataset_manager
+            .create(config, examples)
+            .await
+            .expect("create");
         dataset_id = dataset.id.clone();
 
-        let tracker = ExperimentTracker::with_database(
-            temp.path().join("experiments"),
-            db.clone()
-        );
+        let tracker = ExperimentTracker::with_database(temp.path().join("experiments"), db.clone());
 
         let exp_config = ExperimentConfig::new("persistent-exp", "model", &dataset_id);
-        let _experiment = tracker.create_experiment(exp_config).await.expect("create exp");
+        let _experiment = tracker
+            .create_experiment(exp_config)
+            .await
+            .expect("create exp");
     }
 
     // Verify data persists with new instance
     {
         let db = Arc::new(StudioDatabase::new(&db_path).expect("reopen db"));
 
-        let dataset_manager = DatasetManager::with_database(
-            temp.path().join("datasets"),
-            db.clone()
-        );
+        let dataset_manager =
+            DatasetManager::with_database(temp.path().join("datasets"), db.clone());
 
         assert_eq!(dataset_manager.count().await, 1);
 
@@ -778,24 +833,26 @@ fn test_hyperparam_optimizer_agent_creation() {
 #[tokio::test]
 async fn test_complete_fine_tuning_workflow() {
     let temp = TempDir::new().expect("temp dir");
-    let config = StudioConfig::with_base_dir(temp.path().to_path_buf())
-        .without_agents(); // Disable agents for faster test
+    let config = StudioConfig::with_base_dir(temp.path().to_path_buf()).without_agents(); // Disable agents for faster test
 
     let studio = Studio::new(config).await.expect("create studio");
 
     // 1. Create dataset
     let examples: Vec<Example> = (0..50)
-        .map(|i| Example::new(
-            format!("Explain concept {}", i),
-            format!("Concept {} is about...", i)
-        ))
+        .map(|i| {
+            Example::new(
+                format!("Explain concept {}", i),
+                format!("Concept {} is about...", i),
+            )
+        })
         .collect();
 
     let dataset_config = DatasetConfig::new("training-data")
         .with_description("Training examples")
         .with_tags(vec!["training"]);
 
-    let dataset = studio.datasets()
+    let dataset = studio
+        .datasets()
         .create(dataset_config, examples)
         .await
         .expect("create dataset");
@@ -806,13 +863,15 @@ async fn test_complete_fine_tuning_workflow() {
     let exp_config = ExperimentConfig::new("fine-tune-exp", "llama-3b", &dataset.id)
         .with_description("Fine-tuning experiment");
 
-    let experiment = studio.experiments()
+    let experiment = studio
+        .experiments()
         .create_experiment(exp_config)
         .await
         .expect("create experiment");
 
     // 3. Run training
-    let run = studio.experiments()
+    let run = studio
+        .experiments()
         .start_run(&experiment.id, Some("run-1".to_string()))
         .expect("start run");
 
@@ -822,7 +881,8 @@ async fn test_complete_fine_tuning_workflow() {
         metrics.insert("loss".to_string(), 1.0 - (step as f64 * 0.08));
         metrics.insert("accuracy".to_string(), 0.5 + (step as f64 * 0.04));
 
-        studio.experiments()
+        studio
+            .experiments()
             .log_metrics(&experiment.id, &run.id, step, metrics)
             .expect("log metrics");
     }
@@ -832,7 +892,8 @@ async fn test_complete_fine_tuning_workflow() {
     final_metrics.insert("loss".to_string(), 0.2);
     final_metrics.insert("accuracy".to_string(), 0.9);
 
-    studio.experiments()
+    studio
+        .experiments()
         .complete_run(&experiment.id, &run.id, final_metrics)
         .expect("complete run");
 
@@ -840,12 +901,14 @@ async fn test_complete_fine_tuning_workflow() {
     let model = Model::new("fine-tuned-llama", "llama-3b", "text-generation")
         .with_description("Fine-tuned on custom data");
 
-    let model_id = studio.models()
+    let model_id = studio
+        .models()
         .register_model(model)
         .expect("register model");
 
     let metadata = ModelMetadata::new();
-    studio.models()
+    studio
+        .models()
         .create_version(&model_id, metadata)
         .expect("add version");
 
@@ -862,14 +925,20 @@ async fn test_prompt_ab_testing_workflow() {
     let prompt_studio = PromptStudio::new(temp.path().to_path_buf());
 
     // Create template with multiple versions for A/B testing
-    let template = prompt_studio.create_template("summarization").await.expect("create");
+    let template = prompt_studio
+        .create_template("summarization")
+        .await
+        .expect("create");
 
     // Version A
-    prompt_studio.add_version(
-        &template.id,
-        "Summarize the following text:\n{{text}}",
-        "Simple summarization prompt"
-    ).await.expect("add v1");
+    prompt_studio
+        .add_version(
+            &template.id,
+            "Summarize the following text:\n{{text}}",
+            "Simple summarization prompt",
+        )
+        .await
+        .expect("add v1");
 
     // Version B
     prompt_studio.add_version(
@@ -880,7 +949,10 @@ async fn test_prompt_ab_testing_workflow() {
 
     // Test both versions
     let mut vars = HashMap::new();
-    vars.insert("text".to_string(), "Long article content here...".to_string());
+    vars.insert(
+        "text".to_string(),
+        "Long article content here...".to_string(),
+    );
 
     // Get template
     let mut template = prompt_studio.get_template(&template.id).await.expect("get");

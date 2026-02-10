@@ -277,7 +277,7 @@ impl ChatTemplate {
                     // Mistral prepends system message to first user message
                     has_system = true;
                     result.push_str(&format!("[INST] {}", message.content));
-                }
+                },
                 infernum_core::Role::User => {
                     if has_system {
                         result.push_str(&format!("\n\n{} [/INST]", message.content));
@@ -285,13 +285,13 @@ impl ChatTemplate {
                     } else {
                         result.push_str(&format!("[INST] {} [/INST]", message.content));
                     }
-                }
+                },
                 infernum_core::Role::Assistant => {
                     result.push_str(&format!(" {}</s>", message.content));
-                }
+                },
                 infernum_core::Role::Tool => {
                     result.push_str(&format!("[TOOL_RESULT] {} [/TOOL_RESULT]", message.content));
-                }
+                },
             }
         }
 
@@ -336,29 +336,17 @@ impl ChatTemplate {
         for message in messages {
             match message.role {
                 infernum_core::Role::System => {
-                    result.push_str(&format!(
-                        "### System:\n{}\n\n",
-                        message.content
-                    ));
-                }
+                    result.push_str(&format!("### System:\n{}\n\n", message.content));
+                },
                 infernum_core::Role::User => {
-                    result.push_str(&format!(
-                        "### User:\n{}\n\n",
-                        message.content
-                    ));
-                }
+                    result.push_str(&format!("### User:\n{}\n\n", message.content));
+                },
                 infernum_core::Role::Assistant => {
-                    result.push_str(&format!(
-                        "### Assistant:\n{}\n\n",
-                        message.content
-                    ));
-                }
+                    result.push_str(&format!("### Assistant:\n{}\n\n", message.content));
+                },
                 infernum_core::Role::Tool => {
-                    result.push_str(&format!(
-                        "### Tool:\n{}\n\n",
-                        message.content
-                    ));
-                }
+                    result.push_str(&format!("### Tool:\n{}\n\n", message.content));
+                },
             }
         }
 

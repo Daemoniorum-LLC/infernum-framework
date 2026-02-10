@@ -58,7 +58,7 @@ impl Speculative405BConfig {
     /// Configuration optimized for maximum throughput.
     pub fn fast() -> Self {
         Self {
-            num_draft_tokens: 8,       // More aggressive speculation
+            num_draft_tokens: 8,        // More aggressive speculation
             acceptance_threshold: 0.05, // Lower threshold
             greedy_draft: true,
             ..Default::default()
@@ -68,8 +68,8 @@ impl Speculative405BConfig {
     /// Configuration optimized for quality (higher acceptance rate).
     pub fn quality() -> Self {
         Self {
-            num_draft_tokens: 4,        // Fewer drafts
-            acceptance_threshold: 0.2,  // Higher threshold
+            num_draft_tokens: 4,       // Fewer drafts
+            acceptance_threshold: 0.2, // Higher threshold
             greedy_draft: true,
             ..Default::default()
         }
@@ -180,11 +180,7 @@ pub struct Speculative405B<D: DraftModel, T: TargetModel = crate::models::lazy_l
 
 impl<D: DraftModel, T: TargetModel> Speculative405B<D, T> {
     /// Creates a new speculative decoder.
-    pub fn new(
-        draft: D,
-        target: T,
-        config: Speculative405BConfig,
-    ) -> Self {
+    pub fn new(draft: D, target: T, config: Speculative405BConfig) -> Self {
         let device = draft.device().clone();
         let dtype = draft.dtype();
 
@@ -261,12 +257,8 @@ impl<D: DraftModel, T: TargetModel> Speculative405B<D, T> {
 
             // Step 1: Generate draft tokens
             let draft_start = Instant::now();
-            let draft_tokens = self.generate_draft_tokens(
-                prompt_tokens,
-                &generated,
-                num_draft,
-                eos_token,
-            )?;
+            let draft_tokens =
+                self.generate_draft_tokens(prompt_tokens, &generated, num_draft, eos_token)?;
             let draft_elapsed = draft_start.elapsed().as_millis() as u64;
 
             {
@@ -282,12 +274,8 @@ impl<D: DraftModel, T: TargetModel> Speculative405B<D, T> {
 
             // Step 2: Verify with 405B in single forward pass
             let verify_start = Instant::now();
-            let (accepted, next_token) = self.verify_draft_tokens(
-                prompt_tokens,
-                &generated,
-                &draft_tokens,
-                current_pos,
-            )?;
+            let (accepted, next_token) =
+                self.verify_draft_tokens(prompt_tokens, &generated, &draft_tokens, current_pos)?;
             let verify_elapsed = verify_start.elapsed().as_millis() as u64;
 
             {
@@ -344,7 +332,8 @@ impl<D: DraftModel, T: TargetModel> Speculative405B<D, T> {
         let mut draft_tokens = Vec::with_capacity(num_tokens);
 
         // Build context
-        let context: Vec<u32> = prompt_tokens.iter()
+        let context: Vec<u32> = prompt_tokens
+            .iter()
             .chain(generated.iter())
             .copied()
             .collect();
@@ -452,7 +441,9 @@ impl<D: DraftModel, T: TargetModel> Speculative405B<D, T> {
         }
 
         // All accepted - get next token from last position
-        let next_pos_logits = logits.i((0, draft_tokens.len(), ..))?.to_dtype(DType::F32)?;
+        let next_pos_logits = logits
+            .i((0, draft_tokens.len(), ..))?
+            .to_dtype(DType::F32)?;
         let next_token = if self.config.greedy_draft {
             next_pos_logits.argmax(0)?.to_scalar::<u32>()?
         } else {

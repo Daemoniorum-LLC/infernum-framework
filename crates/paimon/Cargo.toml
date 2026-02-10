@@ -10,12 +10,12 @@ description = "LLM Studio - Teaches arts, sciences, and gives good familiars"
 
 [dependencies]
 # Internal crates
-infernum-core = { path = "../infernum-core", version = "0.1.0" }
-beleth = { path = "../beleth", version = "0.1.0" }
-asmodeus = { path = "../asmodeus", version = "0.1.0" }
-stolas = { path = "../stolas", version = "0.1.0", default-features = false }
-dantalion = { path = "../dantalion", version = "0.1.0" }
-abaddon = { path = "../abaddon", version = "0.1.0" }
+infernum-core = { path = "../infernum-core", version = "0.2.0-rc.1" }
+beleth = { path = "../beleth", version = "0.2.0-rc.1" }
+asmodeus = { path = "../asmodeus", version = "0.2.0-rc.1" }
+stolas = { path = "../stolas", version = "0.2.0-rc.1", default-features = false }
+dantalion = { path = "../dantalion", version = "0.2.0-rc.1" }
+abaddon = { path = "../abaddon", version = "0.2.0-rc.1" }
 
 # Async
 tokio = { workspace = true }
@@ -47,3 +47,6 @@ rusqlite = { version = "0.38", features = ["bundled"] }
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
 tempfile = "3.14"
+
+[lints]
+workspace = true

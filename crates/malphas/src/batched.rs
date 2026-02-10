@@ -139,9 +139,23 @@ pub struct BatchedInferenceService {
     /// Shutdown signal.
     shutdown: Arc<RwLock<bool>>,
     /// Request submission channel.
-    request_tx: mpsc::Sender<(GenerateRequest, Priority, oneshot::Sender<Result<GenerateResponse>>)>,
+    request_tx: mpsc::Sender<(
+        GenerateRequest,
+        Priority,
+        oneshot::Sender<Result<GenerateResponse>>,
+    )>,
     /// Request receiver (moved to processor task).
-    request_rx: Arc<Mutex<Option<mpsc::Receiver<(GenerateRequest, Priority, oneshot::Sender<Result<GenerateResponse>>)>>>>,
+    request_rx: Arc<
+        Mutex<
+            Option<
+                mpsc::Receiver<(
+                    GenerateRequest,
+                    Priority,
+                    oneshot::Sender<Result<GenerateResponse>>,
+                )>,
+            >,
+        >,
+    >,
 }
 
 impl BatchedInferenceService {
@@ -166,7 +180,11 @@ impl BatchedInferenceService {
 
     /// Creates a new service with thermal management.
     #[must_use]
-    pub fn with_thermal(engine: Engine, config: BatchedServiceConfig, thermal: ThermalManager) -> Self {
+    pub fn with_thermal(
+        engine: Engine,
+        config: BatchedServiceConfig,
+        thermal: ThermalManager,
+    ) -> Self {
         let mut service = Self::new(engine, config);
         service.thermal = Some(Arc::new(thermal));
         service
@@ -250,18 +268,17 @@ impl BatchedInferenceService {
                 let request_id = request.request_id.clone();
 
                 // Store the response channel
-                pending_clone.lock().insert(
-                    request_id.clone(),
-                    PendingRequest { response_tx },
-                );
+                pending_clone
+                    .lock()
+                    .insert(request_id.clone(), PendingRequest { response_tx });
 
                 // Enqueue in scheduler
                 if !scheduler_clone.enqueue(request, priority) {
                     // Queue full - immediately respond with error
                     if let Some(pending_req) = pending_clone.lock().remove(&request_id) {
-                        let _ = pending_req.response_tx.send(Err(
-                            infernum_core::Error::internal("Request queue full"),
-                        ));
+                        let _ = pending_req
+                            .response_tx
+                            .send(Err(infernum_core::Error::internal("Request queue full")));
                     }
                 }
             }
@@ -330,7 +347,10 @@ impl BatchedInferenceService {
                     let generated_tokens = result
                         .as_ref()
                         .map(|r| {
-                            r.choices.first().map(|c| c.text.len() as u32 / 4).unwrap_or(0)
+                            r.choices
+                                .first()
+                                .map(|c| c.text.len() as u32 / 4)
+                                .unwrap_or(0)
                         })
                         .unwrap_or(0);
                     scheduler.complete_request(&request_id, generated_tokens);
@@ -347,7 +367,8 @@ impl BatchedInferenceService {
                     let mut s = stats.lock();
                     s.batches_processed += 1;
                     s.total_inference_time_ms += batch_time;
-                    s.avg_batch_time_ms = s.total_inference_time_ms as f64 / s.batches_processed as f64;
+                    s.avg_batch_time_ms =
+                        s.total_inference_time_ms as f64 / s.batches_processed as f64;
                 }
 
                 last_batch_time = std::time::Instant::now();
@@ -485,7 +506,10 @@ mod tests {
             .thermal_aware(false);
 
         assert_eq!(builder.config.scheduler.max_batch_size, 16);
-        assert_eq!(builder.config.scheduler.max_wait_time, Duration::from_millis(25));
+        assert_eq!(
+            builder.config.scheduler.max_wait_time,
+            Duration::from_millis(25)
+        );
         assert!(builder.config.scheduler.continuous_batching);
         assert!(!builder.config.thermal_aware);
     }

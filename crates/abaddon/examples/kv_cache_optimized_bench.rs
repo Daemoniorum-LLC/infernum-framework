@@ -68,12 +68,18 @@ fn main() -> anyhow::Result<()> {
 
     println!("=== Optimized KV Cache Benchmark ===\n");
 
-    let model_dir = Path::new("/home/crook/dev2/workspace/nyx/infernum/infernum-complete/test_models/qwen2.5-7b-int4-v3");
+    let model_dir = Path::new(
+        "/home/crook/dev2/workspace/nyx/infernum/infernum-complete/test_models/qwen2.5-7b-int4-v3",
+    );
     let config_path = model_dir.join("config.json");
     let tokenizer_path = model_dir.join("tokenizer.json");
 
     let device = Device::cuda_if_available(0).unwrap_or(Device::Cpu);
-    let dtype = if device.is_cuda() { DType::BF16 } else { DType::F32 };
+    let dtype = if device.is_cuda() {
+        DType::BF16
+    } else {
+        DType::F32
+    };
 
     println!("Device: {:?}, DType: {:?}", device, dtype);
     println!("KV Cache Mode: {}", mode);
@@ -113,7 +119,7 @@ fn main() -> anyhow::Result<()> {
                 granularity: QuantGranularity::PerToken,
             };
             Qwen2::load_with_flash_and_optimized_cache(config.clone(), vb, quant_config)?
-        }
+        },
     };
     println!("  Model ready!");
 
@@ -190,7 +196,9 @@ The field of AI research was born at a workshop at Dartmouth College in 1956. At
 
     // Calculate memory estimates
     let num_layers = config.num_hidden_layers;
-    let num_kv_heads = config.num_key_value_heads.unwrap_or(config.num_attention_heads);
+    let num_kv_heads = config
+        .num_key_value_heads
+        .unwrap_or(config.num_attention_heads);
     let head_dim = config.hidden_size / config.num_attention_heads;
     let total_seq_len = prompt_len + generated.len();
 
@@ -209,7 +217,7 @@ The field of AI research was born at a workshop at Dartmouth College in 1956. At
         2 * num_layers * num_kv_heads * quantized_len * head_dim * 1  // K+V
         + 2 * num_layers * num_kv_heads * quantized_len * 2  // scales
         // Recent portion (BF16)
-        + 2 * num_layers * num_kv_heads * recent_len * head_dim * 2;  // K+V
+        + 2 * num_layers * num_kv_heads * recent_len * head_dim * 2; // K+V
 
     println!("\n{}", "=".repeat(60));
     println!("RESULTS ({}):", mode);

@@ -28,6 +28,8 @@ fn from_candle_dtype(dtype: candle_core::DType) -> DType {
         candle_core::DType::BF16 => DType::BF16,
         candle_core::DType::F64 => DType::F32, // Map F64 to F32
         candle_core::DType::U8 | candle_core::DType::U32 | candle_core::DType::I64 => DType::I8,
+        // Handle new candle_core DType variants (I16, I32, F8E4M3, etc.)
+        _ => DType::F32,
     }
 }
 
@@ -571,11 +573,11 @@ pub mod cuda {
         /// Get recommended dtype for this GPU
         pub fn recommended_dtype(&self) -> DType {
             if self.has_bf16 {
-                DType::BF16  // Ada/Ampere - use BF16 for best perf
+                DType::BF16 // Ada/Ampere - use BF16 for best perf
             } else if self.has_tensor_cores {
-                DType::F16   // Volta/Turing - use FP16
+                DType::F16 // Volta/Turing - use FP16
             } else {
-                DType::F32   // Older GPUs - F32 only
+                DType::F32 // Older GPUs - F32 only
             }
         }
     }
@@ -620,12 +622,11 @@ pub mod cuda {
         fn query_capabilities(device_id: usize) -> Result<GpuCapabilities> {
             use cudarc::driver::CudaDevice as CudarcDevice;
 
-            let cuda_dev = CudarcDevice::new(device_id).map_err(|e| {
-                infernum_core::Error::Backend {
+            let cuda_dev =
+                CudarcDevice::new(device_id).map_err(|e| infernum_core::Error::Backend {
                     backend: "cuda".to_string(),
                     message: format!("Failed to query CUDA device: {}", e),
-                }
-            })?;
+                })?;
 
             // Get device attributes
             let compute_major = cuda_dev
@@ -670,16 +671,16 @@ pub mod cuda {
             // This is a fallback when direct memory query fails
             match (major, minor) {
                 // Ada Lovelace (RTX 40 series)
-                (8, 9) => 24 * 1024 * 1024 * 1024,  // RTX 4090/4500: 24GB typical
+                (8, 9) => 24 * 1024 * 1024 * 1024, // RTX 4090/4500: 24GB typical
                 // Ampere (RTX 30 series, A100)
-                (8, 6) => 12 * 1024 * 1024 * 1024,  // RTX 3080: 12GB typical
-                (8, 0) => 40 * 1024 * 1024 * 1024,  // A100: 40/80GB
+                (8, 6) => 12 * 1024 * 1024 * 1024, // RTX 3080: 12GB typical
+                (8, 0) => 40 * 1024 * 1024 * 1024, // A100: 40/80GB
                 // Turing (RTX 20 series)
-                (7, 5) => 8 * 1024 * 1024 * 1024,   // RTX 2070: 8GB typical
+                (7, 5) => 8 * 1024 * 1024 * 1024, // RTX 2070: 8GB typical
                 // Volta
-                (7, 0) => 16 * 1024 * 1024 * 1024,  // V100: 16/32GB
+                (7, 0) => 16 * 1024 * 1024 * 1024, // V100: 16/32GB
                 // Older
-                _ => 8 * 1024 * 1024 * 1024,        // Safe default
+                _ => 8 * 1024 * 1024 * 1024, // Safe default
             }
         }
 
@@ -1484,7 +1485,10 @@ pub mod webgpu {
             let head_dim = q.inner.dim(D::Minus1).map_err(Self::map_err)?;
             let scale = scale.unwrap_or(1.0 / (head_dim as f32).sqrt());
 
-            let k_t = k.inner.transpose(D::Minus2, D::Minus1).map_err(Self::map_err)?;
+            let k_t = k
+                .inner
+                .transpose(D::Minus2, D::Minus1)
+                .map_err(Self::map_err)?;
             let scores = q.inner.matmul(&k_t).map_err(Self::map_err)?;
             let scores = (scores * scale as f64).map_err(Self::map_err)?;
 
@@ -1506,15 +1510,28 @@ pub mod webgpu {
             eps: f32,
         ) -> Result<Self::Tensor> {
             let dtype = x.inner.dtype();
-            let x_f32 = x.inner.to_dtype(candle_core::DType::F32).map_err(Self::map_err)?;
-            let variance = x_f32.sqr().map_err(Self::map_err)?
-                .mean_keepdim(D::Minus1).map_err(Self::map_err)?;
-            let x_normed = x_f32.broadcast_div(
-                &(variance + eps as f64).map_err(Self::map_err)?
-                    .sqrt().map_err(Self::map_err)?
-            ).map_err(Self::map_err)?;
-            let result = x_normed.to_dtype(dtype).map_err(Self::map_err)?
-                .broadcast_mul(&weight.inner).map_err(Self::map_err)?;
+            let x_f32 = x
+                .inner
+                .to_dtype(candle_core::DType::F32)
+                .map_err(Self::map_err)?;
+            let variance = x_f32
+                .sqr()
+                .map_err(Self::map_err)?
+                .mean_keepdim(D::Minus1)
+                .map_err(Self::map_err)?;
+            let x_normed = x_f32
+                .broadcast_div(
+                    &(variance + eps as f64)
+                        .map_err(Self::map_err)?
+                        .sqrt()
+                        .map_err(Self::map_err)?,
+                )
+                .map_err(Self::map_err)?;
+            let result = x_normed
+                .to_dtype(dtype)
+                .map_err(Self::map_err)?
+                .broadcast_mul(&weight.inner)
+                .map_err(Self::map_err)?;
             Ok(WebGpuTensor::new(result))
         }
 
@@ -1526,17 +1543,30 @@ pub mod webgpu {
             eps: f32,
         ) -> Result<Self::Tensor> {
             let dtype = x.inner.dtype();
-            let x_f32 = x.inner.to_dtype(candle_core::DType::F32).map_err(Self::map_err)?;
+            let x_f32 = x
+                .inner
+                .to_dtype(candle_core::DType::F32)
+                .map_err(Self::map_err)?;
             let mean = x_f32.mean_keepdim(D::Minus1).map_err(Self::map_err)?;
             let x_centered = x_f32.broadcast_sub(&mean).map_err(Self::map_err)?;
-            let variance = x_centered.sqr().map_err(Self::map_err)?
-                .mean_keepdim(D::Minus1).map_err(Self::map_err)?;
-            let x_normed = x_centered.broadcast_div(
-                &(variance + eps as f64).map_err(Self::map_err)?
-                    .sqrt().map_err(Self::map_err)?
-            ).map_err(Self::map_err)?;
-            let mut result = x_normed.to_dtype(dtype).map_err(Self::map_err)?
-                .broadcast_mul(&weight.inner).map_err(Self::map_err)?;
+            let variance = x_centered
+                .sqr()
+                .map_err(Self::map_err)?
+                .mean_keepdim(D::Minus1)
+                .map_err(Self::map_err)?;
+            let x_normed = x_centered
+                .broadcast_div(
+                    &(variance + eps as f64)
+                        .map_err(Self::map_err)?
+                        .sqrt()
+                        .map_err(Self::map_err)?,
+                )
+                .map_err(Self::map_err)?;
+            let mut result = x_normed
+                .to_dtype(dtype)
+                .map_err(Self::map_err)?
+                .broadcast_mul(&weight.inner)
+                .map_err(Self::map_err)?;
             if let Some(b) = bias {
                 result = result.broadcast_add(&b.inner).map_err(Self::map_err)?;
             }
@@ -1578,7 +1608,10 @@ pub mod webgpu {
         }
 
         fn transpose(&self, x: &Self::Tensor) -> Result<Self::Tensor> {
-            let result = x.inner.transpose(D::Minus2, D::Minus1).map_err(Self::map_err)?;
+            let result = x
+                .inner
+                .transpose(D::Minus2, D::Minus1)
+                .map_err(Self::map_err)?;
             Ok(WebGpuTensor::new(result))
         }
 

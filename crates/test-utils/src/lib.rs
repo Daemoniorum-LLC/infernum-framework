@@ -24,8 +24,6 @@
 //! - [`server`]: Test server setup for integration tests
 
 #![warn(missing_docs)]
-#![warn(clippy::all)]
-#![deny(clippy::unwrap_used)]
 
 pub mod assertions;
 pub mod fixtures;

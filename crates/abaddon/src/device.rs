@@ -131,7 +131,11 @@ pub fn print_devices() {
     eprintln!();
 
     for (i, device) in devices.iter().enumerate() {
-        let recommended = if device.recommended { " \x1b[32m(recommended)\x1b[0m" } else { "" };
+        let recommended = if device.recommended {
+            " \x1b[32m(recommended)\x1b[0m"
+        } else {
+            ""
+        };
         let device_type = match &device.device_type {
             DeviceType::Cpu => "CPU".to_string(),
             DeviceType::Cuda { device_id } => format!("CUDA:{}", device_id),
@@ -139,11 +143,20 @@ pub fn print_devices() {
             DeviceType::WebGpu => "WebGPU".to_string(),
         };
 
-        eprintln!("  {}. \x1b[1m{}\x1b[0m [{}]{}", i + 1, device.name, device_type, recommended);
+        eprintln!(
+            "  {}. \x1b[1m{}\x1b[0m [{}]{}",
+            i + 1,
+            device.name,
+            device_type,
+            recommended
+        );
 
         let mem_gb = device.total_memory as f64 / (1024.0 * 1024.0 * 1024.0);
         let avail_gb = device.available_memory as f64 / (1024.0 * 1024.0 * 1024.0);
-        eprintln!("     Memory: {:.1} GB ({:.1} GB available)", mem_gb, avail_gb);
+        eprintln!(
+            "     Memory: {:.1} GB ({:.1} GB available)",
+            mem_gb, avail_gb
+        );
 
         if let Some((major, minor)) = device.compute_capability {
             eprintln!("     Compute: {}.{}", major, minor);
@@ -252,7 +265,7 @@ fn enumerate_cuda_devices() -> Vec<DeviceInfo> {
         Ok(devices) => {
             tracing::info!(count = devices.len(), "CUDA device enumeration succeeded");
             devices
-        }
+        },
         Err(e) => {
             let msg = if let Some(s) = e.downcast_ref::<&str>() {
                 s.to_string()
@@ -265,7 +278,7 @@ fn enumerate_cuda_devices() -> Vec<DeviceInfo> {
             // Provide WSL-specific guidance if applicable
             check_wsl_cuda_guidance();
             Vec::new()
-        }
+        },
     }
 }
 
@@ -286,11 +299,11 @@ fn enumerate_cuda_devices_inner() -> Vec<DeviceInfo> {
         Ok(count) => {
             tracing::debug!(count, "cudarc device count");
             count as usize
-        }
+        },
         Err(e) => {
             tracing::warn!(error = ?e, "Failed to get CUDA device count");
             return devices;
-        }
+        },
     };
 
     for device_id in 0..device_count {
@@ -304,7 +317,8 @@ fn enumerate_cuda_devices_inner() -> Vec<DeviceInfo> {
                 .unwrap_or(0) as u32;
 
             // Get device name
-            let name = cuda_device_name(device_id).unwrap_or_else(|| format!("CUDA Device {}", device_id));
+            let name =
+                cuda_device_name(device_id).unwrap_or_else(|| format!("CUDA Device {}", device_id));
 
             // Estimate memory based on compute capability
             let total_memory = estimate_cuda_memory(compute_major, compute_minor);
@@ -338,7 +352,7 @@ fn cuda_device_name(device_id: usize) -> Option<String> {
             // CudaDevice doesn't expose name directly, but we can infer from ordinal
             // For now, return a generic name - the actual GPU info is in DeviceInfo
             Some(format!("CUDA Device {}", device_id))
-        }
+        },
         Err(_) => None,
     }
 }
@@ -347,12 +361,12 @@ fn cuda_device_name(device_id: usize) -> Option<String> {
 fn estimate_cuda_memory(major: u32, minor: u32) -> usize {
     // Common VRAM sizes for different compute capabilities
     match (major, minor) {
-        (8, 9) => 24 * 1024 * 1024 * 1024,  // RTX 4090/4500: 24GB
-        (8, 6) => 12 * 1024 * 1024 * 1024,  // RTX 3080: 12GB
-        (8, 0) => 40 * 1024 * 1024 * 1024,  // A100: 40/80GB
-        (7, 5) => 8 * 1024 * 1024 * 1024,   // RTX 2070: 8GB
-        (7, 0) => 16 * 1024 * 1024 * 1024,  // V100: 16/32GB
-        _ => 8 * 1024 * 1024 * 1024,        // Default
+        (8, 9) => 24 * 1024 * 1024 * 1024, // RTX 4090/4500: 24GB
+        (8, 6) => 12 * 1024 * 1024 * 1024, // RTX 3080: 12GB
+        (8, 0) => 40 * 1024 * 1024 * 1024, // A100: 40/80GB
+        (7, 5) => 8 * 1024 * 1024 * 1024,  // RTX 2070: 8GB
+        (7, 0) => 16 * 1024 * 1024 * 1024, // V100: 16/32GB
+        _ => 8 * 1024 * 1024 * 1024,       // Default
     }
 }
 
@@ -395,7 +409,9 @@ fn apple_gpu_name() -> String {
             if cpu.contains("Apple M") {
                 // Extract M-series chip name
                 for part in cpu.split_whitespace() {
-                    if part.starts_with('M') && part.chars().nth(1).map_or(false, |c| c.is_numeric()) {
+                    if part.starts_with('M')
+                        && part.chars().nth(1).map_or(false, |c| c.is_numeric())
+                    {
                         return format!("Apple {} GPU", part);
                     }
                 }
@@ -542,7 +558,10 @@ mod tests {
             recommended: true,
         };
 
-        assert!(matches!(info.device_type, DeviceType::Cuda { device_id: 0 }));
+        assert!(matches!(
+            info.device_type,
+            DeviceType::Cuda { device_id: 0 }
+        ));
         assert!(info.has_tensor_cores);
         assert!(info.supports_bf16);
         assert!(info.recommended);
@@ -698,7 +717,9 @@ mod tests {
         // Should always have at least CPU
         assert!(!devices.is_empty());
 
-        let has_cpu = devices.iter().any(|d| matches!(d.device_type, DeviceType::Cpu));
+        let has_cpu = devices
+            .iter()
+            .any(|d| matches!(d.device_type, DeviceType::Cpu));
         assert!(has_cpu, "CPU should always be available");
     }
 
@@ -772,15 +793,18 @@ mod tests {
         let device = select_device_for_model(100_000, None).expect("select device");
         // Just verify it returns something valid
         match device {
-            DeviceType::Cpu | DeviceType::Cuda { .. } | DeviceType::Metal { .. } | DeviceType::WebGpu => (),
+            DeviceType::Cpu
+            | DeviceType::Cuda { .. }
+            | DeviceType::Metal { .. }
+            | DeviceType::WebGpu => (),
         }
     }
 
     #[test]
     fn test_select_device_respects_preference() {
         // When preferring CPU with sufficient memory, should use CPU
-        let device = select_device_for_model(1_000_000, Some(DeviceType::Cpu))
-            .expect("select device");
+        let device =
+            select_device_for_model(1_000_000, Some(DeviceType::Cpu)).expect("select device");
 
         assert_eq!(device, DeviceType::Cpu);
     }

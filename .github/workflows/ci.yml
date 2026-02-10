@@ -2,15 +2,18 @@ name: CI
 
 on:
   push:
-    branches: [main, development]
+    branches: [main, develop]
   pull_request:
-    branches: [main, development]
+    branches: [main, develop]
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   # Workaround for aws-lc-sys compiler bug check
   AWS_LC_SYS_PREBUILT_NASM: 1
+  # Platform-independent features (excludes cuda, metal which require hardware)
+  # Note: lance temporarily excluded due to arrow version incompatibility (tracked in #33)
+  SAFE_FEATURES: "--features llama-cpp,holotensor,integration-tests"
 
 jobs:
   check:
@@ -21,7 +24,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run cargo check
-        run: cargo check --workspace --all-features
+        run: cargo check --workspace ${{ env.SAFE_FEATURES }}
 
   fmt:
     name: Format
@@ -44,21 +47,39 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Run cargo clippy
-        run: cargo clippy --workspace --all-features -- -D warnings
+        run: cargo clippy --workspace ${{ env.SAFE_FEATURES }} -- -D warnings
 
   test:
-    name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+    name: Test
+    runs-on: ubuntu-latest
+    # Note: macOS and Windows temporarily excluded due to arcanum dependency issues:
+    # - macOS: arcanum-primitives 0.1.2 uses x86_64-only SIMD intrinsics on ARM
+    # - Windows: sha2-asm 0.6.4 linker failures with MSVC
+    # TODO: Re-enable cross-platform tests when arcanum dependencies are fixed
+    env:
+      # Disable incremental compilation to save disk space
+      CARGO_INCREMENTAL: 0
     steps:
+      - name: Free disk space
+        run: |
+          echo "=== Disk space before cleanup ==="
+          df -h /
+          # Remove unnecessary pre-installed software
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker system prune -af || true
+          echo "=== Disk space after cleanup ==="
+          df -h /
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Limit cache size to prevent bloat
+          cache-on-failure: false
       - name: Run tests
-        run: cargo test --workspace --all-features
+        run: cargo test --workspace --features llama-cpp,holotensor,integration-tests
 
   docs:
     name: Documentation
@@ -68,7 +89,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build documentation
-        run: cargo doc --workspace --no-deps --all-features
+        run: cargo doc --workspace --no-deps ${{ env.SAFE_FEATURES }}
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -82,7 +103,7 @@ jobs:
           toolchain: "1.91"
       - uses: Swatinem/rust-cache@v2
       - name: Check MSRV
-        run: cargo check --workspace --all-features
+        run: cargo check --workspace ${{ env.SAFE_FEATURES }}
 
   security:
     name: Security Audit

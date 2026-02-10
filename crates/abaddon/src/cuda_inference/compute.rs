@@ -148,6 +148,14 @@ impl ComputeEngine {
 
         let kv_cache = KvCache::new(&config, max_seq_len, Arc::clone(&device))?;
 
+        tracing::info!(
+            "ComputeEngine config: num_heads={}, kv_heads={}, head_dim={}, hidden={}",
+            config.num_attention_heads,
+            config.num_kv_heads,
+            config.head_dim,
+            config.hidden_size
+        );
+
         // Allocate activation buffers
         let hidden_buffer = GpuTensor::zeros(
             vec![max_seq_len, config.hidden_size],
@@ -206,18 +214,11 @@ impl ComputeEngine {
         )?;
 
         // Position buffer
-        let positions = GpuTensor::zeros(
-            vec![max_seq_len],
-            GpuDType::I32,
-            Arc::clone(&device),
-        )?;
+        let positions = GpuTensor::zeros(vec![max_seq_len], GpuDType::I32, Arc::clone(&device))?;
 
         // Token IDs buffer for embedding lookup
-        let token_ids_buffer = GpuTensor::zeros(
-            vec![max_seq_len],
-            GpuDType::I32,
-            Arc::clone(&device),
-        )?;
+        let token_ids_buffer =
+            GpuTensor::zeros(vec![max_seq_len], GpuDType::I32, Arc::clone(&device))?;
 
         // Logits buffer - pre-allocated to avoid allocation during forward
         let logits_buffer = GpuTensor::zeros(
@@ -266,23 +267,30 @@ impl ComputeEngine {
         match weight.format {
             QuantFormat::Int4 => {
                 // Use fused INT4 dequant + GEMM (symmetric quantization)
-                let scales = weight.scales.as_ref()
+                let scales = weight
+                    .scales
+                    .as_ref()
                     .ok_or_else(|| InferenceError::Shape {
                         expected: "INT4 weights require scales".to_string(),
                         got: "no scales".to_string(),
                     })?;
 
-                self.fused_gemm.forward_int4(input, &weight.data, scales, output)
-            }
+                self.fused_gemm
+                    .forward_int4(input, &weight.data, scales, output)
+            },
             QuantFormat::Gptq => {
                 // GPTQ uses asymmetric INT4 with zero points and optional g_idx for act_order
-                let scales = weight.scales.as_ref()
+                let scales = weight
+                    .scales
+                    .as_ref()
                     .ok_or_else(|| InferenceError::Shape {
                         expected: "GPTQ weights require scales".to_string(),
                         got: "no scales".to_string(),
                     })?;
 
-                let zeros = weight.zero_points.as_ref()
+                let zeros = weight
+                    .zero_points
+                    .as_ref()
                     .ok_or_else(|| InferenceError::Shape {
                         expected: "GPTQ weights require zero_points".to_string(),
                         got: "no zero_points".to_string(),
@@ -298,16 +306,20 @@ impl ComputeEngine {
                     output,
                     weight.block_size,
                 )
-            }
+            },
             QuantFormat::Awq => {
                 // AWQ uses asymmetric INT4 with zero points (sequential groups, no g_idx)
-                let scales = weight.scales.as_ref()
+                let scales = weight
+                    .scales
+                    .as_ref()
                     .ok_or_else(|| InferenceError::Shape {
                         expected: "AWQ weights require scales".to_string(),
                         got: "no scales".to_string(),
                     })?;
 
-                let zeros = weight.zero_points.as_ref()
+                let zeros = weight
+                    .zero_points
+                    .as_ref()
                     .ok_or_else(|| InferenceError::Shape {
                         expected: "AWQ weights require zero_points".to_string(),
                         got: "no zero_points".to_string(),
@@ -322,15 +334,23 @@ impl ComputeEngine {
                     output,
                     weight.block_size,
                 )
-            }
+            },
             QuantFormat::F16 | QuantFormat::BF16 => {
                 // Direct F16 GEMM
-                self.fused_gemm.forward_f16(input, &weight.data, output)
-            }
+                if weight.transposed {
+                    // Weight is in PyTorch format [out, in], use A @ B^T
+                    self.fused_gemm.forward_f16_bt(input, &weight.data, output)
+                } else {
+                    // Weight is in standard format [in, out], use A @ B
+                    self.fused_gemm.forward_f16(input, &weight.data, output)
+                }
+            },
             QuantFormat::Int8 => {
                 // INT8 not yet implemented
-                Err(InferenceError::UnsupportedArch("INT8 quantization not yet supported".to_string()))
-            }
+                Err(InferenceError::UnsupportedArch(
+                    "INT8 quantization not yet supported".to_string(),
+                ))
+            },
         }
     }
 
@@ -356,14 +376,32 @@ impl ComputeEngine {
 
         // Q projection: [seq_len, hidden_size] @ [hidden_size, num_heads * head_dim]
         let mut q_view = self.q_buffer.slice_dim0(0, seq_len)?;
+        tracing::debug!(
+            "Q projection: hidden_view={:?}, q_proj={:?}, q_view={:?}",
+            hidden_view.shape(),
+            layer.q_proj.data.shape(),
+            q_view.shape()
+        );
         self.linear(&hidden_view, &layer.q_proj, &mut q_view)?;
 
         // K projection: [seq_len, hidden_size] @ [hidden_size, num_kv_heads * head_dim]
         let mut k_view = self.k_buffer.slice_dim0(0, seq_len)?;
+        tracing::debug!(
+            "K projection: hidden_view={:?}, k_proj={:?}, k_view={:?}",
+            hidden_view.shape(),
+            layer.k_proj.data.shape(),
+            k_view.shape()
+        );
         self.linear(&hidden_view, &layer.k_proj, &mut k_view)?;
 
         // V projection: [seq_len, hidden_size] @ [hidden_size, num_kv_heads * head_dim]
         let mut v_view = self.v_buffer.slice_dim0(0, seq_len)?;
+        tracing::debug!(
+            "V projection: hidden_view={:?}, v_proj={:?}, v_view={:?}",
+            hidden_view.shape(),
+            layer.v_proj.data.shape(),
+            v_view.shape()
+        );
         self.linear(&hidden_view, &layer.v_proj, &mut v_view)?;
 
         // Reshape Q, K, V to [seq_len, heads, head_dim]
@@ -405,14 +443,24 @@ impl ComputeEngine {
                     RopeScaling::Dynamic(factor) => 1.0 / factor,
                     RopeScaling::Yarn { factor, .. } => 1.0 / factor,
                 }
-            }
+            },
         };
 
         let mut q_rope = q_reshaped;
         let mut k_rope = k_reshaped;
 
-        self.rope.forward(&mut q_rope, &pos_view, self.config.rope_theta, scaling_factor)?;
-        self.rope.forward(&mut k_rope, &pos_view, self.config.rope_theta, scaling_factor)?;
+        self.rope.forward(
+            &mut q_rope,
+            &pos_view,
+            self.config.rope_theta,
+            scaling_factor,
+        )?;
+        self.rope.forward(
+            &mut k_rope,
+            &pos_view,
+            self.config.rope_theta,
+            scaling_factor,
+        )?;
 
         // Update KV cache for this layer
         // Note: advance() is called after all layers in forward()
@@ -439,6 +487,13 @@ impl ComputeEngine {
             self.config.head_dim,
         ])?;
 
+        tracing::debug!(
+            "Flash Attention: q_4d={:?}, k_cached={:?}, v_cached={:?}, out={:?}",
+            q_4d.shape(),
+            k_cached.shape(),
+            v_cached.shape(),
+            attn_out_4d.shape()
+        );
         self.attention.forward(
             &q_4d,
             &k_cached,
@@ -483,22 +538,26 @@ impl ComputeEngine {
         let mut mlp_hidden = self.mlp_buffer.slice_dim0(0, seq_len)?;
         match self.config.hidden_act {
             Activation::SiLU => {
-                self.activation.silu_mul(&gate_out, &up_out, &mut mlp_hidden)?;
-            }
+                self.activation
+                    .silu_mul(&gate_out, &up_out, &mut mlp_hidden)?;
+            },
             Activation::GELU => {
                 // GELU doesn't have a fused version, do separately
-                self.activation.forward(&gate_out, &mut mlp_hidden, ActivationType::GELUFast)?;
+                self.activation
+                    .forward(&gate_out, &mut mlp_hidden, ActivationType::GELUFast)?;
                 self.mul_inplace(&mut mlp_hidden, &up_out, seq_len)?;
-            }
+            },
             Activation::GELUApprox => {
-                self.activation.forward(&gate_out, &mut mlp_hidden, ActivationType::GELUTanh)?;
+                self.activation
+                    .forward(&gate_out, &mut mlp_hidden, ActivationType::GELUTanh)?;
                 self.mul_inplace(&mut mlp_hidden, &up_out, seq_len)?;
-            }
+            },
             Activation::ReLU | Activation::ReLU2 => {
                 // ReLU and ReLU2 both use ReLU kernel (ReLU2 would need squaring, not yet implemented)
-                self.activation.forward(&gate_out, &mut mlp_hidden, ActivationType::ReLU)?;
+                self.activation
+                    .forward(&gate_out, &mut mlp_hidden, ActivationType::ReLU)?;
                 self.mul_inplace(&mut mlp_hidden, &up_out, seq_len)?;
-            }
+            },
         }
 
         // Down projection: [seq_len, intermediate_size] @ [intermediate_size, hidden_size]
@@ -544,8 +603,10 @@ impl ComputeEngine {
         let mut logits = self.logits_buffer.slice_dim0(0, seq_len)?;
 
         if let Some(ref lm_head) = weights.lm_head {
-            // Separate LM head: fused RMSNorm + GEMM
-            self.fused_rmsnorm_proj.forward_f16(
+            // Separate LM head: fused RMSNorm + GEMM with B transposed
+            // lm_head is stored in PyTorch format [vocab_size, hidden_dim], same as embed_tokens
+            // We compute: hidden @ lm_head^T to get [seq, vocab_size]
+            self.fused_rmsnorm_proj.forward_f16_bt(
                 &hidden,
                 &weights.final_norm.weight,
                 lm_head,
@@ -564,7 +625,7 @@ impl ComputeEngine {
             )?;
         } else {
             return Err(InferenceError::ModelLoad(
-                "No LM head and embeddings not tied".to_string()
+                "No LM head and embeddings not tied".to_string(),
             ));
         }
 
@@ -599,6 +660,92 @@ impl ComputeEngine {
         self.forward(&[token_id], weights, self.current_pos)
     }
 
+    // ========================================================================
+    // Lazy Loading Methods
+    //
+    // These methods work with LazyWeightStore, loading layers on-demand
+    // for memory-efficient inference of large models.
+    // ========================================================================
+
+    /// Forward pass with lazy layer loading.
+    ///
+    /// Loads each layer on-demand, enabling models larger than VRAM.
+    pub fn forward_lazy(
+        &mut self,
+        input_ids: &[u32],
+        weights: &mut super::lazy_weight_store::LazyWeightStore,
+        start_pos: usize,
+    ) -> Result<GpuTensor, InferenceError> {
+        let seq_len = input_ids.len();
+
+        // 1. Token embedding lookup
+        let mut hidden = self.embed_tokens(&weights.embed_tokens, input_ids)?;
+
+        // 2. Forward through all layers (lazy loading)
+        for layer_idx in 0..weights.num_layers() {
+            let layer = weights.get_layer(layer_idx)?;
+            self.layer_forward(&mut hidden, layer, seq_len, start_pos)?;
+        }
+
+        // Advance KV cache position after all layers updated
+        self.kv_cache.advance(seq_len);
+
+        // 3. Final norm + 4. LM head projection (fused)
+        let mut logits = self.logits_buffer.slice_dim0(0, seq_len)?;
+
+        if let Some(ref lm_head) = weights.lm_head {
+            // Separate LM head with B transposed (PyTorch format [vocab_size, hidden_dim])
+            self.fused_rmsnorm_proj.forward_f16_bt(
+                &hidden,
+                &weights.final_norm.weight,
+                lm_head,
+                &mut logits,
+                self.config.rms_norm_eps,
+            )?;
+        } else if weights.config.tie_word_embeddings {
+            // Tied embeddings (same transposed format)
+            self.fused_rmsnorm_proj.forward_f16_bt(
+                &hidden,
+                &weights.final_norm.weight,
+                &weights.embed_tokens,
+                &mut logits,
+                self.config.rms_norm_eps,
+            )?;
+        } else {
+            return Err(InferenceError::ModelLoad(
+                "No LM head and embeddings not tied".to_string(),
+            ));
+        }
+
+        self.current_pos = start_pos + seq_len;
+
+        // Store logits for get_logits()
+        let logits_for_storage = logits.reshape(logits.shape().to_vec())?;
+        self.last_logits = Some(logits_for_storage);
+
+        Ok(logits)
+    }
+
+    /// Prefill phase with lazy layer loading.
+    pub fn prefill_lazy(
+        &mut self,
+        input_ids: &[u32],
+        weights: &mut super::lazy_weight_store::LazyWeightStore,
+    ) -> Result<GpuTensor, InferenceError> {
+        self.kv_cache.reset();
+        self.current_pos = 0;
+        self.forward_lazy(input_ids, weights, 0)
+    }
+
+    /// Decode phase with lazy layer loading.
+    pub fn decode_lazy(
+        &mut self,
+        token_id: u32,
+        weights: &mut super::lazy_weight_store::LazyWeightStore,
+    ) -> Result<GpuTensor, InferenceError> {
+        self.forward_lazy(&[token_id], weights, self.current_pos)
+    }
+
     /// Embed tokens by looking up in embedding table using GPU kernel.
     fn embed_tokens(
         &mut self,
@@ -622,7 +769,8 @@ impl ComputeEngine {
         let mut hidden = self.hidden_buffer.slice_dim0(0, seq_len)?;
 
         // Use GPU kernel to gather embeddings
-        self.embedding.forward(embed_table, &token_ids, &mut hidden)?;
+        self.embedding
+            .forward(embed_table, &token_ids, &mut hidden)?;
 
         Ok(hidden)
     }
@@ -687,10 +835,11 @@ impl ComputeEngine {
     /// Returns logits for the last token in the sequence.
     /// Shape: [vocab_size] as F16.
     pub fn get_logits(&self) -> Result<GpuTensor, InferenceError> {
-        let logits = self.last_logits.as_ref()
-            .ok_or_else(|| InferenceError::Kernel(
-                "No logits available - call forward/prefill/decode first".to_string()
-            ))?;
+        let logits = self.last_logits.as_ref().ok_or_else(|| {
+            InferenceError::Kernel(
+                "No logits available - call forward/prefill/decode first".to_string(),
+            )
+        })?;
 
         let shape = logits.shape();
         if shape.len() != 2 {
@@ -732,6 +881,124 @@ impl ComputeEngine {
     /// Faster than synchronize_all() when only compute results are needed.
     pub fn synchronize_compute(&self) -> Result<(), InferenceError> {
         self.streams.synchronize_compute()
+    }
+
+    // ========================================================================
+    // Tiered Storage Methods
+    //
+    // These methods work with TieredWeightStore, providing efficient
+    // inference for models spanning VRAM, RAM, and NVMe tiers.
+    // ========================================================================
+
+    /// Forward pass with tiered weight storage.
+    ///
+    /// Uses the 3-tier memory hierarchy (VRAM ← RAM ← NVMe) for efficient
+    /// inference of models larger than VRAM. Includes prefetching for
+    /// sequential layer access patterns.
+    ///
+    /// # Arguments
+    /// * `input_ids` - Input token IDs
+    /// * `weights` - TieredWeightStore managing multi-tier weights
+    /// * `start_pos` - Starting position in sequence (for KV cache)
+    /// * `prefetch_depth` - How many layers ahead to prefetch (0 to disable)
+    pub fn forward_tiered(
+        &mut self,
+        input_ids: &[u32],
+        weights: &mut super::tiered::TieredWeightStore,
+        start_pos: usize,
+        prefetch_depth: usize,
+    ) -> Result<GpuTensor, InferenceError> {
+        let seq_len = input_ids.len();
+        let num_layers = weights.num_layers();
+
+        // 1. Token embedding lookup (shared weights are always in VRAM)
+        let shared = weights
+            .shared()
+            .ok_or_else(|| InferenceError::ModelLoad("Shared weights not loaded".to_string()))?;
+        let mut hidden = self.embed_tokens(&shared.embed_tokens, input_ids)?;
+
+        // 2. Forward through all layers with prefetching
+        for layer_idx in 0..num_layers {
+            // Request prefetch of upcoming layers
+            if prefetch_depth > 0 {
+                weights.prefetch(layer_idx, prefetch_depth);
+            }
+
+            // Get layer (may promote from RAM/NVMe if not in VRAM)
+            let layer = weights.get_layer(layer_idx).map_err(|e| {
+                InferenceError::ModelLoad(format!("Failed to get layer {}: {}", layer_idx, e))
+            })?;
+
+            self.layer_forward(&mut hidden, layer, seq_len, start_pos)?;
+        }
+
+        // Advance KV cache position after all layers updated
+        self.kv_cache.advance(seq_len);
+
+        // 3. Final norm + 4. LM head projection (fused)
+        let mut logits = self.logits_buffer.slice_dim0(0, seq_len)?;
+
+        let shared = weights
+            .shared()
+            .ok_or_else(|| InferenceError::ModelLoad("Shared weights not loaded".to_string()))?;
+
+        if let Some(ref lm_head) = shared.lm_head {
+            // Separate LM head with B transposed
+            self.fused_rmsnorm_proj.forward_f16_bt(
+                &hidden,
+                &shared.final_norm.weight,
+                lm_head,
+                &mut logits,
+                self.config.rms_norm_eps,
+            )?;
+        } else if self.config.tie_word_embeddings {
+            // Tied embeddings
+            self.fused_rmsnorm_proj.forward_f16_bt(
+                &hidden,
+                &shared.final_norm.weight,
+                &shared.embed_tokens,
+                &mut logits,
+                self.config.rms_norm_eps,
+            )?;
+        } else {
+            return Err(InferenceError::ModelLoad(
+                "No LM head and embeddings not tied".to_string(),
+            ));
+        }
+
+        self.current_pos = start_pos + seq_len;
+
+        // Store logits for get_logits()
+        let logits_for_storage = logits.reshape(logits.shape().to_vec())?;
+        self.last_logits = Some(logits_for_storage);
+
+        Ok(logits)
+    }
+
+    /// Prefill phase with tiered storage.
+    ///
+    /// Processes the entire prompt, resetting the KV cache.
+    pub fn prefill_tiered(
+        &mut self,
+        input_ids: &[u32],
+        weights: &mut super::tiered::TieredWeightStore,
+        prefetch_depth: usize,
+    ) -> Result<GpuTensor, InferenceError> {
+        self.kv_cache.reset();
+        self.current_pos = 0;
+        self.forward_tiered(input_ids, weights, 0, prefetch_depth)
+    }
+
+    /// Decode phase with tiered storage.
+    ///
+    /// Processes a single new token for autoregressive generation.
+    pub fn decode_tiered(
+        &mut self,
+        token_id: u32,
+        weights: &mut super::tiered::TieredWeightStore,
+        prefetch_depth: usize,
+    ) -> Result<GpuTensor, InferenceError> {
+        self.forward_tiered(&[token_id], weights, self.current_pos, prefetch_depth)
     }
 }
 

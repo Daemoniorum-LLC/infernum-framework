@@ -15,7 +15,7 @@ prometheus = ["metrics-exporter-prometheus"]
 jaeger = []
 
 [dependencies]
-infernum-core = { path = "../infernum-core", version = "0.1.0" }
+infernum-core = { path = "../infernum-core", version = "0.2.0-rc.1" }
 
 # Async
 tokio = { workspace = true }
@@ -46,3 +46,6 @@ parking_lot = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
 tempfile = "3.10"
+
+[lints]
+workspace = true

@@ -13,9 +13,6 @@
 //! - **Sigil Specialist**: Training for Sigil-specialized models (Jormungandr)
 
 #![warn(missing_docs)]
-#![warn(clippy::all)]
-#![warn(clippy::pedantic)]
-#![deny(clippy::unwrap_used)]
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::must_use_candidate)]
 
@@ -26,6 +23,10 @@ pub mod sigil_specialist;
 pub mod trainer;
 
 pub use config::{LoraConfig, TrainingConfig};
+pub use gradient::{
+    clip_grad_norm, compute_grad_norm, CrossEntropyLoss, DPOLoss, DPOOutput, GradientAccumulator,
+    GradientConfig, GradientScaler, Reduction, SFTLoss,
+};
 pub use lora::{find_target_modules, LoraLayer, LoraModel};
 pub use sigil_specialist::{
     CheckpointCollector, SigilDataset, SigilTrainer, SigilTrainingConfig, Specialization,
@@ -34,10 +35,6 @@ pub use sigil_specialist::{
 pub use trainer::{
     AdamW, DataLoader, Dataset, InMemoryDataset, LRScheduler, Trainer, TrainerTrait, TrainingRun,
     TrainingSample, TrainingStatus,
-};
-pub use gradient::{
-    clip_grad_norm, compute_grad_norm, CrossEntropyLoss, DPOLoss, DPOOutput, GradientAccumulator,
-    GradientConfig, GradientScaler, Reduction, SFTLoss,
 };
 
 #[cfg(test)]
@@ -219,7 +216,10 @@ mod tests {
             },
         )
         .with_specialization(Specialization::MigrationExpertise);
-        assert!(matches!(pair.specialization, Specialization::MigrationExpertise));
+        assert!(matches!(
+            pair.specialization,
+            Specialization::MigrationExpertise
+        ));
     }
 
     // === Trainer Module Tests ===
@@ -504,15 +504,23 @@ mod tests {
     fn test_sigil_dataset_filter_by_quality() {
         let mut dataset = SigilDataset::new("test");
         dataset.add(
-            TrainingPair::new("a", "b", TrainingSource::Curated {
-                curator: "t".to_string(),
-            })
+            TrainingPair::new(
+                "a",
+                "b",
+                TrainingSource::Curated {
+                    curator: "t".to_string(),
+                },
+            )
             .with_quality(0.8),
         );
         dataset.add(
-            TrainingPair::new("c", "d", TrainingSource::Curated {
-                curator: "t".to_string(),
-            })
+            TrainingPair::new(
+                "c",
+                "d",
+                TrainingSource::Curated {
+                    curator: "t".to_string(),
+                },
+            )
             .with_quality(0.4),
         );
 
@@ -524,9 +532,13 @@ mod tests {
     fn test_sigil_dataset_stats() {
         let mut dataset = SigilDataset::new("test");
         dataset.add(
-            TrainingPair::new("a", "b", TrainingSource::Curated {
-                curator: "t".to_string(),
-            })
+            TrainingPair::new(
+                "a",
+                "b",
+                TrainingSource::Curated {
+                    curator: "t".to_string(),
+                },
+            )
             .with_quality(0.8)
             .with_specialization(Specialization::SyntaxCompletion),
         );
@@ -598,7 +610,10 @@ mod tests {
     #[test]
     fn test_trainer_new() {
         let trainer = Trainer::new("/tmp/output", "test-model");
-        assert_eq!(trainer.output_dir(), &std::path::PathBuf::from("/tmp/output"));
+        assert_eq!(
+            trainer.output_dir(),
+            &std::path::PathBuf::from("/tmp/output")
+        );
     }
 
     #[test]

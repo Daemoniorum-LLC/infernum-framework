@@ -55,7 +55,8 @@ fn main() -> Result<()> {
     println!("Prompt: \"{}\"\n", prompt);
 
     // Tokenize
-    let encoding = tokenizer.encode(prompt, false)
+    let encoding = tokenizer
+        .encode(prompt, false)
         .map_err(|e| anyhow::anyhow!("Tokenization failed: {}", e))?;
     let mut tokens: Vec<u32> = encoding.get_ids().to_vec();
     println!("Input tokens: {:?}\n", tokens);
@@ -101,7 +102,8 @@ fn main() -> Result<()> {
     println!("\n");
 
     // Decode full output
-    let output_text = tokenizer.decode(&tokens, false)
+    let output_text = tokenizer
+        .decode(&tokens, false)
         .map_err(|e| anyhow::anyhow!("Decode failed: {}", e))?;
     println!("Full output: {}", output_text);
 

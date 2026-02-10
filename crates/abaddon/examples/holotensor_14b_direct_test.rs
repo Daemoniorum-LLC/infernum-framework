@@ -25,10 +25,14 @@ fn main() -> Result<()> {
     println!("  Direct Test: Qwen2.5-14B HoloTensor (No Lazy Loading)");
     println!("========================================================================\n");
 
-    let hct_dir = PathBuf::from("/home/crook/.cache/infernum/models/hct/Qwen--Qwen2.5-14B-HoloTensor");
+    let hct_dir =
+        PathBuf::from("/home/crook/.cache/infernum/models/hct/Qwen--Qwen2.5-14B-HoloTensor");
 
     if !hct_dir.exists() {
-        println!("ERROR: 14B HoloTensor model not found at: {}", hct_dir.display());
+        println!(
+            "ERROR: 14B HoloTensor model not found at: {}",
+            hct_dir.display()
+        );
         return Ok(());
     }
 
@@ -48,9 +52,9 @@ fn main() -> Result<()> {
 
     // Create TieredHoloLoader for loading tensors
     let config = TieredConfig {
-        vram_budget: 0,  // CPU only
+        vram_budget: 0,                      // CPU only
         ram_budget: 32 * 1024 * 1024 * 1024, // 32GB
-        min_quality: 1.0, // Full quality
+        min_quality: 1.0,                    // Full quality
         target_quality: 1.0,
         enable_background_streaming: false,
         background_streams: 0,
@@ -72,7 +76,8 @@ fn main() -> Result<()> {
 
     // Tokenize a simple prompt
     let prompt = "Hello";
-    let encoding = tokenizer.encode(prompt, false)
+    let encoding = tokenizer
+        .encode(prompt, false)
         .map_err(|e| anyhow::anyhow!("Tokenization failed: {}", e))?;
     let input_ids: Vec<u32> = encoding.get_ids().to_vec();
     println!("Prompt: \"{}\"", prompt);
@@ -91,7 +96,10 @@ fn main() -> Result<()> {
     let inf_count = embed_vec.iter().filter(|v| v.is_infinite()).count();
     println!("Embedding NaN count: {}", nan_count);
     println!("Embedding Inf count: {}", inf_count);
-    println!("First 5 embedding values: {:?}", &embed_vec[..5.min(embed_vec.len())]);
+    println!(
+        "First 5 embedding values: {:?}",
+        &embed_vec[..5.min(embed_vec.len())]
+    );
 
     let embed_mean = embedded.mean_all()?.to_scalar::<f32>()?;
     let embed_var = embedded.var(2)?.mean_all()?.to_scalar::<f32>()?;
@@ -115,7 +123,8 @@ fn main() -> Result<()> {
     let eps_tensor = Tensor::new(&[eps], &device)?.broadcast_as(mean_sq.dims())?;
     let norm_factor = (mean_sq + eps_tensor)?.sqrt()?.recip()?;
     let normalized: Tensor = embedded.broadcast_mul(&norm_factor)?;
-    let normalized = normalized.broadcast_mul(&input_norm_weight.reshape((1, 1, hidden_size))?)?;
+    let normalized =
+        normalized.broadcast_mul(&input_norm_weight.reshape((1, 1, hidden_size))?)?;
 
     println!("Normalized shape: {:?}", normalized.dims());
 
@@ -124,7 +133,10 @@ fn main() -> Result<()> {
     let norm_inf = norm_vec.iter().filter(|v: &&f32| v.is_infinite()).count();
     println!("Normalized NaN count: {}", norm_nan);
     println!("Normalized Inf count: {}", norm_inf);
-    println!("Normalized first 5: {:?}", &norm_vec[..5.min(norm_vec.len())]);
+    println!(
+        "Normalized first 5: {:?}",
+        &norm_vec[..5.min(norm_vec.len())]
+    );
 
     // Test 3: Check Q projection weight shapes and values
     println!("\n=== Test 3: Q/K/V Projection Weights ===");
@@ -144,7 +156,10 @@ fn main() -> Result<()> {
         let max = vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         let min = vec.iter().cloned().fold(f32::INFINITY, f32::min);
         let nan_count = vec.iter().filter(|v| v.is_nan()).count();
-        println!("  {} proj: mean={:.6}, min={:.4}, max={:.4}, nan={}", name, mean, min, max, nan_count);
+        println!(
+            "  {} proj: mean={:.6}, min={:.4}, max={:.4}, nan={}",
+            name, mean, min, max, nan_count
+        );
     }
 
     // Test 4: Simple Q projection
@@ -176,8 +191,14 @@ fn main() -> Result<()> {
     let q_mean = q_out.mean_all()?.to_scalar::<f32>()?;
     let q_max = q_out_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
 
-    println!("Q output: mean={:.6}, max={:.4}, nan={}, inf={}", q_mean, q_max, q_nan, q_inf);
-    println!("Q output first 5: {:?}", &q_out_vec[..5.min(q_out_vec.len())]);
+    println!(
+        "Q output: mean={:.6}, max={:.4}, nan={}, inf={}",
+        q_mean, q_max, q_nan, q_inf
+    );
+    println!(
+        "Q output first 5: {:?}",
+        &q_out_vec[..5.min(q_out_vec.len())]
+    );
 
     // Test 5: LM Head projection
     println!("\n=== Test 5: LM Head ===");
@@ -198,19 +219,36 @@ fn main() -> Result<()> {
     let logits_inf = logits_vec.iter().filter(|v: &&f32| v.is_infinite()).count();
 
     println!("Logits: nan={}, inf={}", logits_nan, logits_inf);
-    println!("Logits min: {:.4}", logits_vec.iter().cloned().fold(f32::INFINITY, f32::min));
-    println!("Logits max: {:.4}", logits_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max));
+    println!(
+        "Logits min: {:.4}",
+        logits_vec.iter().cloned().fold(f32::INFINITY, f32::min)
+    );
+    println!(
+        "Logits max: {:.4}",
+        logits_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
+    );
     println!("Logits mean: {:.6}", logits.mean_all()?.to_scalar::<f32>()?);
 
     // Get top 5 token predictions
-    let mut indexed: Vec<(usize, f32)> = logits_vec.iter().enumerate().map(|(i, &v)| (i, v)).collect();
+    let mut indexed: Vec<(usize, f32)> = logits_vec
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| (i, v))
+        .collect();
     indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
     println!("\nTop 5 predictions (from fake forward pass):");
     for (i, (token_id, score)) in indexed.iter().take(5).enumerate() {
-        let decoded = tokenizer.decode(&[*token_id as u32], false)
+        let decoded = tokenizer
+            .decode(&[*token_id as u32], false)
             .unwrap_or_else(|_| "[decode error]".to_string());
-        println!("  {}. token {} \"{}\": {:.4}", i+1, token_id, decoded, score);
+        println!(
+            "  {}. token {} \"{}\": {:.4}",
+            i + 1,
+            token_id,
+            decoded,
+            score
+        );
     }
 
     // Summary
@@ -218,8 +256,14 @@ fn main() -> Result<()> {
     println!("DIAGNOSTIC SUMMARY");
     println!("========================================================================");
 
-    let all_ok = nan_count == 0 && inf_count == 0 && norm_nan == 0 && norm_inf == 0
-        && q_nan == 0 && q_inf == 0 && logits_nan == 0 && logits_inf == 0;
+    let all_ok = nan_count == 0
+        && inf_count == 0
+        && norm_nan == 0
+        && norm_inf == 0
+        && q_nan == 0
+        && q_inf == 0
+        && logits_nan == 0
+        && logits_inf == 0;
 
     if all_ok {
         println!("✓ All tensor operations completed without NaN/Inf");
@@ -237,7 +281,10 @@ fn main() -> Result<()> {
     let stats = loader.stats();
     println!("\nLoader stats:");
     println!("  Tensors loaded: {}", stats.tensors_loaded);
-    println!("  CPU reconstructions: {} ({} ms)", stats.cpu_reconstructions, stats.cpu_time_ms);
+    println!(
+        "  CPU reconstructions: {} ({} ms)",
+        stats.cpu_reconstructions, stats.cpu_time_ms
+    );
 
     println!("\n=== Test Complete ===");
     Ok(())

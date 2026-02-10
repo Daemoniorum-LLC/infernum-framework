@@ -26,9 +26,9 @@ use serde::Deserialize;
 
 use crate::flash_attention::{FlashAttention, FlashAttentionConfig};
 use crate::kv_cache_quant::QuantizedKvCache;
-use crate::kv_cache_quant_cuda::{DynamicQuantConfig, OptimizedQuantizedKvCache};
 #[cfg(feature = "cuda")]
 use crate::kv_cache_quant_cuda::cuda::CudaQuantizedKvCache;
+use crate::kv_cache_quant_cuda::{DynamicQuantConfig, OptimizedQuantizedKvCache};
 
 /// Qwen2 model configuration.
 #[derive(Debug, Clone, Deserialize)]
@@ -278,8 +278,8 @@ impl Attention {
 
         // Initialize flash attention if requested
         let flash_attn = if use_flash_attn {
-            let flash_config = FlashAttentionConfig::default()
-                .with_scale(1.0 / (head_dim as f32).sqrt());
+            let flash_config =
+                FlashAttentionConfig::default().with_scale(1.0 / (head_dim as f32).sqrt());
             Some(FlashAttention::new(flash_config))
         } else {
             None
@@ -288,20 +288,21 @@ impl Attention {
         // Initialize KV cache based on type
         let kv_cache = match cache_type {
             CacheType::Standard => KvCacheStorage::Standard(None),
-            CacheType::Quantized => {
-                KvCacheStorage::Quantized(QuantizedKvCache::new(num_kv_heads, head_dim, device, dtype))
-            }
-            CacheType::OptimizedQuantized(quant_config) => {
-                KvCacheStorage::OptimizedQuantized(OptimizedQuantizedKvCache::new(
-                    num_kv_heads, head_dim, device, dtype, quant_config,
-                ))
-            }
+            CacheType::Quantized => KvCacheStorage::Quantized(QuantizedKvCache::new(
+                num_kv_heads,
+                head_dim,
+                device,
+                dtype,
+            )),
+            CacheType::OptimizedQuantized(quant_config) => KvCacheStorage::OptimizedQuantized(
+                OptimizedQuantizedKvCache::new(num_kv_heads, head_dim, device, dtype, quant_config),
+            ),
             #[cfg(feature = "cuda")]
             CacheType::CudaQuantized(device_id) => {
                 let cuda_cache = CudaQuantizedKvCache::new(num_kv_heads, head_dim, device_id)
                     .map_err(|e| candle_core::Error::Msg(format!("CUDA cache init failed: {e}")))?;
                 KvCacheStorage::CudaQuantized(cuda_cache)
-            }
+            },
         };
 
         Ok(Self {
@@ -346,19 +347,22 @@ impl Attention {
         // KV cache handling - supports standard, quantized, optimized quantized, and CUDA quantized storage
         // CUDA quantized uses fused attention kernels, so it returns the attention output directly
         #[cfg(feature = "cuda")]
-        let cuda_attn_output: Option<Tensor> = if let KvCacheStorage::CudaQuantized(cuda_cache) = &mut self.kv_cache {
-            // Append new K/V to CUDA cache (quantizes to INT8 on GPU)
-            cuda_cache.append(&k, &v)
-                .map_err(|e| candle_core::Error::Msg(format!("CUDA cache append failed: {e}")))?;
+        let cuda_attn_output: Option<Tensor> =
+            if let KvCacheStorage::CudaQuantized(cuda_cache) = &mut self.kv_cache {
+                // Append new K/V to CUDA cache (quantizes to INT8 on GPU)
+                cuda_cache.append(&k, &v).map_err(|e| {
+                    candle_core::Error::Msg(format!("CUDA cache append failed: {e}"))
+                })?;
 
-            // Compute attention using fused CUDA kernels that handle GQA internally
-            let attn_scale = 1.0 / (self.head_dim as f32).sqrt();
-            let output = cuda_cache.forward_attention(&q, self.num_heads, attn_scale)
-                .map_err(|e| candle_core::Error::Msg(format!("CUDA attention failed: {e}")))?;
-            Some(output)
-        } else {
-            None
-        };
+                // Compute attention using fused CUDA kernels that handle GQA internally
+                let attn_scale = 1.0 / (self.head_dim as f32).sqrt();
+                let output = cuda_cache
+                    .forward_attention(&q, self.num_heads, attn_scale)
+                    .map_err(|e| candle_core::Error::Msg(format!("CUDA attention failed: {e}")))?;
+                Some(output)
+            } else {
+                None
+            };
 
         #[cfg(not(feature = "cuda"))]
         let cuda_attn_output: Option<Tensor> = None;
@@ -375,13 +379,13 @@ impl Attention {
                             let k_cat = Tensor::cat(&[prev_k.as_ref(), &k], 2)?;
                             let v_cat = Tensor::cat(&[prev_v.as_ref(), &v], 2)?;
                             (k_cat, v_cat)
-                        }
+                        },
                         None => (k.clone(), v.clone()),
                     };
                     let is_empty = cache.is_none();
                     *cache = Some((k_out.clone(), v_out.clone()));
                     (k_out, v_out, is_empty)
-                }
+                },
                 KvCacheStorage::Quantized(cache) => {
                     let is_empty = cache.seq_len() == 0;
                     // Append new K/V to quantized cache
@@ -389,7 +393,7 @@ impl Attention {
                     // Get dequantized full K/V for attention
                     let (k_full, v_full) = cache.get_dequantized()?.unwrap_or((k, v));
                     (k_full, v_full, is_empty)
-                }
+                },
                 KvCacheStorage::OptimizedQuantized(cache) => {
                     let is_empty = cache.seq_len() == 0;
                     // Append new K/V to optimized quantized cache
@@ -398,7 +402,7 @@ impl Attention {
                     // Get full K/V (recent in BF16 + dequantized older)
                     let (k_full, v_full) = cache.get_kv()?.unwrap_or((k, v));
                     (k_full, v_full, is_empty)
-                }
+                },
                 #[cfg(feature = "cuda")]
                 KvCacheStorage::CudaQuantized(_) => unreachable!("CUDA path handled above"),
             };
@@ -485,7 +489,7 @@ impl Attention {
                 cache.as_ref().map_or(0, |(k, v)| {
                     k.elem_count() * 2 + v.elem_count() * 2 // BF16 = 2 bytes
                 })
-            }
+            },
             KvCacheStorage::Quantized(cache) => cache.memory_bytes(),
             KvCacheStorage::OptimizedQuantized(cache) => cache.memory_bytes(),
             #[cfg(feature = "cuda")]
@@ -545,7 +549,14 @@ impl DecoderLayer {
         device: &Device,
         dtype: DType,
     ) -> CandleResult<Self> {
-        let self_attn = Attention::load_with_cache_type(config, vb.pp("self_attn"), use_flash_attn, cache_type, device, dtype)?;
+        let self_attn = Attention::load_with_cache_type(
+            config,
+            vb.pp("self_attn"),
+            use_flash_attn,
+            cache_type,
+            device,
+            dtype,
+        )?;
         let mlp = Mlp::load(config, vb.pp("mlp"))?;
         let input_layernorm = RmsNorm::load(
             config.hidden_size,
@@ -632,7 +643,10 @@ impl Qwen2 {
     /// Combines memory efficiency benefits:
     /// - Flash Attention: faster long-sequence processing
     /// - Quantized KV cache: ~2x memory reduction
-    pub fn load_with_flash_and_quantized_cache(config: Qwen2Config, vb: VarBuilder) -> CandleResult<Self> {
+    pub fn load_with_flash_and_quantized_cache(
+        config: Qwen2Config,
+        vb: VarBuilder,
+    ) -> CandleResult<Self> {
         Self::load_with_cache_type(config, vb, true, CacheType::Quantized)
     }
 
@@ -650,7 +664,12 @@ impl Qwen2 {
         vb: VarBuilder,
         quant_config: DynamicQuantConfig,
     ) -> CandleResult<Self> {
-        Self::load_with_cache_type(config, vb, false, CacheType::OptimizedQuantized(quant_config))
+        Self::load_with_cache_type(
+            config,
+            vb,
+            false,
+            CacheType::OptimizedQuantized(quant_config),
+        )
     }
 
     /// Loads a Qwen2 model with Flash Attention and optimized quantized KV cache.
@@ -664,7 +683,12 @@ impl Qwen2 {
         vb: VarBuilder,
         quant_config: DynamicQuantConfig,
     ) -> CandleResult<Self> {
-        Self::load_with_cache_type(config, vb, true, CacheType::OptimizedQuantized(quant_config))
+        Self::load_with_cache_type(
+            config,
+            vb,
+            true,
+            CacheType::OptimizedQuantized(quant_config),
+        )
     }
 
     /// Loads a Qwen2 model with CUDA-accelerated INT8 quantized KV cache.
@@ -821,7 +845,10 @@ impl Qwen2 {
 
     /// Returns the total cache memory usage across all layers in bytes.
     pub fn cache_memory_bytes(&self) -> usize {
-        self.layers.iter().map(|l| l.self_attn.cache_memory_bytes()).sum()
+        self.layers
+            .iter()
+            .map(|l| l.self_attn.cache_memory_bytes())
+            .sum()
     }
 
     /// Returns the current cache sequence length.
@@ -829,19 +856,22 @@ impl Qwen2 {
     /// Returns 0 if cache is empty, otherwise returns the sequence length
     /// from the first layer's cache.
     pub fn cache_seq_len(&self) -> usize {
-        self.layers.first().map_or(0, |l| {
-            match &l.self_attn.kv_cache {
+        self.layers
+            .first()
+            .map_or(0, |l| match &l.self_attn.kv_cache {
                 KvCacheStorage::Standard(cache) => cache.as_ref().map_or(0, |(k, _)| k.dims()[2]),
                 KvCacheStorage::Quantized(cache) => cache.seq_len(),
                 KvCacheStorage::OptimizedQuantized(cache) => cache.seq_len(),
                 #[cfg(feature = "cuda")]
                 KvCacheStorage::CudaQuantized(cache) => cache.seq_len(),
-            }
-        })
+            })
     }
 
     /// Forward pass that returns hidden states for embedding extraction.
     pub fn forward_embedding(&mut self, input_ids: &Tensor) -> CandleResult<Tensor> {
+        // Clear KV cache to avoid shape mismatches from previous generations
+        self.clear_cache();
+
         let (_batch_size, seq_len) = input_ids.dims2()?;
 
         let mut hidden_states = self.embed_tokens.forward(input_ids)?;

@@ -239,7 +239,9 @@ impl InterferenceConsensus {
     /// Adds a contribution to the consensus.
     pub fn add_contribution(&mut self, contribution: AgentContribution) {
         // Superimpose pattern into field with band weighting
-        let weight = self.config.band_weights
+        let weight = self
+            .config
+            .band_weights
             .get(&contribution.band)
             .copied()
             .unwrap_or(1.0);
@@ -306,7 +308,9 @@ impl InterferenceConsensus {
         }
 
         // Normalize
-        let total_weight: f32 = self.contributions.iter()
+        let total_weight: f32 = self
+            .contributions
+            .iter()
             .map(|c| c.consensus_weight())
             .sum();
 
@@ -413,7 +417,10 @@ impl ConsensusEngine {
             None
         };
 
-        Self { strategy, interference }
+        Self {
+            strategy,
+            interference,
+        }
     }
 
     /// Creates an interference-based consensus engine.
@@ -481,11 +488,14 @@ impl ConsensusEngine {
             .map(|(o, &c)| (*o, c))
             .unwrap_or(("", 0));
 
-        let mut result = ConsensusResult::new(output, count as f32 / votes.len() as f32, self.strategy);
+        let mut result =
+            ConsensusResult::new(output, count as f32 / votes.len() as f32, self.strategy);
         result.participants = votes.len();
         result.agreements = count;
         for vote in votes {
-            result.agent_outputs.insert(vote.agent_id.clone(), vote.output.clone());
+            result
+                .agent_outputs
+                .insert(vote.agent_id.clone(), vote.output.clone());
         }
 
         result
@@ -518,16 +528,20 @@ impl ConsensusEngine {
         result.participants = votes.len();
         result.agreements = agreements;
         for vote in votes {
-            result.agent_outputs.insert(vote.agent_id.clone(), vote.output.clone());
+            result
+                .agent_outputs
+                .insert(vote.agent_id.clone(), vote.output.clone());
         }
 
         result
     }
 
     fn highest_context_consensus(&self, votes: &[AgentVote]) -> ConsensusResult {
-        let best = votes
-            .iter()
-            .max_by(|a, b| a.weight.partial_cmp(&b.weight).unwrap_or(std::cmp::Ordering::Equal));
+        let best = votes.iter().max_by(|a, b| {
+            a.weight
+                .partial_cmp(&b.weight)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         match best {
             Some(vote) => {
@@ -536,10 +550,12 @@ impl ConsensusEngine {
                 result.participants = votes.len();
                 result.agreements = agreements;
                 for v in votes {
-                    result.agent_outputs.insert(v.agent_id.clone(), v.output.clone());
+                    result
+                        .agent_outputs
+                        .insert(v.agent_id.clone(), v.output.clone());
                 }
                 result
-            }
+            },
             None => ConsensusResult::new("", 0.0, self.strategy),
         }
     }
@@ -552,10 +568,12 @@ impl ConsensusEngine {
                 result.participants = votes.len();
                 result.agreements = agreements;
                 for v in votes {
-                    result.agent_outputs.insert(v.agent_id.clone(), v.output.clone());
+                    result
+                        .agent_outputs
+                        .insert(v.agent_id.clone(), v.output.clone());
                 }
                 result
-            }
+            },
             None => ConsensusResult::new("", 0.0, self.strategy),
         }
     }
@@ -577,7 +595,9 @@ impl ConsensusEngine {
         result.participants = votes.len();
         result.agreements = if unanimous { votes.len() } else { 0 };
         for vote in votes {
-            result.agent_outputs.insert(vote.agent_id.clone(), vote.output.clone());
+            result
+                .agent_outputs
+                .insert(vote.agent_id.clone(), vote.output.clone());
         }
 
         result
@@ -650,10 +670,7 @@ mod tests {
     #[test]
     fn test_unanimous_consensus_success() {
         let engine = ConsensusEngine::new(ConsensusStrategy::Unanimous);
-        let votes = vec![
-            make_vote("a1", "agree", 0.5),
-            make_vote("a2", "agree", 0.5),
-        ];
+        let votes = vec![make_vote("a1", "agree", 0.5), make_vote("a2", "agree", 0.5)];
 
         let result = engine.reach_consensus(&votes);
         assert_eq!(result.output, "agree");
@@ -663,10 +680,7 @@ mod tests {
     #[test]
     fn test_unanimous_consensus_failure() {
         let engine = ConsensusEngine::new(ConsensusStrategy::Unanimous);
-        let votes = vec![
-            make_vote("a1", "yes", 0.5),
-            make_vote("a2", "no", 0.5),
-        ];
+        let votes = vec![make_vote("a1", "yes", 0.5), make_vote("a2", "no", 0.5)];
 
         let result = engine.reach_consensus(&votes);
         assert_eq!(result.output, "");

@@ -33,7 +33,12 @@ fn main() -> Result<()> {
     // Count HCT files
     let hct_count = std::fs::read_dir(hct_dir)?
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map(|ext| ext == "hct").unwrap_or(false))
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map(|ext| ext == "hct")
+                .unwrap_or(false)
+        })
         .count();
     println!("HCT files found: {}\n", hct_count);
 
@@ -83,10 +88,10 @@ fn main() -> Result<()> {
                     tensor.dims(),
                     start.elapsed()
                 );
-            }
+            },
             Err(e) => {
                 println!("  {} -> ERROR: {}", name, e);
-            }
+            },
         }
     }
 

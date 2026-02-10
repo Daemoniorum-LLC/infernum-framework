@@ -504,36 +504,28 @@ impl IterationMetrics {
     pub fn prometheus(&self) -> String {
         let mut output = String::new();
 
-        output.push_str(
-            "# HELP infernum_batch_iterations_total Total batch iterations\n",
-        );
+        output.push_str("# HELP infernum_batch_iterations_total Total batch iterations\n");
         output.push_str("# TYPE infernum_batch_iterations_total counter\n");
         output.push_str(&format!(
             "infernum_batch_iterations_total {}\n",
             self.iterations()
         ));
 
-        output.push_str(
-            "# HELP infernum_batch_tokens_generated_total Total tokens generated\n",
-        );
+        output.push_str("# HELP infernum_batch_tokens_generated_total Total tokens generated\n");
         output.push_str("# TYPE infernum_batch_tokens_generated_total counter\n");
         output.push_str(&format!(
             "infernum_batch_tokens_generated_total {}\n",
             self.tokens_generated()
         ));
 
-        output.push_str(
-            "# HELP infernum_batch_preemptions_total Total batch preemptions\n",
-        );
+        output.push_str("# HELP infernum_batch_preemptions_total Total batch preemptions\n");
         output.push_str("# TYPE infernum_batch_preemptions_total counter\n");
         output.push_str(&format!(
             "infernum_batch_preemptions_total {}\n",
             self.preemptions()
         ));
 
-        output.push_str(
-            "# HELP infernum_batch_tokens_per_second Current tokens per second\n",
-        );
+        output.push_str("# HELP infernum_batch_tokens_per_second Current tokens per second\n");
         output.push_str("# TYPE infernum_batch_tokens_per_second gauge\n");
         output.push_str(&format!(
             "infernum_batch_tokens_per_second {:.2}\n",

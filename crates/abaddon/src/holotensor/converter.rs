@@ -14,12 +14,10 @@ use std::thread;
 #[cfg(feature = "cuda")]
 use crossbeam::channel::{self, Receiver, Sender};
 
-use haagenti::holotensor::{
-    HolographicEncoding, HoloTensorHeader, HoloFragment, LrdfEncoder,
-};
-use haagenti::compressive::{CompressiveSpectralEncoder, CompressiveSpectralDecoder};
-use haagenti::tensor::DType;
+use haagenti::compressive::{CompressiveSpectralDecoder, CompressiveSpectralEncoder};
 use haagenti::entropy::{fast_should_compress, CompressibilityFingerprint};
+use haagenti::holotensor::{HoloFragment, HoloTensorHeader, HolographicEncoding, LrdfEncoder};
+use haagenti::tensor::DType;
 // Note: We use the standard zstd crate for compression instead of haagenti-zstd
 // because haagenti-zstd's compressor has bugs that produce corrupted frames
 use xxhash_rust::xxh3::xxh3_64;
@@ -41,14 +39,22 @@ fn fp8_e4m3_to_f32(byte: u8) -> f32 {
         }
         // Subnormal: (-1)^s * 2^(-6) * (m/8)
         let value = (mantissa as f32 / 8.0) * 2.0f32.powi(-6);
-        if sign == 1 { -value } else { value }
+        if sign == 1 {
+            -value
+        } else {
+            value
+        }
     } else if exponent == 15 && mantissa == 7 {
         // NaN (E4M3 doesn't have infinity, uses max exp + max mantissa for NaN)
         f32::NAN
     } else {
         // Normal: (-1)^s * 2^(e-7) * (1 + m/8)
         let value = (1.0 + mantissa as f32 / 8.0) * 2.0f32.powi(exponent as i32 - 7);
-        if sign == 1 { -value } else { value }
+        if sign == 1 {
+            -value
+        } else {
+            value
+        }
     }
 }
 
@@ -67,18 +73,30 @@ fn fp8_e5m2_to_f32(byte: u8) -> f32 {
         }
         // Subnormal: (-1)^s * 2^(-14) * (m/4)
         let value = (mantissa as f32 / 4.0) * 2.0f32.powi(-14);
-        if sign == 1 { -value } else { value }
+        if sign == 1 {
+            -value
+        } else {
+            value
+        }
     } else if exponent == 31 {
         // Infinity or NaN
         if mantissa == 0 {
-            if sign == 1 { f32::NEG_INFINITY } else { f32::INFINITY }
+            if sign == 1 {
+                f32::NEG_INFINITY
+            } else {
+                f32::INFINITY
+            }
         } else {
             f32::NAN
         }
     } else {
         // Normal: (-1)^s * 2^(e-15) * (1 + m/4)
         let value = (1.0 + mantissa as f32 / 4.0) * 2.0f32.powi(exponent as i32 - 15);
-        if sign == 1 { -value } else { value }
+        if sign == 1 {
+            -value
+        } else {
+            value
+        }
     }
 }
 
@@ -130,13 +148,13 @@ impl Default for ConversionConfig {
         Self {
             encoding: HolographicEncoding::LowRankDistributed,
             num_fragments: 32,
-            max_rank: 256,        // Increased from 128 for better reconstruction quality
+            max_rank: 256, // Increased from 128 for better reconstruction quality
             seed: 42,
             parallel: true,
             num_threads: 4,
             verify_quality: true,
-            min_quality: 0.95,    // Increased from 0.85 for better inference quality
-            use_gpu: false, // CPU by default for compatibility
+            min_quality: 0.95, // Increased from 0.85 for better inference quality
+            use_gpu: false,    // CPU by default for compatibility
             compress_fragments: true, // Enable Zstd compression by default
             lossless: false,
             retention_ratio: 0.2, // Keep 20% of DCT coefficients
@@ -195,7 +213,7 @@ impl ConversionConfig {
     pub fn lossless() -> Self {
         Self {
             lossless: true,
-            verify_quality: false, // Not needed for lossless
+            verify_quality: false,     // Not needed for lossless
             compress_fragments: false, // Disable Zstd to avoid decompression issues
             ..Default::default()
         }
@@ -313,31 +331,43 @@ impl HoloModelConverter {
                         Ok(encoder) => {
                             let encoder = encoder.with_max_rank(config.max_rank);
                             Some(std::sync::Arc::new(encoder))
-                        }
+                        },
                         Err(e) => {
-                            eprintln!("Warning: Failed to create GPU encoder: {}. Falling back to CPU.", e);
+                            eprintln!(
+                                "Warning: Failed to create GPU encoder: {}. Falling back to CPU.",
+                                e
+                            );
                             None
-                        }
+                        },
                     };
 
                     // Initialize GPU dtype converter for FP8 → F32 conversion
-                    let dtype_converter = match crate::gpu_dtype::cuda::GpuDtypeConverter::new(device) {
-                        Ok(converter) => {
-                            println!("GPU dtype converter initialized (FP8→F32 acceleration enabled)");
-                            Some(std::sync::Arc::new(converter))
-                        }
-                        Err(e) => {
-                            eprintln!("Warning: Failed to create GPU dtype converter: {}. Using CPU.", e);
-                            None
-                        }
-                    };
+                    let dtype_converter =
+                        match crate::gpu_dtype::cuda::GpuDtypeConverter::new(device) {
+                            Ok(converter) => {
+                                println!(
+                                "GPU dtype converter initialized (FP8→F32 acceleration enabled)"
+                            );
+                                Some(std::sync::Arc::new(converter))
+                            },
+                            Err(e) => {
+                                eprintln!(
+                                    "Warning: Failed to create GPU dtype converter: {}. Using CPU.",
+                                    e
+                                );
+                                None
+                            },
+                        };
 
                     (encoder, dtype_converter)
-                }
+                },
                 Err(e) => {
-                    eprintln!("Warning: Failed to initialize CUDA device: {}. Falling back to CPU.", e);
+                    eprintln!(
+                        "Warning: Failed to initialize CUDA device: {}. Falling back to CPU.",
+                        e
+                    );
                     (None, None)
-                }
+                },
             }
         } else {
             (None, None)
@@ -451,15 +481,15 @@ impl HoloModelConverter {
     pub fn convert_tensor(&self, info: &TensorInfo, data: &[f32]) -> Result<ConvertedTensor> {
         // Handle different tensor dimensionalities
         let (rows, cols) = match info.shape.len() {
-            0 => (1, data.len()), // Scalar
-            1 => (1, info.shape[0]), // 1D: treat as row vector
+            0 => (1, data.len()),                // Scalar
+            1 => (1, info.shape[0]),             // 1D: treat as row vector
             2 => (info.shape[0], info.shape[1]), // 2D: rows x cols
             _ => {
                 // Higher dims: flatten to 2D (first dim x product of rest)
                 let first = info.shape[0];
                 let rest: usize = info.shape[1..].iter().product();
                 (first, rest)
-            }
+            },
         };
 
         // Skip LRDF for 1D tensors (norms, biases) and small tensors
@@ -471,9 +501,8 @@ impl HoloModelConverter {
         // Phase 3 Enhancement: Use entropy fingerprinting for better compression decisions
         // High-entropy data (>7.5 bits/byte) is likely random/encrypted and won't compress well
         // Convert f32 slice to bytes for entropy analysis
-        let data_bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4)
-        };
+        let data_bytes: &[u8] =
+            unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4) };
 
         // Fast entropy check for large tensors to skip expensive LRDF for incompressible data
         let is_incompressible = if !is_1d && !is_small && data.len() > 16384 {
@@ -497,10 +526,10 @@ impl HoloModelConverter {
             let encoded_fragments = match self.config.encoding {
                 HolographicEncoding::Spectral => {
                     self.encode_with_spectral(data, rows, cols, &info.name)?
-                }
+                },
                 HolographicEncoding::LowRankDistributed | _ => {
                     self.encode_with_lrdf(data, rows, cols, &info.name)?
-                }
+                },
             };
 
             // Check quality if verification is enabled
@@ -514,7 +543,8 @@ impl HoloModelConverter {
                 )
                 .with_seed(self.config.seed);
 
-                let quality = self.verify_reconstruction(data, &temp_header, &encoded_fragments, rows, cols)?;
+                let quality =
+                    self.verify_reconstruction(data, &temp_header, &encoded_fragments, rows, cols)?;
 
                 // QUALITY ENFORCEMENT: Fall back to passthrough if quality is too low
                 if quality < self.config.min_quality {
@@ -594,7 +624,12 @@ impl HoloModelConverter {
     ///   - Data: rows*cols f32 values in row-major order
     ///
     /// The raw format is O(rows*cols) storage, much better than the O(rows^2) one-hot encoding.
-    fn create_passthrough_fragment(&self, data: &[f32], rows: usize, cols: usize) -> Result<Vec<HoloFragment>> {
+    fn create_passthrough_fragment(
+        &self,
+        data: &[f32],
+        rows: usize,
+        cols: usize,
+    ) -> Result<Vec<HoloFragment>> {
         if rows == 1 {
             // 1D case: single LRDF component with u=[1.0], v=data
             let mut frag_data = Vec::with_capacity(12 + 4 + 4 + cols * 4);
@@ -635,7 +670,13 @@ impl HoloModelConverter {
     }
 
     /// Encode tensor using LRDF (GPU or CPU).
-    fn encode_with_lrdf(&self, data: &[f32], rows: usize, cols: usize, name: &str) -> Result<Vec<HoloFragment>> {
+    fn encode_with_lrdf(
+        &self,
+        data: &[f32],
+        rows: usize,
+        cols: usize,
+        name: &str,
+    ) -> Result<Vec<HoloFragment>> {
         // Try GPU encoder first, fall back to CPU
         #[cfg(feature = "cuda")]
         let fragments = if let Some(ref gpu_encoder) = self.gpu_encoder {
@@ -648,8 +689,8 @@ impl HoloModelConverter {
                 })?
         } else {
             // Use CPU LRDF encoder
-            let encoder = LrdfEncoder::new(self.config.num_fragments)
-                .with_max_rank(self.config.max_rank);
+            let encoder =
+                LrdfEncoder::new(self.config.num_fragments).with_max_rank(self.config.max_rank);
             encoder.encode_2d(data, rows, cols).map_err(|e| {
                 HoloInferenceError::Conversion(format!("Failed to encode {}: {}", name, e))
             })?
@@ -658,8 +699,8 @@ impl HoloModelConverter {
         #[cfg(not(feature = "cuda"))]
         let fragments = {
             // Use CPU LRDF encoder
-            let encoder = LrdfEncoder::new(self.config.num_fragments)
-                .with_max_rank(self.config.max_rank);
+            let encoder =
+                LrdfEncoder::new(self.config.num_fragments).with_max_rank(self.config.max_rank);
             encoder.encode_2d(data, rows, cols).map_err(|e| {
                 HoloInferenceError::Conversion(format!("Failed to encode {}: {}", name, e))
             })?
@@ -678,11 +719,18 @@ impl HoloModelConverter {
     ///
     /// This is the production-ready spectral encoder that produces HCT3 format,
     /// compatible with CompressiveSpectralDecoder used during inference.
-    fn encode_with_spectral(&self, data: &[f32], rows: usize, cols: usize, name: &str) -> Result<Vec<HoloFragment>> {
+    fn encode_with_spectral(
+        &self,
+        data: &[f32],
+        rows: usize,
+        cols: usize,
+        name: &str,
+    ) -> Result<Vec<HoloFragment>> {
         // Use CompressiveSpectralEncoder which produces HCT3 format
         // retention_ratio: keep top N% of DCT coefficients by energy
         // Higher retention = better quality, larger files
-        let encoder = CompressiveSpectralEncoder::new(self.config.num_fragments, self.config.retention_ratio);
+        let encoder =
+            CompressiveSpectralEncoder::new(self.config.num_fragments, self.config.retention_ratio);
 
         let fragments = encoder.encode_2d(data, cols, rows).map_err(|e| {
             HoloInferenceError::Conversion(format!("Spectral encoding failed for {}: {}", name, e))
@@ -780,7 +828,7 @@ impl HoloModelConverter {
                 decoder.reconstruct().map_err(|e| {
                     HoloInferenceError::Conversion(format!("Spectral reconstruct error: {}", e))
                 })?
-            }
+            },
             HolographicEncoding::LowRankDistributed | _ => {
                 // LrdfDecoder uses (rows, cols)
                 let mut decoder = LrdfDecoder::new(rows, cols, fragments.len() as u16);
@@ -790,7 +838,7 @@ impl HoloModelConverter {
                     })?;
                 }
                 decoder.reconstruct()
-            }
+            },
         };
 
         // Calculate cosine similarity
@@ -802,7 +850,12 @@ impl HoloModelConverter {
     }
 
     /// Get conversion progress.
-    pub fn progress(&self, total_tensors: usize, total_bytes: usize, start_time: std::time::Instant) -> ConversionProgress {
+    pub fn progress(
+        &self,
+        total_tensors: usize,
+        total_bytes: usize,
+        start_time: std::time::Instant,
+    ) -> ConversionProgress {
         let tensors_processed = self.tensors_processed.load(Ordering::Relaxed);
         let bytes_processed = self.bytes_processed.load(Ordering::Relaxed);
         let elapsed = start_time.elapsed().as_secs_f64();
@@ -863,16 +916,22 @@ impl HoloModelConverter {
 
             // Get safetensors index or model file
             let model_path = if let Ok(index) = repo.get("model.safetensors.index.json") {
-                index.parent()
-                    .ok_or_else(|| HoloInferenceError::Conversion(
-                        "Safetensors index file has no parent directory".to_string()
-                    ))?
+                index
+                    .parent()
+                    .ok_or_else(|| {
+                        HoloInferenceError::Conversion(
+                            "Safetensors index file has no parent directory".to_string(),
+                        )
+                    })?
                     .to_path_buf()
             } else if let Ok(model) = repo.get("model.safetensors") {
-                model.parent()
-                    .ok_or_else(|| HoloInferenceError::Conversion(
-                        "Safetensors model file has no parent directory".to_string()
-                    ))?
+                model
+                    .parent()
+                    .ok_or_else(|| {
+                        HoloInferenceError::Conversion(
+                            "Safetensors model file has no parent directory".to_string(),
+                        )
+                    })?
                     .to_path_buf()
             } else {
                 return Err(HoloInferenceError::Conversion(
@@ -909,7 +968,10 @@ impl HoloModelConverter {
         };
 
         let total_files = files.len();
-        println!("\nFound {} safetensors files to convert (streaming mode)", total_files);
+        println!(
+            "\nFound {} safetensors files to convert (streaming mode)",
+            total_files
+        );
 
         // Configure rayon thread pool based on config
         if self.config.num_threads > 0 {
@@ -928,7 +990,12 @@ impl HoloModelConverter {
         // Process one file at a time (streaming) to minimize memory usage
         for (file_idx, file_path) in files.iter().enumerate() {
             let file_name = file_path.file_name().unwrap_or_default().to_string_lossy();
-            println!("\n[{}/{}] Processing: {}", file_idx + 1, total_files, file_name);
+            println!(
+                "\n[{}/{}] Processing: {}",
+                file_idx + 1,
+                total_files,
+                file_name
+            );
 
             // Load single safetensors file
             let data = fs::read(&file_path)?;
@@ -936,7 +1003,11 @@ impl HoloModelConverter {
             println!("  Loaded {} ({:.1} GB)", file_name, file_size as f64 / 1e9);
 
             let tensors = SafeTensors::deserialize(&data).map_err(|e| {
-                HoloInferenceError::Conversion(format!("Failed to load {}: {}", file_path.display(), e))
+                HoloInferenceError::Conversion(format!(
+                    "Failed to load {}: {}",
+                    file_path.display(),
+                    e
+                ))
             })?;
 
             let tensor_names: Vec<String> = tensors.names().iter().map(|s| s.to_string()).collect();
@@ -959,7 +1030,8 @@ impl HoloModelConverter {
                     && self.gpu_encoder.is_some()
                     && self.gpu_dtype_converter.is_some()
                     && shape.len() >= 2
-                    && tensor_size >= 4096  // Only for tensors worth LRDF encoding
+                    && tensor_size >= 4096
+                // Only for tensors worth LRDF encoding
                 {
                     // GPU-resident path: FP8 → GPU → F32 → SVD (no CPU round-trip)
                     // Flatten to 2D: (first_dim, product_of_rest) - matches CPU path and decoder
@@ -972,37 +1044,44 @@ impl HoloModelConverter {
                         if let (Some(gpu_encoder), Some(dtype_converter)) =
                             (self.gpu_encoder.as_ref(), self.gpu_dtype_converter.as_ref())
                         {
-                        match gpu_encoder.encode_2d_fp8_e4m3(tensor.data(), rows, cols, dtype_converter) {
-                            Ok(gpu_fragments) => {
-                                let fragments: Vec<HoloFragment> = gpu_fragments.iter()
-                                    .map(|f| f.to_haagenti())
-                                    .collect();
+                            match gpu_encoder.encode_2d_fp8_e4m3(
+                                tensor.data(),
+                                rows,
+                                cols,
+                                dtype_converter,
+                            ) {
+                                Ok(gpu_fragments) => {
+                                    let fragments: Vec<HoloFragment> =
+                                        gpu_fragments.iter().map(|f| f.to_haagenti()).collect();
 
-                                let info = TensorInfo {
-                                    name: name.clone(),
-                                    shape: shape.clone(),
-                                    dtype: DType::F32, // Converted from FP8
-                                    path: file_path.clone(),
-                                    size: tensor_size * 4, // f32 size
-                                };
+                                    let info = TensorInfo {
+                                        name: name.clone(),
+                                        shape: shape.clone(),
+                                        dtype: DType::F32, // Converted from FP8
+                                        path: file_path.clone(),
+                                        size: tensor_size * 4, // f32 size
+                                    };
 
-                                Some(ConvertedTensor {
-                                    info,
-                                    header: HoloTensorHeader::new(
-                                        HolographicEncoding::LowRankDistributed,
-                                        DType::F32,
-                                        shape.iter().map(|&s| s as u64).collect(),
-                                        fragments.len() as u16,
-                                    ),
-                                    fragments,
-                                    quality: None, // Skip verification for speed
-                                })
+                                    Some(ConvertedTensor {
+                                        info,
+                                        header: HoloTensorHeader::new(
+                                            HolographicEncoding::LowRankDistributed,
+                                            DType::F32,
+                                            shape.iter().map(|&s| s as u64).collect(),
+                                            fragments.len() as u16,
+                                        ),
+                                        fragments,
+                                        quality: None, // Skip verification for speed
+                                    })
+                                },
+                                Err(e) => {
+                                    eprintln!(
+                                        "    GPU FP8 encoding failed for {}: {}, falling back",
+                                        name, e
+                                    );
+                                    None
+                                },
                             }
-                            Err(e) => {
-                                eprintln!("    GPU FP8 encoding failed for {}: {}, falling back", name, e);
-                                None
-                            }
-                        }
                         } else {
                             // GPU encoder or dtype converter unexpectedly None
                             None
@@ -1054,7 +1133,10 @@ impl HoloModelConverter {
             // data and tensors are dropped here, freeing memory before next file
         }
 
-        println!("\n✓ Conversion complete: {} tensors from {} files", tensor_count, total_files);
+        println!(
+            "\n✓ Conversion complete: {} tensors from {} files",
+            tensor_count, total_files
+        );
 
         Ok(ConversionMetadata {
             num_layers: self.count_layers(&output_dir),
@@ -1094,16 +1176,22 @@ impl HoloModelConverter {
             })?;
             let repo = api.repo(Repo::new(source.to_string(), RepoType::Model));
             let model_path = if let Ok(index) = repo.get("model.safetensors.index.json") {
-                index.parent()
-                    .ok_or_else(|| HoloInferenceError::Conversion(
-                        "Safetensors index file has no parent directory".to_string()
-                    ))?
+                index
+                    .parent()
+                    .ok_or_else(|| {
+                        HoloInferenceError::Conversion(
+                            "Safetensors index file has no parent directory".to_string(),
+                        )
+                    })?
                     .to_path_buf()
             } else if let Ok(model) = repo.get("model.safetensors") {
-                model.parent()
-                    .ok_or_else(|| HoloInferenceError::Conversion(
-                        "Safetensors model file has no parent directory".to_string()
-                    ))?
+                model
+                    .parent()
+                    .ok_or_else(|| {
+                        HoloInferenceError::Conversion(
+                            "Safetensors model file has no parent directory".to_string(),
+                        )
+                    })?
                     .to_path_buf()
             } else {
                 return Err(HoloInferenceError::Conversion(
@@ -1141,7 +1229,10 @@ impl HoloModelConverter {
         let num_producers = num_producers.min(total_files).max(1);
 
         println!("\n╔══════════════════════════════════════════════════════════════╗");
-        println!("║           Pipeline Mode: {} producers, 1 GPU consumer          ║", num_producers);
+        println!(
+            "║           Pipeline Mode: {} producers, 1 GPU consumer          ║",
+            num_producers
+        );
         println!("╚══════════════════════════════════════════════════════════════╝\n");
         println!("Found {} safetensors files to convert", total_files);
 
@@ -1176,36 +1267,54 @@ impl HoloModelConverter {
                     }
 
                     let file_path = &files[idx];
-                    let file_name = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                    let file_name = file_path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
 
                     // Load and parse file
                     let data = match fs::read(file_path) {
                         Ok(d) => d,
                         Err(e) => {
-                            eprintln!("[Producer {}] Failed to read {}: {}", producer_id, file_name, e);
+                            eprintln!(
+                                "[Producer {}] Failed to read {}: {}",
+                                producer_id, file_name, e
+                            );
                             continue;
-                        }
+                        },
                     };
 
                     let tensors = match SafeTensors::deserialize(&data) {
                         Ok(t) => t,
                         Err(e) => {
-                            eprintln!("[Producer {}] Failed to parse {}: {}", producer_id, file_name, e);
+                            eprintln!(
+                                "[Producer {}] Failed to parse {}: {}",
+                                producer_id, file_name, e
+                            );
                             continue;
-                        }
+                        },
                     };
 
-                    println!("[Producer {}] Loaded {} ({:.1} GB, {} tensors)",
-                        producer_id, file_name, data.len() as f64 / 1e9, tensors.names().len());
+                    println!(
+                        "[Producer {}] Loaded {} ({:.1} GB, {} tensors)",
+                        producer_id,
+                        file_name,
+                        data.len() as f64 / 1e9,
+                        tensors.names().len()
+                    );
 
                     // Send each tensor to the work queue
                     for name in tensors.names() {
                         let tensor = match tensors.tensor(name) {
                             Ok(t) => t,
                             Err(e) => {
-                                eprintln!("[Producer {}] Failed to get tensor {}: {}", producer_id, name, e);
+                                eprintln!(
+                                    "[Producer {}] Failed to get tensor {}: {}",
+                                    producer_id, name, e
+                                );
                                 continue;
-                            }
+                            },
                         };
 
                         let shape: Vec<usize> = tensor.shape().to_vec();
@@ -1215,8 +1324,8 @@ impl HoloModelConverter {
 
                         // Determine if this is a small tensor (passthrough) or needs LRDF
                         let is_small = tensor_size < 4096;
-                        let is_1d = shape.len() <= 1 ||
-                            (shape.len() >= 1 && shape.iter().filter(|&&s| s > 1).count() <= 1);
+                        let is_1d = shape.len() <= 1
+                            || (shape.len() >= 1 && shape.iter().filter(|&&s| s > 1).count() <= 1);
 
                         let work_item = PipelineWorkItem {
                             name: name.to_string(),
@@ -1269,7 +1378,7 @@ impl HoloModelConverter {
 
                 total_bytes += item.raw_data.len() as u64;
                 let rows = if item.shape.len() >= 2 {
-                    item.shape[0..item.shape.len()-1].iter().product()
+                    item.shape[0..item.shape.len() - 1].iter().product()
                 } else {
                     1
                 };
@@ -1293,23 +1402,33 @@ impl HoloModelConverter {
                     {
                         match encoder.encode_2d_fp8_e4m3(&item.raw_data, rows, cols, dtype_conv) {
                             Ok(gpu_frags) => {
-                                let frags: Vec<HoloFragment> = gpu_frags.iter()
-                                    .map(|f| f.to_haagenti())
-                                    .collect();
+                                let frags: Vec<HoloFragment> =
+                                    gpu_frags.iter().map(|f| f.to_haagenti()).collect();
                                 (frags, None)
-                            }
+                            },
                             Err(e) => {
-                                eprintln!("  [GPU] FP8 encode failed for {}: {}, using CPU", item.name, e);
+                                eprintln!(
+                                    "  [GPU] FP8 encode failed for {}: {}, using CPU",
+                                    item.name, e
+                                );
                                 let f32_data = convert_to_f32_cpu(&item.raw_data, item.dtype);
                                 match cpu_encoder.encode_2d(&f32_data, rows, cols) {
                                     Ok(frags) => (frags, None),
                                     Err(e2) => {
-                                        eprintln!("  [CPU] Encode also failed for {}: {}", item.name, e2);
+                                        eprintln!(
+                                            "  [CPU] Encode also failed for {}: {}",
+                                            item.name, e2
+                                        );
                                         // Return passthrough as last resort
-                                        (vec![create_passthrough_fragment(&f32_data, rows, cols)], None)
-                                    }
+                                        (
+                                            vec![create_passthrough_fragment(
+                                                &f32_data, rows, cols,
+                                            )],
+                                            None,
+                                        )
+                                    },
                                 }
-                            }
+                            },
                         }
                     } else {
                         // GPU encoder or dtype converter unexpectedly None, use CPU
@@ -1318,8 +1437,11 @@ impl HoloModelConverter {
                             Ok(frags) => (frags, None),
                             Err(e) => {
                                 eprintln!("  [CPU] Encode failed for {}: {}", item.name, e);
-                                (vec![create_passthrough_fragment(&f32_data, rows, cols)], None)
-                            }
+                                (
+                                    vec![create_passthrough_fragment(&f32_data, rows, cols)],
+                                    None,
+                                )
+                            },
                         }
                     }
                 } else if let Some(ref encoder) = gpu_encoder {
@@ -1327,21 +1449,26 @@ impl HoloModelConverter {
                     let f32_data = convert_to_f32_cpu(&item.raw_data, item.dtype);
                     match encoder.encode_2d(&f32_data, rows, cols) {
                         Ok(gpu_frags) => {
-                            let frags: Vec<HoloFragment> = gpu_frags.iter()
-                                .map(|f| f.to_haagenti())
-                                .collect();
+                            let frags: Vec<HoloFragment> =
+                                gpu_frags.iter().map(|f| f.to_haagenti()).collect();
                             (frags, None)
-                        }
+                        },
                         Err(e) => {
                             eprintln!("  [GPU] Encode failed for {}: {}, using CPU", item.name, e);
                             match cpu_encoder.encode_2d(&f32_data, rows, cols) {
                                 Ok(frags) => (frags, None),
                                 Err(e2) => {
-                                    eprintln!("  [CPU] Encode also failed for {}: {}", item.name, e2);
-                                    (vec![create_passthrough_fragment(&f32_data, rows, cols)], None)
-                                }
+                                    eprintln!(
+                                        "  [CPU] Encode also failed for {}: {}",
+                                        item.name, e2
+                                    );
+                                    (
+                                        vec![create_passthrough_fragment(&f32_data, rows, cols)],
+                                        None,
+                                    )
+                                },
                             }
-                        }
+                        },
                     }
                 } else {
                     // CPU fallback
@@ -1350,8 +1477,11 @@ impl HoloModelConverter {
                         Ok(frags) => (frags, None),
                         Err(e) => {
                             eprintln!("  [CPU] Encode failed for {}: {}", item.name, e);
-                            (vec![create_passthrough_fragment(&f32_data, rows, cols)], None)
-                        }
+                            (
+                                vec![create_passthrough_fragment(&f32_data, rows, cols)],
+                                None,
+                            )
+                        },
                     }
                 };
 
@@ -1363,7 +1493,8 @@ impl HoloModelConverter {
                     fragments.len() as u16,
                 );
 
-                let hct_path = output_dir_consumer.join(format!("{}.hct", item.name.replace('.', "_")));
+                let hct_path =
+                    output_dir_consumer.join(format!("{}.hct", item.name.replace('.', "_")));
 
                 match haagenti::holotensor::write_holotensor(&hct_path, &header, &fragments) {
                     Ok(size) => {
@@ -1374,13 +1505,16 @@ impl HoloModelConverter {
                         tensor_count += 1;
 
                         if tensor_count % 50 == 0 {
-                            println!("  [GPU] Processed {} tensors ({:.1} GB written)",
-                                tensor_count, hct_size as f64 / 1e9);
+                            println!(
+                                "  [GPU] Processed {} tensors ({:.1} GB written)",
+                                tensor_count,
+                                hct_size as f64 / 1e9
+                            );
                         }
-                    }
+                    },
                     Err(e) => {
                         eprintln!("  [GPU] Failed to write {}: {}", item.name, e);
-                    }
+                    },
                 }
             }
 
@@ -1406,8 +1540,10 @@ impl HoloModelConverter {
             HoloInferenceError::Conversion("Failed to get pipeline results".to_string())
         })?;
 
-        println!("\n✓ Pipeline conversion complete: {} tensors from {} files",
-            result.tensor_count, total_files);
+        println!(
+            "\n✓ Pipeline conversion complete: {} tensors from {} files",
+            result.tensor_count, total_files
+        );
 
         Ok(ConversionMetadata {
             num_layers: self.count_layers(&output_dir),
@@ -1440,7 +1576,11 @@ impl HoloModelConverter {
         for file_path in files {
             let data = fs::read(&file_path)?;
             let tensors = SafeTensors::deserialize(&data).map_err(|e| {
-                HoloInferenceError::Conversion(format!("Failed to load {}: {}", file_path.display(), e))
+                HoloInferenceError::Conversion(format!(
+                    "Failed to load {}: {}",
+                    file_path.display(),
+                    e
+                ))
             })?;
 
             for name in tensors.names() {
@@ -1465,56 +1605,56 @@ impl HoloModelConverter {
         use safetensors::Dtype;
 
         match dtype {
-            Dtype::F32 => {
-                Ok(data.chunks_exact(4)
-                    .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-                    .collect())
-            }
-            Dtype::F16 => {
-                Ok(data.chunks_exact(2)
-                    .map(|chunk| {
-                        let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
-                        half::f16::from_bits(bits).to_f32()
-                    })
-                    .collect())
-            }
-            Dtype::BF16 => {
-                Ok(data.chunks_exact(2)
-                    .map(|chunk| {
-                        let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
-                        half::bf16::from_bits(bits).to_f32()
-                    })
-                    .collect())
-            }
+            Dtype::F32 => Ok(data
+                .chunks_exact(4)
+                .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                .collect()),
+            Dtype::F16 => Ok(data
+                .chunks_exact(2)
+                .map(|chunk| {
+                    let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
+                    half::f16::from_bits(bits).to_f32()
+                })
+                .collect()),
+            Dtype::BF16 => Ok(data
+                .chunks_exact(2)
+                .map(|chunk| {
+                    let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
+                    half::bf16::from_bits(bits).to_f32()
+                })
+                .collect()),
             Dtype::F8_E4M3 => {
                 // FP8 E4M3: Use GPU conversion if available (3x faster, smaller transfer)
                 #[cfg(feature = "cuda")]
                 if let Some(ref converter) = self.gpu_dtype_converter {
                     return converter.fp8_e4m3_to_f32_host(data).map_err(|e| {
-                        HoloInferenceError::Conversion(format!("GPU FP8 E4M3 conversion failed: {}", e))
+                        HoloInferenceError::Conversion(format!(
+                            "GPU FP8 E4M3 conversion failed: {}",
+                            e
+                        ))
                     });
                 }
                 // CPU fallback
-                Ok(data.iter()
-                    .map(|&byte| fp8_e4m3_to_f32(byte))
-                    .collect())
-            }
+                Ok(data.iter().map(|&byte| fp8_e4m3_to_f32(byte)).collect())
+            },
             Dtype::F8_E5M2 => {
                 // FP8 E5M2: Use GPU conversion if available
                 #[cfg(feature = "cuda")]
                 if let Some(ref converter) = self.gpu_dtype_converter {
                     return converter.fp8_e5m2_to_f32_host(data).map_err(|e| {
-                        HoloInferenceError::Conversion(format!("GPU FP8 E5M2 conversion failed: {}", e))
+                        HoloInferenceError::Conversion(format!(
+                            "GPU FP8 E5M2 conversion failed: {}",
+                            e
+                        ))
                     });
                 }
                 // CPU fallback
-                Ok(data.iter()
-                    .map(|&byte| fp8_e5m2_to_f32(byte))
-                    .collect())
-            }
-            _ => Err(HoloInferenceError::Conversion(
-                format!("Unsupported dtype: {:?}", dtype),
-            )),
+                Ok(data.iter().map(|&byte| fp8_e5m2_to_f32(byte)).collect())
+            },
+            _ => Err(HoloInferenceError::Conversion(format!(
+                "Unsupported dtype: {:?}",
+                dtype
+            ))),
         }
     }
 
@@ -1522,9 +1662,8 @@ impl HoloModelConverter {
     fn write_hct_file(&self, path: &Path, converted: &ConvertedTensor) -> Result<u64> {
         use haagenti::holotensor::write_holotensor;
 
-        write_holotensor(path, &converted.header, &converted.fragments).map_err(|e| {
-            HoloInferenceError::Conversion(format!("Failed to write HCT file: {}", e))
-        })
+        write_holotensor(path, &converted.header, &converted.fragments)
+            .map_err(|e| HoloInferenceError::Conversion(format!("Failed to write HCT file: {}", e)))
     }
 
     /// Count transformer layers from output directory.
@@ -1702,7 +1841,8 @@ fn get_required_tensors(architecture: &str, num_layers: usize) -> Vec<String> {
     let mut required = Vec::new();
 
     let arch_lower = architecture.to_lowercase();
-    if arch_lower.contains("llama") || arch_lower.contains("qwen") || arch_lower.contains("mistral") {
+    if arch_lower.contains("llama") || arch_lower.contains("qwen") || arch_lower.contains("mistral")
+    {
         // Standard decoder-only transformer
         required.push("model.embed_tokens.weight".to_string());
         required.push("model.norm.weight".to_string());
@@ -1717,7 +1857,10 @@ fn get_required_tensors(architecture: &str, num_layers: usize) -> Vec<String> {
             required.push(format!("model.layers.{}.mlp.up_proj.weight", layer));
             required.push(format!("model.layers.{}.mlp.down_proj.weight", layer));
             required.push(format!("model.layers.{}.input_layernorm.weight", layer));
-            required.push(format!("model.layers.{}.post_attention_layernorm.weight", layer));
+            required.push(format!(
+                "model.layers.{}.post_attention_layernorm.weight",
+                layer
+            ));
         }
     }
 
@@ -1783,42 +1926,31 @@ fn convert_to_f32_cpu(data: &[u8], dtype: safetensors::Dtype) -> Vec<f32> {
     use safetensors::Dtype;
 
     match dtype {
-        Dtype::F32 => {
-            data.chunks_exact(4)
-                .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-                .collect()
-        }
-        Dtype::F16 => {
-            data.chunks_exact(2)
-                .map(|chunk| {
-                    let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
-                    half::f16::from_bits(bits).to_f32()
-                })
-                .collect()
-        }
-        Dtype::BF16 => {
-            data.chunks_exact(2)
-                .map(|chunk| {
-                    let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
-                    half::bf16::from_bits(bits).to_f32()
-                })
-                .collect()
-        }
-        Dtype::F8_E4M3 => {
-            data.iter()
-                .map(|&byte| fp8_e4m3_to_f32(byte))
-                .collect()
-        }
-        Dtype::F8_E5M2 => {
-            data.iter()
-                .map(|&byte| fp8_e5m2_to_f32(byte))
-                .collect()
-        }
+        Dtype::F32 => data
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect(),
+        Dtype::F16 => data
+            .chunks_exact(2)
+            .map(|chunk| {
+                let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
+                half::f16::from_bits(bits).to_f32()
+            })
+            .collect(),
+        Dtype::BF16 => data
+            .chunks_exact(2)
+            .map(|chunk| {
+                let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
+                half::bf16::from_bits(bits).to_f32()
+            })
+            .collect(),
+        Dtype::F8_E4M3 => data.iter().map(|&byte| fp8_e4m3_to_f32(byte)).collect(),
+        Dtype::F8_E5M2 => data.iter().map(|&byte| fp8_e5m2_to_f32(byte)).collect(),
         _ => {
             // Unsupported dtype - return zeros (caller should handle)
             eprintln!("Warning: unsupported dtype {:?}, returning zeros", dtype);
             vec![0.0; data.len()]
-        }
+        },
     }
 }
 
@@ -1944,7 +2076,7 @@ mod tests {
         });
 
         // Create random-ish test data
-        let data: Vec<f32> = (0..64*64).map(|i| (i as f32 * 0.01).sin()).collect();
+        let data: Vec<f32> = (0..64 * 64).map(|i| (i as f32 * 0.01).sin()).collect();
 
         let info = TensorInfo {
             name: "test_tensor".to_string(),
@@ -2031,7 +2163,10 @@ mod tests {
             total_tensors: 100,
             architecture: "LlamaForCausalLM".to_string(),
             missing_tensors: vec![],
-            corrupted_tensors: vec![("model_layers_0_q_proj_weight.hct".to_string(), "Invalid magic".to_string())],
+            corrupted_tensors: vec![(
+                "model_layers_0_q_proj_weight.hct".to_string(),
+                "Invalid magic".to_string(),
+            )],
             is_complete: true,
             num_layers: 32,
         };
@@ -2045,17 +2180,19 @@ mod tests {
         // Use very strict quality threshold that LRDF won't meet with random data
         let converter = HoloModelConverter::new(ConversionConfig {
             num_fragments: 4,
-            max_rank: 4,  // Very low rank = poor quality
+            max_rank: 4, // Very low rank = poor quality
             verify_quality: true,
             min_quality: 0.999, // Very strict threshold
             ..Default::default()
         });
 
         // Create high-entropy random-ish test data (harder to compress)
-        let data: Vec<f32> = (0..128*128).map(|i| {
-            let x = (i as f32 * 0.73).sin() * (i as f32 * 1.37).cos();
-            x * (i as f32 % 17.0) - (i as f32 % 7.0)
-        }).collect();
+        let data: Vec<f32> = (0..128 * 128)
+            .map(|i| {
+                let x = (i as f32 * 0.73).sin() * (i as f32 * 1.37).cos();
+                x * (i as f32 % 17.0) - (i as f32 % 7.0)
+            })
+            .collect();
 
         let info = TensorInfo {
             name: "test_quality_fallback".to_string(),
@@ -2094,11 +2231,13 @@ mod tests {
         });
 
         // Create compressible test data (low-rank structure)
-        let data: Vec<f32> = (0..64*64).map(|i| {
-            let row = (i / 64) as f32;
-            let col = (i % 64) as f32;
-            row * 0.01 + col * 0.01 // Low-rank linear data
-        }).collect();
+        let data: Vec<f32> = (0..64 * 64)
+            .map(|i| {
+                let row = (i / 64) as f32;
+                let col = (i % 64) as f32;
+                row * 0.01 + col * 0.01 // Low-rank linear data
+            })
+            .collect();
 
         let info = TensorInfo {
             name: "test_quality_acceptable".to_string(),

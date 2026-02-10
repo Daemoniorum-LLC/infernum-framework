@@ -172,7 +172,7 @@ impl RequestTimeout {
                     from_header: Some(timeout),
                     was_clamped: clamped != timeout,
                 }
-            }
+            },
             None => Self {
                 effective: config.default_timeout,
                 from_header: None,
@@ -403,10 +403,7 @@ mod tests {
             .max_timeout(Duration::from_secs(60));
 
         // Below min
-        assert_eq!(
-            config.clamp(Duration::from_secs(1)),
-            Duration::from_secs(5)
-        );
+        assert_eq!(config.clamp(Duration::from_secs(1)), Duration::from_secs(5));
 
         // Above max
         assert_eq!(

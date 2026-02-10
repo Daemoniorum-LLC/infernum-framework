@@ -389,8 +389,8 @@ impl MemoryConfig {
             gpu_memory_limit: 22 * 1024 * 1024 * 1024, // Reserve 2GB for overhead
             kv_cache_fraction: 0.92,                   // More cache for 128K contexts
             mmap_enabled: true,
-            cpu_offload: false,                        // Plenty of VRAM
-            gpu_layers: None,                          // All layers on GPU
+            cpu_offload: false, // Plenty of VRAM
+            gpu_layers: None,   // All layers on GPU
         }
     }
 
@@ -403,8 +403,8 @@ impl MemoryConfig {
     #[must_use]
     pub fn workstation_gpu() -> Self {
         Self {
-            gpu_memory_limit: 0,        // Auto-detect full VRAM
-            kv_cache_fraction: 0.90,    // Slightly conservative for stability
+            gpu_memory_limit: 0,     // Auto-detect full VRAM
+            kv_cache_fraction: 0.90, // Slightly conservative for stability
             mmap_enabled: true,
             cpu_offload: false,
             gpu_layers: None,
@@ -421,10 +421,10 @@ impl MemoryConfig {
     pub fn large_model() -> Self {
         Self {
             gpu_memory_limit: 0,
-            kv_cache_fraction: 0.5,     // Smaller cache to fit model weights
+            kv_cache_fraction: 0.5, // Smaller cache to fit model weights
             mmap_enabled: true,
-            cpu_offload: true,          // Offload some layers if needed
-            gpu_layers: Some(60),       // Keep most layers on GPU
+            cpu_offload: true,    // Offload some layers if needed
+            gpu_layers: Some(60), // Keep most layers on GPU
         }
     }
 }
@@ -484,7 +484,7 @@ mod tests {
         match &config.model {
             ModelSource::HuggingFace { repo_id, .. } => {
                 assert_eq!(repo_id, "meta-llama/Llama-3.2-3B");
-            }
+            },
             _ => panic!("Expected HuggingFace source"),
         }
     }

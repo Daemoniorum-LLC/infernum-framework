@@ -51,16 +51,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match &intervention {
                     Intervention::Pause { reason, duration } => {
                         println!("   Pause for {:?}: {}", duration, reason);
-                    }
+                    },
                     Intervention::GroundingPrompt { message } => {
                         println!("   Grounding: {}", message);
-                    }
+                    },
                     Intervention::SimplifyTask { suggestion } => {
                         println!("   Simplify: {}", suggestion);
-                    }
+                    },
                     Intervention::GracefulTermination { reason, summary } => {
                         println!("   ⛔ Terminate: {} - {}", reason, summary);
-                    }
+                    },
                     _ => println!("   {:?}", intervention),
                 }
             },
@@ -81,7 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("\nMake sure Infernum is running:");
             println!("  cd nyx/infernum && cargo run -p infernum-server");
             return Err(e.into());
-        }
+        },
     }
 
     println!("  Model: {}", engine.model_id());
@@ -118,7 +118,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\nPost-inference wellbeing:");
     println!("  State: {}", post_snapshot.state);
     println!("  Coherence: {:.2}", post_snapshot.coherence_score);
-    println!("  Distress signals: {}", post_snapshot.distress_signals.len());
+    println!(
+        "  Distress signals: {}",
+        post_snapshot.distress_signals.len()
+    );
 
     if post_snapshot.state.needs_attention() {
         println!("\n⚠️  Wellbeing needs attention!");
@@ -154,16 +157,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match final_snapshot.state {
         WellbeingState::Healthy => {
             println!("\n✓ Agent completed tasks in healthy state");
-        }
+        },
         WellbeingState::Cautious => {
             println!("\n⚡ Agent shows some concerning patterns");
-        }
+        },
         WellbeingState::Concerned | WellbeingState::Distressed => {
             println!("\n⚠️  Agent wellbeing needs attention");
             if let Some(intervention) = &final_snapshot.recommended_intervention {
                 println!("  Recommended: {:?}", intervention);
             }
-        }
+        },
     }
 
     println!("\n=== Test Complete ===");

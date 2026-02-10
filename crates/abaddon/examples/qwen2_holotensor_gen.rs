@@ -28,10 +28,14 @@ fn main() -> Result<()> {
     println!("  Qwen2.5-14B HoloTensor Full Forward Test (Single Layer)");
     println!("========================================================================\n");
 
-    let hct_dir = PathBuf::from("/home/crook/.cache/infernum/models/hct/Qwen--Qwen2.5-14B-HoloTensor");
+    let hct_dir =
+        PathBuf::from("/home/crook/.cache/infernum/models/hct/Qwen--Qwen2.5-14B-HoloTensor");
 
     if !hct_dir.exists() {
-        println!("ERROR: 14B HoloTensor model not found at: {}", hct_dir.display());
+        println!(
+            "ERROR: 14B HoloTensor model not found at: {}",
+            hct_dir.display()
+        );
         return Ok(());
     }
 
@@ -94,7 +98,8 @@ fn main() -> Result<()> {
 
     // Input
     let prompt = "The capital of France is";
-    let encoding = tokenizer.encode(prompt, false)
+    let encoding = tokenizer
+        .encode(prompt, false)
         .map_err(|e| anyhow::anyhow!("Tokenization failed: {}", e))?;
     let input_ids: Vec<u32> = encoding.get_ids().to_vec();
     println!("\nPrompt: \"{}\"", prompt);
@@ -106,7 +111,11 @@ fn main() -> Result<()> {
     let start = Instant::now();
 
     let embed_weight = loader.get("model.embed_tokens.weight", &device, dtype)?;
-    println!("Embedding loaded: {:?} in {:?}", embed_weight.dims(), start.elapsed());
+    println!(
+        "Embedding loaded: {:?} in {:?}",
+        embed_weight.dims(),
+        start.elapsed()
+    );
 
     // Embed input tokens
     let input_tensor = Tensor::from_vec(input_ids.clone(), (input_ids.len(),), &device)?;
@@ -156,9 +165,15 @@ fn main() -> Result<()> {
     // 3. Reshape for multi-head attention
     // Q: [seq, num_heads * head_dim] -> [batch, num_heads, seq, head_dim]
     // K/V: [seq, num_kv_heads * head_dim] -> [batch, num_kv_heads, seq, head_dim]
-    let q = q.reshape((1, seq_len, num_heads, head_dim))?.transpose(1, 2)?;
-    let k = k.reshape((1, seq_len, num_kv_heads, head_dim))?.transpose(1, 2)?;
-    let v = v.reshape((1, seq_len, num_kv_heads, head_dim))?.transpose(1, 2)?;
+    let q = q
+        .reshape((1, seq_len, num_heads, head_dim))?
+        .transpose(1, 2)?;
+    let k = k
+        .reshape((1, seq_len, num_kv_heads, head_dim))?
+        .transpose(1, 2)?;
+    let v = v
+        .reshape((1, seq_len, num_kv_heads, head_dim))?
+        .transpose(1, 2)?;
 
     println!("After reshape:");
     println!("  Q: {:?}", q.dims()); // [1, 40, seq, 128]
@@ -199,7 +214,9 @@ fn main() -> Result<()> {
 
     // 7. O projection
     let o_proj = loader.get("model.layers.0.self_attn.o_proj.weight", &device, dtype)?;
-    let attn_output = attn_output.transpose(1, 2)?.reshape((seq_len, hidden_size))?;
+    let attn_output = attn_output
+        .transpose(1, 2)?
+        .reshape((seq_len, hidden_size))?;
     let attn_output = attn_output.matmul(&o_proj.t()?)?;
     println!("O projection output: {:?}", attn_output.dims());
     check_tensor("O projection", &attn_output)?;
@@ -219,19 +236,32 @@ fn main() -> Result<()> {
     let logits_f32 = logits.to_dtype(DType::F32)?;
     let logits_vec: Vec<f32> = logits_f32.flatten_all()?.to_vec1()?;
 
-    println!("Logits range: [{:.4}, {:.4}]",
+    println!(
+        "Logits range: [{:.4}, {:.4}]",
         logits_vec.iter().cloned().fold(f32::INFINITY, f32::min),
-        logits_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max));
+        logits_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
+    );
 
     // Top 5 predictions
-    let mut indexed: Vec<(usize, f32)> = logits_vec.iter().enumerate().map(|(i, &v)| (i, v)).collect();
+    let mut indexed: Vec<(usize, f32)> = logits_vec
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| (i, v))
+        .collect();
     indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
     println!("\nTop 5 predictions:");
     for (i, (token_id, score)) in indexed.iter().take(5).enumerate() {
-        let decoded = tokenizer.decode(&[*token_id as u32], false)
+        let decoded = tokenizer
+            .decode(&[*token_id as u32], false)
             .unwrap_or_else(|_| "[decode error]".to_string());
-        println!("  {}. token {} \"{}\": {:.4}", i+1, token_id, decoded, score);
+        println!(
+            "  {}. token {} \"{}\": {:.4}",
+            i + 1,
+            token_id,
+            decoded,
+            score
+        );
     }
 
     // Note: This is only ONE layer so output won't be meaningful
@@ -241,8 +271,14 @@ fn main() -> Result<()> {
     let stats = loader.stats();
     println!("\n=== Stats ===");
     println!("Tensors loaded: {}", stats.tensors_loaded);
-    println!("GPU reconstructions: {} ({} ms)", stats.gpu_reconstructions, stats.gpu_time_ms);
-    println!("CPU reconstructions: {} ({} ms)", stats.cpu_reconstructions, stats.cpu_time_ms);
+    println!(
+        "GPU reconstructions: {} ({} ms)",
+        stats.gpu_reconstructions, stats.gpu_time_ms
+    );
+    println!(
+        "CPU reconstructions: {} ({} ms)",
+        stats.cpu_reconstructions, stats.cpu_time_ms
+    );
 
     Ok(())
 }
@@ -258,7 +294,10 @@ fn check_tensor(name: &str, tensor: &Tensor) -> Result<()> {
 
     // -inf is expected in attention weights (causal mask), only +inf and NaN are errors
     if nan_count > 0 || pos_inf_count > 0 {
-        println!("  ✗ {}: NaN={}, +Inf={}, -Inf={}", name, nan_count, pos_inf_count, neg_inf_count);
+        println!(
+            "  ✗ {}: NaN={}, +Inf={}, -Inf={}",
+            name, nan_count, pos_inf_count, neg_inf_count
+        );
         anyhow::bail!("{} contains NaN or +Inf", name);
     } else {
         let finite_vec: Vec<f32> = vec.iter().filter(|v| v.is_finite()).cloned().collect();
@@ -270,10 +309,15 @@ fn check_tensor(name: &str, tensor: &Tensor) -> Result<()> {
         let max = finite_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         let min = finite_vec.iter().cloned().fold(f32::INFINITY, f32::min);
         if neg_inf_count > 0 {
-            println!("  ✓ {}: mean={:.6}, range=[{:.4}, {:.4}], -inf={} (expected)",
-                     name, mean, min, max, neg_inf_count);
+            println!(
+                "  ✓ {}: mean={:.6}, range=[{:.4}, {:.4}], -inf={} (expected)",
+                name, mean, min, max, neg_inf_count
+            );
         } else {
-            println!("  ✓ {}: mean={:.6}, range=[{:.4}, {:.4}]", name, mean, min, max);
+            println!(
+                "  ✓ {}: mean={:.6}, range=[{:.4}, {:.4}]",
+                name, mean, min, max
+            );
         }
     }
     Ok(())
@@ -311,11 +355,15 @@ fn apply_rope(
     let inv_freq = Tensor::from_vec(inv_freq, (half_dim,), device)?.to_dtype(dtype)?;
 
     // Position indices
-    let positions: Vec<f32> = (pos_offset..pos_offset + seq_len).map(|p| p as f32).collect();
+    let positions: Vec<f32> = (pos_offset..pos_offset + seq_len)
+        .map(|p| p as f32)
+        .collect();
     let positions = Tensor::from_vec(positions, (seq_len,), device)?.to_dtype(dtype)?;
 
     // Compute angles: [seq_len, half_dim]
-    let angles = positions.reshape((seq_len, 1))?.broadcast_mul(&inv_freq.reshape((1, half_dim))?)?;
+    let angles = positions
+        .reshape((seq_len, 1))?
+        .broadcast_mul(&inv_freq.reshape((1, half_dim))?)?;
 
     // Compute sin and cos
     let cos = angles.cos()?;
@@ -342,8 +390,12 @@ fn apply_rotary_emb(x: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
     let x2 = x.narrow(3, half_d, half_d)?;
 
     // Rotate: [x1*cos - x2*sin, x1*sin + x2*cos]
-    let y1 = x1.broadcast_mul(cos)?.broadcast_sub(&x2.broadcast_mul(sin)?)?;
-    let y2 = x1.broadcast_mul(sin)?.broadcast_add(&x2.broadcast_mul(cos)?)?;
+    let y1 = x1
+        .broadcast_mul(cos)?
+        .broadcast_sub(&x2.broadcast_mul(sin)?)?;
+    let y2 = x1
+        .broadcast_mul(sin)?
+        .broadcast_add(&x2.broadcast_mul(cos)?)?;
 
     // Concatenate back
     Tensor::cat(&[&y1, &y2], 3).map_err(Into::into)

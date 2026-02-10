@@ -569,7 +569,9 @@ Generate the revised plan now:"#,
         let tools_desc = tools.to_prompt_description();
 
         // Step 1: Generate initial thought branches
-        let branches = self.generate_thought_branches(objective, &tools_desc, breadth).await?;
+        let branches = self
+            .generate_thought_branches(objective, &tools_desc, breadth)
+            .await?;
 
         if branches.is_empty() {
             tracing::warn!("No initial branches generated, falling back to single plan");
@@ -578,12 +580,17 @@ Generate the revised plan now:"#,
             return Ok(plan);
         }
 
-        tracing::debug!(branches = branches.len(), "Generated initial thought branches");
+        tracing::debug!(
+            branches = branches.len(),
+            "Generated initial thought branches"
+        );
 
         // Step 2: Expand and evaluate each branch
         let mut evaluated_branches = Vec::new();
         for (i, branch) in branches.into_iter().enumerate() {
-            let expanded = self.expand_branch(&branch, objective, &tools_desc, depth).await?;
+            let expanded = self
+                .expand_branch(&branch, objective, &tools_desc, depth)
+                .await?;
             let score = self.evaluate_branch(&expanded, objective).await?;
 
             tracing::debug!(
@@ -602,7 +609,11 @@ Generate the revised plan now:"#,
         // Step 3: Select the best branch
         let best_branch = evaluated_branches
             .into_iter()
-            .max_by(|a, b| a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal))
+            .max_by(|a, b| {
+                a.score
+                    .partial_cmp(&b.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .ok_or_else(|| infernum_core::Error::internal("No branches to evaluate"))?;
 
         tracing::info!(
@@ -669,7 +680,8 @@ Generate {breadth} distinct approaches now:"#
         let messages = vec![
             Message {
                 role: Role::System,
-                content: "You are an expert problem solver exploring multiple solution paths.".to_string(),
+                content: "You are an expert problem solver exploring multiple solution paths."
+                    .to_string(),
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
@@ -701,10 +713,22 @@ Generate {breadth} distinct approaches now:"#
         if let Some(json_str) = self.extract_json(&response_text) {
             if let Ok(parsed) = serde_json::from_str::<Vec<serde_json::Value>>(&json_str) {
                 for value in parsed {
-                    let approach = value.get("approach").and_then(|v| v.as_str()).unwrap_or("Unknown");
-                    let reasoning = value.get("reasoning").and_then(|v| v.as_str()).unwrap_or("");
-                    let first_step = value.get("first_step").and_then(|v| v.as_str()).unwrap_or("");
-                    let tool = value.get("tool").and_then(|v| v.as_str()).filter(|s| *s != "null");
+                    let approach = value
+                        .get("approach")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Unknown");
+                    let reasoning = value
+                        .get("reasoning")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let first_step = value
+                        .get("first_step")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let tool = value
+                        .get("tool")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| *s != "null");
 
                     branches.push(ThoughtNode {
                         content: format!("{}: {}", approach, first_step),
@@ -809,9 +833,18 @@ Generate the next step:"#
             // Parse the next step
             if let Some(json_str) = self.extract_json(&response_text) {
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json_str) {
-                    let next_step = parsed.get("next_step").and_then(|v| v.as_str()).unwrap_or("Continue");
-                    let reasoning = parsed.get("reasoning").and_then(|v| v.as_str()).unwrap_or("");
-                    let tool = parsed.get("tool").and_then(|v| v.as_str()).filter(|s| *s != "null");
+                    let next_step = parsed
+                        .get("next_step")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Continue");
+                    let reasoning = parsed
+                        .get("reasoning")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let tool = parsed
+                        .get("tool")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| *s != "null");
                     let params = parsed.get("params").cloned();
 
                     let thought = ThoughtNode {
@@ -933,13 +966,9 @@ Evaluate this approach:"#
         let tools_desc = tools.to_prompt_description();
 
         // Step 1: Initial decomposition of the objective
-        let root_task = self.decompose_task(
-            "1",
-            objective,
-            &tools_desc,
-            0,
-            max_depth as usize,
-        ).await?;
+        let root_task = self
+            .decompose_task("1", objective, &tools_desc, 0, max_depth as usize)
+            .await?;
 
         tracing::debug!(
             total_tasks = root_task.total_tasks(),
@@ -947,11 +976,9 @@ Evaluate this approach:"#
         );
 
         // Step 2: Recursively decompose complex subtasks
-        let refined_task = self.refine_decomposition(
-            root_task,
-            &tools_desc,
-            max_depth as usize,
-        ).await?;
+        let refined_task = self
+            .refine_decomposition(root_task, &tools_desc, max_depth as usize)
+            .await?;
 
         tracing::info!(
             total_tasks = refined_task.total_tasks(),
@@ -983,7 +1010,9 @@ Evaluate this approach:"#
     ) -> Result<HierarchicalTask> {
         // If at max depth, return atomic task
         if current_depth >= max_depth {
-            return Ok(self.create_atomic_task(task_id, task_description, tools_desc).await?);
+            return Ok(self
+                .create_atomic_task(task_id, task_description, tools_desc)
+                .await?);
         }
 
         let prompt = format!(
@@ -1032,7 +1061,8 @@ Decompose the task now:"#
         let messages = vec![
             Message {
                 role: Role::System,
-                content: "You are an expert at breaking complex problems into manageable subtasks.".to_string(),
+                content: "You are an expert at breaking complex problems into manageable subtasks."
+                    .to_string(),
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
@@ -1129,7 +1159,11 @@ Assign the tool:"#
 
         if let Some(json_str) = self.extract_json(&response_text) {
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json_str) {
-                if let Some(tool) = parsed.get("tool").and_then(|v| v.as_str()).filter(|s| *s != "null") {
+                if let Some(tool) = parsed
+                    .get("tool")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| *s != "null")
+                {
                     task.tool = Some(tool.to_string());
                 }
                 if let Some(params) = parsed.get("params") {
@@ -1173,7 +1207,11 @@ Assign the tool:"#
 
                 // Parse tool for atomic tasks
                 if task.is_atomic {
-                    if let Some(tool) = parsed.get("tool").and_then(|v| v.as_str()).filter(|s| *s != "null") {
+                    if let Some(tool) = parsed
+                        .get("tool")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| *s != "null")
+                    {
                         task.tool = Some(tool.to_string());
                     }
                     if let Some(params) = parsed.get("params") {
@@ -1225,7 +1263,8 @@ Assign the tool:"#
         mut task: HierarchicalTask,
         tools_desc: &'a str,
         max_depth: usize,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<HierarchicalTask>> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<HierarchicalTask>> + Send + 'a>>
+    {
         Box::pin(async move {
             // Don't refine atomic tasks or if we're at max depth
             if task.is_atomic || task.depth >= max_depth {
@@ -1244,16 +1283,20 @@ Assign the tool:"#
                         "Refining complex subtask"
                     );
 
-                    let decomposed = self.decompose_task(
-                        &subtask.id,
-                        &subtask.description,
-                        tools_desc,
-                        subtask.depth,
-                        max_depth,
-                    ).await?;
+                    let decomposed = self
+                        .decompose_task(
+                            &subtask.id,
+                            &subtask.description,
+                            tools_desc,
+                            subtask.depth,
+                            max_depth,
+                        )
+                        .await?;
 
                     // Recursively refine the decomposed task
-                    let refined = self.refine_decomposition(decomposed, tools_desc, max_depth).await?;
+                    let refined = self
+                        .refine_decomposition(decomposed, tools_desc, max_depth)
+                        .await?;
                     refined_subtasks.push(refined);
                 } else {
                     // Keep atomic or simple tasks as-is
@@ -1408,7 +1451,9 @@ impl Planner for LLMPlanner {
 
         // Use hierarchical decomposition for Hierarchical strategy
         if let PlanningStrategy::Hierarchical { max_depth } = &self.strategy {
-            return self.plan_with_hierarchical(objective, tools, *max_depth).await;
+            return self
+                .plan_with_hierarchical(objective, tools, *max_depth)
+                .await;
         }
 
         let prompt = self.build_planning_prompt(objective, tools);
@@ -1571,16 +1616,13 @@ mod tests {
 
     #[test]
     fn test_plan_step_depends_on() {
-        let step = PlanStep::new("2", "Second")
-            .depends_on("1");
+        let step = PlanStep::new("2", "Second").depends_on("1");
         assert_eq!(step.dependencies, vec!["1".to_string()]);
     }
 
     #[test]
     fn test_plan_step_multiple_dependencies() {
-        let step = PlanStep::new("3", "Third")
-            .depends_on("1")
-            .depends_on("2");
+        let step = PlanStep::new("3", "Third").depends_on("1").depends_on("2");
         assert_eq!(step.dependencies.len(), 2);
         assert!(step.dependencies.contains(&"1".to_string()));
         assert!(step.dependencies.contains(&"2".to_string()));
@@ -1737,7 +1779,10 @@ mod tests {
 
     #[test]
     fn test_planning_strategy_tree_of_thoughts() {
-        let strategy = PlanningStrategy::TreeOfThoughts { breadth: 3, depth: 5 };
+        let strategy = PlanningStrategy::TreeOfThoughts {
+            breadth: 3,
+            depth: 5,
+        };
         if let PlanningStrategy::TreeOfThoughts { breadth, depth } = strategy {
             assert_eq!(breadth, 3);
             assert_eq!(depth, 5);
@@ -1760,12 +1805,15 @@ mod tests {
     fn test_planning_strategy_variants() {
         let single = PlanningStrategy::SingleShot;
         let react = PlanningStrategy::ReAct { max_iterations: 10 };
-        let tot = PlanningStrategy::TreeOfThoughts { breadth: 3, depth: 4 };
+        let tot = PlanningStrategy::TreeOfThoughts {
+            breadth: 3,
+            depth: 4,
+        };
         let hierarchical = PlanningStrategy::Hierarchical { max_depth: 3 };
 
         // Verify strategies can be pattern matched
         match single {
-            PlanningStrategy::SingleShot => {}
+            PlanningStrategy::SingleShot => {},
             _ => panic!("Wrong variant"),
         }
 
@@ -1867,7 +1915,10 @@ mod tests {
 
         assert_eq!(parent.children.len(), 2);
         assert_eq!(parent.children[0].content, "Sub-task 1");
-        assert_eq!(parent.children[1].suggested_tool, Some("calculator".to_string()));
+        assert_eq!(
+            parent.children[1].suggested_tool,
+            Some("calculator".to_string())
+        );
     }
 
     #[test]
@@ -1951,8 +2002,10 @@ mod tests {
 
     #[test]
     fn test_hierarchical_task_atomic() {
-        let task = HierarchicalTask::new("1", "Calculate")
-            .atomic(Some("calculator".to_string()), Some(serde_json::json!({"x": 5})));
+        let task = HierarchicalTask::new("1", "Calculate").atomic(
+            Some("calculator".to_string()),
+            Some(serde_json::json!({"x": 5})),
+        );
 
         assert!(task.is_atomic);
         assert_eq!(task.tool, Some("calculator".to_string()));
@@ -2027,12 +2080,8 @@ mod tests {
     #[test]
     fn test_hierarchical_task_flatten_with_subtasks() {
         let mut parent = HierarchicalTask::new("1", "Parent");
-        parent.add_subtask(
-            HierarchicalTask::new("1.1", "Child 1").atomic(None, None)
-        );
-        parent.add_subtask(
-            HierarchicalTask::new("1.2", "Child 2").atomic(None, None)
-        );
+        parent.add_subtask(HierarchicalTask::new("1.1", "Child 1").atomic(None, None));
+        parent.add_subtask(HierarchicalTask::new("1.2", "Child 2").atomic(None, None));
 
         let steps = parent.flatten();
         // 1 milestone + 2 atomic children
@@ -2087,7 +2136,10 @@ mod tests {
         let tools = ToolRegistry::new();
 
         let original = planner.plan("Original", &tools).await.expect("plan");
-        let revised = planner.replan(&original, "feedback", &tools).await.expect("replan");
+        let revised = planner
+            .replan(&original, "feedback", &tools)
+            .await
+            .expect("replan");
 
         // Replan creates a new plan for the same objective
         assert_eq!(revised.objective, original.objective);
@@ -2187,8 +2239,7 @@ mod tests {
         let mut level2 = HierarchicalTask::new("1.1.1", "Level 2");
         level2.depth = 2;
 
-        let level3 = HierarchicalTask::new("1.1.1.1", "Level 3")
-            .atomic(None, None);
+        let level3 = HierarchicalTask::new("1.1.1.1", "Level 3").atomic(None, None);
 
         level2.add_subtask(level3);
         level1.add_subtask(level2);

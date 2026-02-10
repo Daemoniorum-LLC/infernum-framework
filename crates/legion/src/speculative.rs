@@ -176,11 +176,11 @@ impl QualityCurve {
             Self::Spectral => {
                 // Q(k/n) = 0.60 + 0.30*(k/n) + 0.08*(k/n)² + 0.02*(k/n)³
                 0.60 + 0.30 * fraction + 0.08 * fraction.powi(2) + 0.02 * fraction.powi(3)
-            }
+            },
             Self::Lrdf => {
                 // Q(k/n) = 0.30 + 0.50*(k/n) + 0.15*(k/n)² + 0.05*(k/n)³
                 0.30 + 0.50 * fraction + 0.15 * fraction.powi(2) + 0.05 * fraction.powi(3)
-            }
+            },
             Self::Linear => fraction,
         }
     }
@@ -448,7 +448,11 @@ impl DraftGenerator {
     }
 
     /// Creates a new draft generator with config.
-    pub fn with_config(id: impl Into<String>, band: FrequencyBand, config: DraftGeneratorConfig) -> Self {
+    pub fn with_config(
+        id: impl Into<String>,
+        band: FrequencyBand,
+        config: DraftGeneratorConfig,
+    ) -> Self {
         Self {
             id: id.into(),
             band,
@@ -460,11 +464,7 @@ impl DraftGenerator {
     ///
     /// This is a placeholder that should be wired to actual model inference.
     /// Returns simulated drafts for testing.
-    pub fn generate(
-        &self,
-        _context_tokens: &[TokenId],
-        lookahead: usize,
-    ) -> DraftSequence {
+    pub fn generate(&self, _context_tokens: &[TokenId], lookahead: usize) -> DraftSequence {
         // Placeholder: In real implementation, this calls the draft model
         // For now, return a simulated draft
         let tokens: Vec<TokenId> = (0..lookahead).map(|i| i as TokenId).collect();
@@ -495,7 +495,10 @@ impl DraftPool {
             generators.insert(band, generator);
         }
 
-        Self { generators, _config: config }
+        Self {
+            generators,
+            _config: config,
+        }
     }
 
     /// Selects frequency bands for the given number of agents.
@@ -503,7 +506,11 @@ impl DraftPool {
         match count {
             1 => vec![FrequencyBand::Operational],
             2 => vec![FrequencyBand::Strategic, FrequencyBand::Operational],
-            3 => vec![FrequencyBand::Strategic, FrequencyBand::Tactical, FrequencyBand::Operational],
+            3 => vec![
+                FrequencyBand::Strategic,
+                FrequencyBand::Tactical,
+                FrequencyBand::Operational,
+            ],
             4 => vec![
                 FrequencyBand::Strategic,
                 FrequencyBand::Tactical,
@@ -519,8 +526,11 @@ impl DraftPool {
                     FrequencyBand::Operational,
                     FrequencyBand::Verification,
                     FrequencyBand::Reflective,
-                ].into_iter().take(count).collect()
-            }
+                ]
+                .into_iter()
+                .take(count)
+                .collect()
+            },
         }
     }
 
@@ -635,7 +645,11 @@ impl SpeculativeLegion {
             .collect();
 
         // Sort by coherence (descending)
-        ranked.sort_by(|a, b| b.coherence.partial_cmp(&a.coherence).unwrap_or(std::cmp::Ordering::Equal));
+        ranked.sort_by(|a, b| {
+            b.coherence
+                .partial_cmp(&a.coherence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // Filter by threshold
         ranked.retain(|p| p.coherence >= self.config.coherence_threshold);
@@ -818,7 +832,12 @@ mod tests {
         let tokens = vec![1, 2, 3, 4];
         let log_probs = vec![-0.5, -0.6, -0.7, -0.8];
 
-        let draft = DraftSequence::new("agent-0", FrequencyBand::Strategic, tokens.clone(), log_probs.clone());
+        let draft = DraftSequence::new(
+            "agent-0",
+            FrequencyBand::Strategic,
+            tokens.clone(),
+            log_probs.clone(),
+        );
 
         assert_eq!(draft.agent_id, "agent-0");
         assert_eq!(draft.band, FrequencyBand::Strategic);
@@ -974,8 +993,18 @@ mod tests {
         let legion = SpeculativeLegion::new(config);
 
         // Create diverse drafts (different bands)
-        let draft1 = DraftSequence::new("a", FrequencyBand::Strategic, vec![1, 2, 3], vec![-0.5, -0.5, -0.5]);
-        let draft2 = DraftSequence::new("b", FrequencyBand::Operational, vec![4, 5, 6], vec![-0.5, -0.5, -0.5]);
+        let draft1 = DraftSequence::new(
+            "a",
+            FrequencyBand::Strategic,
+            vec![1, 2, 3],
+            vec![-0.5, -0.5, -0.5],
+        );
+        let draft2 = DraftSequence::new(
+            "b",
+            FrequencyBand::Operational,
+            vec![4, 5, 6],
+            vec![-0.5, -0.5, -0.5],
+        );
 
         let drafts = vec![draft1, draft2];
         let diverse = legion.drafts_are_diverse(&drafts);

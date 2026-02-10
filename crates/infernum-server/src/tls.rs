@@ -156,10 +156,14 @@ pub fn check_cert_expiry(
 
     // Basic PEM validation
     if !cert_data.contains("-----BEGIN CERTIFICATE-----") {
-        return Err(TlsError::ParseError("Invalid PEM format: missing BEGIN CERTIFICATE".to_string()));
+        return Err(TlsError::ParseError(
+            "Invalid PEM format: missing BEGIN CERTIFICATE".to_string(),
+        ));
     }
     if !cert_data.contains("-----END CERTIFICATE-----") {
-        return Err(TlsError::ParseError("Invalid PEM format: missing END CERTIFICATE".to_string()));
+        return Err(TlsError::ParseError(
+            "Invalid PEM format: missing END CERTIFICATE".to_string(),
+        ));
     }
 
     // For full X.509 parsing, we'd need the x509-parser crate.

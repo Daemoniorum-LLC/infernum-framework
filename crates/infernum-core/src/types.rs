@@ -345,7 +345,10 @@ impl Message {
 
     /// Creates an assistant message with tool calls.
     #[must_use]
-    pub fn assistant_with_tool_calls(content: impl Into<String>, tool_calls: Vec<ToolCall>) -> Self {
+    pub fn assistant_with_tool_calls(
+        content: impl Into<String>,
+        tool_calls: Vec<ToolCall>,
+    ) -> Self {
         Self {
             role: Role::Assistant,
             content: content.into(),
@@ -757,8 +760,7 @@ mod tests {
 
     #[test]
     fn test_tool_definition_serialization() {
-        let tool = ToolDefinition::new("bash")
-            .with_description("Run a command");
+        let tool = ToolDefinition::new("bash").with_description("Run a command");
 
         let json = serde_json::to_string(&tool).expect("serialize");
         assert!(json.contains("\"name\":\"bash\""));
@@ -822,7 +824,9 @@ mod tests {
 
     #[test]
     fn test_tool_control_specific_serialization() {
-        let specific = ToolControl::Specific { name: "read_file".into() };
+        let specific = ToolControl::Specific {
+            name: "read_file".into(),
+        };
         let json = serde_json::to_string(&specific).expect("serialize");
         assert!(json.contains("\"name\":\"read_file\""));
 

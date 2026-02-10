@@ -40,9 +40,15 @@ fn main() -> Result<()> {
     let config_path = hf_hub::api::sync::Api::new()?
         .model(model_id.to_string())
         .get("config.json")?;
-    let config: abaddon::models::Qwen2Config = serde_json::from_str(&std::fs::read_to_string(config_path)?)?;
-    println!("Config: hidden_size={}, layers={}, heads={}, kv_heads={}",
-             config.hidden_size, config.num_hidden_layers, config.num_attention_heads, config.num_kv_heads());
+    let config: abaddon::models::Qwen2Config =
+        serde_json::from_str(&std::fs::read_to_string(config_path)?)?;
+    println!(
+        "Config: hidden_size={}, layers={}, heads={}, kv_heads={}",
+        config.hidden_size,
+        config.num_hidden_layers,
+        config.num_attention_heads,
+        config.num_kv_heads()
+    );
 
     // Load model weights
     let weights_start = Instant::now();
@@ -99,7 +105,11 @@ fn main() -> Result<()> {
         // === CUDA Quantized cache ===
         #[cfg(feature = "cuda")]
         {
-            let mut model_cuda = abaddon::models::Qwen2::load_with_cuda_quantized_cache(config.clone(), vb.clone(), 0)?;
+            let mut model_cuda = abaddon::models::Qwen2::load_with_cuda_quantized_cache(
+                config.clone(),
+                vb.clone(),
+                0,
+            )?;
             let input_tensor = Tensor::new(&token_ids[..], &device)?.unsqueeze(0)?;
 
             let cuda_start = Instant::now();
@@ -114,10 +124,16 @@ fn main() -> Result<()> {
 
                 // Get logits for last position (where we sample from)
                 let std_dims = std_logits.dims();
-                let vocab_size = std_dims[2];  // [batch, seq_len, vocab_size]
-                let std_last_logits = std_logits.i((0, std_dims[1] - 1, ..))?.to_dtype(DType::F32)?.to_vec1::<f32>()?;
+                let vocab_size = std_dims[2]; // [batch, seq_len, vocab_size]
+                let std_last_logits = std_logits
+                    .i((0, std_dims[1] - 1, ..))?
+                    .to_dtype(DType::F32)?
+                    .to_vec1::<f32>()?;
                 let cuda_dims = logits.dims();
-                let cuda_last_logits = logits.i((0, cuda_dims[1] - 1, ..))?.to_dtype(DType::F32)?.to_vec1::<f32>()?;
+                let cuda_last_logits = logits
+                    .i((0, cuda_dims[1] - 1, ..))?
+                    .to_dtype(DType::F32)?
+                    .to_vec1::<f32>()?;
 
                 let mut max_diff = 0.0f32;
                 let mut sum_diff = 0.0f32;
@@ -129,20 +145,35 @@ fn main() -> Result<()> {
                     }
                 }
                 let mean_diff = sum_diff / std_last_logits.len() as f32;
-                println!("  Prefill logits comparison: max_diff={:.4}, mean_diff={:.4}", max_diff, mean_diff);
+                println!(
+                    "  Prefill logits comparison: max_diff={:.4}, mean_diff={:.4}",
+                    max_diff, mean_diff
+                );
 
                 // Check logits for tokens 13 (.) and 15 (0)
-                println!("  Token 13 '.' logit: std={:.4}, cuda={:.4}, diff={:.4}",
-                    std_last_logits[13], cuda_last_logits[13], (std_last_logits[13] - cuda_last_logits[13]).abs());
-                println!("  Token 15 '0' logit: std={:.4}, cuda={:.4}, diff={:.4}",
-                    std_last_logits[15], cuda_last_logits[15], (std_last_logits[15] - cuda_last_logits[15]).abs());
-                println!("  Token 220 ' ' logit: std={:.4}, cuda={:.4}",
-                    std_last_logits[220], cuda_last_logits[220]);
+                println!(
+                    "  Token 13 '.' logit: std={:.4}, cuda={:.4}, diff={:.4}",
+                    std_last_logits[13],
+                    cuda_last_logits[13],
+                    (std_last_logits[13] - cuda_last_logits[13]).abs()
+                );
+                println!(
+                    "  Token 15 '0' logit: std={:.4}, cuda={:.4}, diff={:.4}",
+                    std_last_logits[15],
+                    cuda_last_logits[15],
+                    (std_last_logits[15] - cuda_last_logits[15]).abs()
+                );
+                println!(
+                    "  Token 220 ' ' logit: std={:.4}, cuda={:.4}",
+                    std_last_logits[220], cuda_last_logits[220]
+                );
 
                 // Find top 5 tokens in each
-                let mut std_top: Vec<(usize, f32)> = std_last_logits.iter().cloned().enumerate().collect();
+                let mut std_top: Vec<(usize, f32)> =
+                    std_last_logits.iter().cloned().enumerate().collect();
                 std_top.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-                let mut cuda_top: Vec<(usize, f32)> = cuda_last_logits.iter().cloned().enumerate().collect();
+                let mut cuda_top: Vec<(usize, f32)> =
+                    cuda_last_logits.iter().cloned().enumerate().collect();
                 cuda_top.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
                 println!("  Std top 5: {:?}", &std_top[..5]);
                 println!("  CUDA top 5: {:?}", &cuda_top[..5]);
@@ -178,7 +209,10 @@ fn main() -> Result<()> {
     let long_prompt = "Write a detailed explanation of how transformers work in machine learning. Start with the attention mechanism.";
     let token_ids = tokenizer.encode(long_prompt, true)?;
     println!("Prompt: \"{long_prompt}\"");
-    println!("Tokens: {} input tokens, generating 50 tokens", token_ids.len());
+    println!(
+        "Tokens: {} input tokens, generating 50 tokens",
+        token_ids.len()
+    );
 
     // Standard cache benchmark
     let mut model_standard = abaddon::models::Qwen2::load(config.clone(), vb.clone())?;
@@ -195,13 +229,18 @@ fn main() -> Result<()> {
         logits = model_standard.forward(&next_input, current_tokens.len() - 1)?;
     }
     let std_time = std_start.elapsed();
-    println!("Standard cache: {:.2?} ({:.1} tok/s)", std_time, 50.0 / std_time.as_secs_f64());
+    println!(
+        "Standard cache: {:.2?} ({:.1} tok/s)",
+        std_time,
+        50.0 / std_time.as_secs_f64()
+    );
     drop(model_standard);
 
     // CUDA cache benchmark
     #[cfg(feature = "cuda")]
     {
-        let mut model_cuda = abaddon::models::Qwen2::load_with_cuda_quantized_cache(config.clone(), vb.clone(), 0)?;
+        let mut model_cuda =
+            abaddon::models::Qwen2::load_with_cuda_quantized_cache(config.clone(), vb.clone(), 0)?;
         let input_tensor = Tensor::new(&token_ids[..], &device)?.unsqueeze(0)?;
 
         let cuda_start = Instant::now();
@@ -215,7 +254,11 @@ fn main() -> Result<()> {
             logits = model_cuda.forward(&next_input, current_tokens.len() - 1)?;
         }
         let cuda_time = cuda_start.elapsed();
-        println!("CUDA INT8 cache: {:.2?} ({:.1} tok/s)", cuda_time, 50.0 / cuda_time.as_secs_f64());
+        println!(
+            "CUDA INT8 cache: {:.2?} ({:.1} tok/s)",
+            cuda_time,
+            50.0 / cuda_time.as_secs_f64()
+        );
 
         let speedup = std_time.as_secs_f64() / cuda_time.as_secs_f64();
         println!("\nCUDA Speedup: {:.2}x", speedup);
@@ -234,7 +277,7 @@ fn sample_token(logits: &Tensor) -> Result<u32> {
         3 => {
             let seq_len = dims[1];
             logits.i((0, seq_len - 1, ..))? // Get last token for first batch
-        }
+        },
         2 => logits.i((dims[0] - 1, ..))?, // [seq_len, vocab_size]
         1 => logits.clone(),
         _ => anyhow::bail!("Unexpected logits shape: {:?}", dims),

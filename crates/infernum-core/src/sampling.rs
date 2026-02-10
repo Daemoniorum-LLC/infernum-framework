@@ -99,7 +99,10 @@ ws ::= [ \t\n\r]*"#
         let mut pair_rules = Vec::new();
 
         for (key, prop) in properties {
-            let prop_type = prop.get("type").and_then(|t| t.as_str()).unwrap_or("string");
+            let prop_type = prop
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("string");
             let value_rule = match prop_type {
                 "string" => "string",
                 "number" | "integer" => "number",
@@ -123,7 +126,10 @@ ws ::= [ \t\n\r]*"#
         rules.push(r#"array ::= "[" ws (value ("," ws value)*)? "]" ws"#.to_string());
         rules.push(r#"string ::= "\"" char* "\"" ws"#.to_string());
         rules.push(r#"char ::= [^"\\] | "\\" escape"#.to_string());
-        rules.push(r#"escape ::= ["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]"#.to_string());
+        rules.push(
+            r#"escape ::= ["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]"#
+                .to_string(),
+        );
         rules.push(r#"number ::= "-"? integer fraction? exponent? ws"#.to_string());
         rules.push(r#"integer ::= "0" | [1-9] [0-9]*"#.to_string());
         rules.push(r#"fraction ::= "." [0-9]+"#.to_string());
@@ -533,7 +539,10 @@ mod tests {
             ..Default::default()
         };
         assert!(params.validate().is_err());
-        assert!(params.validate().unwrap_err().contains("repetition_penalty"));
+        assert!(params
+            .validate()
+            .unwrap_err()
+            .contains("repetition_penalty"));
     }
 
     #[test]
@@ -587,7 +596,10 @@ mod tests {
         let grammar = r#"root ::= "hello" | "world""#;
         let params = SamplingParams::default().with_gbnf(grammar);
         assert!(params.grammar.is_some());
-        assert_eq!(params.grammar, Some(GrammarConstraint::Gbnf(grammar.to_string())));
+        assert_eq!(
+            params.grammar,
+            Some(GrammarConstraint::Gbnf(grammar.to_string()))
+        );
     }
 
     #[test]
@@ -595,7 +607,10 @@ mod tests {
         let schema = r#"{"type": "object", "properties": {"name": {"type": "string"}}}"#;
         let params = SamplingParams::default().with_json_schema(schema);
         assert!(params.grammar.is_some());
-        assert_eq!(params.grammar, Some(GrammarConstraint::JsonSchema(schema.to_string())));
+        assert_eq!(
+            params.grammar,
+            Some(GrammarConstraint::JsonSchema(schema.to_string()))
+        );
     }
 
     #[test]
@@ -658,7 +673,10 @@ mod tests {
     fn test_grammar_deserialization_gbnf() {
         let json = r#"{"grammar": {"Gbnf": "root ::= value"}}"#;
         let params: SamplingParams = serde_json::from_str(json).unwrap();
-        assert_eq!(params.grammar, Some(GrammarConstraint::Gbnf("root ::= value".to_string())));
+        assert_eq!(
+            params.grammar,
+            Some(GrammarConstraint::Gbnf("root ::= value".to_string()))
+        );
     }
 
     #[test]

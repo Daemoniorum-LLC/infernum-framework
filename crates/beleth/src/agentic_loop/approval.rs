@@ -177,18 +177,14 @@ impl ApprovalGate {
     ///
     /// - [`ApprovalError::NotFound`] if the `call_id` is not in the pending set.
     /// - [`ApprovalError::Expired`] if the receiver was dropped (executor timed out).
-    pub fn deliver(
-        &self,
-        call_id: &str,
-        decision: ApprovalDecision,
-    ) -> Result<(), ApprovalError> {
-        let entry = self
-            .pending
-            .write()
-            .remove(call_id)
-            .ok_or_else(|| ApprovalError::NotFound {
-                call_id: call_id.to_string(),
-            })?;
+    pub fn deliver(&self, call_id: &str, decision: ApprovalDecision) -> Result<(), ApprovalError> {
+        let entry =
+            self.pending
+                .write()
+                .remove(call_id)
+                .ok_or_else(|| ApprovalError::NotFound {
+                    call_id: call_id.to_string(),
+                })?;
 
         // Record runtime override before sending (so it's visible immediately)
         if let ApprovalDecision::ApproveAlways { scope } = &decision {
@@ -261,16 +257,16 @@ impl ApprovalGate {
         match scope {
             ApprovalScope::ThisCall => {
                 // No persistent override — equivalent to a single Approve
-            }
+            },
             ApprovalScope::ThisTool => {
                 self.overrides
                     .write()
                     .approved_tools
                     .insert(tool_name.to_string());
-            }
+            },
             ApprovalScope::ThisSession => {
                 self.overrides.write().approve_all = true;
-            }
+            },
         }
     }
 }
@@ -657,10 +653,7 @@ mod tests {
         // The pending entry was NOT removed by the timeout (executor side cleanup needed)
         // Delivery should fail with Expired since the receiver was dropped by timeout
         let result = gate.deliver("call_b", ApprovalDecision::Approve);
-        assert!(matches!(
-            result.unwrap_err(),
-            ApprovalError::Expired { .. }
-        ));
+        assert!(matches!(result.unwrap_err(), ApprovalError::Expired { .. }));
     }
 
     #[tokio::test]
@@ -675,12 +668,8 @@ mod tests {
         let g3 = Arc::clone(&gate);
 
         let (r1, r2, r3) = tokio::join!(
-            tokio::spawn(async move {
-                g1.deliver("call_1", ApprovalDecision::Approve)
-            }),
-            tokio::spawn(async move {
-                g2.deliver("call_2", ApprovalDecision::Deny)
-            }),
+            tokio::spawn(async move { g1.deliver("call_1", ApprovalDecision::Approve) }),
+            tokio::spawn(async move { g2.deliver("call_2", ApprovalDecision::Deny) }),
             tokio::spawn(async move {
                 g3.deliver(
                     "call_3",

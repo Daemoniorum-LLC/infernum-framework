@@ -304,24 +304,24 @@ impl BatchScheduler {
                     .position(|r| r.priority < request.priority)
                     .unwrap_or(queue.len());
                 queue.insert(pos, request);
-            }
+            },
             SchedulingPolicy::ShortestJobFirst => {
                 let pos = queue
                     .iter()
                     .position(|r| r.total_length() > request.total_length())
                     .unwrap_or(queue.len());
                 queue.insert(pos, request);
-            }
+            },
             SchedulingPolicy::LongestJobFirst => {
                 let pos = queue
                     .iter()
                     .position(|r| r.total_length() < request.total_length())
                     .unwrap_or(queue.len());
                 queue.insert(pos, request);
-            }
+            },
             SchedulingPolicy::Fcfs => {
                 queue.push_back(request);
-            }
+            },
         }
 
         self.metrics.record_submitted();
@@ -359,17 +359,17 @@ impl BatchScheduler {
                 .with_temperature(request.temperature)
                 .with_stop_tokens(request.stop_sequences.iter().flatten().copied().collect());
 
-            let group =
-                SequenceGroup::new(request.id.clone(), seq, sampling).with_priority(request.priority);
+            let group = SequenceGroup::new(request.id.clone(), seq, sampling)
+                .with_priority(request.priority);
 
             match batch.try_add(group) {
                 Ok(_) => {
                     to_remove.push(i);
-                }
+                },
                 Err(_) => {
                     // Batch is full
                     break;
-                }
+                },
             }
         }
 
@@ -442,9 +442,7 @@ impl BatchScheduler {
         if let (Some(waiting), Some(batch)) = (queue.front(), batch_guard.as_ref()) {
             // Check if waiting request has higher priority than running batch
             if self.config.preemption_policy == PreemptionPolicy::Priority {
-                let batch_min_priority = batch
-                    .stats()
-                    .num_groups; // Simplified: check priority of first group
+                let batch_min_priority = batch.stats().num_groups; // Simplified: check priority of first group
                 return waiting.priority > BatchPriority::from_level(batch_min_priority as u8);
             }
         }
@@ -706,7 +704,7 @@ pub struct SchedulerStats {
 mod tests {
     use super::*;
     // Re-import types from batch module for tests
-    use super::super::batch::{SequenceId, Sequence, SequenceGroup, SamplingParams};
+    use super::super::batch::{SamplingParams, Sequence, SequenceGroup, SequenceId};
 
     fn create_test_request(id: &str, seq_id: u64) -> PendingRequest {
         let (request, _rx) = PendingRequest::new(
@@ -793,12 +791,8 @@ mod tests {
         let scheduler = BatchScheduler::new(config);
 
         // Fill queue
-        scheduler
-            .submit(create_test_request("req-1", 1))
-            .unwrap();
-        scheduler
-            .submit(create_test_request("req-2", 2))
-            .unwrap();
+        scheduler.submit(create_test_request("req-1", 1)).unwrap();
+        scheduler.submit(create_test_request("req-2", 2)).unwrap();
 
         // Third should fail
         let result = scheduler.submit(create_test_request("req-3", 3));
@@ -828,12 +822,8 @@ mod tests {
         let scheduler = BatchScheduler::new(config);
 
         // Submit some requests
-        scheduler
-            .submit(create_test_request("req-1", 1))
-            .unwrap();
-        scheduler
-            .submit(create_test_request("req-2", 2))
-            .unwrap();
+        scheduler.submit(create_test_request("req-1", 1)).unwrap();
+        scheduler.submit(create_test_request("req-2", 2)).unwrap();
 
         let batch = scheduler.try_form_batch();
         assert!(batch.is_some());
@@ -857,9 +847,7 @@ mod tests {
         let config = BatchConfig::default();
         let scheduler = BatchScheduler::new(config);
 
-        scheduler
-            .submit(create_test_request("req-1", 1))
-            .unwrap();
+        scheduler.submit(create_test_request("req-1", 1)).unwrap();
         let batch = scheduler.try_form_batch().unwrap();
 
         scheduler.set_active_batch(batch);
@@ -873,9 +861,7 @@ mod tests {
         let config = BatchConfig::default();
         let scheduler = BatchScheduler::new(config);
 
-        scheduler
-            .submit(create_test_request("req-1", 1))
-            .unwrap();
+        scheduler.submit(create_test_request("req-1", 1)).unwrap();
         let batch = scheduler.try_form_batch().unwrap();
         scheduler.set_active_batch(batch);
 
@@ -890,9 +876,7 @@ mod tests {
         let config = BatchConfig::default();
         let scheduler = BatchScheduler::new(config);
 
-        scheduler
-            .submit(create_test_request("req-1", 1))
-            .unwrap();
+        scheduler.submit(create_test_request("req-1", 1)).unwrap();
         let batch = scheduler.try_form_batch().unwrap();
         scheduler.set_active_batch(batch);
 
@@ -917,9 +901,7 @@ mod tests {
         let config = BatchConfig::default();
         let scheduler = BatchScheduler::new(config);
 
-        scheduler
-            .submit(create_test_request("req-1", 1))
-            .unwrap();
+        scheduler.submit(create_test_request("req-1", 1)).unwrap();
         assert_eq!(scheduler.pending_count(), 1);
 
         scheduler.shutdown();
@@ -933,9 +915,7 @@ mod tests {
         let config = BatchConfig::default();
         let scheduler = BatchScheduler::new(config);
 
-        scheduler
-            .submit(create_test_request("req-1", 1))
-            .unwrap();
+        scheduler.submit(create_test_request("req-1", 1)).unwrap();
 
         let stats = scheduler.stats();
 
@@ -1034,16 +1014,8 @@ mod tests {
 
         // Add more requests while batch is running
         // In continuous batching, we can add to the running batch
-        let seq = Sequence::new(
-            SequenceId::new(2),
-            vec![1, 2, 3],
-            100,
-        );
-        let group = SequenceGroup::new(
-            "req-2".to_string(),
-            seq,
-            SamplingParams::default(),
-        );
+        let seq = Sequence::new(SequenceId::new(2), vec![1, 2, 3], 100);
+        let group = SequenceGroup::new("req-2".to_string(), seq, SamplingParams::default());
 
         // try_add works on running batch
         let result = batch.try_add(group);
@@ -1063,30 +1035,17 @@ mod tests {
         let batch = scheduler.try_form_batch().unwrap();
 
         // Add second request
-        let seq = Sequence::new(
-            SequenceId::new(2),
-            vec![1, 2, 3],
-            50,
-        );
-        let group = SequenceGroup::new(
-            "req-2".to_string(),
-            seq,
-            SamplingParams::default(),
-        );
+        let seq = Sequence::new(SequenceId::new(2), vec![1, 2, 3], 50);
+        let group = SequenceGroup::new("req-2".to_string(), seq, SamplingParams::default());
         assert!(batch.try_add(group).is_ok());
 
         // Third request should fail (batch full)
-        let seq = Sequence::new(
-            SequenceId::new(3),
-            vec![1, 2, 3],
-            50,
+        let seq = Sequence::new(SequenceId::new(3), vec![1, 2, 3], 50);
+        let group = SequenceGroup::new("req-3".to_string(), seq, SamplingParams::default());
+        assert!(
+            batch.try_add(group).is_err(),
+            "Batch should reject when full"
         );
-        let group = SequenceGroup::new(
-            "req-3".to_string(),
-            seq,
-            SamplingParams::default(),
-        );
-        assert!(batch.try_add(group).is_err(), "Batch should reject when full");
     }
 
     #[test]
@@ -1109,12 +1068,11 @@ mod tests {
             vec![1; 30], // 30 input tokens
             100,         // max output (not counted in limit check)
         );
-        let group = SequenceGroup::new(
-            "req-2".to_string(),
-            seq,
-            SamplingParams::default(),
+        let group = SequenceGroup::new("req-2".to_string(), seq, SamplingParams::default());
+        assert!(
+            batch.try_add(group).is_ok(),
+            "Should fit: 5 + 30 = 35 < 150"
         );
-        assert!(batch.try_add(group).is_ok(), "Should fit: 5 + 30 = 35 < 150");
 
         // Add a large request that would exceed limit: 130 input tokens
         // 35 + 130 = 165 > 150
@@ -1123,12 +1081,11 @@ mod tests {
             vec![1; 130], // 130 input tokens
             50,           // max output (not counted)
         );
-        let group = SequenceGroup::new(
-            "req-3".to_string(),
-            seq,
-            SamplingParams::default(),
+        let group = SequenceGroup::new("req-3".to_string(), seq, SamplingParams::default());
+        assert!(
+            batch.try_add(group).is_err(),
+            "Should reject: 35 + 130 = 165 > 150"
         );
-        assert!(batch.try_add(group).is_err(), "Should reject: 35 + 130 = 165 > 150");
 
         // Add a smaller request that fits: 50 input tokens
         // 35 + 50 = 85 < 150
@@ -1137,12 +1094,11 @@ mod tests {
             vec![1; 50], // 50 input tokens
             100,         // max output (not counted)
         );
-        let group = SequenceGroup::new(
-            "req-4".to_string(),
-            seq,
-            SamplingParams::default(),
+        let group = SequenceGroup::new("req-4".to_string(), seq, SamplingParams::default());
+        assert!(
+            batch.try_add(group).is_ok(),
+            "Should fit: 35 + 50 = 85 < 150"
         );
-        assert!(batch.try_add(group).is_ok(), "Should fit: 35 + 50 = 85 < 150");
     }
 
     #[test]
@@ -1179,7 +1135,9 @@ mod tests {
 
         // Submit requests in waves
         for i in 0..5 {
-            scheduler.submit(create_test_request(&format!("req-{}", i), i as u64)).unwrap();
+            scheduler
+                .submit(create_test_request(&format!("req-{}", i), i as u64))
+                .unwrap();
         }
 
         // Form first batch
@@ -1188,7 +1146,9 @@ mod tests {
 
         // Submit more while running
         for i in 5..10 {
-            scheduler.submit(create_test_request(&format!("req-{}", i), i as u64)).unwrap();
+            scheduler
+                .submit(create_test_request(&format!("req-{}", i), i as u64))
+                .unwrap();
         }
 
         // Check metrics
@@ -1206,8 +1166,7 @@ mod tests {
 
     #[test]
     fn test_preemption_policy_priority() {
-        let config = BatchConfig::new()
-            .with_preemption_policy(PreemptionPolicy::Priority);
+        let config = BatchConfig::new().with_preemption_policy(PreemptionPolicy::Priority);
         let scheduler = BatchScheduler::new(config);
 
         // Submit and start low priority batch
@@ -1217,18 +1176,19 @@ mod tests {
         scheduler.set_active_batch(batch);
 
         // Submit critical priority request
-        let high_req = create_test_request("high", 2)
-            .with_priority(BatchPriority::Critical);
+        let high_req = create_test_request("high", 2).with_priority(BatchPriority::Critical);
         scheduler.submit(high_req).unwrap();
 
         // Should signal preemption for high priority request
-        assert!(scheduler.should_preempt(), "Should preempt for critical request");
+        assert!(
+            scheduler.should_preempt(),
+            "Should preempt for critical request"
+        );
     }
 
     #[test]
     fn test_no_preemption_policy() {
-        let config = BatchConfig::new()
-            .with_preemption_policy(PreemptionPolicy::None);
+        let config = BatchConfig::new().with_preemption_policy(PreemptionPolicy::None);
         let scheduler = BatchScheduler::new(config);
 
         // Submit and start low priority batch
@@ -1238,11 +1198,13 @@ mod tests {
         scheduler.set_active_batch(batch);
 
         // Submit critical priority request
-        let high_req = create_test_request("high", 2)
-            .with_priority(BatchPriority::Critical);
+        let high_req = create_test_request("high", 2).with_priority(BatchPriority::Critical);
         scheduler.submit(high_req).unwrap();
 
         // Should NOT signal preemption when policy is None
-        assert!(!scheduler.should_preempt(), "Should not preempt with None policy");
+        assert!(
+            !scheduler.should_preempt(),
+            "Should not preempt with None policy"
+        );
     }
 }

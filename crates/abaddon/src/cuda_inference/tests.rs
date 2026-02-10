@@ -25,11 +25,8 @@ mod tests {
     fn test_gpu_tensor_zeros() {
         let device = get_cuda_device().expect("CUDA device required");
 
-        let tensor = GpuTensor::zeros(
-            vec![4, 128],
-            GpuDType::F16,
-            device.clone(),
-        ).expect("Failed to create tensor");
+        let tensor = GpuTensor::zeros(vec![4, 128], GpuDType::F16, device.clone())
+            .expect("Failed to create tensor");
 
         assert_eq!(tensor.shape(), &[4, 128]);
         assert_eq!(tensor.dtype(), GpuDType::F16);
@@ -43,11 +40,8 @@ mod tests {
     fn test_gpu_tensor_strides() {
         let device = get_cuda_device().expect("CUDA device required");
 
-        let tensor = GpuTensor::zeros(
-            vec![2, 3, 4],
-            GpuDType::F32,
-            device.clone(),
-        ).expect("Failed to create tensor");
+        let tensor = GpuTensor::zeros(vec![2, 3, 4], GpuDType::F32, device.clone())
+            .expect("Failed to create tensor");
 
         // Row-major strides: [12, 4, 1]
         assert_eq!(tensor.strides(), &[12, 4, 1]);
@@ -58,11 +52,8 @@ mod tests {
     fn test_gpu_tensor_reshape() {
         let device = get_cuda_device().expect("CUDA device required");
 
-        let tensor = GpuTensor::zeros(
-            vec![4, 8],
-            GpuDType::F16,
-            device.clone(),
-        ).expect("Failed to create tensor");
+        let tensor = GpuTensor::zeros(vec![4, 8], GpuDType::F16, device.clone())
+            .expect("Failed to create tensor");
 
         // Reshape to [2, 16]
         let reshaped = tensor.reshape(vec![2, 16]).expect("Reshape failed");
@@ -79,11 +70,8 @@ mod tests {
     fn test_gpu_tensor_slice() {
         let device = get_cuda_device().expect("CUDA device required");
 
-        let tensor = GpuTensor::zeros(
-            vec![8, 64],
-            GpuDType::F16,
-            device.clone(),
-        ).expect("Failed to create tensor");
+        let tensor = GpuTensor::zeros(vec![8, 64], GpuDType::F16, device.clone())
+            .expect("Failed to create tensor");
 
         // Slice first 4 rows
         let sliced = tensor.slice_dim0(0, 4).expect("Slice failed");
@@ -104,11 +92,8 @@ mod tests {
         let device = get_cuda_device().expect("CUDA device required");
 
         // Create tensor and copy data to it
-        let mut tensor = GpuTensor::zeros(
-            vec![4],
-            GpuDType::F32,
-            device.clone(),
-        ).expect("Failed to create tensor");
+        let mut tensor = GpuTensor::zeros(vec![4], GpuDType::F32, device.clone())
+            .expect("Failed to create tensor");
 
         // Source data: [1.0, 2.0, 3.0, 4.0]
         let src_data: Vec<u8> = [1.0f32, 2.0, 3.0, 4.0]
@@ -116,11 +101,15 @@ mod tests {
             .flat_map(|f| f.to_le_bytes())
             .collect();
 
-        tensor.copy_from_host(&src_data).expect("Copy to GPU failed");
+        tensor
+            .copy_from_host(&src_data)
+            .expect("Copy to GPU failed");
 
         // Copy back and verify
         let mut dst_data = vec![0u8; 16];
-        tensor.copy_to_host(&mut dst_data).expect("Copy from GPU failed");
+        tensor
+            .copy_to_host(&mut dst_data)
+            .expect("Copy from GPU failed");
 
         assert_eq!(src_data, dst_data);
     }
@@ -130,18 +119,17 @@ mod tests {
     fn test_gpu_tensor_to_host() {
         let device = get_cuda_device().expect("CUDA device required");
 
-        let mut tensor = GpuTensor::zeros(
-            vec![4],
-            GpuDType::F32,
-            device.clone(),
-        ).expect("Failed to create tensor");
+        let mut tensor = GpuTensor::zeros(vec![4], GpuDType::F32, device.clone())
+            .expect("Failed to create tensor");
 
         let src_data: Vec<u8> = [1.0f32, 2.0, 3.0, 4.0]
             .iter()
             .flat_map(|f| f.to_le_bytes())
             .collect();
 
-        tensor.copy_from_host(&src_data).expect("Copy to GPU failed");
+        tensor
+            .copy_from_host(&src_data)
+            .expect("Copy to GPU failed");
 
         // Use to_host convenience method
         let dst_data = tensor.to_host().expect("to_host failed");
@@ -153,16 +141,11 @@ mod tests {
     fn test_gpu_tensor_clone() {
         let device = get_cuda_device().expect("CUDA device required");
 
-        let mut tensor = GpuTensor::zeros(
-            vec![8],
-            GpuDType::F32,
-            device.clone(),
-        ).expect("Failed to create tensor");
+        let mut tensor = GpuTensor::zeros(vec![8], GpuDType::F32, device.clone())
+            .expect("Failed to create tensor");
 
         // Write some data
-        let src: Vec<u8> = (0..8u32)
-            .flat_map(|i| (i as f32).to_le_bytes())
-            .collect();
+        let src: Vec<u8> = (0..8u32).flat_map(|i| (i as f32).to_le_bytes()).collect();
         tensor.copy_from_host(&src).expect("Copy failed");
 
         // Clone the tensor
@@ -172,7 +155,9 @@ mod tests {
         let mut original_data = vec![0u8; 32];
         let mut cloned_data = vec![0u8; 32];
 
-        tensor.copy_to_host(&mut original_data).expect("Copy failed");
+        tensor
+            .copy_to_host(&mut original_data)
+            .expect("Copy failed");
         cloned.copy_to_host(&mut cloned_data).expect("Copy failed");
 
         assert_eq!(original_data, cloned_data);
@@ -186,11 +171,8 @@ mod tests {
     fn test_gpu_tensor_i32() {
         let device = get_cuda_device().expect("CUDA device required");
 
-        let mut tensor = GpuTensor::zeros(
-            vec![4],
-            GpuDType::I32,
-            device.clone(),
-        ).expect("Failed to create I32 tensor");
+        let mut tensor = GpuTensor::zeros(vec![4], GpuDType::I32, device.clone())
+            .expect("Failed to create I32 tensor");
 
         assert_eq!(tensor.dtype(), GpuDType::I32);
         assert_eq!(tensor.size_bytes(), 16); // 4 elements * 4 bytes
@@ -213,8 +195,7 @@ mod tests {
     fn test_cublas_handle() {
         let device = get_cuda_device().expect("CUDA device required");
 
-        let handle = CublasHandle::new(device.clone())
-            .expect("Failed to create cuBLAS handle");
+        let handle = CublasHandle::new(device.clone()).expect("Failed to create cuBLAS handle");
 
         handle.set_math_mode(true).expect("Failed to set math mode");
     }
@@ -225,8 +206,10 @@ mod tests {
         let device = get_cuda_device().expect("CUDA device required");
         let handle = CublasHandle::new(device.clone()).expect("Failed to create cuBLAS handle");
 
-        let x = GpuTensor::zeros(vec![128], GpuDType::F16, device.clone()).expect("Failed to create x");
-        let mut y = GpuTensor::zeros(vec![128], GpuDType::F16, device.clone()).expect("Failed to create y");
+        let x =
+            GpuTensor::zeros(vec![128], GpuDType::F16, device.clone()).expect("Failed to create x");
+        let mut y =
+            GpuTensor::zeros(vec![128], GpuDType::F16, device.clone()).expect("Failed to create y");
 
         // This is a placeholder test - actual result depends on implementation
         handle.axpy(1.0, &x, &mut y).expect("axpy failed");
@@ -246,23 +229,15 @@ mod tests {
         let seq_len = 4;
         let hidden_size = 128;
 
-        let mut input = GpuTensor::zeros(
-            vec![seq_len, hidden_size],
-            GpuDType::F16,
-            device.clone(),
-        ).expect("Failed to create input");
+        let mut input = GpuTensor::zeros(vec![seq_len, hidden_size], GpuDType::F16, device.clone())
+            .expect("Failed to create input");
 
-        let weight = GpuTensor::zeros(
-            vec![hidden_size],
-            GpuDType::F16,
-            device.clone(),
-        ).expect("Failed to create weight");
+        let weight = GpuTensor::zeros(vec![hidden_size], GpuDType::F16, device.clone())
+            .expect("Failed to create weight");
 
-        let mut output = GpuTensor::zeros(
-            vec![seq_len, hidden_size],
-            GpuDType::F16,
-            device.clone(),
-        ).expect("Failed to create output");
+        let mut output =
+            GpuTensor::zeros(vec![seq_len, hidden_size], GpuDType::F16, device.clone())
+                .expect("Failed to create output");
 
         // Initialize weight to 1.0
         let ones: Vec<u8> = (0..hidden_size)
@@ -272,7 +247,9 @@ mod tests {
         weight_mut.copy_from_host(&ones).expect("Copy failed");
 
         // Run kernel
-        kernel.forward(&input, &weight_mut, &mut output, 1e-5).expect("RMSNorm failed");
+        kernel
+            .forward(&input, &weight_mut, &mut output, 1e-5)
+            .expect("RMSNorm failed");
     }
 
     #[test]
@@ -288,26 +265,20 @@ mod tests {
         let heads = 8;
         let head_dim = 64;
 
-        let mut x = GpuTensor::zeros(
-            vec![batch, heads, head_dim],
-            GpuDType::F16,
-            device.clone(),
-        ).expect("Failed to create x");
+        let mut x = GpuTensor::zeros(vec![batch, heads, head_dim], GpuDType::F16, device.clone())
+            .expect("Failed to create x");
 
-        let mut positions = GpuTensor::zeros(
-            vec![batch],
-            GpuDType::I32,
-            device.clone(),
-        ).expect("Failed to create positions");
+        let mut positions = GpuTensor::zeros(vec![batch], GpuDType::I32, device.clone())
+            .expect("Failed to create positions");
 
         // Set positions [0, 1, 2, 3]
-        let pos_data: Vec<u8> = (0..batch as i32)
-            .flat_map(|p| p.to_le_bytes())
-            .collect();
+        let pos_data: Vec<u8> = (0..batch as i32).flat_map(|p| p.to_le_bytes()).collect();
         positions.copy_from_host(&pos_data).expect("Copy failed");
 
         // Run kernel
-        kernel.forward(&mut x, &positions, 10000.0, 1.0).expect("RoPE failed");
+        kernel
+            .forward(&mut x, &positions, 10000.0, 1.0)
+            .expect("RoPE failed");
     }
 
     #[test]
@@ -319,8 +290,10 @@ mod tests {
         let mut kernel = ActivationKernel::new(device.clone()).expect("Failed to create kernel");
 
         let n = 256;
-        let mut x = GpuTensor::zeros(vec![n], GpuDType::F16, device.clone()).expect("Failed to create x");
-        let mut out = GpuTensor::zeros(vec![n], GpuDType::F16, device.clone()).expect("Failed to create out");
+        let mut x =
+            GpuTensor::zeros(vec![n], GpuDType::F16, device.clone()).expect("Failed to create x");
+        let mut out =
+            GpuTensor::zeros(vec![n], GpuDType::F16, device.clone()).expect("Failed to create out");
 
         // Initialize with some values
         let data: Vec<u8> = (0..n)
@@ -330,7 +303,9 @@ mod tests {
         x.copy_from_host(&data).expect("Copy failed");
 
         // Run SiLU
-        kernel.forward(&x, &mut out, ActivationType::SiLU).expect("SiLU failed");
+        kernel
+            .forward(&x, &mut out, ActivationType::SiLU)
+            .expect("SiLU failed");
     }
 
     #[test]
@@ -342,12 +317,17 @@ mod tests {
         let mut kernel = ActivationKernel::new(device.clone()).expect("Failed to create kernel");
 
         let n = 256;
-        let gate = GpuTensor::zeros(vec![n], GpuDType::F16, device.clone()).expect("Failed to create gate");
-        let up = GpuTensor::zeros(vec![n], GpuDType::F16, device.clone()).expect("Failed to create up");
-        let mut out = GpuTensor::zeros(vec![n], GpuDType::F16, device.clone()).expect("Failed to create out");
+        let gate = GpuTensor::zeros(vec![n], GpuDType::F16, device.clone())
+            .expect("Failed to create gate");
+        let up =
+            GpuTensor::zeros(vec![n], GpuDType::F16, device.clone()).expect("Failed to create up");
+        let mut out =
+            GpuTensor::zeros(vec![n], GpuDType::F16, device.clone()).expect("Failed to create out");
 
         // Run fused SiLU * up
-        kernel.silu_mul(&gate, &up, &mut out).expect("SiLU mul failed");
+        kernel
+            .silu_mul(&gate, &up, &mut out)
+            .expect("SiLU mul failed");
     }
 
     #[test]
@@ -359,13 +339,16 @@ mod tests {
         let mut kernel = FusedGemmKernel::new(device.clone()).expect("Failed to create kernel");
 
         // Matrix sizes
-        let m = 32;  // batch/seq
+        let m = 32; // batch/seq
         let k = 128; // in features
         let n = 256; // out features
 
-        let a = GpuTensor::zeros(vec![m, k], GpuDType::F16, device.clone()).expect("Failed to create A");
-        let b = GpuTensor::zeros(vec![k, n], GpuDType::F16, device.clone()).expect("Failed to create B");
-        let mut c = GpuTensor::zeros(vec![m, n], GpuDType::F16, device.clone()).expect("Failed to create C");
+        let a = GpuTensor::zeros(vec![m, k], GpuDType::F16, device.clone())
+            .expect("Failed to create A");
+        let b = GpuTensor::zeros(vec![k, n], GpuDType::F16, device.clone())
+            .expect("Failed to create B");
+        let mut c = GpuTensor::zeros(vec![m, n], GpuDType::F16, device.clone())
+            .expect("Failed to create C");
 
         // Run F16 GEMM
         kernel.forward_f16(&a, &b, &mut c).expect("F16 GEMM failed");
@@ -390,28 +373,34 @@ mod tests {
             vec![batch, num_heads, seq_len, head_dim],
             GpuDType::F16,
             device.clone(),
-        ).expect("Failed to create Q");
+        )
+        .expect("Failed to create Q");
 
         let k = GpuTensor::zeros(
             vec![batch, num_kv_heads, seq_len, head_dim],
             GpuDType::F16,
             device.clone(),
-        ).expect("Failed to create K");
+        )
+        .expect("Failed to create K");
 
         let v = GpuTensor::zeros(
             vec![batch, num_kv_heads, seq_len, head_dim],
             GpuDType::F16,
             device.clone(),
-        ).expect("Failed to create V");
+        )
+        .expect("Failed to create V");
 
         let mut out = GpuTensor::zeros(
             vec![batch, num_heads, seq_len, head_dim],
             GpuDType::F16,
             device.clone(),
-        ).expect("Failed to create output");
+        )
+        .expect("Failed to create output");
 
         // Run attention (causal)
-        kernel.forward(&q, &k, &v, &mut out, true).expect("Flash attention failed");
+        kernel
+            .forward(&q, &k, &v, &mut out, true)
+            .expect("Flash attention failed");
     }
 
     // ==================== ComputeEngine Tests ====================
@@ -447,7 +436,11 @@ mod tests {
         };
 
         let engine = ComputeEngine::new(config, 128, device.clone());
-        assert!(engine.is_ok(), "Failed to create ComputeEngine: {:?}", engine.err());
+        assert!(
+            engine.is_ok(),
+            "Failed to create ComputeEngine: {:?}",
+            engine.err()
+        );
 
         let engine = engine.unwrap();
         assert_eq!(engine.config().hidden_size, 256);
@@ -484,7 +477,8 @@ mod tests {
             pad_token_id: None,
         };
 
-        let mut cache = KvCache::new(&config, 128, device.clone()).expect("Failed to create KV cache");
+        let mut cache =
+            KvCache::new(&config, 128, device.clone()).expect("Failed to create KV cache");
 
         assert_eq!(cache.seq_len(), 0);
         assert_eq!(cache.max_seq_len(), 128);
@@ -559,7 +553,7 @@ mod tests {
 
     #[test]
     fn test_rope_scaling_functions() {
-        use crate::cuda_inference::kernels::rope::{ntk_aware_scaling, linear_scaling};
+        use crate::cuda_inference::kernels::rope::{linear_scaling, ntk_aware_scaling};
 
         // No extension
         let theta = ntk_aware_scaling(4096, 4096, 10000.0);
@@ -605,12 +599,15 @@ mod tests {
             .join("../../test_models/smollm2-135m-int4");
 
         if !model_dir.exists() {
-            eprintln!("Skipping test: model directory not found at {:?}", model_dir);
+            eprintln!(
+                "Skipping test: model directory not found at {:?}",
+                model_dir
+            );
             return;
         }
 
-        let weights = WeightStore::load_hct(&model_dir, None, 0)
-            .expect("Failed to load HCT weights");
+        let weights =
+            WeightStore::load_hct(&model_dir, None, 0).expect("Failed to load HCT weights");
 
         // Verify config was parsed correctly
         assert_eq!(weights.config.hidden_size, 576);
@@ -628,14 +625,38 @@ mod tests {
 
         // Verify layer 0 weight shapes and formats
         eprintln!("Layer 0 shapes and formats:");
-        eprintln!("  q_proj: {:?}, format: {:?}", weights.layers[0].q_proj.shape, weights.layers[0].q_proj.format);
-        eprintln!("  k_proj: {:?}, format: {:?}", weights.layers[0].k_proj.shape, weights.layers[0].k_proj.format);
-        eprintln!("  v_proj: {:?}, format: {:?}", weights.layers[0].v_proj.shape, weights.layers[0].v_proj.format);
-        eprintln!("  o_proj: {:?}, format: {:?}", weights.layers[0].o_proj.shape, weights.layers[0].o_proj.format);
-        eprintln!("  gate_proj: {:?}, format: {:?}", weights.layers[0].gate_proj.shape, weights.layers[0].gate_proj.format);
-        eprintln!("  up_proj: {:?}, format: {:?}", weights.layers[0].up_proj.shape, weights.layers[0].up_proj.format);
-        eprintln!("  down_proj: {:?}, format: {:?}", weights.layers[0].down_proj.shape, weights.layers[0].down_proj.format);
-        eprintln!("  embed_tokens data shape: {:?}", weights.embed_tokens.shape());
+        eprintln!(
+            "  q_proj: {:?}, format: {:?}",
+            weights.layers[0].q_proj.shape, weights.layers[0].q_proj.format
+        );
+        eprintln!(
+            "  k_proj: {:?}, format: {:?}",
+            weights.layers[0].k_proj.shape, weights.layers[0].k_proj.format
+        );
+        eprintln!(
+            "  v_proj: {:?}, format: {:?}",
+            weights.layers[0].v_proj.shape, weights.layers[0].v_proj.format
+        );
+        eprintln!(
+            "  o_proj: {:?}, format: {:?}",
+            weights.layers[0].o_proj.shape, weights.layers[0].o_proj.format
+        );
+        eprintln!(
+            "  gate_proj: {:?}, format: {:?}",
+            weights.layers[0].gate_proj.shape, weights.layers[0].gate_proj.format
+        );
+        eprintln!(
+            "  up_proj: {:?}, format: {:?}",
+            weights.layers[0].up_proj.shape, weights.layers[0].up_proj.format
+        );
+        eprintln!(
+            "  down_proj: {:?}, format: {:?}",
+            weights.layers[0].down_proj.shape, weights.layers[0].down_proj.format
+        );
+        eprintln!(
+            "  embed_tokens data shape: {:?}",
+            weights.embed_tokens.shape()
+        );
 
         // Verify o_proj shape is [hidden_size, hidden_size] = [576, 576]
         assert_eq!(weights.layers[0].o_proj.shape, (576, 576));
@@ -665,14 +686,14 @@ mod tests {
             return;
         }
 
-        let weights = WeightStore::load_hct(&model_dir, None, 0)
-            .expect("Failed to load weights");
+        let weights = WeightStore::load_hct(&model_dir, None, 0).expect("Failed to load weights");
 
         let _engine = ComputeEngine::new(
             weights.config.clone(),
             512, // max_seq_len
             weights.device().clone(),
-        ).expect("Failed to create ComputeEngine");
+        )
+        .expect("Failed to create ComputeEngine");
 
         eprintln!("ComputeEngine created from HCT weights successfully");
     }
@@ -699,10 +720,10 @@ mod tests {
         }
 
         // Load weights
-        let weights = WeightStore::load_hct(&model_dir, None, 0)
-            .expect("Failed to load weights");
+        let weights = WeightStore::load_hct(&model_dir, None, 0).expect("Failed to load weights");
 
-        eprintln!("Loaded weights: {} layers, {} MB",
+        eprintln!(
+            "Loaded weights: {} layers, {} MB",
             weights.config.num_layers,
             weights.memory_used as f64 / 1024.0 / 1024.0
         );
@@ -712,7 +733,8 @@ mod tests {
             weights.config.clone(),
             128, // max_seq_len for testing
             weights.device().clone(),
-        ).expect("Failed to create engine");
+        )
+        .expect("Failed to create engine");
 
         // Sample input tokens (e.g., "Hello" might be token 9906 in some tokenizers)
         // Using simple test tokens that are valid for vocab_size = 49152
@@ -720,7 +742,8 @@ mod tests {
 
         // Run forward pass
         let start = std::time::Instant::now();
-        let output = engine.forward(&input_tokens, &weights, 0)
+        let output = engine
+            .forward(&input_tokens, &weights, 0)
             .expect("Forward pass failed");
         let elapsed = start.elapsed();
 
@@ -732,13 +755,11 @@ mod tests {
 
         eprintln!(
             "Forward pass successful: output shape {:?}, time: {:?}",
-            output_shape,
-            elapsed
+            output_shape, elapsed
         );
 
         // Get logits for sampling
-        let logits = engine.get_logits()
-            .expect("Failed to get logits");
+        let logits = engine.get_logits().expect("Failed to get logits");
 
         // Verify logits shape (last token's logits)
         assert_eq!(logits.shape().len(), 1);
@@ -768,14 +789,16 @@ mod tests {
         }
 
         // Load weights
-        let weights = WeightStore::load_hct(&model_dir, None, 0)
-            .expect("Failed to load weights");
+        let weights = WeightStore::load_hct(&model_dir, None, 0).expect("Failed to load weights");
 
         eprintln!("\n=== Performance Benchmark ===");
         eprintln!("Model: SmolLM2-135M (INT4)");
         eprintln!("Layers: {}", weights.config.num_layers);
         eprintln!("Hidden size: {}", weights.config.hidden_size);
-        eprintln!("GPU Memory: {:.2} MB", weights.memory_used as f64 / 1024.0 / 1024.0);
+        eprintln!(
+            "GPU Memory: {:.2} MB",
+            weights.memory_used as f64 / 1024.0 / 1024.0
+        );
         eprintln!();
 
         // Create compute engine
@@ -783,11 +806,14 @@ mod tests {
             weights.config.clone(),
             512, // max_seq_len for benchmark
             weights.device().clone(),
-        ).expect("Failed to create engine");
+        )
+        .expect("Failed to create engine");
 
         // Warmup run
         let warmup_tokens: Vec<u32> = vec![1, 100, 200, 300];
-        let _ = engine.prefill(&warmup_tokens, &weights).expect("Warmup failed");
+        let _ = engine
+            .prefill(&warmup_tokens, &weights)
+            .expect("Warmup failed");
 
         // === Prefill Benchmark ===
         let prompt_lengths = [8, 16, 32, 64, 128];
@@ -846,11 +872,16 @@ mod tests {
         let median_decode = decode_times[decode_iterations / 2];
         let min_decode = decode_times[0];
         let max_decode = decode_times[decode_iterations - 1];
-        let avg_decode: std::time::Duration = decode_times.iter().sum::<std::time::Duration>() / decode_iterations as u32;
+        let avg_decode: std::time::Duration =
+            decode_times.iter().sum::<std::time::Duration>() / decode_iterations as u32;
 
         let tokens_per_sec = 1.0 / avg_decode.as_secs_f64();
 
-        eprintln!("  Avg:    {:6.2}ms ({:.0} tok/s)", avg_decode.as_secs_f64() * 1000.0, tokens_per_sec);
+        eprintln!(
+            "  Avg:    {:6.2}ms ({:.0} tok/s)",
+            avg_decode.as_secs_f64() * 1000.0,
+            tokens_per_sec
+        );
         eprintln!("  Median: {:6.2}ms", median_decode.as_secs_f64() * 1000.0);
         eprintln!("  Min:    {:6.2}ms", min_decode.as_secs_f64() * 1000.0);
         eprintln!("  Max:    {:6.2}ms", max_decode.as_secs_f64() * 1000.0);

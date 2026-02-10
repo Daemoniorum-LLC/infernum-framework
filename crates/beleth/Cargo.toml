@@ -9,12 +9,12 @@ repository.workspace = true
 description = "Autonomous agent framework - The King commands legions"
 
 [dependencies]
-infernum-core = { path = "../infernum-core", version = "0.1.0" }
-abaddon = { path = "../abaddon", version = "0.1.0" }
-malphas = { path = "../malphas", version = "0.1.0" }
-stolas = { path = "../stolas", version = "0.1.0", default-features = false }
-dantalion = { path = "../dantalion", version = "0.1.0" }
-grimoire-loader = { path = "../grimoire-loader", version = "0.1.0" }
+infernum-core = { path = "../infernum-core", version = "0.2.0-rc.1" }
+abaddon = { path = "../abaddon", version = "0.2.0-rc.1" }
+malphas = { path = "../malphas", version = "0.2.0-rc.1" }
+stolas = { path = "../stolas", version = "0.2.0-rc.1", default-features = false }
+dantalion = { path = "../dantalion", version = "0.2.0-rc.1" }
+grimoire-loader = { path = "../grimoire-loader", version = "0.2.0-rc.1" }
 
 # Async
 tokio = { workspace = true }
@@ -69,3 +69,6 @@ path = "examples/monitored_inference.rs"
 [[example]]
 name = "ooda_with_wellbeing"
 path = "examples/ooda_with_wellbeing.rs"
+
+[lints]
+workspace = true

@@ -80,7 +80,12 @@ impl AllocationPlanner {
         };
 
         // Create importance scorer
-        let max_tensor_size = profile.tensors.iter().map(|t| t.size_bytes).max().unwrap_or(1);
+        let max_tensor_size = profile
+            .tensors
+            .iter()
+            .map(|t| t.size_bytes)
+            .max()
+            .unwrap_or(1);
         let scorer = ImportanceScorer::new(profile.num_layers, max_tensor_size);
 
         // Score and sort tensors by importance (highest first)
@@ -117,7 +122,8 @@ impl AllocationPlanner {
             }
 
             // Track quality contribution
-            total_quality_weighted += importance as f64 * allocation.precision.quality_factor() as f64;
+            total_quality_weighted +=
+                importance as f64 * allocation.precision.quality_factor() as f64;
             total_importance += importance as f64;
 
             plan.allocations.insert(tensor.name.clone(), allocation);
@@ -155,7 +161,10 @@ impl AllocationPlanner {
         ram_used: u64,
     ) -> TensorAllocation {
         // Critical tensors (embeddings, lm_head) must go to VRAM at BF16 if possible
-        let is_critical = matches!(tensor.tensor_type, TensorType::Embedding | TensorType::LmHead);
+        let is_critical = matches!(
+            tensor.tensor_type,
+            TensorType::Embedding | TensorType::LmHead
+        );
 
         // Determine precisions to try based on config and tensor criticality
         let precisions = if self.config.enable_mixed_precision {
@@ -167,7 +176,11 @@ impl AllocationPlanner {
                 TensorPrecision::all_by_quality()
             } else {
                 // Lower importance: can use lower precision more readily
-                &[TensorPrecision::INT8, TensorPrecision::INT4, TensorPrecision::BF16][..]
+                &[
+                    TensorPrecision::INT8,
+                    TensorPrecision::INT4,
+                    TensorPrecision::BF16,
+                ][..]
             }
         } else {
             // No mixed precision: only BF16
@@ -272,7 +285,10 @@ mod tests {
         let mut tensors = Vec::new();
 
         // Embeddings (~500MB)
-        tensors.push(TensorInfo::from_name("model.embed_tokens.weight", 500_000_000));
+        tensors.push(TensorInfo::from_name(
+            "model.embed_tokens.weight",
+            500_000_000,
+        ));
 
         // lm_head (~500MB)
         tensors.push(TensorInfo::from_name("lm_head.weight", 500_000_000));
@@ -394,8 +410,12 @@ mod tests {
         let plan = planner.plan(&profile).expect("should plan successfully");
 
         // Layer 0 attention should be in VRAM before middle layers
-        let layer_0_q = plan.allocations.get("model.layers.0.self_attn.q_proj.weight");
-        let layer_24_q = plan.allocations.get("model.layers.24.self_attn.q_proj.weight");
+        let layer_0_q = plan
+            .allocations
+            .get("model.layers.0.self_attn.q_proj.weight");
+        let layer_24_q = plan
+            .allocations
+            .get("model.layers.24.self_attn.q_proj.weight");
 
         if let (Some(l0), Some(l24)) = (layer_0_q, layer_24_q) {
             // Layer 0 should be in higher-priority tier or same tier with higher priority

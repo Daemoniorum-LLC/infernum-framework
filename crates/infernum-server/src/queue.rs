@@ -276,18 +276,14 @@ impl fmt::Display for QueueError {
         match self {
             Self::QueueFull { current, max } => {
                 write!(f, "Queue full: {}/{}", current, max)
-            }
+            },
             Self::PriorityQueueFull {
                 priority,
                 current,
                 max,
             } => {
-                write!(
-                    f,
-                    "Priority queue {} full: {}/{}",
-                    priority, current, max
-                )
-            }
+                write!(f, "Priority queue {} full: {}/{}", priority, current, max)
+            },
             Self::WouldExceedMaxWait {
                 estimated_wait,
                 max_wait,
@@ -297,7 +293,7 @@ impl fmt::Display for QueueError {
                     "Would exceed max wait: {:?} > {:?}",
                     estimated_wait, max_wait
                 )
-            }
+            },
             Self::ShuttingDown => write!(f, "Queue is shutting down"),
         }
     }
@@ -391,10 +387,7 @@ impl RequestQueue {
 
     /// Returns the total queue depth.
     pub fn len(&self) -> usize {
-        self.queues
-            .iter()
-            .map(|q| q.lock().len())
-            .sum()
+        self.queues.iter().map(|q| q.lock().len()).sum()
     }
 
     /// Returns true if the queue is empty.
@@ -439,7 +432,8 @@ impl RequestQueue {
 
         // Enqueue
         self.queues[priority_idx].lock().push_back(request);
-        self.metrics.record_enqueued(BatchPriority::from_level(priority_idx as u8));
+        self.metrics
+            .record_enqueued(BatchPriority::from_level(priority_idx as u8));
         self.notify_enqueue.notify_one();
 
         Ok(())
@@ -568,7 +562,10 @@ impl RequestQueue {
         for priority in [BatchPriority::Background, BatchPriority::Normal] {
             let idx = priority.as_level() as usize;
             let queue = self.queues[idx].lock();
-            if let Some(request) = queue.iter().find(|r| r.is_starving(self.config.starvation_timeout)) {
+            if let Some(request) = queue
+                .iter()
+                .find(|r| r.is_starving(self.config.starvation_timeout))
+            {
                 return Some(PeekResult {
                     id: request.id.clone(),
                     priority: request.priority,
@@ -827,7 +824,10 @@ impl QueueMetrics {
 
     /// Returns total enqueued.
     pub fn enqueued(&self) -> u64 {
-        self.enqueued.iter().map(|c| c.load(Ordering::Relaxed)).sum()
+        self.enqueued
+            .iter()
+            .map(|c| c.load(Ordering::Relaxed))
+            .sum()
     }
 
     /// Returns enqueued by priority.
@@ -837,7 +837,10 @@ impl QueueMetrics {
 
     /// Returns total dequeued.
     pub fn dequeued(&self) -> u64 {
-        self.dequeued.iter().map(|c| c.load(Ordering::Relaxed)).sum()
+        self.dequeued
+            .iter()
+            .map(|c| c.load(Ordering::Relaxed))
+            .sum()
     }
 
     /// Returns dequeued by priority.
@@ -847,7 +850,10 @@ impl QueueMetrics {
 
     /// Returns total rejected.
     pub fn rejected(&self) -> u64 {
-        self.rejected.iter().map(|c| c.load(Ordering::Relaxed)).sum()
+        self.rejected
+            .iter()
+            .map(|c| c.load(Ordering::Relaxed))
+            .sum()
     }
 
     /// Returns rejected by priority.
@@ -857,7 +863,10 @@ impl QueueMetrics {
 
     /// Returns total cancelled.
     pub fn cancelled(&self) -> u64 {
-        self.cancelled.iter().map(|c| c.load(Ordering::Relaxed)).sum()
+        self.cancelled
+            .iter()
+            .map(|c| c.load(Ordering::Relaxed))
+            .sum()
     }
 
     /// Returns starvation promotions.
@@ -919,9 +928,8 @@ impl QueueMetrics {
             self.cancelled()
         ));
 
-        output.push_str(
-            "# HELP infernum_queue_starvation_promotions_total Starvation promotions\n",
-        );
+        output
+            .push_str("# HELP infernum_queue_starvation_promotions_total Starvation promotions\n");
         output.push_str("# TYPE infernum_queue_starvation_promotions_total counter\n");
         output.push_str(&format!(
             "infernum_queue_starvation_promotions_total {}\n",
@@ -1076,7 +1084,12 @@ mod tests {
 
         // Enqueue in reverse priority order
         queue
-            .enqueue(QueuedRequest::new("low", BatchPriority::Background, "m", 10))
+            .enqueue(QueuedRequest::new(
+                "low",
+                BatchPriority::Background,
+                "m",
+                10,
+            ))
             .unwrap();
         queue
             .enqueue(QueuedRequest::new("normal", BatchPriority::Normal, "m", 10))
@@ -1085,7 +1098,12 @@ mod tests {
             .enqueue(QueuedRequest::new("high", BatchPriority::High, "m", 10))
             .unwrap();
         queue
-            .enqueue(QueuedRequest::new("critical", BatchPriority::Critical, "m", 10))
+            .enqueue(QueuedRequest::new(
+                "critical",
+                BatchPriority::Critical,
+                "m",
+                10,
+            ))
             .unwrap();
 
         // Should dequeue in priority order
@@ -1378,7 +1396,12 @@ mod tests {
 
         // Add a critical request
         queue
-            .enqueue(QueuedRequest::new("critical", BatchPriority::Critical, "m", 10))
+            .enqueue(QueuedRequest::new(
+                "critical",
+                BatchPriority::Critical,
+                "m",
+                10,
+            ))
             .unwrap();
 
         // The starving normal request should be dequeued first

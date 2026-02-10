@@ -5,7 +5,7 @@ use std::time::Instant;
 
 #[cfg(feature = "cuda")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use abaddon::cuda_inference::{ComputeEngine, WeightStore, ModelArch};
+    use abaddon::cuda_inference::{ComputeEngine, ModelArch, WeightStore};
     use cudarc::driver::CudaDevice;
 
     println!("=== CUDA Profiling ===\n");
@@ -16,11 +16,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Get GPU info
     let (free, total) = cudarc::driver::result::mem_get_info()?;
-    println!("GPU Memory: {:.1} GB free / {:.1} GB total\n",
+    println!(
+        "GPU Memory: {:.1} GB free / {:.1} GB total\n",
         free as f64 / 1024.0 / 1024.0 / 1024.0,
-        total as f64 / 1024.0 / 1024.0 / 1024.0);
+        total as f64 / 1024.0 / 1024.0 / 1024.0
+    );
 
-    let model_dir = "/home/crook/dev2/workspace/nyx/infernum/infernum-complete/test_models/smollm2-135m-int4";
+    let model_dir =
+        "/home/crook/dev2/workspace/nyx/infernum/infernum-complete/test_models/smollm2-135m-int4";
 
     // Profile weight loading
     println!("--- Weight Loading ---");
@@ -86,7 +89,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     device.synchronize()?;
     let prefill_time = start.elapsed();
     println!("Prefill time: {:?}", prefill_time);
-    println!("Throughput: {:.0} tok/s", 128.0 / prefill_time.as_secs_f64());
+    println!(
+        "Throughput: {:.0} tok/s",
+        128.0 / prefill_time.as_secs_f64()
+    );
 
     println!("\n=== Profile Complete ===");
     Ok(())

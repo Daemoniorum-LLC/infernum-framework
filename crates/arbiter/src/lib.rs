@@ -66,9 +66,6 @@
 //! ```
 
 #![warn(missing_docs)]
-#![warn(clippy::all)]
-#![warn(clippy::pedantic)]
-#![deny(clippy::unwrap_used)]
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::must_use_candidate)]
 
@@ -90,12 +87,12 @@ use parking_lot::RwLock;
 use thiserror::Error;
 
 pub use allocation::{Allocation, AllocationRequest, AllocationResult};
-pub use cache::{FragmentCache, CacheConfig, CacheStats, CacheTier};
+pub use cache::{CacheConfig, CacheStats, CacheTier, FragmentCache};
 pub use coordinator::{Coordinator, CoordinatorConfig};
-pub use gpu::{GpuDetector, GpuDetectionResult, GpuInfo, GpuVendor, DetectionMethod};
+pub use gpu::{DetectionMethod, GpuDetectionResult, GpuDetector, GpuInfo, GpuVendor};
 pub use memory::{GpuMemoryTracker, MemoryPressure, MemoryStats};
 pub use priority::{Priority, WorkloadType};
-pub use quality::{QualityBudget, QualityAllocation, QualityPolicy};
+pub use quality::{QualityAllocation, QualityBudget, QualityPolicy};
 
 // ==================== Error Types ====================
 
@@ -373,11 +370,9 @@ impl Arbiter {
 
         // Calculate quality allocation based on current pressure (after allocation)
         let pressure = self.memory_tracker.pressure();
-        let quality = self.coordinator.calculate_quality(
-            workload_type,
-            priority,
-            pressure,
-        );
+        let quality = self
+            .coordinator
+            .calculate_quality(workload_type, priority, pressure);
 
         // Update state
         let mut state = self.state.write();
@@ -385,11 +380,11 @@ impl Arbiter {
             WorkloadType::LlmInference => {
                 state.active_llm_workloads += 1;
                 state.llm_quality = quality;
-            }
+            },
             WorkloadType::ImageGeneration | WorkloadType::VideoGeneration => {
                 state.active_diffusion_workloads += 1;
                 state.diffusion_quality = quality;
-            }
+            },
         }
         state.vram_used += memory_required;
         state.vram_available = self.config.vram_budget.saturating_sub(state.vram_used);
@@ -415,10 +410,11 @@ impl Arbiter {
         match allocation.workload_type {
             WorkloadType::LlmInference => {
                 state.active_llm_workloads = state.active_llm_workloads.saturating_sub(1);
-            }
+            },
             WorkloadType::ImageGeneration | WorkloadType::VideoGeneration => {
-                state.active_diffusion_workloads = state.active_diffusion_workloads.saturating_sub(1);
-            }
+                state.active_diffusion_workloads =
+                    state.active_diffusion_workloads.saturating_sub(1);
+            },
         }
         state.vram_used = state.vram_used.saturating_sub(allocation.memory_allocated);
         state.vram_available = self.config.vram_budget.saturating_sub(state.vram_used);
@@ -438,7 +434,9 @@ impl Arbiter {
         let state = self.state.read();
         match workload_type {
             WorkloadType::LlmInference => state.llm_quality,
-            WorkloadType::ImageGeneration | WorkloadType::VideoGeneration => state.diffusion_quality,
+            WorkloadType::ImageGeneration | WorkloadType::VideoGeneration => {
+                state.diffusion_quality
+            },
         }
     }
 }
@@ -479,11 +477,13 @@ mod integration_tests {
     fn test_allocation_release() {
         let arbiter = Arbiter::new(ArbiterConfig::for_vram_gb(24)).expect("Failed");
 
-        let allocation = arbiter.request_allocation(
-            WorkloadType::ImageGeneration,
-            Priority::Normal,
-            2 * 1024 * 1024 * 1024, // 2GB
-        ).expect("Failed to allocate");
+        let allocation = arbiter
+            .request_allocation(
+                WorkloadType::ImageGeneration,
+                Priority::Normal,
+                2 * 1024 * 1024 * 1024, // 2GB
+            )
+            .expect("Failed to allocate");
 
         let state_before = arbiter.state();
         assert_eq!(state_before.active_diffusion_workloads, 1);
@@ -505,7 +505,10 @@ mod integration_tests {
         );
 
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ArbiterError::InsufficientMemory { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            ArbiterError::InsufficientMemory { .. }
+        ));
     }
 
     #[test]
@@ -513,18 +516,22 @@ mod integration_tests {
         let arbiter = Arbiter::new(ArbiterConfig::for_vram_gb(24)).expect("Failed");
 
         // First LLM allocation gets full quality
-        let llm1 = arbiter.request_allocation(
-            WorkloadType::LlmInference,
-            Priority::High,
-            10 * 1024 * 1024 * 1024,
-        ).expect("Failed");
+        let llm1 = arbiter
+            .request_allocation(
+                WorkloadType::LlmInference,
+                Priority::High,
+                10 * 1024 * 1024 * 1024,
+            )
+            .expect("Failed");
 
         // Adding diffusion should reduce both qualities
-        let _diff = arbiter.request_allocation(
-            WorkloadType::ImageGeneration,
-            Priority::Normal,
-            8 * 1024 * 1024 * 1024,
-        ).expect("Failed");
+        let _diff = arbiter
+            .request_allocation(
+                WorkloadType::ImageGeneration,
+                Priority::Normal,
+                8 * 1024 * 1024 * 1024,
+            )
+            .expect("Failed");
 
         let state = arbiter.state();
         // Both should be running

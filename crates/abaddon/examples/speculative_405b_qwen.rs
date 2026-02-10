@@ -32,7 +32,11 @@ struct Qwen2Draft {
 
 impl Qwen2Draft {
     fn new(model: Qwen2, device: Device, dtype: DType) -> Self {
-        Self { model, device, dtype }
+        Self {
+            model,
+            device,
+            dtype,
+        }
     }
 }
 
@@ -71,10 +75,12 @@ fn load_safetensors_weights(
     let index: serde_json::Value = serde_json::from_str(&index_str)?;
 
     // Get unique shard files
-    let weight_map = index["weight_map"].as_object()
+    let weight_map = index["weight_map"]
+        .as_object()
         .ok_or_else(|| anyhow::anyhow!("Missing weight_map in index"))?;
 
-    let mut shard_files: Vec<String> = weight_map.values()
+    let mut shard_files: Vec<String> = weight_map
+        .values()
         .filter_map(|v| v.as_str())
         .map(|s| s.to_string())
         .collect();
@@ -87,7 +93,12 @@ fn load_safetensors_weights(
     let mut tensors = std::collections::HashMap::new();
 
     for (i, shard_name) in shard_files.iter().enumerate() {
-        println!("Loading shard {}/{}: {}", i + 1, shard_files.len(), shard_name);
+        println!(
+            "Loading shard {}/{}: {}",
+            i + 1,
+            shard_files.len(),
+            shard_name
+        );
         let shard_path = repo.get(shard_name)?;
         let data = std::fs::read(&shard_path)?;
         let safetensors = SafeTensors::deserialize(&data)?;
@@ -103,12 +114,8 @@ fn load_safetensors_weights(
             };
 
             // Create tensor on CPU first, then move to device and convert dtype
-            let tensor = Tensor::from_raw_buffer(
-                tensor_view.data(),
-                tensor_dtype,
-                &shape,
-                &Device::Cpu,
-            )?;
+            let tensor =
+                Tensor::from_raw_buffer(tensor_view.data(), tensor_dtype, &shape, &Device::Cpu)?;
 
             let tensor = tensor.to_device(device)?.to_dtype(dtype)?;
             tensors.insert(name.to_string(), tensor);
@@ -125,11 +132,15 @@ fn main() -> Result<()> {
     println!("========================================================================\n");
 
     // Paths
-    let hct_dir = PathBuf::from("/home/crook/.cache/infernum/models/hct/meta-llama--Llama-405B-HoloTensor");
+    let hct_dir =
+        PathBuf::from("/home/crook/.cache/infernum/models/hct/meta-llama--Llama-405B-HoloTensor");
 
     // Check 405B model exists
     if !hct_dir.exists() {
-        println!("ERROR: 405B HoloTensor model not found at: {}", hct_dir.display());
+        println!(
+            "ERROR: 405B HoloTensor model not found at: {}",
+            hct_dir.display()
+        );
         return Ok(());
     }
 
@@ -153,16 +164,18 @@ fn main() -> Result<()> {
 
     // Load config from HuggingFace
     let api = Api::new()?;
-    let draft_repo = api.repo(Repo::new("Qwen/Qwen2.5-7B-Instruct".to_string(), RepoType::Model));
+    let draft_repo = api.repo(Repo::new(
+        "Qwen/Qwen2.5-7B-Instruct".to_string(),
+        RepoType::Model,
+    ));
 
     let config_path = draft_repo.get("config.json")?;
     let config_str = std::fs::read_to_string(&config_path)?;
     let draft_config: Qwen2Config = serde_json::from_str(&config_str)?;
 
-    println!("Draft config: {} layers, {} hidden, {} heads",
-        draft_config.num_hidden_layers,
-        draft_config.hidden_size,
-        draft_config.num_attention_heads
+    println!(
+        "Draft config: {} layers, {} hidden, {} heads",
+        draft_config.num_hidden_layers, draft_config.hidden_size, draft_config.num_attention_heads
     );
 
     // Load weights from SafeTensors
@@ -183,9 +196,9 @@ fn main() -> Result<()> {
 
     // Configure tiered loader - conservative settings for 24GB VRAM
     let config = TieredConfig {
-        vram_budget: 8 * 1024 * 1024 * 1024,  // 8GB (leave room for draft ~14GB)
-        ram_budget: 60 * 1024 * 1024 * 1024,   // 60GB
-        min_quality: 0.85,                      // Higher quality for better results
+        vram_budget: 8 * 1024 * 1024 * 1024, // 8GB (leave room for draft ~14GB)
+        ram_budget: 60 * 1024 * 1024 * 1024, // 60GB
+        min_quality: 0.85,                   // Higher quality for better results
         target_quality: 0.95,
         enable_background_streaming: false,
         background_streams: 0,
@@ -198,7 +211,14 @@ fn main() -> Result<()> {
     println!("TieredHoloLoader created");
     println!("VRAM budget: 8 GB (draft uses ~14GB)");
     println!("RAM budget: 60 GB");
-    println!("GPU acceleration: {}\n", if loader.is_gpu_enabled() { "enabled" } else { "disabled" });
+    println!(
+        "GPU acceleration: {}\n",
+        if loader.is_gpu_enabled() {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
 
     // Create LazyVarBuilder
     let provider: Arc<dyn TensorProvider> = Arc::clone(&loader) as Arc<dyn TensorProvider>;
@@ -228,7 +248,10 @@ fn main() -> Result<()> {
 
     println!("405B model shell created in {:?}", target_start.elapsed());
     let stats = target.stats();
-    println!("Initial layers loaded: {}/{}", stats.loaded_layers, stats.total_layers);
+    println!(
+        "Initial layers loaded: {}/{}",
+        stats.loaded_layers, stats.total_layers
+    );
     println!("Max concurrent layers: {}\n", max_loaded_layers);
 
     // ============================================================
@@ -237,16 +260,19 @@ fn main() -> Result<()> {
     println!("=== Setting Up Speculative Decoder ===");
 
     let spec_config = Speculative405BConfig {
-        num_draft_tokens: 4,        // 4 draft tokens per round (conservative)
-        acceptance_threshold: 0.1,  // Low threshold (405B is authoritative)
+        num_draft_tokens: 4,       // 4 draft tokens per round (conservative)
+        acceptance_threshold: 0.1, // Low threshold (405B is authoritative)
         draft_temperature: 0.7,
         target_temperature: 0.7,
-        greedy_draft: true,         // Greedy for speed
+        greedy_draft: true, // Greedy for speed
     };
 
     println!("Configuration:");
     println!("  Draft tokens per round: {}", spec_config.num_draft_tokens);
-    println!("  Acceptance threshold: {}", spec_config.acceptance_threshold);
+    println!(
+        "  Acceptance threshold: {}",
+        spec_config.acceptance_threshold
+    );
     println!("  Greedy draft: {}", spec_config.greedy_draft);
 
     let speculative = Speculative405B::new(draft, target, spec_config);
@@ -267,7 +293,8 @@ fn main() -> Result<()> {
     let max_tokens = 30;
     let eos_token = model_config.eos_token_id.unwrap_or(128001) as u32;
 
-    let encoding = tokenizer.encode(prompt, false)
+    let encoding = tokenizer
+        .encode(prompt, false)
         .map_err(|e| anyhow::anyhow!("Tokenization failed: {}", e))?;
     let prompt_tokens: Vec<u32> = encoding.get_ids().to_vec();
 
@@ -282,7 +309,8 @@ fn main() -> Result<()> {
     let gen_elapsed = gen_start.elapsed();
 
     // Decode output
-    let generated_text = tokenizer.decode(&generated_tokens, false)
+    let generated_text = tokenizer
+        .decode(&generated_tokens, false)
         .map_err(|e| anyhow::anyhow!("Decode failed: {}", e))?;
 
     // ============================================================
@@ -296,24 +324,36 @@ fn main() -> Result<()> {
     let tokens_per_sec = generated_tokens.len() as f64 / gen_elapsed.as_secs_f64();
 
     println!("\nPerformance:");
-    println!("  Generated: {} tokens in {:.2}s", generated_tokens.len(), gen_elapsed.as_secs_f64());
+    println!(
+        "  Generated: {} tokens in {:.2}s",
+        generated_tokens.len(),
+        gen_elapsed.as_secs_f64()
+    );
     println!("  Speed: {:.1} tokens/sec", tokens_per_sec);
 
     println!("\nSpeculation Stats:");
     println!("  Rounds: {}", stats.rounds);
     println!("  Draft tokens proposed: {}", stats.draft_tokens);
-    println!("  Accepted: {} ({:.1}%)", stats.accepted_tokens, stats.acceptance_rate() * 100.0);
+    println!(
+        "  Accepted: {} ({:.1}%)",
+        stats.accepted_tokens,
+        stats.acceptance_rate() * 100.0
+    );
     println!("  Rejected: {}", stats.rejected_tokens);
     println!("  Tokens per round: {:.2}", stats.tokens_per_round());
     println!("  Effective speedup: {:.1}x", stats.speedup());
 
     println!("\nTiming Breakdown:");
-    println!("  Draft time: {} ms ({:.1} ms/forward)",
+    println!(
+        "  Draft time: {} ms ({:.1} ms/forward)",
         stats.draft_time_ms,
-        stats.draft_time_ms as f64 / stats.draft_forward_passes.max(1) as f64);
-    println!("  Verify time: {} ms ({:.1} ms/forward)",
+        stats.draft_time_ms as f64 / stats.draft_forward_passes.max(1) as f64
+    );
+    println!(
+        "  Verify time: {} ms ({:.1} ms/forward)",
         stats.verify_time_ms,
-        stats.verify_time_ms as f64 / stats.target_forward_passes.max(1) as f64);
+        stats.verify_time_ms as f64 / stats.target_forward_passes.max(1) as f64
+    );
 
     println!("\n========================================================================");
     println!("Generated Text:");
@@ -325,10 +365,14 @@ fn main() -> Result<()> {
     let loader_stats = loader.stats();
     println!("\nTiered Loader Stats:");
     println!("  Tensors loaded: {}", loader_stats.tensors_loaded);
-    println!("  GPU reconstructions: {} ({} ms)",
-        loader_stats.gpu_reconstructions, loader_stats.gpu_time_ms);
-    println!("  CPU fallbacks: {} ({} ms)",
-        loader_stats.cpu_reconstructions, loader_stats.cpu_time_ms);
+    println!(
+        "  GPU reconstructions: {} ({} ms)",
+        loader_stats.gpu_reconstructions, loader_stats.gpu_time_ms
+    );
+    println!(
+        "  CPU fallbacks: {} ({} ms)",
+        loader_stats.cpu_reconstructions, loader_stats.cpu_time_ms
+    );
 
     println!("\n=== Complete ===");
     Ok(())

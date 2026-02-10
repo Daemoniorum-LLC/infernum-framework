@@ -345,7 +345,10 @@ impl SessionRegistry {
 
     /// Generates a new session ID.
     pub fn generate_id() -> String {
-        format!("sess_{}", uuid::Uuid::new_v4().simple().to_string()[..12].to_string())
+        format!(
+            "sess_{}",
+            uuid::Uuid::new_v4().simple().to_string()[..12].to_string()
+        )
     }
 }
 
@@ -481,52 +484,51 @@ pub async fn sessions_stream(
         .map(|s| s.split(',').map(|s| s.trim().to_string()).collect());
 
     // Convert broadcast stream events to SSE events
-    let sse_stream = stream
-        .filter_map(move |result| {
-            let session_filter = session_filter.clone();
-            let event_filter = event_filter.clone();
+    let sse_stream = stream.filter_map(move |result| {
+        let session_filter = session_filter.clone();
+        let event_filter = event_filter.clone();
 
-            match result {
-                Ok(event) => {
-                    let session_id = match &event {
-                        SessionEvent::SessionStarted { session } => session.id.clone(),
-                        SessionEvent::SessionUpdated { session_id, .. } => session_id.clone(),
-                        SessionEvent::AgentEvent { session_id, .. } => session_id.clone(),
-                        SessionEvent::SessionEnded { session_id, .. } => session_id.clone(),
-                    };
+        match result {
+            Ok(event) => {
+                let session_id = match &event {
+                    SessionEvent::SessionStarted { session } => session.id.clone(),
+                    SessionEvent::SessionUpdated { session_id, .. } => session_id.clone(),
+                    SessionEvent::AgentEvent { session_id, .. } => session_id.clone(),
+                    SessionEvent::SessionEnded { session_id, .. } => session_id.clone(),
+                };
 
-                    let event_type = match &event {
-                        SessionEvent::SessionStarted { .. } => "session_started",
-                        SessionEvent::SessionUpdated { .. } => "session_updated",
-                        SessionEvent::AgentEvent { .. } => "agent_event",
-                        SessionEvent::SessionEnded { .. } => "session_ended",
-                    };
+                let event_type = match &event {
+                    SessionEvent::SessionStarted { .. } => "session_started",
+                    SessionEvent::SessionUpdated { .. } => "session_updated",
+                    SessionEvent::AgentEvent { .. } => "agent_event",
+                    SessionEvent::SessionEnded { .. } => "session_ended",
+                };
 
-                    // Apply session filter
-                    let session_ok = session_filter
-                        .as_ref()
-                        .map(|f| f.contains(&session_id))
-                        .unwrap_or(true);
+                // Apply session filter
+                let session_ok = session_filter
+                    .as_ref()
+                    .map(|f| f.contains(&session_id))
+                    .unwrap_or(true);
 
-                    // Apply event type filter
-                    let event_ok = event_filter
-                        .as_ref()
-                        .map(|f| f.iter().any(|t| t == event_type))
-                        .unwrap_or(true);
+                // Apply event type filter
+                let event_ok = event_filter
+                    .as_ref()
+                    .map(|f| f.iter().any(|t| t == event_type))
+                    .unwrap_or(true);
 
-                    if session_ok && event_ok {
-                        serde_json::to_string(&event).ok().map(|data| {
-                            Ok::<_, std::convert::Infallible>(
-                                Event::default().event(event_type).data(data),
-                            )
-                        })
-                    } else {
-                        None
-                    }
+                if session_ok && event_ok {
+                    serde_json::to_string(&event).ok().map(|data| {
+                        Ok::<_, std::convert::Infallible>(
+                            Event::default().event(event_type).data(data),
+                        )
+                    })
+                } else {
+                    None
                 }
-                Err(_) => None,
-            }
-        });
+            },
+            Err(_) => None,
+        }
+    });
 
     Sse::new(sse_stream).keep_alive(
         axum::response::sse::KeepAlive::new()
@@ -581,7 +583,7 @@ pub async fn session_stream(
                         )
                     })
                 }
-            }
+            },
             Err(_) => None,
         }
     });
@@ -701,8 +703,7 @@ mod tests {
     #[tokio::test]
     async fn test_session_registry_register() {
         let registry = SessionRegistry::new();
-        let session =
-            AgentSession::new("sess_test".to_string(), "Test objective".to_string());
+        let session = AgentSession::new("sess_test".to_string(), "Test objective".to_string());
 
         registry.register_session(session.clone()).await;
 
@@ -754,10 +755,16 @@ mod tests {
     async fn test_session_registry_list() {
         let registry = SessionRegistry::new();
         registry
-            .register_session(AgentSession::new("sess_1".to_string(), "Task 1".to_string()))
+            .register_session(AgentSession::new(
+                "sess_1".to_string(),
+                "Task 1".to_string(),
+            ))
             .await;
         registry
-            .register_session(AgentSession::new("sess_2".to_string(), "Task 2".to_string()))
+            .register_session(AgentSession::new(
+                "sess_2".to_string(),
+                "Task 2".to_string(),
+            ))
             .await;
 
         let sessions = registry.list_sessions().await;

@@ -2,7 +2,7 @@
 //!
 //! Tests the persona loading, caching, and listing workflows.
 
-use grimoire_loader::{GrimoireLoader, GrimoirePersona, default_grimoire_path, GRIMOIRE_PATH_ENV};
+use grimoire_loader::{default_grimoire_path, GrimoireLoader, GrimoirePersona, GRIMOIRE_PATH_ENV};
 use std::collections::HashMap;
 use std::fs;
 use tempfile::TempDir;
@@ -29,9 +29,15 @@ fn test_persona_creation() {
 #[test]
 fn test_persona_with_variants() {
     let mut variants = HashMap::new();
-    variants.insert("formal".to_string(), "You are a formal assistant.".to_string());
+    variants.insert(
+        "formal".to_string(),
+        "You are a formal assistant.".to_string(),
+    );
     variants.insert("casual".to_string(), "Hey! I'm here to help!".to_string());
-    variants.insert("technical".to_string(), "I provide technical assistance.".to_string());
+    variants.insert(
+        "technical".to_string(),
+        "I provide technical assistance.".to_string(),
+    );
 
     let persona = GrimoirePersona {
         id: "multi-variant".to_string(),
@@ -44,7 +50,11 @@ fn test_persona_with_variants() {
     assert_eq!(persona.variants.len(), 3);
     assert!(persona.variants.get("formal").unwrap().contains("formal"));
     assert!(persona.variants.get("casual").unwrap().contains("Hey"));
-    assert!(persona.variants.get("technical").unwrap().contains("technical"));
+    assert!(persona
+        .variants
+        .get("technical")
+        .unwrap()
+        .contains("technical"));
 }
 
 #[test]
@@ -64,9 +74,18 @@ fn test_persona_with_metadata() {
     };
 
     assert_eq!(persona.metadata.get("version"), Some(&"2.0".to_string()));
-    assert_eq!(persona.metadata.get("author"), Some(&"Test Author".to_string()));
-    assert_eq!(persona.metadata.get("category"), Some(&"development".to_string()));
-    assert_eq!(persona.metadata.get("model_preference"), Some(&"claude-opus-4".to_string()));
+    assert_eq!(
+        persona.metadata.get("author"),
+        Some(&"Test Author".to_string())
+    );
+    assert_eq!(
+        persona.metadata.get("category"),
+        Some(&"development".to_string())
+    );
+    assert_eq!(
+        persona.metadata.get("model_preference"),
+        Some(&"claude-opus-4".to_string())
+    );
 }
 
 #[test]
@@ -139,7 +158,10 @@ fn test_persona_debug_format() {
 #[test]
 fn test_loader_with_custom_path() {
     let loader = GrimoireLoader::with_path("/custom/grimoire/path");
-    assert_eq!(loader.base_path().to_string_lossy(), "/custom/grimoire/path");
+    assert_eq!(
+        loader.base_path().to_string_lossy(),
+        "/custom/grimoire/path"
+    );
 }
 
 #[test]
@@ -543,7 +565,12 @@ async fn test_large_prompt_file() {
 
     // Create a large prompt (100KB)
     let large_prompt: String = (0..10000)
-        .map(|i| format!("Line {}: This is part of a very detailed system prompt.\n", i))
+        .map(|i| {
+            format!(
+                "Line {}: This is part of a very detailed system prompt.\n",
+                i
+            )
+        })
         .collect();
 
     fs::write(temp.path().join("large.md"), &large_prompt).expect("write");
@@ -576,9 +603,7 @@ async fn test_concurrent_loads() {
     let mut handles = Vec::new();
     for _ in 0..10 {
         let loader_clone = loader.clone();
-        let handle = tokio::spawn(async move {
-            loader_clone.load("concurrent").await
-        });
+        let handle = tokio::spawn(async move { loader_clone.load("concurrent").await });
         handles.push(handle);
     }
 
@@ -607,17 +632,13 @@ async fn test_concurrent_list_and_load() {
 
     // Concurrent list operations
     let loader_list = loader.clone();
-    let list_handle = tokio::spawn(async move {
-        loader_list.list().await
-    });
+    let list_handle = tokio::spawn(async move { loader_list.list().await });
 
     // Concurrent load operations
     let mut load_handles = Vec::new();
     for i in 0..5 {
         let loader_clone = loader.clone();
-        let handle = tokio::spawn(async move {
-            loader_clone.load(&format!("agent-{}", i)).await
-        });
+        let handle = tokio::spawn(async move { loader_clone.load(&format!("agent-{}", i)).await });
         load_handles.push(handle);
     }
 

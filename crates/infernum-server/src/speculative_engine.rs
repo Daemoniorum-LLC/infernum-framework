@@ -34,10 +34,10 @@ use parking_lot::Mutex;
 use abaddon::holotensor::tiered_loading::{TieredConfig, TieredHoloLoader};
 use abaddon::lazy_varbuilder::LazyVarBuilder;
 use abaddon::loader::{ModelConfig, WeightFiles};
-use abaddon::models::ArchitectureType;
 use abaddon::models::lazy_llama::LazyLlama;
 use abaddon::models::llama::{Llama, LlamaConfig};
 use abaddon::models::qwen2::{Qwen2, Qwen2Config};
+use abaddon::models::ArchitectureType;
 use abaddon::speculative_405b::{Speculative405B, Speculative405BConfig, Speculative405BStats};
 use abaddon::Tokenizer;
 
@@ -117,14 +117,14 @@ impl Default for SpeculativeEngineConfig {
             target_model_path: String::new(),
             num_draft_tokens: 5,
             acceptance_threshold: 0.1,
-            vram_budget: 8 * 1024 * 1024 * 1024,  // 8GB
-            ram_budget: 64 * 1024 * 1024 * 1024,  // 64GB
+            vram_budget: 8 * 1024 * 1024 * 1024, // 8GB
+            ram_budget: 64 * 1024 * 1024 * 1024, // 64GB
             cache_dir: None,
             device_id: 0,
             greedy_draft: true,
             min_quality: 0.7,
             target_quality: 0.95,
-            max_loaded_layers: Some(32),  // Default to 32 layers (~fits in 64GB)
+            max_loaded_layers: Some(32), // Default to 32 layers (~fits in 64GB)
         }
     }
 }
@@ -318,7 +318,7 @@ impl SpeculativeEngine {
                     SpeculativeEngineError::ModelLoad(format!("Failed to load Qwen2: {}", e))
                 })?;
                 DraftModelKind::Qwen2(model)
-            }
+            },
             ArchitectureType::Llama | ArchitectureType::Unknown => {
                 let llama_config = LlamaConfig {
                     hidden_size: model_config.hidden_size.unwrap_or(4096),
@@ -340,10 +340,14 @@ impl SpeculativeEngine {
                     SpeculativeEngineError::ModelLoad(format!("Failed to load Llama: {}", e))
                 })?;
                 DraftModelKind::Llama(model)
-            }
+            },
         };
 
-        Ok((DraftModelWrapper { kind: draft_model }, tokenizer, eos_token_id))
+        Ok((
+            DraftModelWrapper { kind: draft_model },
+            tokenizer,
+            eos_token_id,
+        ))
     }
 
     /// Loads the target model (large model, with lazy layer loading).
@@ -423,9 +427,10 @@ impl SpeculativeEngine {
         let max_loaded_layers = config.max_loaded_layers.unwrap_or(32);
 
         // Load lazy model
-        let lazy_llama = LazyLlama::load(llama_config, lazy_vb, max_loaded_layers).map_err(|e| {
-            SpeculativeEngineError::ModelLoad(format!("Failed to load LazyLlama: {}", e))
-        })?;
+        let lazy_llama =
+            LazyLlama::load(llama_config, lazy_vb, max_loaded_layers).map_err(|e| {
+                SpeculativeEngineError::ModelLoad(format!("Failed to load LazyLlama: {}", e))
+            })?;
 
         Ok(lazy_llama)
     }
@@ -450,7 +455,8 @@ impl SpeculativeEngine {
                 SpeculativeEngineError::ModelLoad("Missing weight_map in index".to_string())
             })?;
 
-            let mut shard_files: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut shard_files: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
             if let Some(map) = weight_map.as_object() {
                 for file in map.values() {
                     if let Some(f) = file.as_str() {
@@ -484,7 +490,7 @@ impl SpeculativeEngine {
                 VarBuilder::from_buffered_safetensors(data, dtype, device).map_err(|e| {
                     SpeculativeEngineError::ModelLoad(format!("Failed to load weights: {}", e))
                 })
-            }
+            },
             WeightFiles::ShardedSafetensors { shards, .. } => {
                 // SAFETY: Files are read-only and paths are controlled
                 unsafe {
@@ -492,7 +498,7 @@ impl SpeculativeEngine {
                         SpeculativeEngineError::ModelLoad(format!("Failed to mmap shards: {}", e))
                     })
                 }
-            }
+            },
             _ => Err(SpeculativeEngineError::ModelLoad(
                 "Unsupported weight format".to_string(),
             )),
@@ -506,17 +512,19 @@ impl SpeculativeEngine {
         max_tokens: usize,
     ) -> Result<String, SpeculativeEngineError> {
         // Tokenize prompt (abaddon Tokenizer returns Vec<u32> directly)
-        let prompt_tokens = self.tokenizer.encode(prompt, true).map_err(|e| {
-            SpeculativeEngineError::Tokenizer(format!("Failed to tokenize: {}", e))
-        })?;
+        let prompt_tokens = self
+            .tokenizer
+            .encode(prompt, true)
+            .map_err(|e| SpeculativeEngineError::Tokenizer(format!("Failed to tokenize: {}", e)))?;
 
         // Generate tokens
         let generated_tokens = self.generate_tokens(&prompt_tokens, max_tokens)?;
 
         // Decode tokens
-        let text = self.tokenizer.decode(&generated_tokens, true).map_err(|e| {
-            SpeculativeEngineError::Tokenizer(format!("Failed to decode: {}", e))
-        })?;
+        let text = self
+            .tokenizer
+            .decode(&generated_tokens, true)
+            .map_err(|e| SpeculativeEngineError::Tokenizer(format!("Failed to decode: {}", e)))?;
 
         Ok(text)
     }

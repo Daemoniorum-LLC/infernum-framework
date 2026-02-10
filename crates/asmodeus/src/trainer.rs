@@ -261,7 +261,7 @@ impl AdamW {
                 let m = Tensor::zeros(param.shape(), dtype, device)?;
                 let v = Tensor::zeros(param.shape(), dtype, device)?;
                 e.insert(AdamWState { m, v, step: 0 })
-            }
+            },
         };
         state.step += 1;
 
@@ -393,7 +393,7 @@ impl TrainingRun {
                 let mut guard = poisoned.into_inner();
                 *guard = status;
                 tracing::warn!("Recovered from poisoned status lock");
-            }
+            },
         }
     }
 }
@@ -460,12 +460,12 @@ impl Trainer {
         match self.runs.write() {
             Ok(mut guard) => {
                 guard.insert(run_id.clone(), run.clone());
-            }
+            },
             Err(poisoned) => {
                 let mut guard = poisoned.into_inner();
                 guard.insert(run_id.clone(), run.clone());
                 tracing::warn!("Recovered from poisoned runs lock during insert");
-            }
+            },
         }
 
         let lora_config = config.lora.clone().unwrap_or_default();
@@ -830,7 +830,7 @@ impl TrainerTrait for Trainer {
             Err(poisoned) => {
                 tracing::warn!("Recovered from poisoned runs lock during status check");
                 poisoned.into_inner()
-            }
+            },
         };
         guard.get(run_id).map(|run| run.status())
     }
@@ -841,7 +841,7 @@ impl TrainerTrait for Trainer {
             Err(poisoned) => {
                 tracing::warn!("Recovered from poisoned runs lock during stop");
                 poisoned.into_inner()
-            }
+            },
         };
         if let Some(run) = guard.get(run_id) {
             run.stop();

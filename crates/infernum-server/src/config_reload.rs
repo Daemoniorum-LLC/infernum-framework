@@ -58,7 +58,10 @@ impl std::fmt::Debug for ReloadableConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ReloadableConfig")
             .field("config_path", &self.config_path)
-            .field("reload_enabled", &self.reload_enabled.load(Ordering::SeqCst))
+            .field(
+                "reload_enabled",
+                &self.reload_enabled.load(Ordering::SeqCst),
+            )
             .field("callbacks_count", &self.callbacks.read().len())
             .finish_non_exhaustive()
     }
@@ -333,8 +336,8 @@ impl ConfigWatcher {
                         if event.paths.iter().any(|p| p == &path_clone) {
                             let _ = tx_clone.blocking_send(());
                         }
-                    }
-                    _ => {}
+                    },
+                    _ => {},
                 }
             }
         })

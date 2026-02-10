@@ -61,7 +61,14 @@ fn test_cli_dataset_create() {
 
     // Create should succeed
     infernum_with_workspace(temp.path())
-        .args(["studio", "dataset", "create", "test-dataset", "-d", "A test dataset"])
+        .args([
+            "studio",
+            "dataset",
+            "create",
+            "test-dataset",
+            "-d",
+            "A test dataset",
+        ])
         .assert()
         .success();
 }
@@ -72,7 +79,14 @@ fn test_cli_dataset_workflow() {
 
     // 1. Create dataset
     infernum_with_workspace(temp.path())
-        .args(["studio", "dataset", "create", "workflow-ds", "-d", "Test workflow"])
+        .args([
+            "studio",
+            "dataset",
+            "create",
+            "workflow-ds",
+            "-d",
+            "Test workflow",
+        ])
         .assert()
         .success();
 
@@ -147,7 +161,14 @@ fn test_cli_experiment_create() {
     let temp = setup_workspace();
 
     infernum_with_workspace(temp.path())
-        .args(["studio", "experiment", "create", "test-exp", "-d", "A test experiment"])
+        .args([
+            "studio",
+            "experiment",
+            "create",
+            "test-exp",
+            "-d",
+            "A test experiment",
+        ])
         .assert()
         .success();
 }
@@ -158,7 +179,14 @@ fn test_cli_experiment_workflow() {
 
     // 1. Create experiment
     infernum_with_workspace(temp.path())
-        .args(["studio", "experiment", "create", "exp-workflow", "-d", "Workflow test"])
+        .args([
+            "studio",
+            "experiment",
+            "create",
+            "exp-workflow",
+            "-d",
+            "Workflow test",
+        ])
         .assert()
         .success();
 

@@ -11,23 +11,23 @@
 
 use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions, Ptx};
 
-pub mod rmsnorm;
-pub mod rope;
 pub mod activations;
+pub mod attention;
+pub mod embedding;
 pub mod fused_gemm;
 pub mod fused_rmsnorm_proj;
-pub mod attention;
+pub mod rmsnorm;
+pub mod rope;
 pub mod sampling;
-pub mod embedding;
 
-pub use rmsnorm::RMSNormKernel;
-pub use rope::RoPEKernel;
 pub use activations::{ActivationKernel, ActivationType};
+pub use attention::FlashAttentionKernel;
+pub use embedding::EmbeddingKernel;
 pub use fused_gemm::FusedGemmKernel;
 pub use fused_rmsnorm_proj::FusedRMSNormProjKernel;
-pub use attention::FlashAttentionKernel;
-pub use sampling::{SamplingKernel, RepetitionPenalty};
-pub use embedding::EmbeddingKernel;
+pub use rmsnorm::RMSNormKernel;
+pub use rope::RoPEKernel;
+pub use sampling::{RepetitionPenalty, SamplingKernel};
 
 /// Compile CUDA C source to PTX with FP16 support.
 ///

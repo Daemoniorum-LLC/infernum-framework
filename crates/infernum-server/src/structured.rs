@@ -88,7 +88,9 @@ impl ResponseFormat {
 
     /// Creates a JSON schema response format.
     pub fn json_schema(schema: JsonSchema) -> Self {
-        Self::JsonSchema { json_schema: schema }
+        Self::JsonSchema {
+            json_schema: schema,
+        }
     }
 
     /// Returns true if this format requires JSON output.
@@ -302,7 +304,8 @@ pub fn validate_json(value: &Value, schema: &Value) -> ValidationResult {
 
 /// Validates a JSON string against a schema.
 pub fn validate_json_string(json_str: &str, schema: &Value) -> Result<ValidationResult, String> {
-    let value: Value = serde_json::from_str(json_str).map_err(|e| format!("Invalid JSON: {}", e))?;
+    let value: Value =
+        serde_json::from_str(json_str).map_err(|e| format!("Invalid JSON: {}", e))?;
     Ok(validate_json(&value, schema))
 }
 
@@ -311,7 +314,10 @@ fn validate_value(value: &Value, schema: &Value, path: &str, errors: &mut Vec<Va
     // Handle boolean schemas
     if let Some(b) = schema.as_bool() {
         if !b {
-            errors.push(ValidationError::new(path, "Schema is false, nothing is valid"));
+            errors.push(ValidationError::new(
+                path,
+                "Schema is false, nothing is valid",
+            ));
         }
         return;
     }
@@ -350,7 +356,7 @@ fn validate_value(value: &Value, schema: &Value, path: &str, errors: &mut Vec<Va
         Value::Array(arr) => validate_array(arr, schema_obj, path, errors),
         Value::String(s) => validate_string(s, schema_obj, path, errors),
         Value::Number(n) => validate_number(n, schema_obj, path, errors),
-        _ => {}
+        _ => {},
     }
 }
 
@@ -466,7 +472,10 @@ fn validate_object(
             for key in obj.keys() {
                 if !properties.contains(key) {
                     let prop_path = format!("{}.{}", path, key);
-                    errors.push(ValidationError::new(prop_path, "Additional property not allowed"));
+                    errors.push(ValidationError::new(
+                        prop_path,
+                        "Additional property not allowed",
+                    ));
                 }
             }
         }
@@ -587,8 +596,7 @@ fn validate_string(
     if let Some(format) = schema.get("format").and_then(|v| v.as_str()) {
         if !validate_format(s, format) {
             errors.push(
-                ValidationError::new(path, "Invalid format")
-                    .with_expected(format.to_string()),
+                ValidationError::new(path, "Invalid format").with_expected(format.to_string()),
             );
         }
     }
@@ -670,11 +678,11 @@ fn validate_format(s: &str, format: &str) -> bool {
                 && s[0..4].parse::<u16>().is_ok()
                 && s[5..7].parse::<u8>().is_ok()
                 && s[8..10].parse::<u8>().is_ok()
-        }
+        },
         "date-time" => {
             // Basic ISO 8601 validation
             s.contains('T') && (s.ends_with('Z') || s.contains('+') || s.contains('-'))
-        }
+        },
         "uuid" => {
             // Basic UUID validation
             s.len() == 36
@@ -682,11 +690,11 @@ fn validate_format(s: &str, format: &str) -> bool {
                 && s.chars().nth(13) == Some('-')
                 && s.chars().nth(18) == Some('-')
                 && s.chars().nth(23) == Some('-')
-        }
+        },
         "ipv4" => {
             let parts: Vec<&str> = s.split('.').collect();
             parts.len() == 4 && parts.iter().all(|p| p.parse::<u8>().is_ok())
-        }
+        },
         "ipv6" => s.contains(':') && s.split(':').count() >= 3,
         _ => true, // Unknown format, accept
     }
@@ -785,8 +793,8 @@ mod tests {
 
     #[test]
     fn test_response_format_json_schema_serialization() {
-        let schema = JsonSchema::new("person", json!({"type": "object"}))
-            .with_description("A person");
+        let schema =
+            JsonSchema::new("person", json!({"type": "object"})).with_description("A person");
         let format = ResponseFormat::json_schema(schema);
 
         let json = serde_json::to_string(&format).expect("serialize");
@@ -1254,14 +1262,11 @@ mod tests {
         let json_obj = ResponseFormat::json_object();
         assert!(!json_obj.is_strict());
 
-        let non_strict = ResponseFormat::json_schema(
-            JsonSchema::new("test", json!({}))
-        );
+        let non_strict = ResponseFormat::json_schema(JsonSchema::new("test", json!({})));
         assert!(!non_strict.is_strict());
 
-        let strict = ResponseFormat::json_schema(
-            JsonSchema::new("test", json!({})).with_strict(true)
-        );
+        let strict =
+            ResponseFormat::json_schema(JsonSchema::new("test", json!({})).with_strict(true));
         assert!(strict.is_strict());
     }
 

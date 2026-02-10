@@ -104,19 +104,20 @@ impl AuthMetrics {
         match reason {
             AuthFailureReason::MissingKey => {
                 self.failures_missing_key.fetch_add(1, Ordering::Relaxed);
-            }
+            },
             AuthFailureReason::InvalidKey => {
                 self.failures_invalid_key.fetch_add(1, Ordering::Relaxed);
-            }
+            },
             AuthFailureReason::ExpiredKey => {
                 self.failures_expired_key.fetch_add(1, Ordering::Relaxed);
-            }
+            },
             AuthFailureReason::DisabledKey => {
                 self.failures_disabled_key.fetch_add(1, Ordering::Relaxed);
-            }
+            },
             AuthFailureReason::InsufficientScope => {
-                self.failures_insufficient_scope.fetch_add(1, Ordering::Relaxed);
-            }
+                self.failures_insufficient_scope
+                    .fetch_add(1, Ordering::Relaxed);
+            },
         }
     }
 
@@ -418,7 +419,7 @@ impl ApiKey {
     /// Returns a hex-encoded hash string with "sha256:" prefix.
     #[must_use]
     pub fn hash_key_sha256(key: &str) -> String {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
 
         let mut hasher = Sha256::new();
         hasher.update(key.as_bytes());
@@ -467,7 +468,7 @@ impl ApiKey {
     /// Creates a hashed version of this key for secure storage.
     ///
     /// Returns a new `ApiKey` with the `key_hash` field set and the
-    /// plaintext key replaced with "[HASHED]".
+    /// plaintext key replaced with `"[HASHED]"`.
     #[must_use]
     pub fn hashed(mut self) -> Self {
         self.key_hash = Some(self.hash_key());
@@ -552,13 +553,13 @@ impl AuthConfig {
                 match parts.as_slice() {
                     [key, "admin"] => {
                         config = config.add_key(ApiKey::admin(*key));
-                    }
+                    },
                     [key, "user"] | [key] => {
                         config = config.add_key(ApiKey::user(*key));
-                    }
+                    },
                     _ => {
                         tracing::warn!("Invalid API key format: {}", pair);
-                    }
+                    },
                 }
             }
         }
@@ -686,7 +687,7 @@ impl AuthState {
                 }
 
                 ValidationResult::Valid(api_key.permission)
-            }
+            },
         }
     }
 
@@ -710,10 +711,9 @@ impl AuthState {
     /// Checks if an API key has a specific scope.
     pub async fn has_scope(&self, key: &str, scope: Scope) -> bool {
         let config = self.config.read().await;
-        config
-            .api_keys
-            .get(key)
-            .map_or(false, |api_key| api_key.enabled && api_key.scopes.contains(&scope))
+        config.api_keys.get(key).map_or(false, |api_key| {
+            api_key.enabled && api_key.scopes.contains(&scope)
+        })
     }
 }
 
@@ -815,11 +815,7 @@ fn generate_request_id() -> String {
 ///
 /// Validates API keys and sets permission level in request extensions.
 /// Logs all authentication events to the audit log.
-pub async fn auth_middleware(
-    auth_state: AuthState,
-    request: Request,
-    next: Next,
-) -> Response {
+pub async fn auth_middleware(auth_state: AuthState, request: Request, next: Next) -> Response {
     let path = request.uri().path().to_string();
     let client_ip = extract_client_ip(&request);
     let request_id = generate_request_id();
@@ -838,15 +834,12 @@ pub async fn auth_middleware(
     let api_key = match extract_api_key(&request) {
         Some(key) => key,
         None => {
-            auth_state.metrics().record_failure(AuthFailureReason::MissingKey);
+            auth_state
+                .metrics()
+                .record_failure(AuthFailureReason::MissingKey);
             auth_state
                 .audit_logger()
-                .auth_failure(
-                    &request_id,
-                    client_ip.as_deref(),
-                    "missing_api_key",
-                    &path,
-                )
+                .auth_failure(&request_id, client_ip.as_deref(), "missing_api_key", &path)
                 .await;
 
             return (
@@ -856,7 +849,7 @@ pub async fn auth_middleware(
                 )),
             )
                 .into_response();
-        }
+        },
     };
 
     // Validate the key with detailed result
@@ -865,7 +858,9 @@ pub async fn auth_middleware(
     let permission = match validation_result {
         ValidationResult::Valid(perm) => perm,
         ValidationResult::NotFound => {
-            auth_state.metrics().record_failure(AuthFailureReason::InvalidKey);
+            auth_state
+                .metrics()
+                .record_failure(AuthFailureReason::InvalidKey);
             auth_state
                 .audit_logger()
                 .auth_failure(&request_id, client_ip.as_deref(), "invalid_key", &path)
@@ -876,9 +871,11 @@ pub async fn auth_middleware(
                 Json(AuthError::unauthorized("Invalid API key")),
             )
                 .into_response();
-        }
+        },
         ValidationResult::Disabled => {
-            auth_state.metrics().record_failure(AuthFailureReason::DisabledKey);
+            auth_state
+                .metrics()
+                .record_failure(AuthFailureReason::DisabledKey);
             auth_state
                 .audit_logger()
                 .auth_disabled(&request_id, client_ip.as_deref(), &api_key, &path)
@@ -889,9 +886,11 @@ pub async fn auth_middleware(
                 Json(AuthError::unauthorized("API key is disabled")),
             )
                 .into_response();
-        }
+        },
         ValidationResult::Expired => {
-            auth_state.metrics().record_failure(AuthFailureReason::ExpiredKey);
+            auth_state
+                .metrics()
+                .record_failure(AuthFailureReason::ExpiredKey);
             auth_state
                 .audit_logger()
                 .auth_expired(&request_id, client_ip.as_deref(), &api_key, &path)
@@ -902,21 +901,17 @@ pub async fn auth_middleware(
                 Json(AuthError::unauthorized("API key has expired")),
             )
                 .into_response();
-        }
+        },
     };
 
     // Check if admin permission is required for this path
     if requires_admin_permission(&path) && permission != Permission::Admin {
-        auth_state.metrics().record_failure(AuthFailureReason::InsufficientScope);
+        auth_state
+            .metrics()
+            .record_failure(AuthFailureReason::InsufficientScope);
         auth_state
             .audit_logger()
-            .scope_violation(
-                &request_id,
-                client_ip.as_deref(),
-                &api_key,
-                &path,
-                "admin",
-            )
+            .scope_violation(&request_id, client_ip.as_deref(), &api_key, &path, "admin")
             .await;
 
         return (
@@ -1011,14 +1006,16 @@ mod tests {
         let state = AuthState::new(config);
 
         assert_eq!(state.validate_key("sk-user").await, Some(Permission::User));
-        assert_eq!(state.validate_key("sk-admin").await, Some(Permission::Admin));
+        assert_eq!(
+            state.validate_key("sk-admin").await,
+            Some(Permission::Admin)
+        );
         assert_eq!(state.validate_key("sk-invalid").await, None);
     }
 
     #[tokio::test]
     async fn test_auth_state_public_path() {
-        let config = AuthConfig::enabled()
-            .add_public_path("/custom/public");
+        let config = AuthConfig::enabled().add_public_path("/custom/public");
 
         let state = AuthState::new(config);
 
@@ -1101,7 +1098,10 @@ mod tests {
         assert_eq!(ApiKey::parse_scope_from_key(admin_key), Some(Scope::Admin));
 
         let metrics_key = "sk-met-qrs456";
-        assert_eq!(ApiKey::parse_scope_from_key(metrics_key), Some(Scope::Metrics));
+        assert_eq!(
+            ApiKey::parse_scope_from_key(metrics_key),
+            Some(Scope::Metrics)
+        );
 
         let legacy_key = "sk-oldkey123";
         assert_eq!(ApiKey::parse_scope_from_key(legacy_key), None);
@@ -1110,20 +1110,50 @@ mod tests {
     #[test]
     fn test_endpoint_scope_requirements() {
         // Inference endpoints require Inference scope
-        assert_eq!(required_scope_for_path("/v1/chat/completions"), Some(Scope::Inference));
-        assert_eq!(required_scope_for_path("/v1/completions"), Some(Scope::Inference));
-        assert_eq!(required_scope_for_path("/v1/embeddings"), Some(Scope::Inference));
-        assert_eq!(required_scope_for_path("/v1/models"), Some(Scope::Inference));
+        assert_eq!(
+            required_scope_for_path("/v1/chat/completions"),
+            Some(Scope::Inference)
+        );
+        assert_eq!(
+            required_scope_for_path("/v1/completions"),
+            Some(Scope::Inference)
+        );
+        assert_eq!(
+            required_scope_for_path("/v1/embeddings"),
+            Some(Scope::Inference)
+        );
+        assert_eq!(
+            required_scope_for_path("/v1/models"),
+            Some(Scope::Inference)
+        );
 
         // Admin endpoints require Admin scope
-        assert_eq!(required_scope_for_path("/api/models/load"), Some(Scope::Admin));
-        assert_eq!(required_scope_for_path("/api/models/unload"), Some(Scope::Admin));
+        assert_eq!(
+            required_scope_for_path("/api/models/load"),
+            Some(Scope::Admin)
+        );
+        assert_eq!(
+            required_scope_for_path("/api/models/unload"),
+            Some(Scope::Admin)
+        );
         assert_eq!(required_scope_for_path("/api/keys"), Some(Scope::Admin));
         assert_eq!(required_scope_for_path("/api/config"), Some(Scope::Admin));
-        assert_eq!(required_scope_for_path("/admin/models/load"), Some(Scope::Admin));
-        assert_eq!(required_scope_for_path("/admin/models/unload"), Some(Scope::Admin));
-        assert_eq!(required_scope_for_path("/admin/models/status"), Some(Scope::Admin));
-        assert_eq!(required_scope_for_path("/admin/models/warmup"), Some(Scope::Admin));
+        assert_eq!(
+            required_scope_for_path("/admin/models/load"),
+            Some(Scope::Admin)
+        );
+        assert_eq!(
+            required_scope_for_path("/admin/models/unload"),
+            Some(Scope::Admin)
+        );
+        assert_eq!(
+            required_scope_for_path("/admin/models/status"),
+            Some(Scope::Admin)
+        );
+        assert_eq!(
+            required_scope_for_path("/admin/models/warmup"),
+            Some(Scope::Admin)
+        );
 
         // Public paths require no scope
         assert_eq!(required_scope_for_path("/health"), None);
@@ -1187,7 +1217,10 @@ mod tests {
         assert_eq!(metrics.failures_invalid_key.load(Ordering::Relaxed), 2);
         assert_eq!(metrics.failures_expired_key.load(Ordering::Relaxed), 1);
         assert_eq!(metrics.failures_disabled_key.load(Ordering::Relaxed), 1);
-        assert_eq!(metrics.failures_insufficient_scope.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            metrics.failures_insufficient_scope.load(Ordering::Relaxed),
+            1
+        );
     }
 
     #[test]
@@ -1215,7 +1248,9 @@ mod tests {
         assert_eq!(state.metrics().total_failures(), 0);
 
         // Record a failure
-        state.metrics().record_failure(AuthFailureReason::InvalidKey);
+        state
+            .metrics()
+            .record_failure(AuthFailureReason::InvalidKey);
         assert_eq!(state.metrics().total_failures(), 1);
     }
 }

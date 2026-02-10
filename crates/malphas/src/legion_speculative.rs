@@ -322,12 +322,8 @@ impl LegionSpeculativeDecoder {
                 .map(|&t| t as TokenId)
                 .collect();
 
-            let draft_sequences = self.generate_draft_sequences(
-                &context,
-                lookahead,
-                sampling_params,
-                eos_token,
-            )?;
+            let draft_sequences =
+                self.generate_draft_sequences(&context, lookahead, sampling_params, eos_token)?;
 
             if draft_sequences.is_empty() {
                 break;
@@ -357,8 +353,7 @@ impl LegionSpeculativeDecoder {
                         / coherent_paths.len() as f32;
                     // Running average
                     let n = stats.base.rounds as f32;
-                    stats.avg_coherence =
-                        (stats.avg_coherence * (n - 1.0) + avg_coh) / n;
+                    stats.avg_coherence = (stats.avg_coherence * (n - 1.0) + avg_coh) / n;
                 }
             }
 
@@ -652,12 +647,12 @@ impl LegionSpeculativeDecoder {
 
         // Each band explores different temperature ranges
         let temp_adjustment = match band {
-            FrequencyBand::Anima => 0.0,          // DC component - unchanged
-            FrequencyBand::Strategic => -0.1,     // Lower temp for planning
-            FrequencyBand::Tactical => 0.0,       // Standard temp
-            FrequencyBand::Operational => 0.05,   // Slightly higher for diversity
-            FrequencyBand::Verification => 0.1,   // More exploration
-            FrequencyBand::Reflective => 0.15,    // Most exploration
+            FrequencyBand::Anima => 0.0,        // DC component - unchanged
+            FrequencyBand::Strategic => -0.1,   // Lower temp for planning
+            FrequencyBand::Tactical => 0.0,     // Standard temp
+            FrequencyBand::Operational => 0.05, // Slightly higher for diversity
+            FrequencyBand::Verification => 0.1, // More exploration
+            FrequencyBand::Reflective => 0.15,  // Most exploration
         };
 
         params.temperature = (params.temperature + temp_adjustment).max(0.1);
@@ -712,7 +707,10 @@ impl LegionSpeculativeDecoder {
 fn softmax(logits: &[f32]) -> Vec<f32> {
     let max_logit = logits.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
     let exp_sum: f32 = logits.iter().map(|&x| (x - max_logit).exp()).sum();
-    logits.iter().map(|&x| (x - max_logit).exp() / exp_sum).collect()
+    logits
+        .iter()
+        .map(|&x| (x - max_logit).exp() / exp_sum)
+        .collect()
 }
 
 /// Gets the maximum probability from a probability distribution.

@@ -111,8 +111,7 @@ impl TerminationReason {
         match self {
             Self::Natural(n) => matches!(
                 n,
-                NaturalTermination::AgentStuck { .. }
-                    | NaturalTermination::AgentYielded { .. }
+                NaturalTermination::AgentStuck { .. } | NaturalTermination::AgentYielded { .. }
             ),
             Self::Resource(_) => true,
             Self::External(_) => false,
@@ -425,7 +424,9 @@ pub fn apply_config_override(
     // Widen autonomy: add new auto-approve patterns
     if let Some(ref patterns) = overrides.auto_approve {
         for pattern in patterns {
-            autonomy.auto_approve.push(ToolPattern::Tool(pattern.clone()));
+            autonomy
+                .auto_approve
+                .push(ToolPattern::Tool(pattern.clone()));
         }
     }
 
@@ -542,8 +543,8 @@ pub fn create_continuation_state(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::types::{ExternalTermination, ResourceTermination};
+    use super::*;
     use proptest::prelude::*;
     use std::time::Duration;
 
@@ -659,7 +660,10 @@ mod tests {
         let loaded = store.load(&token).await.expect("load").expect("found");
         let loaded_json = serde_json::to_string(&loaded).expect("serialize loaded");
 
-        assert_eq!(original_json, loaded_json, "JSON roundtrip must be lossless");
+        assert_eq!(
+            original_json, loaded_json,
+            "JSON roundtrip must be lossless"
+        );
     }
 
     #[tokio::test]
@@ -785,13 +789,11 @@ mod tests {
         );
 
         // At least one of the original three was evicted
-        let remaining: usize = futures::future::join_all(
-            tokens.iter().map(|t| store.load(t)),
-        )
-        .await
-        .into_iter()
-        .filter(|r| r.as_ref().expect("load").is_some())
-        .count();
+        let remaining: usize = futures::future::join_all(tokens.iter().map(|t| store.load(t)))
+            .await
+            .into_iter()
+            .filter(|r| r.as_ref().expect("load").is_some())
+            .count();
 
         assert_eq!(remaining, 2, "one of the original three should be evicted");
     }
@@ -953,7 +955,10 @@ mod tests {
         };
 
         let result = apply_config_override(&state, &overrides);
-        assert!(result.is_err(), "limit equal to consumed should be rejected");
+        assert!(
+            result.is_err(),
+            "limit equal to consumed should be rejected"
+        );
     }
 
     // =======================================================================
@@ -978,10 +983,7 @@ mod tests {
             ..make_state(stuck_termination())
         };
 
-        let resumed = build_resumed_messages(
-            &state,
-            Some("The config is at /opt/app/config.yaml"),
-        );
+        let resumed = build_resumed_messages(&state, Some("The config is at /opt/app/config.yaml"));
 
         assert_eq!(resumed.len(), 3);
         assert_eq!(resumed[2].role, "user");
@@ -1019,10 +1021,7 @@ mod tests {
         let overrides = ConfigOverride::default();
 
         let (_, _) = apply_config_override(&state, &overrides).expect("apply");
-        assert_eq!(
-            state.working_dir,
-            Some("/home/user/project".to_string())
-        );
+        assert_eq!(state.working_dir, Some("/home/user/project".to_string()));
     }
 
     #[test]
@@ -1157,15 +1156,17 @@ mod tests {
                 (1u32..10).prop_map(|attempts| {
                     TerminationReason::Natural(NaturalTermination::AgentStuck {
                         attempts,
-                        request: super::super::super::types::StuckRequest::Clarification(
-                            vec!["question".to_string()],
-                        ),
+                        request: super::super::super::types::StuckRequest::Clarification(vec![
+                            "question".to_string(),
+                        ]),
                     })
                 }),
-                Just(TerminationReason::Natural(NaturalTermination::AgentYielded {
-                    partial: None,
-                    reason: "yield".to_string(),
-                })),
+                Just(TerminationReason::Natural(
+                    NaturalTermination::AgentYielded {
+                        partial: None,
+                        reason: "yield".to_string(),
+                    }
+                )),
                 // Resource
                 (1u32..100, 1u32..100).prop_map(|(c, l)| {
                     TerminationReason::Resource(ResourceTermination::MaxIterations {
@@ -1186,8 +1187,12 @@ mod tests {
                     })
                 }),
                 // External
-                Just(TerminationReason::External(ExternalTermination::ClientCancelled)),
-                Just(TerminationReason::External(ExternalTermination::SystemShutdown)),
+                Just(TerminationReason::External(
+                    ExternalTermination::ClientCancelled
+                )),
+                Just(TerminationReason::External(
+                    ExternalTermination::SystemShutdown
+                )),
             ]
         }
 

@@ -216,7 +216,11 @@ impl MockVectorStore {
 
         let docs = self.documents.read().await;
         let mut results: Vec<_> = docs.values().cloned().collect();
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         results.truncate(top_k);
         results
     }

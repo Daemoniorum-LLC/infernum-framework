@@ -237,11 +237,11 @@ impl CircuitBreaker {
                     self.rejected_requests.fetch_add(1, Ordering::Relaxed);
                     false
                 }
-            }
+            },
             CircuitState::HalfOpen => {
                 // Allow limited requests in half-open state
                 true
-            }
+            },
         }
     }
 
@@ -257,7 +257,7 @@ impl CircuitBreaker {
             CircuitState::Closed => {
                 // Reset failure count on success
                 self.failure_count.store(0, Ordering::Relaxed);
-            }
+            },
             CircuitState::HalfOpen => {
                 let successes = self.half_open_successes.fetch_add(1, Ordering::Relaxed) + 1;
 
@@ -265,10 +265,10 @@ impl CircuitBreaker {
                     // Enough successes, close the circuit
                     self.transition_to(CircuitState::Closed);
                 }
-            }
+            },
             CircuitState::Open => {
                 // Should not happen, but handle gracefully
-            }
+            },
         }
     }
 
@@ -287,14 +287,14 @@ impl CircuitBreaker {
                 if failures >= self.config.failure_threshold {
                     self.transition_to(CircuitState::Open);
                 }
-            }
+            },
             CircuitState::HalfOpen => {
                 // Any failure in half-open immediately reopens the circuit
                 self.transition_to(CircuitState::Open);
-            }
+            },
             CircuitState::Open => {
                 // Already open, nothing to do
-            }
+            },
         }
     }
 
@@ -379,17 +379,17 @@ infernum_circuit_breaker_transitions_total{{name="{name}"}} {}
                     // Record when we opened (use max(1, ...) to ensure non-zero)
                     let now = self.start_instant.elapsed().as_millis() as u64;
                     self.opened_at.store(now.max(1), Ordering::Release);
-                }
+                },
                 CircuitState::Closed => {
                     // Reset counters
                     self.failure_count.store(0, Ordering::Relaxed);
                     self.half_open_successes.store(0, Ordering::Relaxed);
                     self.opened_at.store(0, Ordering::Relaxed);
-                }
+                },
                 CircuitState::HalfOpen => {
                     // Reset half-open success counter
                     self.half_open_successes.store(0, Ordering::Relaxed);
-                }
+                },
             }
 
             tracing::info!(

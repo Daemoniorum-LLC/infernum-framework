@@ -1,9 +1,9 @@
 //! Parameterized coding evaluation - test any retention level
 //! Usage: cargo run --release --example coding_eval_param -- --retention 80
 
-use std::path::Path;
 use std::collections::HashMap;
 use std::env;
+use std::path::Path;
 
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
@@ -41,25 +41,28 @@ fn load_safetensors(path: &Path, device: &Device) -> Result<HashMap<String, Tens
         let data = st_tensor.data();
         let tensor = match st_tensor.dtype() {
             safetensors::Dtype::BF16 => {
-                let halfs: Vec<half::bf16> = data.chunks_exact(2)
+                let halfs: Vec<half::bf16> = data
+                    .chunks_exact(2)
                     .map(|chunk| half::bf16::from_le_bytes([chunk[0], chunk[1]]))
                     .collect();
                 let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
                 Tensor::from_vec(floats, shape.as_slice(), device)?
-            }
+            },
             safetensors::Dtype::F32 => {
-                let floats: Vec<f32> = data.chunks_exact(4)
+                let floats: Vec<f32> = data
+                    .chunks_exact(4)
                     .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                     .collect();
                 Tensor::from_vec(floats, shape.as_slice(), device)?
-            }
+            },
             safetensors::Dtype::F16 => {
-                let halfs: Vec<half::f16> = data.chunks_exact(2)
+                let halfs: Vec<half::f16> = data
+                    .chunks_exact(2)
                     .map(|chunk| half::f16::from_le_bytes([chunk[0], chunk[1]]))
                     .collect();
                 let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
                 Tensor::from_vec(floats, shape.as_slice(), device)?
-            }
+            },
             _ => continue,
         };
         tensors.insert(name.to_string(), tensor);
@@ -67,7 +70,12 @@ fn load_safetensors(path: &Path, device: &Device) -> Result<HashMap<String, Tens
     Ok(tensors)
 }
 
-fn load_hybrid(hct_dir: &Path, safetensors_path: &Path, device: &Device, dtype: DType) -> Result<HashMap<String, Tensor>> {
+fn load_hybrid(
+    hct_dir: &Path,
+    safetensors_path: &Path,
+    device: &Device,
+    dtype: DType,
+) -> Result<HashMap<String, Tensor>> {
     let mut tensors = load_hct_directory_sequential(hct_dir, device, dtype)?;
     let file_content = std::fs::read(safetensors_path)?;
     let st = SafeTensors::deserialize(&file_content)?;
@@ -79,25 +87,28 @@ fn load_hybrid(hct_dir: &Path, safetensors_path: &Path, device: &Device, dtype: 
             let data = st_tensor.data();
             let tensor = match st_tensor.dtype() {
                 safetensors::Dtype::BF16 => {
-                    let halfs: Vec<half::bf16> = data.chunks_exact(2)
+                    let halfs: Vec<half::bf16> = data
+                        .chunks_exact(2)
                         .map(|chunk| half::bf16::from_le_bytes([chunk[0], chunk[1]]))
                         .collect();
                     let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
                     Tensor::from_vec(floats, shape.as_slice(), device)?
-                }
+                },
                 safetensors::Dtype::F32 => {
-                    let floats: Vec<f32> = data.chunks_exact(4)
+                    let floats: Vec<f32> = data
+                        .chunks_exact(4)
                         .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                         .collect();
                     Tensor::from_vec(floats, shape.as_slice(), device)?
-                }
+                },
                 safetensors::Dtype::F16 => {
-                    let halfs: Vec<half::f16> = data.chunks_exact(2)
+                    let halfs: Vec<half::f16> = data
+                        .chunks_exact(2)
                         .map(|chunk| half::f16::from_le_bytes([chunk[0], chunk[1]]))
                         .collect();
                     let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
                     Tensor::from_vec(floats, shape.as_slice(), device)?
-                }
+                },
                 _ => continue,
             };
             tensors.insert(tensor_name, tensor);
@@ -120,7 +131,10 @@ impl ModelPair {
         let tokenizer_path = Path::new("/home/crook/models/llama-3.2-1b/tokenizer.json");
 
         if !hct_dir.exists() {
-            anyhow::bail!("HCT directory not found: {}. Run compression first.", hct_dir_str);
+            anyhow::bail!(
+                "HCT directory not found: {}. Run compression first.",
+                hct_dir_str
+            );
         }
 
         println!("Loading tokenizer...");
@@ -132,30 +146,50 @@ impl ModelPair {
         let orig_vb = VarBuilder::from_tensors(orig_tensors, dtype, device);
         let original = Llama::load(get_config(), orig_vb)?;
 
-        println!("Loading {}% compressed model from {}...", retention_pct, hct_dir_str);
+        println!(
+            "Loading {}% compressed model from {}...",
+            retention_pct, hct_dir_str
+        );
         let comp_tensors = load_hybrid(hct_dir, safetensors_path, device, dtype)?;
         let comp_vb = VarBuilder::from_tensors(comp_tensors, dtype, device);
         let compressed = Llama::load(get_config(), comp_vb)?;
 
-        Ok(Self { original, compressed, tokenizer })
+        Ok(Self {
+            original,
+            compressed,
+            tokenizer,
+        })
     }
 
     fn encode(&self, text: &str) -> Result<Vec<u32>> {
-        let encoding = self.tokenizer.encode(text, false)
+        let encoding = self
+            .tokenizer
+            .encode(text, false)
             .map_err(|e| anyhow::anyhow!("Encode error: {}", e))?;
         Ok(encoding.get_ids().to_vec())
     }
 
     fn decode(&self, tokens: &[u32]) -> Result<String> {
-        self.tokenizer.decode(tokens, true)
+        self.tokenizer
+            .decode(tokens, true)
             .map_err(|e| anyhow::anyhow!("Decode error: {}", e))
     }
 
-    fn generate(&mut self, prompt: &str, max_tokens: usize, device: &Device, use_compressed: bool) -> Result<(String, Vec<u32>)> {
+    fn generate(
+        &mut self,
+        prompt: &str,
+        max_tokens: usize,
+        device: &Device,
+        use_compressed: bool,
+    ) -> Result<(String, Vec<u32>)> {
         let mut tokens = self.encode(prompt)?;
         let prompt_len = tokens.len();
 
-        let model = if use_compressed { &mut self.compressed } else { &mut self.original };
+        let model = if use_compressed {
+            &mut self.compressed
+        } else {
+            &mut self.original
+        };
         model.clear_cache();
 
         // Prefill
@@ -190,7 +224,9 @@ impl ModelPair {
 
 fn token_match_rate(orig: &[u32], comp: &[u32]) -> f32 {
     let min_len = orig.len().min(comp.len());
-    if min_len == 0 { return 0.0; }
+    if min_len == 0 {
+        return 0.0;
+    }
     let matches = orig.iter().zip(comp.iter()).filter(|(a, b)| a == b).count();
     matches as f32 / min_len as f32
 }
@@ -206,7 +242,8 @@ struct TestResult {
 fn main() -> Result<()> {
     // Parse --retention argument
     let args: Vec<String> = env::args().collect();
-    let retention_pct: u32 = args.iter()
+    let retention_pct: u32 = args
+        .iter()
         .position(|a| a == "--retention")
         .and_then(|i| args.get(i + 1))
         .and_then(|s| s.parse().ok())
@@ -269,7 +306,10 @@ fn main() -> Result<()> {
             passed,
         });
 
-        level_results.entry(*level).or_default().push((passed, match_rate));
+        level_results
+            .entry(*level)
+            .or_default()
+            .push((passed, match_rate));
     }
 
     // Summary
@@ -287,22 +327,40 @@ fn main() -> Result<()> {
     for level in 1..=5 {
         if let Some(level_data) = level_results.get(&level) {
             let level_passed = level_data.iter().filter(|(p, _)| *p).count();
-            let level_avg: f32 = level_data.iter().map(|(_, m)| m).sum::<f32>() / level_data.len() as f32;
-            println!("  Level {}: {}/{} passed, {:.1}% avg match",
-                     level, level_passed, level_data.len(), level_avg * 100.0);
+            let level_avg: f32 =
+                level_data.iter().map(|(_, m)| m).sum::<f32>() / level_data.len() as f32;
+            println!(
+                "  Level {}: {}/{} passed, {:.1}% avg match",
+                level,
+                level_passed,
+                level_data.len(),
+                level_avg * 100.0
+            );
         }
     }
 
     let pass_rate = passed as f32 / total as f32;
     println!("\n");
     if pass_rate >= 0.95 {
-        println!("*** EXCELLENT - {}% retention is VIABLE for coding! ***", retention_pct);
+        println!(
+            "*** EXCELLENT - {}% retention is VIABLE for coding! ***",
+            retention_pct
+        );
     } else if pass_rate >= 0.80 {
-        println!("*** GOOD - {}% retention is USABLE with occasional divergence ***", retention_pct);
+        println!(
+            "*** GOOD - {}% retention is USABLE with occasional divergence ***",
+            retention_pct
+        );
     } else if pass_rate >= 0.50 {
-        println!("*** MARGINAL - {}% retention has significant divergence ***", retention_pct);
+        println!(
+            "*** MARGINAL - {}% retention has significant divergence ***",
+            retention_pct
+        );
     } else {
-        println!("*** INSUFFICIENT - {}% retention NOT recommended for coding ***", retention_pct);
+        println!(
+            "*** INSUFFICIENT - {}% retention NOT recommended for coding ***",
+            retention_pct
+        );
     }
 
     Ok(())

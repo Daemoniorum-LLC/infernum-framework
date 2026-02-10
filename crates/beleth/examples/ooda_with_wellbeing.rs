@@ -72,7 +72,8 @@ Always structure your response as:
 4. RESULT: Your actual response
 
 If you've fully answered, say "COMPLETE: [confidence]" at the end.
-If you need more information, say "CONTINUE: [what you need]"."#.to_string(),
+If you need more information, say "CONTINUE: [what you need]"."#
+                .to_string(),
         }
     }
 }
@@ -197,7 +198,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
 
     for iteration in 1..=max_iterations {
-        println!("┌─ Iteration {} ─────────────────────────────────", iteration);
+        println!(
+            "┌─ Iteration {} ─────────────────────────────────",
+            iteration
+        );
 
         // Record pre-iteration wellbeing
         let pre_state = monitor.current_state();
@@ -286,13 +290,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match final_snapshot.state {
         WellbeingState::Healthy => {
             println!("\n✓ Agent completed task in healthy state");
-        }
+        },
         WellbeingState::Cautious => {
             println!("\n⚡ Agent showed some caution (this may be appropriate)");
-        }
+        },
         _ => {
             println!("\n⚠️  Agent wellbeing needs attention");
-        }
+        },
     }
 
     println!("\n=== Test Complete ===");

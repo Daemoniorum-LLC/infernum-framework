@@ -144,11 +144,7 @@ impl CacheKey {
 
     /// Creates a cache key from a completion request.
     #[must_use]
-    pub fn from_completion_request(
-        model: &str,
-        prompt: &str,
-        max_tokens: Option<u32>,
-    ) -> Self {
+    pub fn from_completion_request(model: &str, prompt: &str, max_tokens: Option<u32>) -> Self {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         prompt.hash(&mut hasher);
         Self::new(model, hasher.finish(), max_tokens)

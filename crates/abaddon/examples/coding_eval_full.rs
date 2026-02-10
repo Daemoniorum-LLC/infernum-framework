@@ -1,19 +1,19 @@
 //! Full model coding evaluation - test complete model compression
 //! Usage: cargo run --release --example coding_eval_full -- --hct-dir /path/to/compressed
 
-use std::path::Path;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
+use std::path::Path;
 
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use safetensors::SafeTensors;
 
-use haagenti::compressive::CompressiveSpectralDecoder;
-use haagenti::holotensor::HoloFragment;
 use abaddon::models::{Llama, LlamaConfig};
 use anyhow::Result;
+use haagenti::compressive::CompressiveSpectralDecoder;
+use haagenti::holotensor::HoloFragment;
 
 fn get_config() -> LlamaConfig {
     LlamaConfig {
@@ -43,25 +43,28 @@ fn load_safetensors(path: &Path, device: &Device) -> Result<HashMap<String, Tens
         let data = st_tensor.data();
         let tensor = match st_tensor.dtype() {
             safetensors::Dtype::BF16 => {
-                let halfs: Vec<half::bf16> = data.chunks_exact(2)
+                let halfs: Vec<half::bf16> = data
+                    .chunks_exact(2)
                     .map(|chunk| half::bf16::from_le_bytes([chunk[0], chunk[1]]))
                     .collect();
                 let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
                 Tensor::from_vec(floats, shape.as_slice(), device)?
-            }
+            },
             safetensors::Dtype::F32 => {
-                let floats: Vec<f32> = data.chunks_exact(4)
+                let floats: Vec<f32> = data
+                    .chunks_exact(4)
                     .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                     .collect();
                 Tensor::from_vec(floats, shape.as_slice(), device)?
-            }
+            },
             safetensors::Dtype::F16 => {
-                let halfs: Vec<half::f16> = data.chunks_exact(2)
+                let halfs: Vec<half::f16> = data
+                    .chunks_exact(2)
                     .map(|chunk| half::f16::from_le_bytes([chunk[0], chunk[1]]))
                     .collect();
                 let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
                 Tensor::from_vec(floats, shape.as_slice(), device)?
-            }
+            },
             _ => continue,
         };
         tensors.insert(name.to_string(), tensor);
@@ -92,14 +95,20 @@ fn decompress_hct(data: &[u8]) -> Result<Vec<f32>> {
         let index = u16::from_le_bytes([decompressed[offset], decompressed[offset + 1]]);
         let flags = u16::from_le_bytes([decompressed[offset + 2], decompressed[offset + 3]]);
         let checksum = u64::from_le_bytes([
-            decompressed[offset + 4], decompressed[offset + 5],
-            decompressed[offset + 6], decompressed[offset + 7],
-            decompressed[offset + 8], decompressed[offset + 9],
-            decompressed[offset + 10], decompressed[offset + 11],
+            decompressed[offset + 4],
+            decompressed[offset + 5],
+            decompressed[offset + 6],
+            decompressed[offset + 7],
+            decompressed[offset + 8],
+            decompressed[offset + 9],
+            decompressed[offset + 10],
+            decompressed[offset + 11],
         ]);
         let data_len = u32::from_le_bytes([
-            decompressed[offset + 12], decompressed[offset + 13],
-            decompressed[offset + 14], decompressed[offset + 15],
+            decompressed[offset + 12],
+            decompressed[offset + 13],
+            decompressed[offset + 14],
+            decompressed[offset + 15],
         ]) as usize;
         offset += 16;
 
@@ -126,15 +135,18 @@ fn decompress_hct(data: &[u8]) -> Result<Vec<f32>> {
 
     for fragment in &fragments {
         if fragment.index == 0 {
-            decoder.add_essentials(fragment)
+            decoder
+                .add_essentials(fragment)
                 .map_err(|e| anyhow::anyhow!("Add essentials error: {}", e))?;
         } else {
-            decoder.add_detail(fragment)
+            decoder
+                .add_detail(fragment)
                 .map_err(|e| anyhow::anyhow!("Add detail error: {}", e))?;
         }
     }
 
-    let result = decoder.reconstruct()
+    let result = decoder
+        .reconstruct()
         .map_err(|e| anyhow::anyhow!("Reconstruct error: {}", e))?;
 
     Ok(result)
@@ -192,7 +204,12 @@ fn filename_to_tensor_name(filename: &str) -> String {
 }
 
 /// Load fully compressed model from HCT files + safetensors for 1D tensors
-fn load_full_compressed(hct_dir: &Path, safetensors_path: &Path, device: &Device, dtype: DType) -> Result<HashMap<String, Tensor>> {
+fn load_full_compressed(
+    hct_dir: &Path,
+    safetensors_path: &Path,
+    device: &Device,
+    dtype: DType,
+) -> Result<HashMap<String, Tensor>> {
     // First load everything from safetensors (as fallback for 1D tensors)
     let mut tensors = load_safetensors(safetensors_path, device)?;
 
@@ -218,7 +235,12 @@ fn load_full_compressed(hct_dir: &Path, safetensors_path: &Path, device: &Device
                 match decompress_hct(&hct_data) {
                     Ok(decompressed) => {
                         if decompressed.len() != expected_size {
-                            eprintln!("Size mismatch for {}: got {} expected {}", tensor_name, decompressed.len(), expected_size);
+                            eprintln!(
+                                "Size mismatch for {}: got {} expected {}",
+                                tensor_name,
+                                decompressed.len(),
+                                expected_size
+                            );
                             continue;
                         }
 
@@ -226,16 +248,22 @@ fn load_full_compressed(hct_dir: &Path, safetensors_path: &Path, device: &Device
                         let nan_count = decompressed.iter().filter(|x| x.is_nan()).count();
                         let inf_count = decompressed.iter().filter(|x| x.is_infinite()).count();
                         if nan_count > 0 || inf_count > 0 {
-                            eprintln!("Bad values in {}: nan={} inf={}", tensor_name, nan_count, inf_count);
+                            eprintln!(
+                                "Bad values in {}: nan={} inf={}",
+                                tensor_name, nan_count, inf_count
+                            );
                             continue;
                         }
 
                         // Debug: print first tensor info
                         if first {
                             let orig_vals: Vec<f32> = orig_tensor.flatten_all()?.to_vec1()?;
-                            let diff: f32 = decompressed.iter().zip(orig_vals.iter())
+                            let diff: f32 = decompressed
+                                .iter()
+                                .zip(orig_vals.iter())
                                 .map(|(a, b)| (a - b).abs())
-                                .sum::<f32>() / expected_size as f32;
+                                .sum::<f32>()
+                                / expected_size as f32;
                             eprintln!("First tensor {}: mean_abs_diff={:.6}", tensor_name, diff);
                             first = false;
                         }
@@ -244,10 +272,10 @@ fn load_full_compressed(hct_dir: &Path, safetensors_path: &Path, device: &Device
                         let tensor = tensor.to_dtype(dtype)?;
                         tensors.insert(tensor_name, tensor);
                         loaded += 1;
-                    }
+                    },
                     Err(e) => {
                         eprintln!("Error decompressing {}: {}", tensor_name, e);
-                    }
+                    },
                 }
             } else {
                 // Try some common name variations
@@ -292,18 +320,33 @@ impl ModelPair {
         let comp_vb = VarBuilder::from_tensors(comp_tensors, dtype, device);
         let compressed = Llama::load(get_config(), comp_vb)?;
 
-        Ok(Self { original, compressed, tokenizer })
+        Ok(Self {
+            original,
+            compressed,
+            tokenizer,
+        })
     }
 
-    fn generate(&mut self, prompt: &str, max_tokens: usize, use_compressed: bool) -> Result<Vec<u32>> {
-        let encoding = self.tokenizer.encode(prompt, true)
+    fn generate(
+        &mut self,
+        prompt: &str,
+        max_tokens: usize,
+        use_compressed: bool,
+    ) -> Result<Vec<u32>> {
+        let encoding = self
+            .tokenizer
+            .encode(prompt, true)
             .map_err(|e| anyhow::anyhow!("Tokenize error: {}", e))?;
         let input_ids: Vec<u32> = encoding.get_ids().to_vec();
 
         let device = Device::Cpu;
         let mut tokens = input_ids.clone();
 
-        let model = if use_compressed { &mut self.compressed } else { &mut self.original };
+        let model = if use_compressed {
+            &mut self.compressed
+        } else {
+            &mut self.original
+        };
         model.clear_cache();
 
         for _ in 0..max_tokens {
@@ -313,8 +356,7 @@ impl ModelPair {
             let logits = model.forward(&input, tokens.len().saturating_sub(1))?;
             let logits = logits.i((.., logits.dim(1)? - 1, ..))?;
 
-            let next_token = logits.argmax(candle_core::D::Minus1)?
-                .to_vec1::<u32>()?[0];
+            let next_token = logits.argmax(candle_core::D::Minus1)?.to_vec1::<u32>()?[0];
 
             tokens.push(next_token);
 
@@ -386,12 +428,12 @@ fn main() -> Result<()> {
             "--hct-dir" | "-d" => {
                 i += 1;
                 hct_dir = args.get(i).cloned().unwrap_or_default();
-            }
+            },
             "--help" | "-h" => {
                 println!("Usage: coding_eval_full --hct-dir /path/to/compressed");
                 return Ok(());
-            }
-            _ => {}
+            },
+            _ => {},
         }
         i += 1;
     }
@@ -419,11 +461,17 @@ fn main() -> Result<()> {
         let comp_tokens = models.generate(test.prompt, test.max_tokens, true)?;
 
         let min_len = orig_tokens.len().min(comp_tokens.len());
-        let matches = orig_tokens.iter().take(min_len)
+        let matches = orig_tokens
+            .iter()
+            .take(min_len)
             .zip(comp_tokens.iter().take(min_len))
             .filter(|(a, b)| a == b)
             .count();
-        let match_rate = if min_len > 0 { matches as f32 / min_len as f32 } else { 0.0 };
+        let match_rate = if min_len > 0 {
+            matches as f32 / min_len as f32
+        } else {
+            0.0
+        };
         let passed = match_rate >= 0.8;
 
         let result = TestResult {
@@ -435,12 +483,23 @@ fn main() -> Result<()> {
         };
 
         let status = if passed { "PASS" } else { "FAIL" };
-        println!("Testing L{}: {}... {} ({:.1}%)",
-                 test.level, test.name, status, match_rate * 100.0);
+        println!(
+            "Testing L{}: {}... {} ({:.1}%)",
+            test.level,
+            test.name,
+            status,
+            match_rate * 100.0
+        );
 
         if !passed {
-            println!("  Original tokens: {:?}", &orig_tokens[..orig_tokens.len().min(10)]);
-            println!("  Compressed tokens: {:?}", &comp_tokens[..comp_tokens.len().min(10)]);
+            println!(
+                "  Original tokens: {:?}",
+                &orig_tokens[..orig_tokens.len().min(10)]
+            );
+            println!(
+                "  Compressed tokens: {:?}",
+                &comp_tokens[..comp_tokens.len().min(10)]
+            );
         }
 
         results.push(result);
@@ -462,15 +521,22 @@ fn main() -> Result<()> {
 
     // Per-level summary
     for level in 1..=5 {
-        let level_results: Vec<_> = results.iter()
+        let level_results: Vec<_> = results
+            .iter()
             .enumerate()
             .filter(|(i, _)| TEST_CASES[*i].level == level)
             .map(|(_, r)| r)
             .collect();
         let level_passed = level_results.iter().filter(|r| r.passed).count();
-        let level_avg: f32 = level_results.iter().map(|r| r.match_rate).sum::<f32>() / level_results.len() as f32;
-        println!("  Level {}: {}/{} passed, {:.1}% avg match",
-                 level, level_passed, level_results.len(), level_avg * 100.0);
+        let level_avg: f32 =
+            level_results.iter().map(|r| r.match_rate).sum::<f32>() / level_results.len() as f32;
+        println!(
+            "  Level {}: {}/{} passed, {:.1}% avg match",
+            level,
+            level_passed,
+            level_results.len(),
+            level_avg * 100.0
+        );
     }
 
     println!();
@@ -481,7 +547,10 @@ fn main() -> Result<()> {
     } else if avg_match >= 0.80 {
         println!("*** MARGINAL - {} has some divergence ***", dir_name);
     } else {
-        println!("*** INSUFFICIENT - {} NOT recommended for coding ***", dir_name);
+        println!(
+            "*** INSUFFICIENT - {} NOT recommended for coding ***",
+            dir_name
+        );
     }
 
     Ok(())

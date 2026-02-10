@@ -18,11 +18,11 @@
 //!     --output /tmp/model-holo \
 //!     --gpu --pipeline --producers 8
 
+use clap::Parser;
 use std::path::PathBuf;
 use std::time::Instant;
-use clap::Parser;
 
-use abaddon::holotensor::{HoloModelConverter, ConversionConfig};
+use abaddon::holotensor::{ConversionConfig, HoloModelConverter};
 
 #[derive(Parser, Debug)]
 #[command(name = "convert_to_holo")]
@@ -124,7 +124,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.verify_quality = !args.skip_verify;
         config.num_threads = args.threads;
         config.retention_ratio = args.retention;
-        println!("  Retention: {:.0}% of DCT coefficients", args.retention * 100.0);
+        println!(
+            "  Retention: {:.0}% of DCT coefficients",
+            args.retention * 100.0
+        );
         config
     } else if args.fast {
         println!("Mode: FAST (reduced quality for speed)");
@@ -197,7 +200,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Run conversion (pipeline mode if requested with GPU)
     #[cfg(feature = "cuda")]
     let result = if args.pipeline && args.gpu {
-        converter.convert_model_pipeline(&args.model, &args.output, num_producers).await
+        converter
+            .convert_model_pipeline(&args.model, &args.output, num_producers)
+            .await
     } else {
         converter.convert_model(&args.model, &args.output).await
     };
@@ -222,21 +227,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Results:");
             println!("  Layers:           {}", metadata.num_layers);
             println!("  Fragments/tensor: {}", metadata.total_fragments);
-            println!("  Original size:    {:.2} GB", metadata.original_size as f64 / (1024.0 * 1024.0 * 1024.0));
-            println!("  HCT size:         {:.2} GB", metadata.hct_size as f64 / (1024.0 * 1024.0 * 1024.0));
-            println!("  Compression:      {:.2}x", metadata.original_size as f64 / metadata.hct_size as f64);
+            println!(
+                "  Original size:    {:.2} GB",
+                metadata.original_size as f64 / (1024.0 * 1024.0 * 1024.0)
+            );
+            println!(
+                "  HCT size:         {:.2} GB",
+                metadata.hct_size as f64 / (1024.0 * 1024.0 * 1024.0)
+            );
+            println!(
+                "  Compression:      {:.2}x",
+                metadata.original_size as f64 / metadata.hct_size as f64
+            );
             println!("  Min quality:      {:.4}", metadata.verified_quality);
-            println!("  Time elapsed:     {:.1} minutes", elapsed.as_secs_f64() / 60.0);
+            println!(
+                "  Time elapsed:     {:.1} minutes",
+                elapsed.as_secs_f64() / 60.0
+            );
             println!();
             println!("Output directory: {}", args.output.display());
             println!();
             println!("To run inference:");
-            println!("  cargo run --release -p infernum -- serve --model {} --holotensor", args.output.display());
-        }
+            println!(
+                "  cargo run --release -p infernum -- serve --model {} --holotensor",
+                args.output.display()
+            );
+        },
         Err(e) => {
             eprintln!("Conversion failed: {}", e);
             std::process::exit(1);
-        }
+        },
     }
 
     Ok(())

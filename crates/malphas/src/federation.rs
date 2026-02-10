@@ -307,11 +307,7 @@ impl FederationRouter {
     }
 
     /// Routes for a specific task type.
-    pub fn route_for_task(
-        &self,
-        task: TaskType,
-        registry: &ModelRegistry,
-    ) -> Result<Arc<Engine>> {
+    pub fn route_for_task(&self, task: TaskType, registry: &ModelRegistry) -> Result<Arc<Engine>> {
         let prefs = self.task_preferences.read();
         let models = self.models.read();
 
@@ -507,10 +503,7 @@ impl ExternalProvider {
             name: "anthropic".to_string(),
             base_url: "https://api.anthropic.com/v1".to_string(),
             api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            models: vec![
-                "claude-opus-4".to_string(),
-                "claude-sonnet-4".to_string(),
-            ],
+            models: vec!["claude-opus-4".to_string(), "claude-sonnet-4".to_string()],
             enabled: false,
             rate_limit_rpm: Some(60),
         }

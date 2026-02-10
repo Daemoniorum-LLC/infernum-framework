@@ -19,11 +19,10 @@
 //! 3. Default: `~/.local/share/infernum/personas/`
 
 #![warn(missing_docs)]
-#![warn(clippy::all)]
 
+use regex::Regex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use regex::Regex;
 
 use infernum_core::Result;
 use serde::{Deserialize, Serialize};
@@ -242,16 +241,16 @@ impl GrimoireSkill {
     pub fn as_agent_instruction(&self) -> String {
         format!(
             "Use the following skill:\n\n# {}\n\n{}\n\n{}",
-            self.name,
-            self.description,
-            self.content
+            self.name, self.description, self.content
         )
     }
 
     /// Gets a template by name.
     #[must_use]
     pub fn get_template(&self, name: &str) -> Option<&CodeTemplate> {
-        self.templates.iter().find(|t| t.name.eq_ignore_ascii_case(name))
+        self.templates
+            .iter()
+            .find(|t| t.name.eq_ignore_ascii_case(name))
     }
 
     /// Gets templates by language.
@@ -397,7 +396,10 @@ impl SkillLoader {
             let mut heading = "Code Block".to_string();
 
             for cap in heading_re.captures_iter(&content[..code_start]) {
-                heading = cap.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
+                heading = cap
+                    .get(1)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
             }
 
             // Only include if it looks like a template (has "Template" in heading or is substantial)
@@ -704,19 +706,30 @@ impl GrimoireSimulacrum {
         self.accessibility.vision.acuity != "normal"
             || self.accessibility.vision.color_blindness != "none"
             || self.accessibility.motor.fine_control != "normal"
-            || self.accessibility.assistive_tech.as_ref().map_or(false, |t| !t.is_empty())
+            || self
+                .accessibility
+                .assistive_tech
+                .as_ref()
+                .map_or(false, |t| !t.is_empty())
     }
 
     /// Calculates frustration risk for a given task.
     ///
     /// Returns a score from 0 (no risk) to 1+ (high risk).
     #[must_use]
-    pub fn calculate_frustration_risk(&self, expected_clicks: u32, expected_wait_seconds: u32) -> f32 {
-        if self.behavior.max_clicks_before_frustration == 0 || self.behavior.max_seconds_waiting == 0 {
+    pub fn calculate_frustration_risk(
+        &self,
+        expected_clicks: u32,
+        expected_wait_seconds: u32,
+    ) -> f32 {
+        if self.behavior.max_clicks_before_frustration == 0
+            || self.behavior.max_seconds_waiting == 0
+        {
             return 0.0;
         }
 
-        let click_ratio = expected_clicks as f32 / self.behavior.max_clicks_before_frustration as f32;
+        let click_ratio =
+            expected_clicks as f32 / self.behavior.max_clicks_before_frustration as f32;
         let wait_ratio = expected_wait_seconds as f32 / self.behavior.max_seconds_waiting as f32;
 
         // Weight by patience (inverse relationship)
@@ -738,19 +751,37 @@ impl GrimoireSimulacrum {
         prompt.push_str(&format!("## Demographics\n"));
         prompt.push_str(&format!("- Age: {}\n", self.demographics.age));
         prompt.push_str(&format!("- Occupation: {}\n", self.demographics.occupation));
-        prompt.push_str(&format!("- Primary Device: {}\n", self.demographics.devices.primary));
+        prompt.push_str(&format!(
+            "- Primary Device: {}\n",
+            self.demographics.devices.primary
+        ));
         prompt.push('\n');
 
         prompt.push_str(&format!("## Cognitive Profile\n"));
-        prompt.push_str(&format!("- Tech Literacy: {}/10\n", self.cognition.tech_literacy));
+        prompt.push_str(&format!(
+            "- Tech Literacy: {}/10\n",
+            self.cognition.tech_literacy
+        ));
         prompt.push_str(&format!("- Patience: {}/10\n", self.cognition.patience));
-        prompt.push_str(&format!("- Attention Span: {}\n", self.cognition.attention_span));
+        prompt.push_str(&format!(
+            "- Attention Span: {}\n",
+            self.cognition.attention_span
+        ));
         prompt.push('\n');
 
         prompt.push_str(&format!("## Temperament\n"));
-        prompt.push_str(&format!("- Frustration Threshold: {}\n", self.temperament.frustration_threshold));
-        prompt.push_str(&format!("- Error Tolerance: {}\n", self.temperament.error_tolerance));
-        prompt.push_str(&format!("- Exploration Tendency: {}\n", self.temperament.exploration_tendency));
+        prompt.push_str(&format!(
+            "- Frustration Threshold: {}\n",
+            self.temperament.frustration_threshold
+        ));
+        prompt.push_str(&format!(
+            "- Error Tolerance: {}\n",
+            self.temperament.error_tolerance
+        ));
+        prompt.push_str(&format!(
+            "- Exploration Tendency: {}\n",
+            self.temperament.exploration_tendency
+        ));
         prompt.push('\n');
 
         if self.needs_accessibility() {
@@ -763,8 +794,14 @@ impl GrimoireSimulacrum {
         }
 
         prompt.push_str(&format!("## Behavior\n"));
-        prompt.push_str(&format!("- Max Clicks Before Frustration: {}\n", self.behavior.max_clicks_before_frustration));
-        prompt.push_str(&format!("- Max Seconds Waiting: {}\n", self.behavior.max_seconds_waiting));
+        prompt.push_str(&format!(
+            "- Max Clicks Before Frustration: {}\n",
+            self.behavior.max_clicks_before_frustration
+        ));
+        prompt.push_str(&format!(
+            "- Max Seconds Waiting: {}\n",
+            self.behavior.max_seconds_waiting
+        ));
         prompt.push_str(&format!("- Reads Labels: {}\n", self.behavior.reads_labels));
         prompt.push('\n');
 
@@ -1007,17 +1044,15 @@ impl WorkspaceConfigLoader {
                                 let commands: Vec<String> = hook_list
                                     .iter()
                                     .filter_map(|h| {
-                                        h.get("hooks")
-                                            .and_then(|arr| arr.as_array())
-                                            .map(|arr| {
-                                                arr.iter()
-                                                    .filter_map(|cmd| {
-                                                        cmd.get("command")
-                                                            .and_then(|c| c.as_str())
-                                                            .map(String::from)
-                                                    })
-                                                    .collect::<Vec<_>>()
-                                            })
+                                        h.get("hooks").and_then(|arr| arr.as_array()).map(|arr| {
+                                            arr.iter()
+                                                .filter_map(|cmd| {
+                                                    cmd.get("command")
+                                                        .and_then(|c| c.as_str())
+                                                        .map(String::from)
+                                                })
+                                                .collect::<Vec<_>>()
+                                        })
                                     })
                                     .flatten()
                                     .collect();
@@ -1044,8 +1079,8 @@ impl WorkspaceConfigLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::fs;
+    use tempfile::TempDir;
 
     #[test]
     fn test_default_grimoire_path_from_env() {
@@ -1077,7 +1112,10 @@ mod tests {
             system_prompt: "You are a helpful assistant.".to_string(),
             variants: {
                 let mut v = HashMap::new();
-                v.insert("formal".to_string(), "You are a formal assistant.".to_string());
+                v.insert(
+                    "formal".to_string(),
+                    "You are a formal assistant.".to_string(),
+                );
                 v
             },
             metadata: {
@@ -1098,8 +1136,14 @@ mod tests {
         assert_eq!(parsed.id, persona.id);
         assert_eq!(parsed.name, persona.name);
         assert_eq!(parsed.system_prompt, persona.system_prompt);
-        assert_eq!(parsed.variants.get("formal"), persona.variants.get("formal"));
-        assert_eq!(parsed.metadata.get("version"), persona.metadata.get("version"));
+        assert_eq!(
+            parsed.variants.get("formal"),
+            persona.variants.get("formal")
+        );
+        assert_eq!(
+            parsed.metadata.get("version"),
+            persona.metadata.get("version")
+        );
     }
 
     #[test]
@@ -1139,7 +1183,9 @@ mod tests {
         let loader = GrimoireLoader::with_path("/test");
         let content = "You are a helpful assistant for code review.";
 
-        let persona = loader.parse_persona("code-reviewer", content).expect("parse");
+        let persona = loader
+            .parse_persona("code-reviewer", content)
+            .expect("parse");
 
         assert_eq!(persona.id, "code-reviewer");
         assert_eq!(persona.name, "code-reviewer");
@@ -1190,8 +1236,9 @@ mod tests {
         fs::create_dir(temp.path().join("complex-agent")).expect("mkdir");
         fs::write(
             temp.path().join("complex-agent").join("prompt.md"),
-            "Complex agent prompt"
-        ).expect("write");
+            "Complex agent prompt",
+        )
+        .expect("write");
 
         fs::create_dir(temp.path().join("simple-agent")).expect("mkdir");
 
@@ -1579,7 +1626,9 @@ class UserService(
         // Create kotlin skill
         let kotlin_dir = temp.path().join("kotlin");
         fs::create_dir(&kotlin_dir).expect("mkdir");
-        fs::write(kotlin_dir.join("SKILL.md"), r#"---
+        fs::write(
+            kotlin_dir.join("SKILL.md"),
+            r#"---
 name: kotlin
 description: Kotlin code gen
 triggers:
@@ -1587,12 +1636,16 @@ triggers:
   - "spring boot"
 ---
 # Kotlin
-"#).expect("write");
+"#,
+        )
+        .expect("write");
 
         // Create react skill
         let react_dir = temp.path().join("react");
         fs::create_dir(&react_dir).expect("mkdir");
-        fs::write(react_dir.join("SKILL.md"), r#"---
+        fs::write(
+            react_dir.join("SKILL.md"),
+            r#"---
 name: react
 description: React code gen
 triggers:
@@ -1600,7 +1653,9 @@ triggers:
   - "typescript component"
 ---
 # React
-"#).expect("write");
+"#,
+        )
+        .expect("write");
 
         let loader = SkillLoader::new(temp.path());
 
@@ -1610,11 +1665,17 @@ triggers:
         assert_eq!(kotlin_skills[0].id, "kotlin");
 
         // Find by "spring boot" trigger
-        let spring_skills = loader.find_by_trigger("spring boot service").await.expect("find");
+        let spring_skills = loader
+            .find_by_trigger("spring boot service")
+            .await
+            .expect("find");
         assert_eq!(spring_skills.len(), 1);
 
         // Find by "react" trigger
-        let react_skills = loader.find_by_trigger("react component").await.expect("find");
+        let react_skills = loader
+            .find_by_trigger("react component")
+            .await
+            .expect("find");
         assert_eq!(react_skills.len(), 1);
         assert_eq!(react_skills[0].id, "react");
 
@@ -1629,14 +1690,18 @@ triggers:
 
         let skill_dir = temp.path().join("cached");
         fs::create_dir(&skill_dir).expect("mkdir");
-        fs::write(skill_dir.join("SKILL.md"), r#"---
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            r#"---
 name: cached
 description: Original
 triggers:
   - "cached"
 ---
 # Original
-"#).expect("write");
+"#,
+        )
+        .expect("write");
 
         let loader = SkillLoader::new(temp.path());
 
@@ -1645,14 +1710,18 @@ triggers:
         assert_eq!(skill1.description, "Original");
 
         // Modify file
-        fs::write(skill_dir.join("SKILL.md"), r#"---
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            r#"---
 name: cached
 description: Modified
 triggers:
   - "cached"
 ---
 # Modified
-"#).expect("write");
+"#,
+        )
+        .expect("write");
 
         // Should return cached version
         let skill2 = loader.load("cached").await.expect("load");
@@ -1713,7 +1782,10 @@ triggers:
         let config = WorkspaceConfig::new("/test/workspace");
         let loader = config.skill_loader();
 
-        assert_eq!(loader.base_path(), Path::new("/test/workspace/.claude/skills"));
+        assert_eq!(
+            loader.base_path(),
+            Path::new("/test/workspace/.claude/skills")
+        );
     }
 
     #[test]
@@ -1838,7 +1910,9 @@ triggers:
     fn test_workspace_config_serialization() {
         let mut config = WorkspaceConfig::new("/test");
         config.skills = vec!["kotlin".to_string(), "react".to_string()];
-        config.hooks.insert("SessionStart".to_string(), vec!["./start.sh".to_string()]);
+        config
+            .hooks
+            .insert("SessionStart".to_string(), vec!["./start.sh".to_string()]);
 
         let json = serde_json::to_string(&config).expect("serialize");
         assert!(json.contains("kotlin"));
@@ -1939,7 +2013,11 @@ triggers:
                 code: "SCREEN_READER_USER".to_string(),
                 name: "David".to_string(),
                 version: 1,
-                tags: Some(vec!["accessibility".to_string(), "a11y".to_string(), "blind".to_string()]),
+                tags: Some(vec![
+                    "accessibility".to_string(),
+                    "a11y".to_string(),
+                    "blind".to_string(),
+                ]),
                 archetype: None,
             },
             demographics: SimulacrumDemographics {
@@ -2064,7 +2142,11 @@ triggers:
 
         // Medium risk task (6 clicks, 8 seconds)
         let medium_risk = sim.calculate_frustration_risk(6, 8);
-        assert!(medium_risk > 0.3 && medium_risk < 0.8, "Expected medium risk, got {}", medium_risk);
+        assert!(
+            medium_risk > 0.3 && medium_risk < 0.8,
+            "Expected medium risk, got {}",
+            medium_risk
+        );
 
         // High risk task (15 clicks, 20 seconds)
         let high_risk = sim.calculate_frustration_risk(15, 20);
@@ -2083,8 +2165,12 @@ triggers:
         let impatient_risk = impatient.calculate_frustration_risk(5, 5);
         let patient_risk = patient.calculate_frustration_risk(5, 5);
 
-        assert!(impatient_risk > patient_risk,
-            "Impatient risk {} should be > patient risk {}", impatient_risk, patient_risk);
+        assert!(
+            impatient_risk > patient_risk,
+            "Impatient risk {} should be > patient risk {}",
+            impatient_risk,
+            patient_risk
+        );
     }
 
     #[test]

@@ -22,7 +22,10 @@ fn main() -> Result<()> {
     let safetensors_dir = Path::new("/tmp/llama405b-safetensors");
 
     if !safetensors_dir.exists() {
-        println!("Safetensors directory not found: {}", safetensors_dir.display());
+        println!(
+            "Safetensors directory not found: {}",
+            safetensors_dir.display()
+        );
         println!("Expected at: /tmp/llama405b-safetensors");
         return Ok(());
     }
@@ -48,7 +51,11 @@ fn main() -> Result<()> {
             }
         }
     }
-    println!("Layer coverage: 0-{} ({} of 126 layers)", max_layer, max_layer + 1);
+    println!(
+        "Layer coverage: 0-{} ({} of 126 layers)",
+        max_layer,
+        max_layer + 1
+    );
     println!();
 
     let device = Device::Cpu;
@@ -109,8 +116,10 @@ fn main() -> Result<()> {
 
     println!();
     println!("Loaded {} params in {:?}", total_params, total_time);
-    println!("Throughput: {:.1} MB/s",
-        (total_params as f64 * 4.0 / 1e6) / total_time.as_secs_f64());
+    println!(
+        "Throughput: {:.1} MB/s",
+        (total_params as f64 * 4.0 / 1e6) / total_time.as_secs_f64()
+    );
 
     // Memory estimate for full model
     println!("\n--- 405B Memory Analysis ---");
@@ -159,9 +168,18 @@ fn main() -> Result<()> {
     }
 
     println!();
-    println!("Estimated loaded params: {:.1}B", total_model_params as f64 / 1e9);
-    println!("Estimated size (F32): {:.1} GB", total_model_params as f64 * 4.0 / 1e9);
-    println!("Estimated size (F16): {:.1} GB", total_model_params as f64 * 2.0 / 1e9);
+    println!(
+        "Estimated loaded params: {:.1}B",
+        total_model_params as f64 / 1e9
+    );
+    println!(
+        "Estimated size (F32): {:.1} GB",
+        total_model_params as f64 * 4.0 / 1e9
+    );
+    println!(
+        "Estimated size (F16): {:.1} GB",
+        total_model_params as f64 * 2.0 / 1e9
+    );
 
     // Full 405B stats
     println!("\nFull 405B model:");
@@ -169,9 +187,11 @@ fn main() -> Result<()> {
     println!("  Total params: ~405B");
     println!("  Size (FP8): ~405 GB");
     println!("  Size (F16): ~810 GB");
-    println!("  Available: {} layers ({:.1}%)",
+    println!(
+        "  Available: {} layers ({:.1}%)",
         max_layer + 1,
-        (max_layer + 1) as f64 / 126.0 * 100.0);
+        (max_layer + 1) as f64 / 126.0 * 100.0
+    );
 
     println!("\n=== Test Complete ===");
     Ok(())

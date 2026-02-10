@@ -3,8 +3,8 @@
 //! Provides cross-platform detection of system RAM and available memory
 //! for fragment placement decisions.
 
-use sysinfo::System;
 use std::sync::OnceLock;
+use sysinfo::System;
 
 /// Cached system info for performance.
 static SYSTEM_INFO: OnceLock<SystemMemoryInfo> = OnceLock::new();
@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn test_memory_gb_conversion() {
         let mem = SystemMemoryInfo {
-            total_bytes: 64 * 1024 * 1024 * 1024, // 64 GB
+            total_bytes: 64 * 1024 * 1024 * 1024,     // 64 GB
             available_bytes: 48 * 1024 * 1024 * 1024, // 48 GB
             used_bytes: 16 * 1024 * 1024 * 1024,
             swap_total_bytes: 0,

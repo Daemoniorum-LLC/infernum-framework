@@ -332,7 +332,7 @@ impl ErrorCode {
             // 503 Service Unavailable
             Self::ModelNotLoaded | Self::ServiceOverloaded | Self::ServiceUnavailable => {
                 StatusCode::SERVICE_UNAVAILABLE
-            }
+            },
         }
     }
 
@@ -346,24 +346,26 @@ impl ErrorCode {
             Self::MessageTooLong => Some("Reduce message length or split into multiple messages"),
             Self::TooManyMessages => {
                 Some("Reduce conversation history or summarize earlier messages")
-            }
+            },
             Self::ContextLengthExceeded => {
                 Some("Reduce prompt length or use a model with larger context")
-            }
+            },
             Self::ModelNotLoaded => {
                 Some("Load a model via POST /api/models/load or restart with --model")
-            }
+            },
             Self::RateLimited => {
                 Some("Reduce request frequency or contact support for higher limits")
-            }
-            Self::ServiceOverloaded => Some("Server is at capacity. Retry with exponential backoff"),
+            },
+            Self::ServiceOverloaded => {
+                Some("Server is at capacity. Retry with exponential backoff")
+            },
             Self::InsufficientScope => {
                 Some("API key lacks required scope. Use a key with appropriate permissions")
-            }
+            },
             Self::ExpiredApiKey => Some("API key has expired. Generate a new key"),
             Self::EmbeddingExtractionFailed => {
                 Some("Embedding extraction failed. This may indicate a model compatibility issue")
-            }
+            },
             Self::EmptyPrompt => Some("Provide a non-empty prompt or messages array"),
             Self::PromptTooLong => Some("Reduce prompt length to within model limits"),
             Self::InvalidModel => Some("Check the model identifier format and availability"),
@@ -399,7 +401,7 @@ impl ErrorCode {
 
             Self::ModelNotLoaded | Self::ServiceOverloaded | Self::ServiceUnavailable => {
                 ErrorType::ServiceUnavailableError
-            }
+            },
 
             Self::InternalError
             | Self::ContextLengthExceeded
@@ -653,7 +655,9 @@ pub fn sanitize_error(error: &str) -> String {
     // Remove Unix paths
     let unix_path_pattern =
         regex::Regex::new(r"(/[a-zA-Z0-9_./-]+)+").expect("valid regex pattern");
-    sanitized = unix_path_pattern.replace_all(&sanitized, "[path]").to_string();
+    sanitized = unix_path_pattern
+        .replace_all(&sanitized, "[path]")
+        .to_string();
 
     // Remove Windows paths
     let windows_path_pattern =
@@ -685,7 +689,11 @@ pub fn handle_internal_error(error: &dyn std::error::Error, request_id: &str) ->
     );
 
     // Return sanitized error to client
-    api_error_with_message(ErrorCode::InternalError, request_id, &sanitize_error(&error.to_string()))
+    api_error_with_message(
+        ErrorCode::InternalError,
+        request_id,
+        &sanitize_error(&error.to_string()),
+    )
 }
 
 #[cfg(test)]
@@ -694,14 +702,38 @@ mod tests {
 
     #[test]
     fn test_error_code_status_codes() {
-        assert_eq!(ErrorCode::InvalidModel.status_code(), StatusCode::BAD_REQUEST);
-        assert_eq!(ErrorCode::InvalidApiKey.status_code(), StatusCode::UNAUTHORIZED);
-        assert_eq!(ErrorCode::InsufficientScope.status_code(), StatusCode::FORBIDDEN);
-        assert_eq!(ErrorCode::ModelNotFound.status_code(), StatusCode::NOT_FOUND);
-        assert_eq!(ErrorCode::Timeout.status_code(), StatusCode::REQUEST_TIMEOUT);
-        assert_eq!(ErrorCode::RateLimited.status_code(), StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(ErrorCode::ModelNotLoaded.status_code(), StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(ErrorCode::InternalError.status_code(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            ErrorCode::InvalidModel.status_code(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            ErrorCode::InvalidApiKey.status_code(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            ErrorCode::InsufficientScope.status_code(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            ErrorCode::ModelNotFound.status_code(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            ErrorCode::Timeout.status_code(),
+            StatusCode::REQUEST_TIMEOUT
+        );
+        assert_eq!(
+            ErrorCode::RateLimited.status_code(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(
+            ErrorCode::ModelNotLoaded.status_code(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            ErrorCode::InternalError.status_code(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 
     #[test]
@@ -909,7 +941,11 @@ mod tests {
 
         for subcode in subcodes {
             let desc = subcode.description();
-            assert!(!desc.is_empty(), "Subcode {:?} should have description", subcode);
+            assert!(
+                !desc.is_empty(),
+                "Subcode {:?} should have description",
+                subcode
+            );
         }
     }
 

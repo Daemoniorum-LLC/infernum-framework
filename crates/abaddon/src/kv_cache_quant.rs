@@ -113,7 +113,7 @@ impl QuantizedKvCache {
                 let k = Tensor::cat(&[prev_k, &k_quant], 2)?;
                 let scale = Tensor::cat(&[prev_scale, &k_scale], 2)?;
                 (k, scale)
-            }
+            },
             _ => (k_quant, k_scale),
         };
 
@@ -122,7 +122,7 @@ impl QuantizedKvCache {
                 let v = Tensor::cat(&[prev_v, &v_quant], 2)?;
                 let scale = Tensor::cat(&[prev_scale, &v_scale], 2)?;
                 (v, scale)
-            }
+            },
             _ => (v_quant, v_scale),
         };
 
@@ -137,22 +137,24 @@ impl QuantizedKvCache {
     /// Get dequantized K and V tensors for attention computation.
     /// Returns: (K, V) both with shape (batch, num_kv_heads, full_seq_len, head_dim)
     pub fn get_dequantized(&self) -> CandleResult<Option<(Tensor, Tensor)>> {
-        match (&self.k_quantized, &self.k_scales, &self.v_quantized, &self.v_scales) {
+        match (
+            &self.k_quantized,
+            &self.k_scales,
+            &self.v_quantized,
+            &self.v_scales,
+        ) {
             (Some(k_q), Some(k_s), Some(v_q), Some(v_s)) => {
                 let k = Self::dequantize(k_q, k_s, self.dtype)?;
                 let v = Self::dequantize(v_q, v_s, self.dtype)?;
                 Ok(Some((k, v)))
-            }
+            },
             _ => Ok(None),
         }
     }
 
     /// Get the current sequence length in the cache.
     pub fn seq_len(&self) -> usize {
-        self.k_quantized
-            .as_ref()
-            .map(|t| t.dims()[2])
-            .unwrap_or(0)
+        self.k_quantized.as_ref().map(|t| t.dims()[2]).unwrap_or(0)
     }
 
     /// Clear the cache.
@@ -165,19 +167,23 @@ impl QuantizedKvCache {
 
     /// Get memory usage in bytes.
     pub fn memory_bytes(&self) -> usize {
-        let k_mem = self.k_quantized
+        let k_mem = self
+            .k_quantized
             .as_ref()
             .map(|t| t.elem_count())
             .unwrap_or(0);
-        let v_mem = self.v_quantized
+        let v_mem = self
+            .v_quantized
             .as_ref()
             .map(|t| t.elem_count())
             .unwrap_or(0);
-        let k_scale_mem = self.k_scales
+        let k_scale_mem = self
+            .k_scales
             .as_ref()
             .map(|t| t.elem_count() * 2) // BF16 = 2 bytes
             .unwrap_or(0);
-        let v_scale_mem = self.v_scales
+        let v_scale_mem = self
+            .v_scales
             .as_ref()
             .map(|t| t.elem_count() * 2)
             .unwrap_or(0);
@@ -191,7 +197,8 @@ impl QuantizedKvCache {
         // Full precision: 2 bytes per element (BF16)
         // Quantized: 1 byte + scale overhead
         // Scale overhead: 1 scale per token per head (negligible for head_dim >> 1)
-        let full_precision_bytes = self.k_quantized
+        let full_precision_bytes = self
+            .k_quantized
             .as_ref()
             .map(|t| t.elem_count() * 2 * 2) // K + V, 2 bytes each
             .unwrap_or(0);
@@ -270,7 +277,13 @@ mod tests {
 
         for (o, r) in orig.iter().zip(recv.iter()) {
             let error = (o - r).abs();
-            assert!(error < 0.02, "Quantization error too large: {} vs {} (error: {})", o, r, error);
+            assert!(
+                error < 0.02,
+                "Quantization error too large: {} vs {} (error: {})",
+                o,
+                r,
+                error
+            );
         }
 
         Ok(())
@@ -319,7 +332,11 @@ mod tests {
         println!("Memory savings ratio: {:.2}x", savings);
 
         // Should be close to 2x (INT8 vs BF16, minus scale overhead)
-        assert!(savings > 1.5, "Expected at least 1.5x savings, got {:.2}x", savings);
+        assert!(
+            savings > 1.5,
+            "Expected at least 1.5x savings, got {:.2}x",
+            savings
+        );
 
         Ok(())
     }

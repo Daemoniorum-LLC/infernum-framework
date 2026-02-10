@@ -96,7 +96,11 @@ impl ImportanceScorer {
     }
 
     /// Computes individual importance factors for a tensor.
-    pub fn compute_factors(&self, tensor: &TensorInfo, quality_sensitivity: Option<f32>) -> ImportanceFactors {
+    pub fn compute_factors(
+        &self,
+        tensor: &TensorInfo,
+        quality_sensitivity: Option<f32>,
+    ) -> ImportanceFactors {
         ImportanceFactors {
             layer_position: self.layer_position_factor(tensor.layer_index),
             tensor_type: self.tensor_type_factor(tensor.tensor_type),
@@ -134,7 +138,7 @@ impl ImportanceScorer {
                     // Slight preference for layers closer to edges even in middle zone
                     0.5 + 0.1 * (1.0 - (middle_position - 0.5).abs() * 2.0)
                 }
-            }
+            },
         }
     }
 
@@ -202,15 +206,22 @@ mod tests {
     fn test_embeddings_highest_priority() {
         let scorer = make_scorer();
         let embed = TensorInfo::from_name("model.embed_tokens.weight", 50_000_000);
-        let middle_attn = TensorInfo::from_name("model.layers.24.self_attn.q_proj.weight", 50_000_000);
+        let middle_attn =
+            TensorInfo::from_name("model.layers.24.self_attn.q_proj.weight", 50_000_000);
         let middle_mlp = TensorInfo::from_name("model.layers.24.mlp.gate_proj.weight", 50_000_000);
 
         let embed_score = scorer.score(&embed);
         let attn_score = scorer.score(&middle_attn);
         let mlp_score = scorer.score(&middle_mlp);
 
-        assert!(embed_score > attn_score, "embeddings should be higher than attention");
-        assert!(attn_score > mlp_score, "attention should be higher than mlp");
+        assert!(
+            embed_score > attn_score,
+            "embeddings should be higher than attention"
+        );
+        assert!(
+            attn_score > mlp_score,
+            "attention should be higher than mlp"
+        );
     }
 
     #[test]
@@ -224,10 +235,19 @@ mod tests {
         let score_24 = scorer.score(&layer_24);
         let score_47 = scorer.score(&layer_47);
 
-        assert!(score_0 > score_24, "layer 0 should be higher than middle layer");
-        assert!(score_47 > score_24, "last layer should be higher than middle layer");
+        assert!(
+            score_0 > score_24,
+            "layer 0 should be higher than middle layer"
+        );
+        assert!(
+            score_47 > score_24,
+            "last layer should be higher than middle layer"
+        );
         // First and last should be similar
-        assert!((score_0 - score_47).abs() < 0.1, "first and last layers should have similar scores");
+        assert!(
+            (score_0 - score_47).abs() < 0.1,
+            "first and last layers should have similar scores"
+        );
     }
 
     #[test]
@@ -240,8 +260,14 @@ mod tests {
         let large_score = scorer.score(&large);
 
         // Size is minor factor (10%), so difference should be small but present
-        assert!(small_score > large_score, "smaller tensor should have slightly higher score");
-        assert!(small_score - large_score < 0.15, "size difference should be minor factor");
+        assert!(
+            small_score > large_score,
+            "smaller tensor should have slightly higher score"
+        );
+        assert!(
+            small_score - large_score < 0.15,
+            "size difference should be minor factor"
+        );
     }
 
     #[test]
@@ -269,7 +295,10 @@ mod tests {
         // Linear curve: 25% fragments give ~50% quality
         let linear = importance_from_quality_curve(0.5, 0.9);
 
-        assert!(steep > linear, "steep curve should indicate higher importance");
+        assert!(
+            steep > linear,
+            "steep curve should indicate higher importance"
+        );
     }
 
     #[test]
@@ -305,6 +334,9 @@ mod tests {
         let attn_score = scorer.score(&attn);
         let mlp_score = scorer.score(&mlp);
 
-        assert!(attn_score > mlp_score, "attention should be prioritized over MLP at same layer");
+        assert!(
+            attn_score > mlp_score,
+            "attention should be prioritized over MLP at same layer"
+        );
     }
 }

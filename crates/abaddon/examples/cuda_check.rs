@@ -13,12 +13,15 @@ fn main() {
             Ok(device) => {
                 println!("SUCCESS! CUDA device created.");
                 // Try to get device properties
-                println!("Device pointer: {:?}", std::sync::Arc::strong_count(&device));
-            }
+                println!(
+                    "Device pointer: {:?}",
+                    std::sync::Arc::strong_count(&device)
+                );
+            },
             Err(e) => {
                 println!("FAILED to create CUDA device:");
                 println!("  Error: {:?}", e);
-            }
+            },
         }
     }
 

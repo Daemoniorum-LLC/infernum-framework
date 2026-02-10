@@ -35,13 +35,13 @@ use std::time::Instant;
 
 use anyhow::Result;
 use candle_core::{DType, Device, Tensor};
-use crossbeam::channel::{bounded, Sender, Receiver};
+use crossbeam::channel::{bounded, Receiver, Sender};
 use rayon::prelude::*;
 
-use abaddon::holotensor::tiered_loading::{TieredConfig, TieredHoloLoader};
-use abaddon::lazy_varbuilder::TensorProvider;
 #[cfg(feature = "cuda")]
 use abaddon::cuda_inference::streams::device_synchronize;
+use abaddon::holotensor::tiered_loading::{TieredConfig, TieredHoloLoader};
+use abaddon::lazy_varbuilder::TensorProvider;
 
 /// Single tensor ready for writing
 struct TensorToWrite {
@@ -78,7 +78,7 @@ fn main() -> Result<()> {
     let mut quality = 0.95f32;
     let mut force = false;
     let mut batch_layers = false; // Batch all tensors per layer into one file
-    let mut cpu_large = true;     // CPU fallback for large tensors (>1GB) - fixes OOM
+    let mut cpu_large = true; // CPU fallback for large tensors (>1GB) - fixes OOM
     let large_tensor_threshold: u64 = 1024 * 1024 * 1024; // 1GB
 
     let mut i = 1;
@@ -87,40 +87,40 @@ fn main() -> Result<()> {
             "--input" | "-i" => {
                 input_dir = PathBuf::from(&args[i + 1]);
                 i += 2;
-            }
+            },
             "--output" | "-o" => {
                 output_dir = PathBuf::from(&args[i + 1]);
                 i += 2;
-            }
+            },
             "--quality" | "-q" => {
                 quality = args[i + 1].parse()?;
                 i += 2;
-            }
+            },
             "--batch-layers" | "-b" => {
                 batch_layers = true;
                 i += 1;
-            }
+            },
             "--cpu-large" => {
                 cpu_large = true;
                 i += 1;
-            }
+            },
             "--no-cpu-large" => {
                 cpu_large = false;
                 i += 1;
-            }
+            },
             "--force" | "-f" => {
                 force = true;
                 i += 1;
-            }
+            },
             "--help" | "-h" => {
                 print_help();
                 return Ok(());
-            }
+            },
             _ => {
                 eprintln!("Unknown argument: {}", args[i]);
                 print_help();
                 return Ok(());
-            }
+            },
         }
     }
 
@@ -128,14 +128,27 @@ fn main() -> Result<()> {
     println!("Input:       {}", input_dir.display());
     println!("Output:      {}", output_dir.display());
     println!("Quality:     {:.0}%", quality * 100.0);
-    println!("Mode:        {}", if batch_layers { "BATCHED (one file per layer)" } else { "Individual tensors" });
-    println!("CPU large:   {} (tensors >1GB use CPU to avoid OOM)", cpu_large);
+    println!(
+        "Mode:        {}",
+        if batch_layers {
+            "BATCHED (one file per layer)"
+        } else {
+            "Individual tensors"
+        }
+    );
+    println!(
+        "CPU large:   {} (tensors >1GB use CPU to avoid OOM)",
+        cpu_large
+    );
     println!("Resume:      {}", !force);
     println!();
 
     // Validate input directory
     if !input_dir.exists() {
-        eprintln!("Error: Input directory does not exist: {}", input_dir.display());
+        eprintln!(
+            "Error: Input directory does not exist: {}",
+            input_dir.display()
+        );
         return Ok(());
     }
 
@@ -153,7 +166,15 @@ fn main() -> Result<()> {
 
     // Branch based on mode
     if batch_layers {
-        return run_batched_mode(&input_dir, &output_dir, quality, force, cpu_large, large_tensor_threshold, &hct_files);
+        return run_batched_mode(
+            &input_dir,
+            &output_dir,
+            quality,
+            force,
+            cpu_large,
+            large_tensor_threshold,
+            &hct_files,
+        );
     }
 
     // Individual tensor mode (legacy)
@@ -163,7 +184,8 @@ fn main() -> Result<()> {
     let files_to_convert: Vec<_> = if force {
         large_files.clone()
     } else {
-        large_files.iter()
+        large_files
+            .iter()
             .filter(|(path, _)| {
                 let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
                 let output_path = output_dir.join(format!("{}.safetensors", name));
@@ -210,14 +232,28 @@ fn main() -> Result<()> {
         background_streams: 0,
     };
 
-    let loader = Arc::new(TieredHoloLoader::new(&input_dir, config, device.clone(), dtype)?);
+    let loader = Arc::new(TieredHoloLoader::new(
+        &input_dir,
+        config,
+        device.clone(),
+        dtype,
+    )?);
     println!("TieredHoloLoader created");
-    println!("GPU acceleration: {}\n", if loader.is_gpu_enabled() { "enabled" } else { "disabled" });
+    println!(
+        "GPU acceleration: {}\n",
+        if loader.is_gpu_enabled() {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
 
     // Stats
     let stats = Arc::new(ConversionStats::default());
     stats.skipped_exists.store(already_done, Ordering::Relaxed);
-    stats.skipped_small.store(small_files.len(), Ordering::Relaxed);
+    stats
+        .skipped_small
+        .store(small_files.len(), Ordering::Relaxed);
 
     // Create async I/O pipeline
     // Channel: reconstruction threads -> writer thread
@@ -238,7 +274,10 @@ fn main() -> Result<()> {
     let start = Instant::now();
 
     println!("--- Converting {} tensors (largest first) ---\n", total);
-    println!("(PARALLEL mode - {} threads, CPU reconstruction avoids CUDA context issues)\n", rayon::current_num_threads());
+    println!(
+        "(PARALLEL mode - {} threads, CPU reconstruction avoids CUDA context issues)\n",
+        rayon::current_num_threads()
+    );
 
     // Process tensors in PARALLEL (safe with CPU reconstruction)
     // Ultra-conservative concurrency: 4 threads = 16GB max working set
@@ -250,62 +289,81 @@ fn main() -> Result<()> {
             let processed = AtomicUsize::new(0);
             let stats_recon = Arc::clone(&stats);
 
-            files_sorted.par_iter().for_each(|(hct_path, _estimated_size)| {
-        let tensor_name = hct_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("unknown")
-            .to_string();
+            files_sorted
+                .par_iter()
+                .for_each(|(hct_path, _estimated_size)| {
+                    let tensor_name = hct_path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("unknown")
+                        .to_string();
 
-        let output_path = output_dir.join(format!("{}.safetensors", tensor_name));
+                    let output_path = output_dir.join(format!("{}.safetensors", tensor_name));
 
-        let idx = processed.fetch_add(1, Ordering::Relaxed);
+                    let idx = processed.fetch_add(1, Ordering::Relaxed);
 
-        // Reconstruct tensor
-        let recon_start = Instant::now();
-        match loader.get(&tensor_name, &device, dtype) {
-            Ok(tensor) => {
-                let recon_ms = recon_start.elapsed().as_millis() as u64;
-                stats_recon.reconstruct_ms.fetch_add(recon_ms, Ordering::Relaxed);
+                    // Reconstruct tensor
+                    let recon_start = Instant::now();
+                    match loader.get(&tensor_name, &device, dtype) {
+                        Ok(tensor) => {
+                            let recon_ms = recon_start.elapsed().as_millis() as u64;
+                            stats_recon
+                                .reconstruct_ms
+                                .fetch_add(recon_ms, Ordering::Relaxed);
 
-                let size_mb = tensor.elem_count() as f64 * dtype.size_in_bytes() as f64 / (1024.0 * 1024.0);
+                            let size_mb = tensor.elem_count() as f64 * dtype.size_in_bytes() as f64
+                                / (1024.0 * 1024.0);
 
-                // Print progress
-                let elapsed = start.elapsed().as_secs_f64();
-                let rate = (idx + 1) as f64 / elapsed;
-                let remaining = (total - idx - 1) as f64 / rate;
+                            // Print progress
+                            let elapsed = start.elapsed().as_secs_f64();
+                            let rate = (idx + 1) as f64 / elapsed;
+                            let remaining = (total - idx - 1) as f64 / rate;
 
-                println!(
-                    "[{}/{}] {} ({:.1} MB, {:.1}s recon) ETA: {:.0}m",
-                    idx + 1, total, tensor_name, size_mb, recon_ms as f64 / 1000.0, remaining / 60.0
-                );
+                            println!(
+                                "[{}/{}] {} ({:.1} MB, {:.1}s recon) ETA: {:.0}m",
+                                idx + 1,
+                                total,
+                                tensor_name,
+                                size_mb,
+                                recon_ms as f64 / 1000.0,
+                                remaining / 60.0
+                            );
 
-                // CRITICAL: Move to CPU here (main thread has CUDA context)
-                // Writer thread cannot access CUDA tensors (thread-local context)
-                let tensor_cpu = match tensor.to_device(&Device::Cpu) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        eprintln!("[{}/{}] {} CPU transfer FAILED: {}", idx + 1, total, tensor_name, e);
-                        stats_recon.failed.fetch_add(1, Ordering::Relaxed);
-                        return; // Exit this iteration
+                            // CRITICAL: Move to CPU here (main thread has CUDA context)
+                            // Writer thread cannot access CUDA tensors (thread-local context)
+                            let tensor_cpu = match tensor.to_device(&Device::Cpu) {
+                                Ok(t) => t,
+                                Err(e) => {
+                                    eprintln!(
+                                        "[{}/{}] {} CPU transfer FAILED: {}",
+                                        idx + 1,
+                                        total,
+                                        tensor_name,
+                                        e
+                                    );
+                                    stats_recon.failed.fetch_add(1, Ordering::Relaxed);
+                                    return; // Exit this iteration
+                                },
+                            };
+
+                            // Send to writer thread
+                            if tx
+                                .send(TensorToWrite {
+                                    name: tensor_name,
+                                    tensor: tensor_cpu,
+                                    output_path,
+                                })
+                                .is_err()
+                            {
+                                eprintln!("Writer channel closed");
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("[{}/{}] {} FAILED: {}", idx + 1, total, tensor_name, e);
+                            stats_recon.failed.fetch_add(1, Ordering::Relaxed);
+                        },
                     }
-                };
-
-                // Send to writer thread
-                if tx.send(TensorToWrite {
-                    name: tensor_name,
-                    tensor: tensor_cpu,
-                    output_path,
-                }).is_err() {
-                    eprintln!("Writer channel closed");
-                }
-            }
-            Err(e) => {
-                eprintln!("[{}/{}] {} FAILED: {}", idx + 1, total, tensor_name, e);
-                stats_recon.failed.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-            }); // end par_iter
+                }); // end par_iter
         }); // end thread pool install
 
     // Close channel and wait for writer
@@ -318,31 +376,65 @@ fn main() -> Result<()> {
     println!("\n{}", "=".repeat(60));
     println!("CONVERSION COMPLETE");
     println!("{}", "=".repeat(60));
-    println!("Converted:        {} tensors", stats.converted.load(Ordering::Relaxed));
-    println!("Skipped (exists): {} tensors", stats.skipped_exists.load(Ordering::Relaxed));
-    println!("Skipped (small):  {} tensors", stats.skipped_small.load(Ordering::Relaxed));
-    println!("Failed:           {} tensors", stats.failed.load(Ordering::Relaxed));
+    println!(
+        "Converted:        {} tensors",
+        stats.converted.load(Ordering::Relaxed)
+    );
+    println!(
+        "Skipped (exists): {} tensors",
+        stats.skipped_exists.load(Ordering::Relaxed)
+    );
+    println!(
+        "Skipped (small):  {} tensors",
+        stats.skipped_small.load(Ordering::Relaxed)
+    );
+    println!(
+        "Failed:           {} tensors",
+        stats.failed.load(Ordering::Relaxed)
+    );
     println!();
-    println!("Total time:       {:.1} minutes", elapsed.as_secs_f64() / 60.0);
-    println!("Total written:    {:.2} GB", stats.total_bytes.load(Ordering::Relaxed) as f64 / 1e9);
+    println!(
+        "Total time:       {:.1} minutes",
+        elapsed.as_secs_f64() / 60.0
+    );
+    println!(
+        "Total written:    {:.2} GB",
+        stats.total_bytes.load(Ordering::Relaxed) as f64 / 1e9
+    );
     println!();
     println!("Timing breakdown:");
-    println!("  Reconstruction: {:.1} s", stats.reconstruct_ms.load(Ordering::Relaxed) as f64 / 1000.0);
-    println!("  Writing:        {:.1} s", stats.write_ms.load(Ordering::Relaxed) as f64 / 1000.0);
+    println!(
+        "  Reconstruction: {:.1} s",
+        stats.reconstruct_ms.load(Ordering::Relaxed) as f64 / 1000.0
+    );
+    println!(
+        "  Writing:        {:.1} s",
+        stats.write_ms.load(Ordering::Relaxed) as f64 / 1000.0
+    );
     println!();
-    println!("Throughput: {:.1} tensors/min",
-        stats.converted.load(Ordering::Relaxed) as f64 / (elapsed.as_secs_f64() / 60.0));
+    println!(
+        "Throughput: {:.1} tensors/min",
+        stats.converted.load(Ordering::Relaxed) as f64 / (elapsed.as_secs_f64() / 60.0)
+    );
     println!();
     println!("Output: {}", output_dir.display());
 
     // Print loader stats
     let loader_stats = loader.stats();
     println!("\nReconstruction stats:");
-    println!("  GPU reconstructions: {}", loader_stats.gpu_reconstructions);
-    println!("  CPU reconstructions: {}", loader_stats.cpu_reconstructions);
+    println!(
+        "  GPU reconstructions: {}",
+        loader_stats.gpu_reconstructions
+    );
+    println!(
+        "  CPU reconstructions: {}",
+        loader_stats.cpu_reconstructions
+    );
     if loader_stats.gpu_reconstructions > 0 {
-        println!("  Avg GPU time: {:.1} ms",
-            loader_stats.gpu_time_ms as f64 / loader_stats.gpu_reconstructions as f64);
+        println!(
+            "  Avg GPU time: {:.1} ms",
+            loader_stats.gpu_time_ms as f64 / loader_stats.gpu_reconstructions as f64
+        );
     }
 
     Ok(())
@@ -383,9 +475,14 @@ fn run_batched_mode(
     let total_non_layer = non_layer_files.len();
 
     println!("\nBatched conversion plan:");
-    println!("  Layers:      {} (each with {} tensors avg)",
+    println!(
+        "  Layers:      {} (each with {} tensors avg)",
         total_layers,
-        if total_layers > 0 { hct_files.len().saturating_sub(total_non_layer) / total_layers } else { 0 }
+        if total_layers > 0 {
+            hct_files.len().saturating_sub(total_non_layer) / total_layers
+        } else {
+            0
+        }
     );
     println!("  Non-layer:   {} (embed, lm_head, etc.)", total_non_layer);
 
@@ -406,7 +503,8 @@ fn run_batched_mode(
     let non_layer_to_convert: Vec<_> = if force {
         non_layer_files.clone()
     } else {
-        non_layer_files.iter()
+        non_layer_files
+            .iter()
             .filter(|path| {
                 let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
                 let output_path = output_dir.join(format!("{}.safetensors", name));
@@ -418,8 +516,15 @@ fn run_batched_mode(
 
     let non_layer_skipped = non_layer_files.len() - non_layer_to_convert.len();
 
-    println!("  To convert:  {} layers + {} non-layer files", layers_to_convert.len(), non_layer_to_convert.len());
-    println!("  Skipped:     {} layers + {} non-layer files (already exist)", skipped, non_layer_skipped);
+    println!(
+        "  To convert:  {} layers + {} non-layer files",
+        layers_to_convert.len(),
+        non_layer_to_convert.len()
+    );
+    println!(
+        "  Skipped:     {} layers + {} non-layer files (already exist)",
+        skipped, non_layer_skipped
+    );
     println!();
 
     if layers_to_convert.is_empty() && non_layer_to_convert.is_empty() {
@@ -438,7 +543,10 @@ fn run_batched_mode(
 
     println!("CUDA available: {}", has_cuda);
     if cpu_large && has_cuda {
-        println!("CPU fallback:   enabled for tensors >{}MB", large_tensor_threshold / (1024 * 1024));
+        println!(
+            "CPU fallback:   enabled for tensors >{}MB",
+            large_tensor_threshold / (1024 * 1024)
+        );
     }
 
     // Create GPU loader (for smaller tensors)
@@ -464,14 +572,33 @@ fn run_batched_mode(
     };
 
     let gpu_loader = if has_cuda {
-        Some(Arc::new(TieredHoloLoader::new(input_dir, gpu_config, gpu_device.clone().unwrap(), dtype_gpu)?))
+        Some(Arc::new(TieredHoloLoader::new(
+            input_dir,
+            gpu_config,
+            gpu_device.clone().unwrap(),
+            dtype_gpu,
+        )?))
     } else {
         None
     };
 
-    let cpu_loader = Arc::new(TieredHoloLoader::new(input_dir, cpu_config, cpu_device.clone(), dtype_cpu)?);
+    let cpu_loader = Arc::new(TieredHoloLoader::new(
+        input_dir,
+        cpu_config,
+        cpu_device.clone(),
+        dtype_cpu,
+    )?);
 
-    println!("GPU acceleration: {}", gpu_loader.as_ref().map_or("disabled", |l| if l.is_gpu_enabled() { "enabled" } else { "disabled" }));
+    println!(
+        "GPU acceleration: {}",
+        gpu_loader
+            .as_ref()
+            .map_or("disabled", |l| if l.is_gpu_enabled() {
+                "enabled"
+            } else {
+                "disabled"
+            })
+    );
     println!();
 
     let start = Instant::now();
@@ -484,8 +611,16 @@ fn run_batched_mode(
 
     // Sort layers by number (layer_0, layer_1, ...)
     layers_to_convert.sort_by(|a, b| {
-        let num_a: usize = a.0.split('_').last().and_then(|s| s.parse().ok()).unwrap_or(0);
-        let num_b: usize = b.0.split('_').last().and_then(|s| s.parse().ok()).unwrap_or(0);
+        let num_a: usize =
+            a.0.split('_')
+                .last()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+        let num_b: usize =
+            b.0.split('_')
+                .last()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
         num_a.cmp(&num_b)
     });
 
@@ -503,9 +638,11 @@ fn run_batched_mode(
 
         // ALWAYS use CPU for known large tensors (regardless of cpu_large flag)
         // MLP projection weights: ~1.7GB each (3 per layer = 5GB)
-        if tensor_name.contains("mlp") && (tensor_name.contains("down_proj") ||
-                                           tensor_name.contains("gate_proj") ||
-                                           tensor_name.contains("up_proj")) {
+        if tensor_name.contains("mlp")
+            && (tensor_name.contains("down_proj")
+                || tensor_name.contains("gate_proj")
+                || tensor_name.contains("up_proj"))
+        {
             return true;
         }
 
@@ -527,7 +664,10 @@ fn run_batched_mode(
 
     // Convert non-layer files first (embed_tokens, lm_head are large)
     for (idx, path) in non_layer_to_convert.iter().enumerate() {
-        let tensor_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
+        let tensor_name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
         let output_path = output_dir.join(format!("{}.safetensors", tensor_name));
 
         let use_cpu = should_use_cpu(path, tensor_name);
@@ -538,13 +678,17 @@ fn run_batched_mode(
             cpu_loader.get(tensor_name, &cpu_device, dtype_cpu)
         } else {
             gpu_recons += 1;
-            gpu_loader.as_ref().unwrap().get(tensor_name, gpu_device.as_ref().unwrap(), dtype_gpu)
+            gpu_loader
+                .as_ref()
+                .unwrap()
+                .get(tensor_name, gpu_device.as_ref().unwrap(), dtype_gpu)
         };
 
         match result {
             Ok(tensor) => {
                 let recon_ms = recon_start.elapsed().as_millis();
-                let size_mb = tensor.elem_count() as f64 * tensor.dtype().size_in_bytes() as f64 / (1024.0 * 1024.0);
+                let size_mb = tensor.elem_count() as f64 * tensor.dtype().size_in_bytes() as f64
+                    / (1024.0 * 1024.0);
 
                 // Write single tensor
                 match save_safetensor_fast(&tensor, tensor_name, &output_path) {
@@ -559,13 +703,25 @@ fn run_batched_mode(
                         let device_tag = if use_cpu { "CPU" } else { "GPU" };
                         println!(
                             "[{}/{}] {} ({:.1} MB, {:.1}s, {}) ETA: {:.0}m",
-                            idx + 1, total, tensor_name, size_mb, recon_ms as f64 / 1000.0, device_tag, remaining / 60.0
+                            idx + 1,
+                            total,
+                            tensor_name,
+                            size_mb,
+                            recon_ms as f64 / 1000.0,
+                            device_tag,
+                            remaining / 60.0
                         );
-                    }
+                    },
                     Err(e) => {
-                        eprintln!("[{}/{}] {} WRITE FAILED: {}", idx + 1, total, tensor_name, e);
+                        eprintln!(
+                            "[{}/{}] {} WRITE FAILED: {}",
+                            idx + 1,
+                            total,
+                            tensor_name,
+                            e
+                        );
                         failed += 1;
-                    }
+                    },
                 }
 
                 // CRITICAL: Explicit cleanup to free VRAM
@@ -574,11 +730,11 @@ fn run_batched_mode(
                 if has_cuda && !use_cpu {
                     let _ = device_synchronize();
                 }
-            }
+            },
             Err(e) => {
                 eprintln!("[{}/{}] {} FAILED: {}", idx + 1, total, tensor_name, e);
                 failed += 1;
-            }
+            },
         }
     }
 
@@ -596,7 +752,10 @@ fn run_batched_mode(
         let mut layer_size: u64 = 0;
 
         for path in tensor_paths {
-            let tensor_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
+            let tensor_name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown");
             let use_cpu = should_use_cpu(path, tensor_name);
 
             let result = if use_cpu {
@@ -604,7 +763,11 @@ fn run_batched_mode(
                 cpu_loader.get(tensor_name, &cpu_device, dtype_cpu)
             } else {
                 gpu_recons += 1;
-                gpu_loader.as_ref().unwrap().get(tensor_name, gpu_device.as_ref().unwrap(), dtype_gpu)
+                gpu_loader.as_ref().unwrap().get(
+                    tensor_name,
+                    gpu_device.as_ref().unwrap(),
+                    dtype_gpu,
+                )
             };
 
             match result {
@@ -617,25 +780,30 @@ fn run_batched_mode(
                         DType::F16 => {
                             let data: Vec<half::f16> = tensor_cpu.flatten_all()?.to_vec1()?;
                             (bytemuck::cast_slice(&data).to_vec(), "F16")
-                        }
+                        },
                         DType::F32 => {
                             let data: Vec<f32> = tensor_cpu.flatten_all()?.to_vec1()?;
                             (bytemuck::cast_slice(&data).to_vec(), "F32")
-                        }
+                        },
                         DType::BF16 => {
                             let data: Vec<half::bf16> = tensor_cpu.flatten_all()?.to_vec1()?;
                             (bytemuck::cast_slice(&data).to_vec(), "BF16")
-                        }
+                        },
                         _ => {
                             let t32 = tensor_cpu.to_dtype(DType::F32)?;
                             let data: Vec<f32> = t32.flatten_all()?.to_vec1()?;
                             (bytemuck::cast_slice(&data).to_vec(), "F32")
-                        }
+                        },
                     };
 
                     let shape: Vec<usize> = tensor_cpu.dims().to_vec();
                     layer_size += data.len() as u64;
-                    layer_tensors.push((tensor_name.to_string(), data, dtype_str.to_string(), shape));
+                    layer_tensors.push((
+                        tensor_name.to_string(),
+                        data,
+                        dtype_str.to_string(),
+                        shape,
+                    ));
 
                     // CRITICAL: Explicit cleanup to free VRAM immediately
                     drop(tensor_cpu);
@@ -648,11 +816,11 @@ fn run_batched_mode(
                         // Small sleep to ensure cleanup completes
                         std::thread::sleep(std::time::Duration::from_millis(10));
                     }
-                }
+                },
                 Err(e) => {
                     eprintln!("  {} FAILED: {}", tensor_name, e);
                     layer_failed += 1;
-                }
+                },
             }
         }
 
@@ -660,14 +828,22 @@ fn run_batched_mode(
         let layer_tensors_count = layer_tensors.len();
 
         if layer_tensors.is_empty() {
-            eprintln!("[{}/{}] {} - all tensors failed!", non_layer_offset + idx + 1, total, layer_name);
+            eprintln!(
+                "[{}/{}] {} - all tensors failed!",
+                non_layer_offset + idx + 1,
+                total,
+                layer_name
+            );
             failed += 1;
             continue;
         }
 
         // Report if any tensors failed
         if layer_failed > 0 {
-            eprintln!("  WARNING: {} tensors failed in {}", layer_failed, layer_name);
+            eprintln!(
+                "  WARNING: {} tensors failed in {}",
+                layer_failed, layer_name
+            );
         }
 
         // Write batched layer file from pre-extracted bytes
@@ -685,13 +861,25 @@ fn run_batched_mode(
 
                 println!(
                     "[{}/{}] {} ({} tensors, {:.1} MB, {:.1}s) ETA: {:.0}m",
-                    current, total, layer_name, layer_tensors_count, size_mb, recon_ms as f64 / 1000.0, remaining / 60.0
+                    current,
+                    total,
+                    layer_name,
+                    layer_tensors_count,
+                    size_mb,
+                    recon_ms as f64 / 1000.0,
+                    remaining / 60.0
                 );
-            }
+            },
             Err(e) => {
-                eprintln!("[{}/{}] {} WRITE FAILED: {}", non_layer_offset + idx + 1, total, layer_name, e);
+                eprintln!(
+                    "[{}/{}] {} WRITE FAILED: {}",
+                    non_layer_offset + idx + 1,
+                    total,
+                    layer_name,
+                    e
+                );
                 failed += 1;
-            }
+            },
         }
 
         // Clear layer tensors (free RAM)
@@ -711,9 +899,15 @@ fn run_batched_mode(
     println!("  GPU:            {} tensors", gpu_recons);
     println!("  CPU (large):    {} tensors", cpu_recons);
     println!();
-    println!("Total time:       {:.1} minutes", elapsed.as_secs_f64() / 60.0);
+    println!(
+        "Total time:       {:.1} minutes",
+        elapsed.as_secs_f64() / 60.0
+    );
     println!("Total written:    {:.2} GB", total_bytes as f64 / 1e9);
-    println!("Throughput:       {:.1} layers/min", converted_layers as f64 / (elapsed.as_secs_f64() / 60.0));
+    println!(
+        "Throughput:       {:.1} layers/min",
+        converted_layers as f64 / (elapsed.as_secs_f64() / 60.0)
+    );
     println!();
     println!("Output: {}", output_dir.display());
 
@@ -735,7 +929,11 @@ fn save_layer_safetensor_from_bytes(
 
         header_parts.push(format!(
             r#""{}": {{"dtype": "{}", "shape": [{}], "data_offsets": [{}, {}]}}"#,
-            name, dtype, shape_str.join(", "), offset, end_offset
+            name,
+            dtype,
+            shape_str.join(", "),
+            offset,
+            end_offset
         ));
 
         offset = end_offset;
@@ -789,20 +987,20 @@ fn save_layer_safetensor(tensors: &[(String, Tensor)], path: &Path) -> Result<us
             DType::F16 => {
                 let data: Vec<half::f16> = tensor.flatten_all()?.to_vec1()?;
                 bytemuck::cast_slice(&data).to_vec()
-            }
+            },
             DType::F32 => {
                 let data: Vec<f32> = tensor.flatten_all()?.to_vec1()?;
                 bytemuck::cast_slice(&data).to_vec()
-            }
+            },
             DType::BF16 => {
                 let data: Vec<half::bf16> = tensor.flatten_all()?.to_vec1()?;
                 bytemuck::cast_slice(&data).to_vec()
-            }
+            },
             _ => {
                 let tensor = tensor.to_dtype(DType::F32)?;
                 let data: Vec<f32> = tensor.flatten_all()?.to_vec1()?;
                 bytemuck::cast_slice(&data).to_vec()
-            }
+            },
         };
 
         let dtype_str = match tensor.dtype() {
@@ -826,7 +1024,11 @@ fn save_layer_safetensor(tensors: &[(String, Tensor)], path: &Path) -> Result<us
 
         header_parts.push(format!(
             r#""{}": {{"dtype": "{}", "shape": [{}], "data_offsets": [{}, {}]}}"#,
-            name, dtype, shape_str.join(", "), offset, end_offset
+            name,
+            dtype,
+            shape_str.join(", "),
+            offset,
+            end_offset
         ));
 
         offset = end_offset;
@@ -866,11 +1068,11 @@ fn writer_thread(rx: Receiver<TensorToWrite>, stats: Arc<ConversionStats>) {
                 stats.write_ms.fetch_add(write_ms, Ordering::Relaxed);
                 stats.total_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
                 stats.converted.fetch_add(1, Ordering::Relaxed);
-            }
+            },
             Err(e) => {
                 eprintln!("Write failed for {}: {}", item.name, e);
                 stats.failed.fetch_add(1, Ordering::Relaxed);
-            }
+            },
         }
     }
 }
@@ -886,20 +1088,20 @@ fn save_safetensor_fast(tensor: &Tensor, name: &str, path: &Path) -> Result<usiz
         DType::F16 => {
             let data: Vec<half::f16> = tensor.flatten_all()?.to_vec1()?;
             bytemuck::cast_slice(&data).to_vec()
-        }
+        },
         DType::F32 => {
             let data: Vec<f32> = tensor.flatten_all()?.to_vec1()?;
             bytemuck::cast_slice(&data).to_vec()
-        }
+        },
         DType::BF16 => {
             let data: Vec<half::bf16> = tensor.flatten_all()?.to_vec1()?;
             bytemuck::cast_slice(&data).to_vec()
-        }
+        },
         _ => {
             let tensor = tensor.to_dtype(DType::F32)?;
             let data: Vec<f32> = tensor.flatten_all()?.to_vec1()?;
             bytemuck::cast_slice(&data).to_vec()
-        }
+        },
     };
 
     let dtype_str = match tensor.dtype() {
@@ -970,10 +1172,7 @@ fn categorize_files(
         let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
 
         // Skip small tensors if enabled
-        let is_small = skip_small && (
-            size < threshold_bytes ||
-            is_small_tensor_name(name)
-        );
+        let is_small = skip_small && (size < threshold_bytes || is_small_tensor_name(name));
 
         if is_small {
             small.push(path.clone());
@@ -987,14 +1186,14 @@ fn categorize_files(
 
 /// Check if tensor name indicates a small tensor (norms, scales, biases)
 fn is_small_tensor_name(name: &str) -> bool {
-    name.contains("layernorm") ||
-    name.contains("_norm") ||
-    name.contains("_scale") ||
-    name.contains("input_scale") ||
-    name.contains("_bias") ||
-    name.ends_with("bias") ||
-    name.contains("rotary") ||
-    name == "model_norm_weight"
+    name.contains("layernorm")
+        || name.contains("_norm")
+        || name.contains("_scale")
+        || name.contains("input_scale")
+        || name.contains("_bias")
+        || name.ends_with("bias")
+        || name.contains("rotary")
+        || name == "model_norm_weight"
 }
 
 fn print_help() {

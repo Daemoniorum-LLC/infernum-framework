@@ -48,6 +48,13 @@ const FUSED_GEMM_CUDA: &str = r#"
 #include <cuda_fp16.h>
 
 // ============================================================================
+// Tile sizes for GEMM computation (must match Rust constants for grid calc)
+// ============================================================================
+#define TILE_M 64
+#define TILE_N 64
+#define TILE_K 32
+
+// ============================================================================
 // Optimized INT4 GEMV (M=1) - Vector-Matrix Multiplication for Decode
 // Each thread computes one output element by accumulating K dot products
 // Grid: (ceil(N/GEMV_BLOCK), 1), Block: (GEMV_BLOCK, 1)
@@ -926,50 +933,64 @@ impl FusedGemmKernel {
                     "fused_gptq_gemm_f16",
                 ],
             )
-            .map_err(|e| InferenceError::Kernel(format!("Failed to load fused GEMM kernel: {}", e)))?;
+            .map_err(|e| {
+                InferenceError::Kernel(format!("Failed to load fused GEMM kernel: {}", e))
+            })?;
 
         // Load GEMM functions
         self.int4_func = Some(
             self.device
                 .get_func("fused_gemm", "fused_int4_gemm_f16")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get fused_int4_gemm_f16 function".to_string()))?,
+                .ok_or_else(|| {
+                    InferenceError::Kernel("Failed to get fused_int4_gemm_f16 function".to_string())
+                })?,
         );
 
         self.f16_func = Some(
             self.device
                 .get_func("fused_gemm", "gemm_f16")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get gemm_f16 function".to_string()))?,
+                .ok_or_else(|| {
+                    InferenceError::Kernel("Failed to get gemm_f16 function".to_string())
+                })?,
         );
 
         self.f16_bt_func = Some(
             self.device
                 .get_func("fused_gemm", "gemm_f16_bt")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get gemm_f16_bt function".to_string()))?,
+                .ok_or_else(|| {
+                    InferenceError::Kernel("Failed to get gemm_f16_bt function".to_string())
+                })?,
         );
 
         // Load GEMV functions (M=1 optimized)
         self.int4_gemv_func = Some(
             self.device
                 .get_func("fused_gemm", "fused_int4_gemv_f16")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get fused_int4_gemv_f16 function".to_string()))?,
+                .ok_or_else(|| {
+                    InferenceError::Kernel("Failed to get fused_int4_gemv_f16 function".to_string())
+                })?,
         );
 
         self.int4_gemv_v2_func = Some(
             self.device
                 .get_func("fused_gemm", "fused_int4_gemv_f16_v2")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get fused_int4_gemv_f16_v2 function".to_string()))?,
+                .ok_or_else(|| {
+                    InferenceError::Kernel(
+                        "Failed to get fused_int4_gemv_f16_v2 function".to_string(),
+                    )
+                })?,
         );
 
-        self.f16_gemv_func = Some(
-            self.device
-                .get_func("fused_gemm", "gemv_f16")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get gemv_f16 function".to_string()))?,
-        );
+        self.f16_gemv_func = Some(self.device.get_func("fused_gemm", "gemv_f16").ok_or_else(
+            || InferenceError::Kernel("Failed to get gemv_f16 function".to_string()),
+        )?);
 
         self.f16_gemv_bt_func = Some(
             self.device
                 .get_func("fused_gemm", "gemv_f16_bt")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get gemv_f16_bt function".to_string()))?,
+                .ok_or_else(|| {
+                    InferenceError::Kernel("Failed to get gemv_f16_bt function".to_string())
+                })?,
         );
 
         // WMMA tensor core kernels disabled for now (require sm_70+ and CUDA toolkit)
@@ -982,24 +1003,28 @@ impl FusedGemmKernel {
         self.gptq_gemv_func = Some(
             self.device
                 .get_func("fused_gemm", "fused_gptq_gemv_f16")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get fused_gptq_gemv_f16 function".to_string()))?,
+                .ok_or_else(|| {
+                    InferenceError::Kernel("Failed to get fused_gptq_gemv_f16 function".to_string())
+                })?,
         );
 
         self.awq_gemv_func = Some(
             self.device
                 .get_func("fused_gemm", "fused_awq_gemv_f16")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get fused_awq_gemv_f16 function".to_string()))?,
+                .ok_or_else(|| {
+                    InferenceError::Kernel("Failed to get fused_awq_gemv_f16 function".to_string())
+                })?,
         );
 
         self.gptq_gemm_func = Some(
             self.device
                 .get_func("fused_gemm", "fused_gptq_gemm_f16")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get fused_gptq_gemm_f16 function".to_string()))?,
+                .ok_or_else(|| {
+                    InferenceError::Kernel("Failed to get fused_gptq_gemm_f16 function".to_string())
+                })?,
         );
 
-        tracing::info!(
-            "Loaded GEMM kernels: GEMV (M=1), scalar GEMM (M>1), GPTQ/AWQ"
-        );
+        tracing::info!("Loaded GEMM kernels: GEMV (M=1), scalar GEMM (M>1), GPTQ/AWQ");
 
         Ok(())
     }
@@ -1083,12 +1108,16 @@ impl FusedGemmKernel {
                         ),
                     )
                 }
-                .map_err(|e| InferenceError::Kernel(format!("INT4 WMMA GEMM launch failed: {}", e)));
+                .map_err(|e| {
+                    InferenceError::Kernel(format!("INT4 WMMA GEMM launch failed: {}", e))
+                });
             }
         }
 
         // Fallback to scalar GEMM if tensor cores not available
-        let func = self.int4_func.as_ref()
+        let func = self
+            .int4_func
+            .as_ref()
             .ok_or_else(|| InferenceError::Kernel("Fused GEMM kernel not loaded".to_string()))?;
 
         // Grid: one block per 64x64 output tile
@@ -1132,7 +1161,9 @@ impl FusedGemmKernel {
         output: &mut GpuTensor,
     ) -> Result<(), InferenceError> {
         // Use the v2 kernel which processes pairs of K values
-        let func = self.int4_gemv_v2_func.as_ref()
+        let func = self
+            .int4_gemv_v2_func
+            .as_ref()
             .ok_or_else(|| InferenceError::Kernel("INT4 GEMV kernel not loaded".to_string()))?;
 
         let input_shape = input.shape();
@@ -1239,12 +1270,16 @@ impl FusedGemmKernel {
                         ),
                     )
                 }
-                .map_err(|e| InferenceError::Kernel(format!("F16 WMMA GEMM launch failed: {}", e)));
+                .map_err(|e| {
+                    InferenceError::Kernel(format!("F16 WMMA GEMM launch failed: {}", e))
+                });
             }
         }
 
         // Fallback to scalar GEMM if tensor cores not available
-        let func = self.f16_func.as_ref()
+        let func = self
+            .f16_func
+            .as_ref()
             .ok_or_else(|| InferenceError::Kernel("GEMM kernel not loaded".to_string()))?;
 
         // Tiled launch: 16x16 threads, 64x64 tiles
@@ -1284,7 +1319,9 @@ impl FusedGemmKernel {
         b: &GpuTensor,
         c: &mut GpuTensor,
     ) -> Result<(), InferenceError> {
-        let func = self.f16_gemv_func.as_ref()
+        let func = self
+            .f16_gemv_func
+            .as_ref()
             .ok_or_else(|| InferenceError::Kernel("F16 GEMV kernel not loaded".to_string()))?;
 
         let a_shape = a.shape();
@@ -1348,7 +1385,7 @@ impl FusedGemmKernel {
 
         let m = a_shape[0];
         let k = a_shape[1];
-        let n = b_shape[0];  // B is [N, K] (transposed)
+        let n = b_shape[0]; // B is [N, K] (transposed)
 
         // Validate dimensions for C = A @ B^T
         // A: [M, K], B: [N, K] (stored as B^T), C: [M, N]
@@ -1364,7 +1401,9 @@ impl FusedGemmKernel {
             return self.forward_f16_bt_gemv(a, b, c);
         }
 
-        let func = self.f16_bt_func.as_ref()
+        let func = self
+            .f16_bt_func
+            .as_ref()
             .ok_or_else(|| InferenceError::Kernel("GEMM BT kernel not loaded".to_string()))?;
 
         // Tiled launch: 16x16 threads, 64x64 tiles
@@ -1404,7 +1443,9 @@ impl FusedGemmKernel {
         b: &GpuTensor,
         c: &mut GpuTensor,
     ) -> Result<(), InferenceError> {
-        let func = self.f16_gemv_bt_func.as_ref()
+        let func = self
+            .f16_gemv_bt_func
+            .as_ref()
             .ok_or_else(|| InferenceError::Kernel("F16 GEMV BT kernel not loaded".to_string()))?;
 
         let a_shape = a.shape();
@@ -1475,11 +1516,14 @@ impl FusedGemmKernel {
 
         // Use optimized GEMV kernel for M=1 (decode case)
         if m == 1 {
-            return self.forward_gptq_gemv(input, weights, scales, zeros, g_idx, output, group_size);
+            return self
+                .forward_gptq_gemv(input, weights, scales, zeros, g_idx, output, group_size);
         }
 
         // Use GPTQ GEMM for M > 1 (prefill)
-        let func = self.gptq_gemm_func.as_ref()
+        let func = self
+            .gptq_gemm_func
+            .as_ref()
             .ok_or_else(|| InferenceError::Kernel("GPTQ GEMM kernel not loaded".to_string()))?;
 
         // Grid: one block per 64x64 output tile
@@ -1528,7 +1572,9 @@ impl FusedGemmKernel {
         output: &mut GpuTensor,
         group_size: usize,
     ) -> Result<(), InferenceError> {
-        let func = self.gptq_gemv_func.as_ref()
+        let func = self
+            .gptq_gemv_func
+            .as_ref()
             .ok_or_else(|| InferenceError::Kernel("GPTQ GEMV kernel not loaded".to_string()))?;
 
         let input_shape = input.shape();
@@ -1612,7 +1658,9 @@ impl FusedGemmKernel {
         }
 
         // Use GPTQ GEMM for M > 1 (prefill) - AWQ uses sequential groups (no g_idx)
-        let func = self.gptq_gemm_func.as_ref()
+        let func = self
+            .gptq_gemm_func
+            .as_ref()
             .ok_or_else(|| InferenceError::Kernel("AWQ GEMM kernel not loaded".to_string()))?;
 
         // Grid: one block per 64x64 output tile
@@ -1660,7 +1708,9 @@ impl FusedGemmKernel {
         output: &mut GpuTensor,
         group_size: usize,
     ) -> Result<(), InferenceError> {
-        let func = self.awq_gemv_func.as_ref()
+        let func = self
+            .awq_gemv_func
+            .as_ref()
             .ok_or_else(|| InferenceError::Kernel("AWQ GEMV kernel not loaded".to_string()))?;
 
         let input_shape = input.shape();
@@ -1707,6 +1757,45 @@ impl FusedGemmKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Specification: TILE constants must be defined in CUDA source.
+    ///
+    /// The fused_gptq_gemm_f16 kernel uses TILE_M, TILE_N, TILE_K for shared memory
+    /// allocation and loop bounds. These must be #define'd in the CUDA source since
+    /// Rust constants are not visible to NVRTC.
+    ///
+    /// Gap discovered: 2026-02-05 during HoloTensor integration.
+    /// See: docs/specs/CUDA-KERNEL-TILING-FIX.md
+    #[test]
+    fn spec_tile_constants_defined_in_cuda_source() {
+        // TILE_M, TILE_N, TILE_K must be #define'd for NVRTC compilation
+        assert!(
+            FUSED_GEMM_CUDA.contains("#define TILE_M"),
+            "TILE_M must be #define'd in CUDA source for fused_gptq_gemm_f16"
+        );
+        assert!(
+            FUSED_GEMM_CUDA.contains("#define TILE_N"),
+            "TILE_N must be #define'd in CUDA source for fused_gptq_gemm_f16"
+        );
+        assert!(
+            FUSED_GEMM_CUDA.contains("#define TILE_K"),
+            "TILE_K must be #define'd in CUDA source for fused_gptq_gemm_f16"
+        );
+
+        // Verify values match Rust constants (for grid calculation consistency)
+        assert!(
+            FUSED_GEMM_CUDA.contains("#define TILE_M 64"),
+            "TILE_M must be 64 to match Rust constant"
+        );
+        assert!(
+            FUSED_GEMM_CUDA.contains("#define TILE_N 64"),
+            "TILE_N must be 64 to match Rust constant"
+        );
+        assert!(
+            FUSED_GEMM_CUDA.contains("#define TILE_K 32"),
+            "TILE_K must be 32 to match Rust constant"
+        );
+    }
 
     #[test]
     fn test_fused_gemm_kernel_compilation() {

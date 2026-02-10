@@ -75,7 +75,7 @@ impl WorkloadType {
     /// Below this, results are too degraded to be useful.
     pub fn min_quality(self) -> f32 {
         match self {
-            Self::LlmInference => 0.4,      // LLM needs more precision
+            Self::LlmInference => 0.4,     // LLM needs more precision
             Self::ImageGeneration => 0.3,  // Images more tolerant
             Self::VideoGeneration => 0.25, // Video very tolerant at high timesteps
         }
@@ -94,7 +94,7 @@ impl WorkloadType {
     pub fn typical_memory_mb(self) -> u64 {
         match self {
             Self::LlmInference => 8 * 1024,     // 8GB typical for inference
-            Self::ImageGeneration => 6 * 1024, // 6GB for SDXL
+            Self::ImageGeneration => 6 * 1024,  // 6GB for SDXL
             Self::VideoGeneration => 12 * 1024, // 12GB for video
         }
     }
@@ -102,9 +102,9 @@ impl WorkloadType {
     /// Returns whether this workload type is streaming (continuous output).
     pub fn is_streaming(self) -> bool {
         match self {
-            Self::LlmInference => true,        // Token by token
-            Self::ImageGeneration => false,    // Single output
-            Self::VideoGeneration => true,     // Frame by frame
+            Self::LlmInference => true,     // Token by token
+            Self::ImageGeneration => false, // Single output
+            Self::VideoGeneration => true,  // Frame by frame
         }
     }
 }
@@ -137,6 +137,8 @@ mod tests {
 
     #[test]
     fn test_workload_min_quality() {
-        assert!(WorkloadType::LlmInference.min_quality() > WorkloadType::VideoGeneration.min_quality());
+        assert!(
+            WorkloadType::LlmInference.min_quality() > WorkloadType::VideoGeneration.min_quality()
+        );
     }
 }

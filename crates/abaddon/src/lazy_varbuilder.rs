@@ -130,14 +130,17 @@ impl LruCache {
         }
 
         // Evict if necessary
-        while self.total_bytes + size_bytes > self.max_bytes || self.entries.len() >= self.max_entries {
+        while self.total_bytes + size_bytes > self.max_bytes
+            || self.entries.len() >= self.max_entries
+        {
             if !self.evict_lru() {
                 break; // No more entries to evict
             }
         }
 
         // Final check - don't insert if still over budget (shouldn't happen, but defensive)
-        if self.total_bytes + size_bytes > self.max_bytes || self.entries.len() >= self.max_entries {
+        if self.total_bytes + size_bytes > self.max_bytes || self.entries.len() >= self.max_entries
+        {
             return;
         }
 
@@ -223,11 +226,7 @@ impl LruCache {
 
 impl LazyVarBuilder {
     /// Creates a new lazy VarBuilder from a tensor provider.
-    pub fn new(
-        provider: Arc<dyn TensorProvider>,
-        device: Device,
-        dtype: DType,
-    ) -> Self {
+    pub fn new(provider: Arc<dyn TensorProvider>, device: Device, dtype: DType) -> Self {
         Self::with_cache_config(provider, device, dtype, CacheConfig::default())
     }
 
@@ -357,11 +356,17 @@ impl LazyVarBuilder {
         } else {
             (0, 0)
         };
-        tracing::debug!(local_count = local_count, "LazyVarBuilder: Cleared from local cache");
+        tracing::debug!(
+            local_count = local_count,
+            "LazyVarBuilder: Cleared from local cache"
+        );
 
         // Also clear from the provider's cache (e.g., TieredHoloLoader)
         let (provider_count, provider_bytes) = self.provider.clear_prefix(prefix);
-        tracing::debug!(provider_count = provider_count, "LazyVarBuilder: Cleared from provider cache");
+        tracing::debug!(
+            provider_count = provider_count,
+            "LazyVarBuilder: Cleared from provider cache"
+        );
 
         (local_count + provider_count, local_bytes + provider_bytes)
     }
@@ -387,6 +392,8 @@ fn dtype_size(dtype: DType) -> u64 {
         DType::F64 | DType::I64 => 8,
         DType::F16 | DType::BF16 => 2,
         DType::U8 => 1,
+        // Handle new candle_core DType variants (I16, I32, F8E4M3, etc.)
+        _ => 4,
     }
 }
 
@@ -445,9 +452,12 @@ impl DirectoryTensorProvider {
 
 impl TensorProvider for DirectoryTensorProvider {
     fn get(&self, name: &str, device: &Device, dtype: DType) -> Result<Tensor, HctError> {
-        let path = self.tensor_files.get(name).ok_or_else(|| HctError::Tensor {
-            message: format!("Tensor not found: {}", name),
-        })?;
+        let path = self
+            .tensor_files
+            .get(name)
+            .ok_or_else(|| HctError::Tensor {
+                message: format!("Tensor not found: {}", name),
+            })?;
 
         let loader = HctLoader::from_file(path)?;
         loader.to_tensor(device, Some(dtype))
@@ -466,8 +476,8 @@ impl TensorProvider for DirectoryTensorProvider {
 mod tests {
     use super::*;
     use std::fs;
-    use tempfile::TempDir;
     use std::io::Write;
+    use tempfile::TempDir;
 
     /// Mock tensor provider for testing.
     struct MockTensorProvider {
@@ -511,11 +521,7 @@ mod tests {
         let mut provider = MockTensorProvider::new();
         provider.add_tensor("weight", vec![4], vec![1.0, 2.0, 3.0, 4.0]);
 
-        let vb = LazyVarBuilder::new(
-            Arc::new(provider),
-            Device::Cpu,
-            DType::F32,
-        );
+        let vb = LazyVarBuilder::new(Arc::new(provider), Device::Cpu, DType::F32);
 
         // At this point, no tensor should be loaded
         let (cached_count, _) = vb.cache_stats();
@@ -536,11 +542,7 @@ mod tests {
         provider.add_tensor("tensor_a", vec![2], vec![1.0, 2.0]);
         provider.add_tensor("tensor_b", vec![2], vec![3.0, 4.0]);
 
-        let vb = LazyVarBuilder::new(
-            Arc::new(provider),
-            Device::Cpu,
-            DType::F32,
-        );
+        let vb = LazyVarBuilder::new(Arc::new(provider), Device::Cpu, DType::F32);
 
         // Access tensor_a
         let _a = vb.get("tensor_a").expect("load tensor_a");
@@ -572,12 +574,8 @@ mod tests {
             max_entries: 2,
         };
 
-        let vb = LazyVarBuilder::with_cache_config(
-            Arc::new(provider),
-            Device::Cpu,
-            DType::F32,
-            config,
-        );
+        let vb =
+            LazyVarBuilder::with_cache_config(Arc::new(provider), Device::Cpu, DType::F32, config);
 
         // Load tensors 1 and 2
         let _t1 = vb.get("tensor_1").expect("load tensor_1");
@@ -596,15 +594,23 @@ mod tests {
     #[test]
     fn test_lazy_varbuilder_pp_get_works_for_model_layers() {
         let mut provider = MockTensorProvider::new();
-        provider.add_tensor("model.layers.0.self_attn.q_proj.weight", vec![4], vec![1.0, 2.0, 3.0, 4.0]);
-        provider.add_tensor("model.layers.0.self_attn.k_proj.weight", vec![4], vec![5.0, 6.0, 7.0, 8.0]);
-        provider.add_tensor("model.layers.0.mlp.gate_proj.weight", vec![4], vec![9.0, 10.0, 11.0, 12.0]);
-
-        let vb = LazyVarBuilder::new(
-            Arc::new(provider),
-            Device::Cpu,
-            DType::F32,
+        provider.add_tensor(
+            "model.layers.0.self_attn.q_proj.weight",
+            vec![4],
+            vec![1.0, 2.0, 3.0, 4.0],
         );
+        provider.add_tensor(
+            "model.layers.0.self_attn.k_proj.weight",
+            vec![4],
+            vec![5.0, 6.0, 7.0, 8.0],
+        );
+        provider.add_tensor(
+            "model.layers.0.mlp.gate_proj.weight",
+            vec![4],
+            vec![9.0, 10.0, 11.0, 12.0],
+        );
+
+        let vb = LazyVarBuilder::new(Arc::new(provider), Device::Cpu, DType::F32);
 
         // Navigate using pp()
         let layer_vb = vb.pp("model").pp("layers").pp("0");
@@ -633,11 +639,7 @@ mod tests {
         let mut provider = MockTensorProvider::new();
         provider.add_tensor("existing", vec![2], vec![1.0, 2.0]);
 
-        let vb = LazyVarBuilder::new(
-            Arc::new(provider),
-            Device::Cpu,
-            DType::F32,
-        );
+        let vb = LazyVarBuilder::new(Arc::new(provider), Device::Cpu, DType::F32);
 
         assert!(vb.contains("existing"));
         assert!(!vb.contains("nonexistent"));

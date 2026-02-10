@@ -261,7 +261,9 @@ impl ResearchTracker {
         self.record_event(event);
 
         let mut stats = self.stats.write();
-        let session_stats = stats.entry(id.clone()).or_insert_with(|| SessionStats::new(id.clone()));
+        let session_stats = stats
+            .entry(id.clone())
+            .or_insert_with(|| SessionStats::new(id.clone()));
         session_stats.start_time = Some(Utc::now());
 
         id
@@ -344,7 +346,8 @@ impl ResearchTracker {
 
         // Update global counters
         self.global_requests.fetch_add(1, Ordering::Relaxed);
-        self.global_tokens.fetch_add((input_tokens + output_tokens) as u64, Ordering::Relaxed);
+        self.global_tokens
+            .fetch_add((input_tokens + output_tokens) as u64, Ordering::Relaxed);
     }
 
     /// Records a checkpoint creation.
@@ -796,7 +799,11 @@ mod tests {
             from_phase: "init".to_string(),
             to_phase: "running".to_string(),
         };
-        if let EventType::PhaseTransition { from_phase, to_phase } = event {
+        if let EventType::PhaseTransition {
+            from_phase,
+            to_phase,
+        } = event
+        {
             assert_eq!(from_phase, "init");
             assert_eq!(to_phase, "running");
         } else {
@@ -1082,12 +1089,8 @@ mod tests {
     fn test_research_tracker() {
         let tracker = ResearchTracker::new();
 
-        let session_id = tracker.start_session(
-            "session-001",
-            "infernum",
-            "agent-001",
-            "claude-opus-4",
-        );
+        let session_id =
+            tracker.start_session("session-001", "infernum", "agent-001", "claude-opus-4");
 
         tracker.record_inference(
             &session_id,
@@ -1164,15 +1167,7 @@ mod tests {
         let session_id = tracker.start_session("multi", "p", "a", "m");
 
         for i in 0..5 {
-            tracker.record_inference(
-                &session_id,
-                100,
-                50,
-                100,
-                i % 2 == 0,
-                "project",
-                "model",
-            );
+            tracker.record_inference(&session_id, 100, 50, 100, i % 2 == 0, "project", "model");
         }
 
         let stats = tracker.get_stats(&session_id).unwrap();
@@ -1204,7 +1199,9 @@ mod tests {
 
         let events = tracker.get_events(&session_id);
         assert!(events.len() >= 2); // Start + transition
-        assert!(events.iter().any(|e| matches!(e.event_type, EventType::PhaseTransition { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e.event_type, EventType::PhaseTransition { .. })));
     }
 
     #[test]
@@ -1471,9 +1468,6 @@ mod tests {
     #[test]
     fn test_json_file_listener_path_from_string() {
         let listener = JsonFileListener::new(String::from("/tmp/events.jsonl"));
-        assert_eq!(
-            listener.path,
-            std::path::PathBuf::from("/tmp/events.jsonl")
-        );
+        assert_eq!(listener.path, std::path::PathBuf::from("/tmp/events.jsonl"));
     }
 }

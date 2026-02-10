@@ -8,7 +8,7 @@ use std::path::Path;
 use tempfile::TempDir;
 
 use abaddon::loader::WeightFiles;
-use abaddon::{TieredConfig, TieredHoloLoader, LazyVarBuilder, TensorProvider};
+use abaddon::{LazyVarBuilder, TensorProvider, TieredConfig, TieredHoloLoader};
 use candle_core::{DType, Device, Tensor};
 use haagenti::tensor::{CompressionAlgorithm, DType as HctDType, HctWriter};
 use haagenti::Lz4Compressor;
@@ -27,10 +27,13 @@ fn create_test_hct_file(dir: &Path, name: &str, shape: &[u64]) -> std::path::Pat
         CompressionAlgorithm::Lz4,
         HctDType::F32,
         shape.to_vec(),
-    ).with_block_size(64 * 1024);
+    )
+    .with_block_size(64 * 1024);
 
     let compressor = Lz4Compressor::new();
-    writer.compress_data(&bytes, &compressor).expect("write data");
+    writer
+        .compress_data(&bytes, &compressor)
+        .expect("write data");
     writer.finish().expect("finish");
 
     path
@@ -42,13 +45,41 @@ fn create_test_model_dir() -> TempDir {
 
     // Create some model weights
     create_test_hct_file(temp_dir.path(), "model_embed_tokens_weight", &[128, 64]);
-    create_test_hct_file(temp_dir.path(), "model_layers_0_self_attn_q_proj_weight", &[64, 64]);
-    create_test_hct_file(temp_dir.path(), "model_layers_0_self_attn_k_proj_weight", &[64, 64]);
-    create_test_hct_file(temp_dir.path(), "model_layers_0_self_attn_v_proj_weight", &[64, 64]);
-    create_test_hct_file(temp_dir.path(), "model_layers_0_self_attn_o_proj_weight", &[64, 64]);
-    create_test_hct_file(temp_dir.path(), "model_layers_0_mlp_down_proj_weight", &[64, 128]);
-    create_test_hct_file(temp_dir.path(), "model_layers_0_mlp_up_proj_weight", &[128, 64]);
-    create_test_hct_file(temp_dir.path(), "model_layers_0_input_layernorm_weight", &[64]);
+    create_test_hct_file(
+        temp_dir.path(),
+        "model_layers_0_self_attn_q_proj_weight",
+        &[64, 64],
+    );
+    create_test_hct_file(
+        temp_dir.path(),
+        "model_layers_0_self_attn_k_proj_weight",
+        &[64, 64],
+    );
+    create_test_hct_file(
+        temp_dir.path(),
+        "model_layers_0_self_attn_v_proj_weight",
+        &[64, 64],
+    );
+    create_test_hct_file(
+        temp_dir.path(),
+        "model_layers_0_self_attn_o_proj_weight",
+        &[64, 64],
+    );
+    create_test_hct_file(
+        temp_dir.path(),
+        "model_layers_0_mlp_down_proj_weight",
+        &[64, 128],
+    );
+    create_test_hct_file(
+        temp_dir.path(),
+        "model_layers_0_mlp_up_proj_weight",
+        &[128, 64],
+    );
+    create_test_hct_file(
+        temp_dir.path(),
+        "model_layers_0_input_layernorm_weight",
+        &[64],
+    );
     create_test_hct_file(temp_dir.path(), "lm_head_weight", &[128, 64]);
 
     temp_dir
@@ -78,7 +109,7 @@ fn test_tiered_loader_loads_all_tensors() {
     let temp_dir = create_test_model_dir();
 
     let config = TieredConfig {
-        vram_budget: 1024 * 1024 * 1024, // 1GB
+        vram_budget: 1024 * 1024 * 1024,    // 1GB
         ram_budget: 4 * 1024 * 1024 * 1024, // 4GB
         min_quality: 0.7,
         target_quality: 0.95,
@@ -91,15 +122,24 @@ fn test_tiered_loader_loads_all_tensors() {
 
     // Get list of tensors
     let tensor_names = loader.tensor_names();
-    assert!(tensor_names.len() >= 9, "Expected at least 9 tensors, got {}", tensor_names.len());
+    assert!(
+        tensor_names.len() >= 9,
+        "Expected at least 9 tensors, got {}",
+        tensor_names.len()
+    );
 
     // Load each tensor
     for name in tensor_names {
-        let tensor = loader.get(&name, &Device::Cpu, DType::F32)
+        let tensor = loader
+            .get(&name, &Device::Cpu, DType::F32)
             .expect(&format!("load tensor: {}", name));
 
         // Verify tensor is valid
-        assert!(tensor.elem_count() > 0, "Tensor {} should have elements", name);
+        assert!(
+            tensor.elem_count() > 0,
+            "Tensor {} should have elements",
+            name
+        );
     }
 }
 
@@ -119,7 +159,8 @@ fn test_tiered_loader_as_tensor_provider() {
     assert!(provider.contains("model.layers.0.self_attn.q_proj.weight"));
 
     // Verify get works
-    let tensor = provider.get("model.embed_tokens.weight", &Device::Cpu, DType::F32)
+    let tensor = provider
+        .get("model.embed_tokens.weight", &Device::Cpu, DType::F32)
         .expect("get tensor");
     assert_eq!(tensor.dims(), &[128, 64]);
 }
@@ -133,19 +174,17 @@ fn test_lazy_varbuilder_with_tiered_loader() {
         .expect("create loader");
 
     let provider: std::sync::Arc<dyn TensorProvider> = std::sync::Arc::new(loader);
-    let lazy_vb = LazyVarBuilder::new(
-        std::sync::Arc::clone(&provider),
-        Device::Cpu,
-        DType::F32,
-    );
+    let lazy_vb = LazyVarBuilder::new(std::sync::Arc::clone(&provider), Device::Cpu, DType::F32);
 
     // Get a tensor via LazyVarBuilder
-    let tensor = lazy_vb.get("model.embed_tokens.weight")
+    let tensor = lazy_vb
+        .get("model.embed_tokens.weight")
         .expect("get tensor");
     assert_eq!(tensor.dims(), &[128, 64]);
 
     // Get another tensor
-    let tensor = lazy_vb.get("model.layers.0.self_attn.q_proj.weight")
+    let tensor = lazy_vb
+        .get("model.layers.0.self_attn.q_proj.weight")
         .expect("get tensor");
     assert_eq!(tensor.dims(), &[64, 64]);
 }
@@ -164,11 +203,7 @@ fn test_progressive_loading_collects_all_tensors() {
 
     // Create provider
     let provider: std::sync::Arc<dyn TensorProvider> = std::sync::Arc::new(loader);
-    let lazy_vb = LazyVarBuilder::new(
-        std::sync::Arc::clone(&provider),
-        Device::Cpu,
-        DType::F32,
-    );
+    let lazy_vb = LazyVarBuilder::new(std::sync::Arc::clone(&provider), Device::Cpu, DType::F32);
 
     // Collect all tensors
     let tensor_names = provider.tensor_names();
@@ -178,15 +213,19 @@ fn test_progressive_loading_collects_all_tensors() {
         match lazy_vb.get(&name) {
             Ok(tensor) => {
                 tensors.insert(name.clone(), tensor);
-            }
+            },
             Err(e) => {
                 eprintln!("Failed to load {}: {}", name, e);
-            }
+            },
         }
     }
 
     // Verify we loaded the expected number of tensors
-    assert!(tensors.len() >= 9, "Expected at least 9 tensors, got {}", tensors.len());
+    assert!(
+        tensors.len() >= 9,
+        "Expected at least 9 tensors, got {}",
+        tensors.len()
+    );
 
     // Verify specific tensors exist
     assert!(tensors.contains_key("model.embed_tokens.weight"));

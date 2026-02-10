@@ -3,9 +3,7 @@
 //! These tests verify that HoloTensor uses Haagenti's polynomial QualityCurve
 //! instead of the simple sqrt(k/N) approximation.
 
-use haagenti::holotensor::{
-    HolographicEncoding, QualityCurve, HoloTensorHeader,
-};
+use haagenti::holotensor::{HoloTensorHeader, HolographicEncoding, QualityCurve};
 use haagenti::tensor::DType;
 
 // =============================================================================
@@ -28,8 +26,14 @@ fn test_quality_curve_lrdf_accurate() {
     let lrdf_curve = HolographicEncoding::LowRankDistributed.default_quality_curve();
 
     // Verify curve coefficients are as expected
-    assert!((lrdf_curve.coefficients[0] - 0.3).abs() < 0.01, "LRDF a0 should be 0.3");
-    assert!((lrdf_curve.coefficients[1] - 0.5).abs() < 0.01, "LRDF a1 should be 0.5");
+    assert!(
+        (lrdf_curve.coefficients[0] - 0.3).abs() < 0.01,
+        "LRDF a0 should be 0.3"
+    );
+    assert!(
+        (lrdf_curve.coefficients[1] - 0.5).abs() < 0.01,
+        "LRDF a1 should be 0.5"
+    );
 
     // With LRDF, baseline quality is 30% (a0 coefficient)
     let quality_1_of_8 = lrdf_curve.predict(1, 8);
@@ -190,7 +194,11 @@ fn test_quality_curve_serialization() {
 
     // Serialize to bytes
     let bytes = original.to_bytes();
-    assert_eq!(bytes.len(), 16, "Quality curve should serialize to 16 bytes");
+    assert_eq!(
+        bytes.len(),
+        16,
+        "Quality curve should serialize to 16 bytes"
+    );
 
     // Deserialize
     let restored = QualityCurve::from_bytes(&bytes);
@@ -200,7 +208,9 @@ fn test_quality_curve_serialization() {
         assert!(
             (original.coefficients[i] - restored.coefficients[i]).abs() < 0.0001,
             "Coefficient {} mismatch: {} vs {}",
-            i, original.coefficients[i], restored.coefficients[i]
+            i,
+            original.coefficients[i],
+            restored.coefficients[i]
         );
     }
 }
@@ -263,7 +273,8 @@ fn test_lrdf_has_svd_knee() {
     assert!(
         gain_first_2 > gain_last_2,
         "LRDF should show diminishing returns: first 2 gain ({:.2}) > last 2 ({:.2})",
-        gain_first_2, gain_last_2
+        gain_first_2,
+        gain_last_2
     );
 }
 
@@ -275,14 +286,22 @@ fn test_lrdf_has_svd_knee() {
 fn test_quality_curve_zero_fragments() {
     let curve = QualityCurve::linear();
 
-    assert_eq!(curve.predict(0, 8), 0.0, "0 fragments should give 0 quality");
+    assert_eq!(
+        curve.predict(0, 8),
+        0.0,
+        "0 fragments should give 0 quality"
+    );
 }
 
 #[test]
 fn test_quality_curve_all_fragments() {
     let curve = QualityCurve::linear();
 
-    assert_eq!(curve.predict(8, 8), 1.0, "All fragments should give 100% quality");
+    assert_eq!(
+        curve.predict(8, 8),
+        1.0,
+        "All fragments should give 100% quality"
+    );
 }
 
 #[test]
@@ -290,7 +309,11 @@ fn test_quality_curve_more_than_total() {
     let curve = QualityCurve::linear();
 
     // Should clamp to 1.0
-    assert_eq!(curve.predict(10, 8), 1.0, "More than total should clamp to 100%");
+    assert_eq!(
+        curve.predict(10, 8),
+        1.0,
+        "More than total should clamp to 100%"
+    );
 }
 
 #[test]

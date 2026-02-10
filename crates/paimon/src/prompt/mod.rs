@@ -104,7 +104,11 @@ impl PromptTemplate {
     }
 
     /// Creates a new version of this template.
-    pub fn create_version(&mut self, content: impl Into<String>, message: impl Into<String>) -> &PromptVersion {
+    pub fn create_version(
+        &mut self,
+        content: impl Into<String>,
+        message: impl Into<String>,
+    ) -> &PromptVersion {
         let mut version = PromptVersion::new(content, message);
         // Assign the next version number (1-indexed)
         version.version_number = self.versions.len() as u32 + 1;
@@ -123,7 +127,8 @@ impl PromptTemplate {
 
     /// Gets the active version.
     pub fn active_version(&self) -> Option<&PromptVersion> {
-        self.active_version_id.as_ref()
+        self.active_version_id
+            .as_ref()
             .and_then(|id| self.versions.iter().find(|v| &v.id == id))
     }
 
@@ -144,7 +149,8 @@ impl PromptTemplate {
 
     /// Renders the active version with variables.
     pub fn render(&self, variables: &HashMap<String, String>) -> Result<String> {
-        let version = self.active_version()
+        let version = self
+            .active_version()
             .ok_or_else(|| PromptError::NotFound("No active version".to_string()))?;
         version.render(variables)
     }
@@ -367,12 +373,14 @@ impl TestResult {
 
     /// Records a result for version A.
     pub fn record_a(&mut self, success: bool, quality_score: f32, latency_ms: u64) {
-        self.version_a_results.record(success, quality_score, latency_ms);
+        self.version_a_results
+            .record(success, quality_score, latency_ms);
     }
 
     /// Records a result for version B.
     pub fn record_b(&mut self, success: bool, quality_score: f32, latency_ms: u64) {
-        self.version_b_results.record(success, quality_score, latency_ms);
+        self.version_b_results
+            .record(success, quality_score, latency_ms);
     }
 
     /// Determines the winner based on quality scores.
@@ -390,7 +398,9 @@ impl TestResult {
         // Simple statistical test (would use proper t-test in production)
         let diff = (a_mean - b_mean).abs();
         let pooled_std = ((self.version_a_results.quality_variance()
-            + self.version_b_results.quality_variance()) / 2.0).sqrt();
+            + self.version_b_results.quality_variance())
+            / 2.0)
+            .sqrt();
 
         if pooled_std > 0.0 {
             let effect_size = diff / pooled_std;
@@ -447,9 +457,7 @@ impl TestVersionResults {
             return 0.0;
         }
         let mean = self.avg_quality();
-        let sum_sq: f32 = self.quality_scores.iter()
-            .map(|x| (x - mean).powi(2))
-            .sum();
+        let sum_sq: f32 = self.quality_scores.iter().map(|x| (x - mean).powi(2)).sum();
         sum_sq / (self.quality_scores.len() - 1) as f32
     }
 
@@ -536,8 +544,12 @@ impl PromptStudio {
 
         // Save to database if available
         if let Some(ref db) = self.db {
-            db.save_prompt_template(&template)
-                .map_err(|e| PromptError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            db.save_prompt_template(&template).map_err(|e| {
+                PromptError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))
+            })?;
         } else {
             // Save to disk
             self.save_template_to_disk(&template).await?;
@@ -626,8 +638,12 @@ impl PromptStudio {
         let _span = info_span!("prompt_studio.delete_template", id = %id).entered();
 
         if let Some(ref db) = self.db {
-            db.delete_prompt_template(id)
-                .map_err(|e| PromptError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            db.delete_prompt_template(id).map_err(|e| {
+                PromptError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))
+            })?;
         } else {
             self.templates.write().remove(id);
         }
@@ -647,21 +663,33 @@ impl PromptStudio {
 
         if let Some(ref db) = self.db {
             // Load template from database
-            let mut template = db.load_prompt_template(template_id)
-                .map_err(|e| PromptError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
+            let mut template = db
+                .load_prompt_template(template_id)
+                .map_err(|e| {
+                    PromptError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e.to_string(),
+                    ))
+                })?
                 .ok_or_else(|| PromptError::NotFound(template_id.to_string()))?;
 
             let version = template.create_version(content, message).clone();
 
             // Save updated template back to database
-            db.save_prompt_template(&template)
-                .map_err(|e| PromptError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            db.save_prompt_template(&template).map_err(|e| {
+                PromptError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))
+            })?;
 
             info!(version_id = %version.id, "Added version");
             Ok(version)
         } else {
             // Load template from disk first
-            let mut template = self.get_template(template_id).await
+            let mut template = self
+                .get_template(template_id)
+                .await
                 .ok_or_else(|| PromptError::NotFound(template_id.to_string()))?;
 
             let version = template.create_version(content, message).clone();
@@ -670,7 +698,9 @@ impl PromptStudio {
             self.save_template_to_disk(&template).await?;
 
             // Update in-memory cache
-            self.templates.write().insert(template_id.to_string(), template);
+            self.templates
+                .write()
+                .insert(template_id.to_string(), template);
 
             info!(version_id = %version.id, "Added version");
             Ok(version)
@@ -683,20 +713,32 @@ impl PromptStudio {
             "prompt_studio.set_active_version",
             template_id = %template_id,
             version_id = %version_id
-        ).entered();
+        )
+        .entered();
 
         if let Some(ref db) = self.db {
-            let mut template = db.load_prompt_template(template_id)
-                .map_err(|e| PromptError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
+            let mut template = db
+                .load_prompt_template(template_id)
+                .map_err(|e| {
+                    PromptError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e.to_string(),
+                    ))
+                })?
                 .ok_or_else(|| PromptError::NotFound(template_id.to_string()))?;
 
             template.set_active_version(version_id)?;
 
-            db.save_prompt_template(&template)
-                .map_err(|e| PromptError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            db.save_prompt_template(&template).map_err(|e| {
+                PromptError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))
+            })?;
         } else {
             let mut templates = self.templates.write();
-            let template = templates.get_mut(template_id)
+            let template = templates
+                .get_mut(template_id)
                 .ok_or_else(|| PromptError::NotFound(template_id.to_string()))?;
 
             template.set_active_version(version_id)?;
@@ -712,7 +754,9 @@ impl PromptStudio {
         template_id: &str,
         variables: &HashMap<String, String>,
     ) -> Result<String> {
-        let template = self.get_template(template_id).await
+        let template = self
+            .get_template(template_id)
+            .await
             .ok_or_else(|| PromptError::NotFound(template_id.to_string()))?;
 
         template.render(variables)
@@ -731,10 +775,13 @@ impl PromptStudio {
             template_id = %template_id,
             version_a = %version_a_id,
             version_b = %version_b_id
-        ).entered();
+        )
+        .entered();
 
         // Verify versions exist
-        let template = self.get_template(template_id).await
+        let template = self
+            .get_template(template_id)
+            .await
             .ok_or_else(|| PromptError::NotFound(template_id.to_string()))?;
 
         if template.get_version(version_a_id).is_none() {
@@ -751,8 +798,12 @@ impl PromptStudio {
 
         // Save to database or in-memory
         if let Some(ref db) = self.db {
-            db.save_prompt_test(Some(template_id), &test)
-                .map_err(|e| PromptError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            db.save_prompt_test(Some(template_id), &test).map_err(|e| {
+                PromptError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))
+            })?;
         } else {
             self.tests.write().insert(test_id, test.clone());
         }
@@ -771,8 +822,14 @@ impl PromptStudio {
         latency_ms: u64,
     ) -> Result<()> {
         if let Some(ref db) = self.db {
-            let mut test = db.load_prompt_test(test_id)
-                .map_err(|e| PromptError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
+            let mut test = db
+                .load_prompt_test(test_id)
+                .map_err(|e| {
+                    PromptError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e.to_string(),
+                    ))
+                })?
                 .ok_or_else(|| PromptError::TestNotFound(test_id.to_string()))?;
 
             if is_version_a {
@@ -784,11 +841,16 @@ impl PromptStudio {
             // Check if we can determine a winner
             test.determine_winner(30, 0.5); // min 30 samples, effect size > 0.5
 
-            db.save_prompt_test(Some(template_id), &test)
-                .map_err(|e| PromptError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            db.save_prompt_test(Some(template_id), &test).map_err(|e| {
+                PromptError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))
+            })?;
         } else {
             let mut tests = self.tests.write();
-            let test = tests.get_mut(test_id)
+            let test = tests
+                .get_mut(test_id)
                 .ok_or_else(|| PromptError::TestNotFound(test_id.to_string()))?;
 
             if is_version_a {
@@ -839,8 +901,14 @@ impl PromptStudio {
         let _span = info_span!("prompt_studio.end_test", test_id = %test_id).entered();
 
         if let Some(ref db) = self.db {
-            let mut test = db.load_prompt_test(test_id)
-                .map_err(|e| PromptError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
+            let mut test = db
+                .load_prompt_test(test_id)
+                .map_err(|e| {
+                    PromptError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e.to_string(),
+                    ))
+                })?
                 .ok_or_else(|| PromptError::TestNotFound(test_id.to_string()))?;
 
             if test.status == TestStatus::Running {
@@ -852,14 +920,19 @@ impl PromptStudio {
                 test.ended_at = Some(Utc::now());
             }
 
-            db.save_prompt_test(Some(template_id), &test)
-                .map_err(|e| PromptError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            db.save_prompt_test(Some(template_id), &test).map_err(|e| {
+                PromptError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))
+            })?;
 
             info!(status = ?test.status, winner = ?test.winner, "Ended A/B test");
             Ok(test)
         } else {
             let mut tests = self.tests.write();
-            let test = tests.get_mut(test_id)
+            let test = tests
+                .get_mut(test_id)
                 .ok_or_else(|| PromptError::TestNotFound(test_id.to_string()))?;
 
             if test.status == TestStatus::Running {
@@ -886,24 +959,39 @@ impl PromptStudio {
         quality_score: Option<f32>,
     ) -> Result<()> {
         if let Some(ref db) = self.db {
-            let mut template = db.load_prompt_template(template_id)
-                .map_err(|e| PromptError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
+            let mut template = db
+                .load_prompt_template(template_id)
+                .map_err(|e| {
+                    PromptError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e.to_string(),
+                    ))
+                })?
                 .ok_or_else(|| PromptError::NotFound(template_id.to_string()))?;
 
-            let version = template.versions.iter_mut()
+            let version = template
+                .versions
+                .iter_mut()
                 .find(|v| v.id == version_id)
                 .ok_or_else(|| PromptError::VersionNotFound(version_id.to_string()))?;
 
             version.record_usage(latency_ms, success, quality_score);
 
-            db.save_prompt_template(&template)
-                .map_err(|e| PromptError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            db.save_prompt_template(&template).map_err(|e| {
+                PromptError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))
+            })?;
         } else {
             let mut templates = self.templates.write();
-            let template = templates.get_mut(template_id)
+            let template = templates
+                .get_mut(template_id)
                 .ok_or_else(|| PromptError::NotFound(template_id.to_string()))?;
 
-            let version = template.versions.iter_mut()
+            let version = template
+                .versions
+                .iter_mut()
                 .find(|v| v.id == version_id)
                 .ok_or_else(|| PromptError::VersionNotFound(version_id.to_string()))?;
 
@@ -914,7 +1002,9 @@ impl PromptStudio {
 
     /// Gets performance comparison across versions.
     pub async fn version_comparison(&self, template_id: &str) -> Result<VersionComparison> {
-        let template = self.get_template(template_id).await
+        let template = self
+            .get_template(template_id)
+            .await
             .ok_or_else(|| PromptError::NotFound(template_id.to_string()))?;
 
         let mut versions = Vec::new();
@@ -992,27 +1082,27 @@ mod tests {
     fn test_template_versioning() {
         let mut template = PromptTemplate::new("test");
 
-        let v1_id = template.create_version(
-            "Hello {{name}}!",
-            "Initial version"
-        ).id.clone();
+        let v1_id = template
+            .create_version("Hello {{name}}!", "Initial version")
+            .id
+            .clone();
         assert_eq!(v1_id, template.active_version_id.clone().unwrap());
 
-        let _ = template.create_version(
-            "Hi {{name}}, welcome!",
-            "More friendly"
-        );
+        let _ = template.create_version("Hi {{name}}, welcome!", "More friendly");
 
         assert_eq!(template.versions.len(), 2);
         // First version should still be active
-        assert_eq!(template.active_version_id, Some(template.versions[0].id.clone()));
+        assert_eq!(
+            template.active_version_id,
+            Some(template.versions[0].id.clone())
+        );
     }
 
     #[test]
     fn test_variable_extraction() {
         let version = PromptVersion::new(
             "Hello {{name}}, your order {{order_id}} is ready. Thank you, {{name}}!",
-            "test"
+            "test",
         );
 
         let vars = version.variables();
@@ -1024,7 +1114,7 @@ mod tests {
         let mut template = PromptTemplate::new("test");
         template.create_version(
             "Hello {{name}}! Your order {{order_id}} is ready.",
-            "Initial"
+            "Initial",
         );
 
         let mut vars = HashMap::new();
@@ -1066,12 +1156,14 @@ mod tests {
     async fn test_prompt_studio() {
         let studio = PromptStudio::default();
 
-        let template = studio.create_template("greeting").await.expect("create template");
-        let version = studio.add_version(
-            &template.id,
-            "Hello {{name}}!",
-            "Initial version"
-        ).await.expect("add version");
+        let template = studio
+            .create_template("greeting")
+            .await
+            .expect("create template");
+        let version = studio
+            .add_version(&template.id, "Hello {{name}}!", "Initial version")
+            .await
+            .expect("add version");
 
         let mut vars = HashMap::new();
         vars.insert("name".to_string(), "World".to_string());
@@ -1080,35 +1172,44 @@ mod tests {
         assert_eq!(rendered, "Hello World!");
 
         // Record usage
-        studio.record_usage(&template.id, &version.id, 50, true, Some(0.9))
+        studio
+            .record_usage(&template.id, &version.id, 50, true, Some(0.9))
             .expect("record usage");
 
-        let comparison = studio.version_comparison(&template.id).await.expect("comparison");
+        let comparison = studio
+            .version_comparison(&template.id)
+            .await
+            .expect("comparison");
         assert_eq!(comparison.versions.len(), 1);
         assert_eq!(comparison.versions[0].total_uses, 1);
     }
 
     #[tokio::test]
     async fn test_prompt_studio_with_database() {
-        use std::sync::Arc;
         use crate::persistence::StudioDatabase;
+        use std::sync::Arc;
 
         let db = Arc::new(StudioDatabase::in_memory().expect("create db"));
         let studio = PromptStudio::with_database(".", db);
 
         // Create template
-        let template = studio.create_template("db-greeting").await.expect("create template");
+        let template = studio
+            .create_template("db-greeting")
+            .await
+            .expect("create template");
         assert_eq!(template.name, "db-greeting");
 
         // Add version
-        let version = studio.add_version(
-            &template.id,
-            "Hello {{name}}!",
-            "Initial version"
-        ).await.expect("add version");
+        let version = studio
+            .add_version(&template.id, "Hello {{name}}!", "Initial version")
+            .await
+            .expect("add version");
 
         // Get template
-        let retrieved = studio.get_template(&template.id).await.expect("template exists");
+        let retrieved = studio
+            .get_template(&template.id)
+            .await
+            .expect("template exists");
         assert_eq!(retrieved.versions.len(), 1);
 
         // Render
@@ -1118,10 +1219,14 @@ mod tests {
         assert_eq!(rendered, "Hello Database!");
 
         // Record usage and verify
-        studio.record_usage(&template.id, &version.id, 50, true, Some(0.9))
+        studio
+            .record_usage(&template.id, &version.id, 50, true, Some(0.9))
             .expect("record usage");
 
-        let comparison = studio.version_comparison(&template.id).await.expect("comparison");
+        let comparison = studio
+            .version_comparison(&template.id)
+            .await
+            .expect("comparison");
         assert_eq!(comparison.versions.len(), 1);
         assert_eq!(comparison.versions[0].total_uses, 1);
 
@@ -1139,8 +1244,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_prompt_studio_persistence_across_instances() {
-        use std::sync::Arc;
         use crate::persistence::StudioDatabase;
+        use std::sync::Arc;
 
         let temp = tempfile::TempDir::new().expect("temp dir");
         let db_path = temp.path().join("test.db");
@@ -1152,8 +1257,14 @@ mod tests {
             let db = Arc::new(StudioDatabase::new(&db_path).expect("create db"));
             let studio = PromptStudio::with_database(".", db);
 
-            let template = studio.create_template("persistent-template").await.expect("create");
-            studio.add_version(&template.id, "Version 1", "Initial").await.expect("add version");
+            let template = studio
+                .create_template("persistent-template")
+                .await
+                .expect("create");
+            studio
+                .add_version(&template.id, "Version 1", "Initial")
+                .await
+                .expect("add version");
             template_id = template.id.clone();
         }
 
@@ -1164,7 +1275,10 @@ mod tests {
 
             assert_eq!(studio.count().await, 1);
 
-            let loaded = studio.get_template(&template_id).await.expect("template exists");
+            let loaded = studio
+                .get_template(&template_id)
+                .await
+                .expect("template exists");
             assert_eq!(loaded.name, "persistent-template");
             assert_eq!(loaded.versions.len(), 1);
         }

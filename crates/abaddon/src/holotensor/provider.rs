@@ -30,8 +30,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use haagenti::holotensor::{HoloFragment, HoloTensorHeader, HolographicEncoding, LrdfDecoder, QualityCurve};
 use haagenti::compressive::CompressiveSpectralDecoder;
+use haagenti::holotensor::{
+    HoloFragment, HoloTensorHeader, HolographicEncoding, LrdfDecoder, QualityCurve,
+};
 
 use super::memory::{FragmentId, HoloMemoryManager};
 use super::streaming::{StreamManager, StreamPriority, StreamRequest};
@@ -105,7 +107,12 @@ pub struct QualityMetrics {
 impl QualityMetrics {
     /// Create new metrics for a layer with default LRDF encoding.
     pub fn new(layer: usize, total_fragments: usize, target_quality: f32) -> Self {
-        Self::with_encoding(layer, total_fragments, target_quality, HolographicEncoding::LowRankDistributed)
+        Self::with_encoding(
+            layer,
+            total_fragments,
+            target_quality,
+            HolographicEncoding::LowRankDistributed,
+        )
     }
 
     /// Create new metrics for a layer with specific encoding type.
@@ -170,7 +177,9 @@ impl QualityMetrics {
 
     /// Get the minimum fragments needed to reach target quality.
     pub fn fragments_for_target(&self) -> usize {
-        self.quality_curve.fragments_for_quality(self.target_quality, self.total_fragments as u16) as usize
+        self.quality_curve
+            .fragments_for_quality(self.target_quality, self.total_fragments as u16)
+            as usize
     }
 
     /// Get the quality curve being used.
@@ -299,7 +308,8 @@ impl ProgressiveWeightProvider {
 
     /// Set model metadata.
     pub fn set_metadata(&mut self, metadata: HoloModelMetadata) {
-        self.num_layers.store(metadata.num_layers, Ordering::Relaxed);
+        self.num_layers
+            .store(metadata.num_layers, Ordering::Relaxed);
         self.metadata = Some(metadata);
     }
 
@@ -322,16 +332,18 @@ impl ProgressiveWeightProvider {
         weight_type: WeightType,
         header: HoloTensorHeader,
     ) -> Result<()> {
-        let mut headers = self.headers.write().map_err(|_| {
-            HoloInferenceError::Haagenti("headers lock poisoned".to_string())
-        })?;
+        let mut headers = self
+            .headers
+            .write()
+            .map_err(|_| HoloInferenceError::Haagenti("headers lock poisoned".to_string()))?;
         headers.insert((layer, weight_type), header);
 
         // Initialize quality metrics
         let num_fragments = self.config.num_fragments as usize;
-        let mut quality = self.quality.write().map_err(|_| {
-            HoloInferenceError::Haagenti("quality lock poisoned".to_string())
-        })?;
+        let mut quality = self
+            .quality
+            .write()
+            .map_err(|_| HoloInferenceError::Haagenti("quality lock poisoned".to_string()))?;
 
         if !quality.contains_key(&layer) {
             quality.insert(
@@ -363,14 +375,12 @@ impl ProgressiveWeightProvider {
         })?;
 
         // Count fragments for this layer
-        let loaded = cache
-            .keys()
-            .filter(|id| id.layer == layer)
-            .count();
+        let loaded = cache.keys().filter(|id| id.layer == layer).count();
 
-        let mut quality = self.quality.write().map_err(|_| {
-            HoloInferenceError::Haagenti("quality lock poisoned".to_string())
-        })?;
+        let mut quality = self
+            .quality
+            .write()
+            .map_err(|_| HoloInferenceError::Haagenti("quality lock poisoned".to_string()))?;
 
         if let Some(metrics) = quality.get_mut(&layer) {
             metrics.update_from_fragments(loaded);
@@ -422,15 +432,12 @@ impl ProgressiveWeightProvider {
     ///
     /// This is the key method that provides weights to inference.
     /// It reconstructs from available fragments, even if partial.
-    pub fn get_weights(
-        &self,
-        layer: usize,
-        weight_type: WeightType,
-    ) -> Result<LayerWeights> {
+    pub fn get_weights(&self, layer: usize, weight_type: WeightType) -> Result<LayerWeights> {
         // Get header
-        let headers = self.headers.read().map_err(|_| {
-            HoloInferenceError::Haagenti("headers lock poisoned".to_string())
-        })?;
+        let headers = self
+            .headers
+            .read()
+            .map_err(|_| HoloInferenceError::Haagenti("headers lock poisoned".to_string()))?;
 
         let header = headers.get(&(layer, weight_type)).ok_or_else(|| {
             HoloInferenceError::FragmentNotFound {
@@ -485,7 +492,7 @@ impl ProgressiveWeightProvider {
                 decoder.reconstruct().map_err(|e| {
                     HoloInferenceError::Haagenti(format!("Spectral reconstruct error: {}", e))
                 })?
-            }
+            },
             HolographicEncoding::LowRankDistributed | _ => {
                 // Use LrdfDecoder for LRDF format
                 // CRITICAL: Use header.total_fragments, NOT config.num_fragments!
@@ -497,12 +504,13 @@ impl ProgressiveWeightProvider {
                     })?;
                 }
                 decoder.reconstruct()
-            }
+            },
         };
 
         // Calculate quality using the correct curve for the encoding
         // Use header.total_fragments, NOT config.num_fragments!
-        let quality = header.encoding
+        let quality = header
+            .encoding
             .default_quality_curve()
             .predict(fragments.len() as u16, header.total_fragments);
 
@@ -516,10 +524,21 @@ impl ProgressiveWeightProvider {
         // Request streaming for remaining fragments
         // Use header.total_fragments to check actual fragment count
         if self.config.enable_streaming && fragments.len() < header.total_fragments as usize {
-            self.request_remaining_fragments(layer, weight_type, fragments.len(), header.total_fragments)?;
+            self.request_remaining_fragments(
+                layer,
+                weight_type,
+                fragments.len(),
+                header.total_fragments,
+            )?;
         }
 
-        Ok(LayerWeights::new(layer, data, (rows, cols), weight_type, quality))
+        Ok(LayerWeights::new(
+            layer,
+            data,
+            (rows, cols),
+            weight_type,
+            quality,
+        ))
     }
 
     /// Request streaming for remaining fragments.
@@ -598,7 +617,10 @@ impl ProgressiveWeightProvider {
 
     /// Get inference duration.
     pub fn inference_duration(&self) -> Option<Duration> {
-        self.inference_start.read().ok()?.map(|start| start.elapsed())
+        self.inference_start
+            .read()
+            .ok()?
+            .map(|start| start.elapsed())
     }
 
     /// Get tokens generated.
@@ -609,13 +631,19 @@ impl ProgressiveWeightProvider {
     /// Calculate tokens per second.
     pub fn tokens_per_second(&self) -> f64 {
         let tokens = self.tokens_generated() as f64;
-        let duration = self.inference_duration().map(|d| d.as_secs_f64()).unwrap_or(1.0);
+        let duration = self
+            .inference_duration()
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(1.0);
         tokens / duration
     }
 
     /// Get layers that have reached target quality.
     pub fn completed_layers(&self) -> Vec<usize> {
-        self.layers_complete.read().map(|v| v.clone()).unwrap_or_default()
+        self.layers_complete
+            .read()
+            .map(|v| v.clone())
+            .unwrap_or_default()
     }
 
     /// Get current layer being processed.

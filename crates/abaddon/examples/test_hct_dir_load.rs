@@ -77,16 +77,13 @@ fn main() -> anyhow::Result<()> {
                 if let Ok(data) = tensor.flatten_all()?.to_vec1::<f32>() {
                     let non_zero = data.iter().filter(|x| x.abs() > 1e-10).count();
                     let nz_pct = 100.0 * non_zero as f64 / data.len() as f64;
-                    println!(
-                        "    First 5 values: {:?}",
-                        &data[..5.min(data.len())]
-                    );
+                    println!("    First 5 values: {:?}", &data[..5.min(data.len())]);
                     println!("    Non-zero: {} ({:.1}%)", non_zero, nz_pct);
                 }
-            }
+            },
             Err(e) => {
                 println!("FAILED: {}", e);
-            }
+            },
         }
         println!();
     }

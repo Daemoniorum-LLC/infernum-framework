@@ -9,10 +9,10 @@ repository.workspace = true
 description = "Model orchestration and routing layer - The Builder constructs order from chaos"
 
 [dependencies]
-infernum-core = { path = "../infernum-core", version = "0.1.0" }
-abaddon = { path = "../abaddon", version = "0.1.0" }
-dantalion = { path = "../dantalion", version = "0.1.0" }
-legion = { path = "../legion", version = "0.1.0", default-features = false }
+infernum-core = { path = "../infernum-core", version = "0.2.0-rc.1" }
+abaddon = { path = "../abaddon", version = "0.2.0-rc.1" }
+dantalion = { path = "../dantalion", version = "0.2.0-rc.1" }
+legion = { path = "../legion", version = "0.2.0-rc.1", default-features = false }
 
 # Async
 tokio = { workspace = true }
@@ -44,3 +44,6 @@ candle-core = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
 mockall = { workspace = true }
+
+[lints]
+workspace = true

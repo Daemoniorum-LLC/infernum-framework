@@ -30,8 +30,8 @@ impl Default for FieldConfig {
         Self {
             width: 64,
             height: 64,
-            decay_rate: 0.95,        // 5% decay per step
-            energy_floor: 1e-6,      // Never fully forgotten
+            decay_rate: 0.95,   // 5% decay per step
+            energy_floor: 1e-6, // Never fully forgotten
             quality_curve: QualityCurve::SPECTRAL,
         }
     }
@@ -155,15 +155,13 @@ impl LegionField {
         let mut coeffs = self.coefficients.write();
 
         for coeff in coeffs.iter_mut() {
-            *coeff = (*coeff * self.config.decay_rate).max(
-                if *coeff > 0.0 {
-                    self.config.energy_floor
-                } else if *coeff < 0.0 {
-                    -self.config.energy_floor
-                } else {
-                    0.0
-                },
-            );
+            *coeff = (*coeff * self.config.decay_rate).max(if *coeff > 0.0 {
+                self.config.energy_floor
+            } else if *coeff < 0.0 {
+                -self.config.energy_floor
+            } else {
+                0.0
+            });
         }
 
         // Update energy
@@ -265,7 +263,9 @@ impl LegionPattern {
     pub fn essential(&self) -> EssentialCoefficients {
         let dc = self.dc_component();
         let low_freq_count = (self.coefficients.len() as f32 * 0.15) as usize;
-        let low_freq: Vec<f32> = self.coefficients.iter()
+        let low_freq: Vec<f32> = self
+            .coefficients
+            .iter()
             .skip(1)
             .take(low_freq_count)
             .copied()
@@ -279,7 +279,9 @@ impl LegionPattern {
     /// These are distributed across fragments for progressive loading.
     pub fn detail(&self, start_index: usize) -> DetailCoefficients {
         let essential_count = 1 + (self.coefficients.len() as f32 * 0.15) as usize;
-        let detail: Vec<f32> = self.coefficients.iter()
+        let detail: Vec<f32> = self
+            .coefficients
+            .iter()
             .skip(essential_count)
             .copied()
             .collect();
@@ -334,7 +336,9 @@ impl LegionPattern {
             return 0.0;
         }
 
-        let dot: f32 = self.coefficients.iter()
+        let dot: f32 = self
+            .coefficients
+            .iter()
             .zip(other.coefficients.iter())
             .map(|(a, b)| a * b)
             .sum();
@@ -498,8 +502,8 @@ mod tests {
     #[test]
     fn test_essential_coefficients() {
         let mut pattern = LegionPattern::new(64, 64);
-        pattern.coefficients[0] = 1.0;  // DC
-        pattern.coefficients[1] = 0.8;  // Low freq
+        pattern.coefficients[0] = 1.0; // DC
+        pattern.coefficients[1] = 0.8; // Low freq
         pattern.coefficients[2] = 0.6;
 
         let essential = pattern.essential();
@@ -531,12 +535,19 @@ mod tests {
         let resonance = Resonance {
             values: vec![0.8, 0.9, -0.2],
             peaks: vec![
-                ResonancePeak { index: 0, strength: 0.8 },
-                ResonancePeak { index: 1, strength: 0.9 },
+                ResonancePeak {
+                    index: 0,
+                    strength: 0.8,
+                },
+                ResonancePeak {
+                    index: 1,
+                    strength: 0.9,
+                },
             ],
-            conflicts: vec![
-                ResonanceConflict { index: 2, strength: 0.2 },
-            ],
+            conflicts: vec![ResonanceConflict {
+                index: 2,
+                strength: 0.2,
+            }],
         };
 
         // 1.7 / 1.9 = ~0.89

@@ -106,13 +106,24 @@ impl LazyQwen2 {
         let embed_tokens = Self::load_embedding(&config, &lazy_vb)?;
 
         // Load final norm
-        let norm = Self::load_norm(config.hidden_size, config.rms_norm_eps, &lazy_vb, "model.norm")?;
+        let norm = Self::load_norm(
+            config.hidden_size,
+            config.rms_norm_eps,
+            &lazy_vb,
+            "model.norm",
+        )?;
 
         // Load lm_head (or tie to embeddings)
         let lm_head = if config.tie_word_embeddings {
             Linear::new(embed_tokens.embeddings().clone(), None)
         } else {
-            Self::load_linear(&lazy_vb, "lm_head", config.hidden_size, config.vocab_size, false)?
+            Self::load_linear(
+                &lazy_vb,
+                "lm_head",
+                config.hidden_size,
+                config.vocab_size,
+                false,
+            )?
         };
 
         // Create rotary embeddings
@@ -163,7 +174,11 @@ impl LazyQwen2 {
     /// Forward pass with lazy layer loading.
     ///
     /// Layers are loaded on-demand and evicted via LRU when `max_loaded_layers` is exceeded.
-    pub fn forward(&mut self, input_ids: &Tensor, start_pos: usize) -> Result<Tensor, LazyLoadError> {
+    pub fn forward(
+        &mut self,
+        input_ids: &Tensor,
+        start_pos: usize,
+    ) -> Result<Tensor, LazyLoadError> {
         let (_batch_size, seq_len) = input_ids
             .dims2()
             .map_err(|e| LazyLoadError::Candle(e.to_string()))?;
@@ -248,7 +263,11 @@ impl LazyQwen2 {
                 self.force_memory_cleanup();
             }
 
-            tracing::debug!(layer = layer_idx, attempt = attempt, "Loading decoder layer");
+            tracing::debug!(
+                layer = layer_idx,
+                attempt = attempt,
+                "Loading decoder layer"
+            );
 
             match self.load_decoder_layer(layer_idx) {
                 Ok(mut layer) => {
@@ -266,7 +285,7 @@ impl LazyQwen2 {
                     self.lru_order.push(layer_idx);
                     self.layer_loads += 1;
                     return Ok(());
-                }
+                },
                 Err(e) if Self::is_oom_error(&e) => {
                     tracing::warn!(
                         layer = layer_idx,
@@ -298,11 +317,11 @@ impl LazyQwen2 {
                             evictions: total_evictions,
                         });
                     }
-                }
+                },
                 Err(e) => {
                     // Non-OOM error, don't retry
                     return Err(e);
-                }
+                },
             }
         }
 
@@ -341,7 +360,10 @@ impl LazyQwen2 {
     /// the layer is evicted. This ensures cache continuity across layer evictions.
     fn evict_lru_layer(&mut self) {
         if let Some(layer_idx) = self.lru_order.first().copied() {
-            tracing::debug!(layer = layer_idx, "Evicting decoder layer (preserving KV cache)");
+            tracing::debug!(
+                layer = layer_idx,
+                "Evicting decoder layer (preserving KV cache)"
+            );
 
             // Extract and preserve the KV cache before evicting the layer
             if let Some(mut layer) = self.loaded_layers.remove(&layer_idx) {
@@ -409,7 +431,7 @@ impl LazyQwen2 {
                 Err(e) => {
                     tracing::warn!(layer = layer_idx, error = %e, "Warmup prefetch failed");
                     break;
-                }
+                },
             }
         }
 
@@ -477,7 +499,10 @@ impl LazyQwen2 {
 
     // ==================== Loading Helpers ====================
 
-    fn load_embedding(config: &Qwen2Config, vb: &LazyVarBuilder) -> Result<Embedding, LazyLoadError> {
+    fn load_embedding(
+        config: &Qwen2Config,
+        vb: &LazyVarBuilder,
+    ) -> Result<Embedding, LazyLoadError> {
         let weight = vb.get("model.embed_tokens.weight")?;
         Ok(Embedding::new(weight, config.hidden_size))
     }
@@ -559,7 +584,9 @@ pub enum LazyLoadError {
     #[error("Layer not found: {0}")]
     LayerNotFound(usize),
     /// Out of memory error after exhausting recovery attempts.
-    #[error("Out of memory: layer {layer} failed after {attempts} retries with {evictions} evictions")]
+    #[error(
+        "Out of memory: layer {layer} failed after {attempts} retries with {evictions} evictions"
+    )]
     OutOfMemory {
         /// Layer that failed to load.
         layer: usize,
@@ -671,7 +698,11 @@ struct Mlp {
 }
 
 impl Mlp {
-    fn load(config: &Qwen2Config, vb: &LazyVarBuilder, prefix: &str) -> Result<Self, LazyLoadError> {
+    fn load(
+        config: &Qwen2Config,
+        vb: &LazyVarBuilder,
+        prefix: &str,
+    ) -> Result<Self, LazyLoadError> {
         // Qwen2 MLP doesn't use bias
         let gate_proj = LazyQwen2::load_linear(
             vb,
@@ -745,21 +776,21 @@ impl Attention {
             &format!("{}.q_proj", prefix),
             config.hidden_size,
             num_heads * head_dim,
-            true,  // Qwen2 has bias
+            true, // Qwen2 has bias
         )?;
         let k_proj = LazyQwen2::load_linear(
             vb,
             &format!("{}.k_proj", prefix),
             config.hidden_size,
             num_kv_heads * head_dim,
-            true,  // Qwen2 has bias
+            true, // Qwen2 has bias
         )?;
         let v_proj = LazyQwen2::load_linear(
             vb,
             &format!("{}.v_proj", prefix),
             config.hidden_size,
             num_kv_heads * head_dim,
-            true,  // Qwen2 has bias
+            true, // Qwen2 has bias
         )?;
         // O projection has no bias
         let o_proj = LazyQwen2::load_linear(
@@ -833,9 +864,11 @@ impl Attention {
         )?;
 
         // Reshape and project output
-        let attn_output = attn_output
-            .transpose(1, 2)?
-            .reshape((batch_size, seq_len, self.num_heads * self.head_dim))?;
+        let attn_output = attn_output.transpose(1, 2)?.reshape((
+            batch_size,
+            seq_len,
+            self.num_heads * self.head_dim,
+        ))?;
         self.o_proj.forward(&attn_output)
     }
 
@@ -891,8 +924,12 @@ impl DecoderLayer {
     ) -> Result<Self, LazyLoadError> {
         let self_attn = Attention::load(config, &vb, "self_attn", cache_type)?;
         let mlp = Mlp::load(config, &vb, "mlp")?;
-        let input_layernorm =
-            LazyQwen2::load_norm(config.hidden_size, config.rms_norm_eps, &vb, "input_layernorm")?;
+        let input_layernorm = LazyQwen2::load_norm(
+            config.hidden_size,
+            config.rms_norm_eps,
+            &vb,
+            "input_layernorm",
+        )?;
         let post_attention_layernorm = LazyQwen2::load_norm(
             config.hidden_size,
             config.rms_norm_eps,

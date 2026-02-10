@@ -511,28 +511,36 @@ impl WsMetrics {
     pub fn prometheus(&self) -> String {
         let mut output = String::new();
 
-        output.push_str("# HELP infernum_ws_connections_opened_total Total WebSocket connections opened\n");
+        output.push_str(
+            "# HELP infernum_ws_connections_opened_total Total WebSocket connections opened\n",
+        );
         output.push_str("# TYPE infernum_ws_connections_opened_total counter\n");
         output.push_str(&format!(
             "infernum_ws_connections_opened_total {}\n",
             self.connections_opened()
         ));
 
-        output.push_str("# HELP infernum_ws_connections_closed_total Total WebSocket connections closed\n");
+        output.push_str(
+            "# HELP infernum_ws_connections_closed_total Total WebSocket connections closed\n",
+        );
         output.push_str("# TYPE infernum_ws_connections_closed_total counter\n");
         output.push_str(&format!(
             "infernum_ws_connections_closed_total {}\n",
             self.connections_closed()
         ));
 
-        output.push_str("# HELP infernum_ws_connections_active Current active WebSocket connections\n");
+        output.push_str(
+            "# HELP infernum_ws_connections_active Current active WebSocket connections\n",
+        );
         output.push_str("# TYPE infernum_ws_connections_active gauge\n");
         output.push_str(&format!(
             "infernum_ws_connections_active {}\n",
             self.active_connections()
         ));
 
-        output.push_str("# HELP infernum_ws_messages_received_total Total WebSocket messages received\n");
+        output.push_str(
+            "# HELP infernum_ws_messages_received_total Total WebSocket messages received\n",
+        );
         output.push_str("# TYPE infernum_ws_messages_received_total counter\n");
         output.push_str(&format!(
             "infernum_ws_messages_received_total {}\n",
@@ -548,12 +556,11 @@ impl WsMetrics {
 
         output.push_str("# HELP infernum_ws_errors_total Total WebSocket errors\n");
         output.push_str("# TYPE infernum_ws_errors_total counter\n");
-        output.push_str(&format!(
-            "infernum_ws_errors_total {}\n",
-            self.errors()
-        ));
+        output.push_str(&format!("infernum_ws_errors_total {}\n", self.errors()));
 
-        output.push_str("# HELP infernum_ws_requests_processed_total Total WebSocket requests processed\n");
+        output.push_str(
+            "# HELP infernum_ws_requests_processed_total Total WebSocket requests processed\n",
+        );
         output.push_str("# TYPE infernum_ws_requests_processed_total counter\n");
         output.push_str(&format!(
             "infernum_ws_requests_processed_total {}\n",
@@ -670,9 +677,18 @@ impl WsError {
         let (code, message) = match self {
             Self::ConnectionClosed(reason) => ("connection_closed".to_string(), reason.to_string()),
             Self::ParseError(msg) => ("parse_error".to_string(), msg.clone()),
-            Self::TooManyRequests => ("too_many_requests".to_string(), "Too many concurrent requests".to_string()),
-            Self::MessageTooLarge => ("message_too_large".to_string(), "Message exceeds size limit".to_string()),
-            Self::RequestNotFound(id) => ("request_not_found".to_string(), format!("Request not found: {}", id)),
+            Self::TooManyRequests => (
+                "too_many_requests".to_string(),
+                "Too many concurrent requests".to_string(),
+            ),
+            Self::MessageTooLarge => (
+                "message_too_large".to_string(),
+                "Message exceeds size limit".to_string(),
+            ),
+            Self::RequestNotFound(id) => (
+                "request_not_found".to_string(),
+                format!("Request not found: {}", id),
+            ),
             Self::Internal(msg) => ("internal_error".to_string(), msg.clone()),
         };
 
@@ -875,8 +891,7 @@ mod tests {
 
     #[test]
     fn test_connection_info_with_client_ip() {
-        let info = ConnectionInfo::new("conn-456")
-            .with_client_ip("192.168.1.1");
+        let info = ConnectionInfo::new("conn-456").with_client_ip("192.168.1.1");
 
         assert_eq!(info.client_ip, Some("192.168.1.1".to_string()));
     }
@@ -1012,11 +1027,15 @@ mod tests {
         let msg = err.to_server_message(Some("req-123".to_string()));
 
         match msg {
-            ServerMessage::Error { request_id, code, message } => {
+            ServerMessage::Error {
+                request_id,
+                code,
+                message,
+            } => {
                 assert_eq!(request_id, Some("req-123".to_string()));
                 assert_eq!(code, "too_many_requests");
                 assert!(message.contains("Too many"));
-            }
+            },
             _ => panic!("Expected Error message"),
         }
     }
@@ -1027,10 +1046,12 @@ mod tests {
         let msg = err.to_server_message(None);
 
         match msg {
-            ServerMessage::Error { request_id, code, .. } => {
+            ServerMessage::Error {
+                request_id, code, ..
+            } => {
                 assert!(request_id.is_none());
                 assert_eq!(code, "parse_error");
-            }
+            },
             _ => panic!("Expected Error message"),
         }
     }
@@ -1048,10 +1069,13 @@ mod tests {
 
         let msg: ClientMessage = serde_json::from_str(json).expect("deserialize");
         match msg {
-            ClientMessage::Chat { payload, request_id } => {
+            ClientMessage::Chat {
+                payload,
+                request_id,
+            } => {
                 assert_eq!(payload.model, "test-model");
                 assert_eq!(request_id, Some("req-001".to_string()));
-            }
+            },
             _ => panic!("Expected Chat message"),
         }
     }
@@ -1064,7 +1088,7 @@ mod tests {
         match msg {
             ClientMessage::Ping { timestamp } => {
                 assert_eq!(timestamp, Some(12345));
-            }
+            },
             _ => panic!("Expected Ping message"),
         }
     }
@@ -1077,7 +1101,7 @@ mod tests {
         match msg {
             ClientMessage::Cancel { request_id } => {
                 assert_eq!(request_id, "req-999");
-            }
+            },
             _ => panic!("Expected Cancel message"),
         }
     }

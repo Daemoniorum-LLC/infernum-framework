@@ -27,9 +27,9 @@ llama-cpp-metal = ["llama-cpp", "llama_cpp/metal"]
 llama-cpp-vulkan = ["llama-cpp", "llama_cpp/vulkan"]
 
 [dependencies]
-infernum-core = { path = "../infernum-core", version = "0.1.0" }
-dantalion = { path = "../dantalion", version = "0.1.0" }
-arbiter = { path = "../arbiter", version = "0.1.0" }
+infernum-core = { path = "../infernum-core", version = "0.2.0-rc.1" }
+dantalion = { path = "../dantalion", version = "0.2.0-rc.1" }
+arbiter = { path = "../arbiter", version = "0.2.0-rc.1" }
 
 # Async
 tokio = { workspace = true }
@@ -146,3 +146,6 @@ required-features = ["cuda"]
 [[example]]
 name = "speculative_405b"
 required-features = ["cuda"]
+
+[lints]
+workspace = true

@@ -467,10 +467,7 @@ impl ResourceQuotaManager {
             quota.remaining_tool_calls -= count;
 
             let mut agents = self.per_agent.write();
-            agents
-                .entry(agent_id.to_string())
-                .or_default()
-                .tool_calls += count;
+            agents.entry(agent_id.to_string()).or_default().tool_calls += count;
             true
         } else {
             false
@@ -486,10 +483,7 @@ impl ResourceQuotaManager {
             quota.remaining_tokens -= count;
 
             let mut agents = self.per_agent.write();
-            agents
-                .entry(agent_id.to_string())
-                .or_default()
-                .tokens += count;
+            agents.entry(agent_id.to_string()).or_default().tokens += count;
             true
         } else {
             false
@@ -532,7 +526,6 @@ pub struct AgentCoordinator {
     pub quotas: Option<Arc<ResourceQuotaManager>>,
 
     // Coordination primitives (AGENTIC-LOOP-SPEC §7.2)
-
     /// Pending assistance requests (`request_id` → pending).
     pending_requests: RwLock<HashMap<String, PendingAssistance>>,
     /// Pending yield queue.
@@ -733,8 +726,7 @@ impl AgentCoordinator {
 
         // Check if there's anyone to yield to
         let agents = self.agents.read();
-        let other_agents_exist = agents.len() > 1
-            || agents.keys().any(|id| id != from);
+        let other_agents_exist = agents.len() > 1 || agents.keys().any(|id| id != from);
         let has_subscribers = self.event_tx.receiver_count() > 0;
 
         if !other_agents_exist && !has_subscribers {
@@ -851,7 +843,7 @@ impl AgentCoordinator {
                         .tags
                         .iter()
                         .any(|tag| agent_capabilities.contains(tag))
-                }
+                },
                 VisibilityPolicy::Explicit { allow_list } => allow_list
                     .get(for_agent)
                     .is_some_and(|allowed| allowed.contains(&stored.from)),
@@ -959,17 +951,19 @@ mod tests {
 
     fn assistance_response_strategy() -> impl Strategy<Value = AssistanceResponse> {
         prop_oneof![
-            ("[a-z_]{3,15}", proptest::option::of("[A-Z][a-z]{2,10}"), proptest::option::of("[a-z ]{5,30}"))
+            (
+                "[a-z_]{3,15}",
+                proptest::option::of("[A-Z][a-z]{2,10}"),
+                proptest::option::of("[a-z ]{5,30}")
+            )
                 .prop_map(|(id, name, msg)| AssistanceResponse::Assigned {
                     helper_id: id,
                     helper_name: name,
                     message: msg,
                 }),
-            ("[a-z ]{5,30}", proptest::option::of("[a-z ]{5,30}"))
-                .prop_map(|(reason, suggestion)| AssistanceResponse::Unavailable {
-                    reason,
-                    suggestion,
-                }),
+            ("[a-z ]{5,30}", proptest::option::of("[a-z ]{5,30}")).prop_map(
+                |(reason, suggestion)| AssistanceResponse::Unavailable { reason, suggestion }
+            ),
             Just(AssistanceResponse::TimedOut),
         ]
     }
@@ -1011,29 +1005,64 @@ mod tests {
         let mgr = ToolLockManager::new();
 
         // Agent 1 acquires a lock
-        assert!(mgr.try_acquire("agent-1", "write_file", "/tmp/a.rs", Duration::from_secs(30)));
+        assert!(mgr.try_acquire(
+            "agent-1",
+            "write_file",
+            "/tmp/a.rs",
+            Duration::from_secs(30)
+        ));
 
         // Agent 2 cannot acquire the same lock
-        assert!(!mgr.try_acquire("agent-2", "write_file", "/tmp/a.rs", Duration::from_secs(30)));
+        assert!(!mgr.try_acquire(
+            "agent-2",
+            "write_file",
+            "/tmp/a.rs",
+            Duration::from_secs(30)
+        ));
 
         // Agent 1 can re-acquire (idempotent)
-        assert!(mgr.try_acquire("agent-1", "write_file", "/tmp/a.rs", Duration::from_secs(30)));
+        assert!(mgr.try_acquire(
+            "agent-1",
+            "write_file",
+            "/tmp/a.rs",
+            Duration::from_secs(30)
+        ));
 
         // Different resource is fine
-        assert!(mgr.try_acquire("agent-2", "write_file", "/tmp/b.rs", Duration::from_secs(30)));
+        assert!(mgr.try_acquire(
+            "agent-2",
+            "write_file",
+            "/tmp/b.rs",
+            Duration::from_secs(30)
+        ));
 
         assert_eq!(mgr.active_lock_count(), 2);
 
         // Release
         mgr.release("agent-1", "write_file", "/tmp/a.rs");
-        assert!(mgr.try_acquire("agent-2", "write_file", "/tmp/a.rs", Duration::from_secs(30)));
+        assert!(mgr.try_acquire(
+            "agent-2",
+            "write_file",
+            "/tmp/a.rs",
+            Duration::from_secs(30)
+        ));
     }
 
     #[test]
     fn test_tool_lock_release_all() {
         let mgr = ToolLockManager::new();
-        mgr.try_acquire("agent-1", "write_file", "/tmp/a.rs", Duration::from_secs(30));
-        mgr.try_acquire("agent-1", "write_file", "/tmp/b.rs", Duration::from_secs(30));
+        mgr.try_acquire(
+            "agent-1",
+            "write_file",
+            "/tmp/a.rs",
+            Duration::from_secs(30),
+        );
+        mgr.try_acquire(
+            "agent-1",
+            "write_file",
+            "/tmp/b.rs",
+            Duration::from_secs(30),
+        );
         mgr.try_acquire("agent-1", "bash", "git push", Duration::from_secs(30));
 
         assert_eq!(mgr.locks_for("agent-1").len(), 3);
@@ -1076,12 +1105,8 @@ mod tests {
     fn test_coordinator_register_unregister() {
         let coord = AgentCoordinator::new();
 
-        coord.register_agent(
-            AgentIdentity::new("agent-1", AgentRole::Primary).with_name("Atlas"),
-        );
-        coord.register_agent(
-            AgentIdentity::new("agent-2", AgentRole::Specialist),
-        );
+        coord.register_agent(AgentIdentity::new("agent-1", AgentRole::Primary).with_name("Atlas"));
+        coord.register_agent(AgentIdentity::new("agent-2", AgentRole::Specialist));
 
         assert_eq!(coord.agents().len(), 2);
         assert!(coord.get_agent("agent-1").is_some());
@@ -1210,11 +1235,12 @@ mod tests {
         let coordinator = AgentCoordinator::new();
         coordinator.register_agent(AgentIdentity::new("agent_1", AgentRole::Primary));
 
-        let rx = coordinator.request_assistance(
-            &"agent_1".to_string(),
-            blocking_assistance_request("need help"),
-        )
-        .expect("should succeed");
+        let rx = coordinator
+            .request_assistance(
+                &"agent_1".to_string(),
+                blocking_assistance_request("need help"),
+            )
+            .expect("should succeed");
 
         // Nobody delivers a response — timeout
         let result = tokio::time::timeout(Duration::from_millis(50), rx).await;
@@ -1226,11 +1252,12 @@ mod tests {
         let coordinator = AgentCoordinator::new();
         coordinator.register_agent(AgentIdentity::new("agent_1", AgentRole::Primary));
 
-        let rx = coordinator.request_assistance(
-            &"agent_1".to_string(),
-            blocking_assistance_request("need help"),
-        )
-        .expect("should succeed");
+        let rx = coordinator
+            .request_assistance(
+                &"agent_1".to_string(),
+                blocking_assistance_request("need help"),
+            )
+            .expect("should succeed");
 
         // Drop the receiver (simulates caller timeout/cancellation)
         drop(rx);
@@ -1247,11 +1274,12 @@ mod tests {
         let coordinator = AgentCoordinator::new();
         coordinator.register_agent(AgentIdentity::new("agent_1", AgentRole::Primary));
 
-        let _rx = coordinator.request_assistance(
-            &"agent_1".to_string(),
-            blocking_assistance_request("need help"),
-        )
-        .expect("should succeed");
+        let _rx = coordinator
+            .request_assistance(
+                &"agent_1".to_string(),
+                blocking_assistance_request("need help"),
+            )
+            .expect("should succeed");
 
         let pending = coordinator.take_pending_requests();
         assert_eq!(pending.len(), 1);
@@ -1269,11 +1297,12 @@ mod tests {
         let coordinator = AgentCoordinator::new();
         coordinator.register_agent(AgentIdentity::new("agent_1", AgentRole::Primary));
 
-        let _rx = coordinator.request_assistance(
-            &"agent_1".to_string(),
-            blocking_assistance_request("need help"),
-        )
-        .expect("should succeed");
+        let _rx = coordinator
+            .request_assistance(
+                &"agent_1".to_string(),
+                blocking_assistance_request("need help"),
+            )
+            .expect("should succeed");
 
         // Peek at pending requests to get the ID without draining
         let pending_ids: Vec<String> = coordinator
@@ -1414,7 +1443,7 @@ mod tests {
             } => {
                 assert_eq!(from, "agent_1");
                 assert!(suggested_expertise.contains(&"database".to_string()));
-            }
+            },
             other => panic!("Expected AgentYielded, got {other:?}"),
         }
 
@@ -1598,16 +1627,13 @@ mod tests {
         coordinator.set_visibility_policy(VisibilityPolicy::CapabilityFiltered);
 
         coordinator.register_agent(
-            AgentIdentity::new("db_agent", AgentRole::Specialist)
-                .with_capability("database"),
+            AgentIdentity::new("db_agent", AgentRole::Specialist).with_capability("database"),
         );
         coordinator.register_agent(
-            AgentIdentity::new("ui_agent", AgentRole::Specialist)
-                .with_capability("frontend"),
+            AgentIdentity::new("ui_agent", AgentRole::Specialist).with_capability("frontend"),
         );
         coordinator.register_agent(
-            AgentIdentity::new("reader", AgentRole::Primary)
-                .with_capability("database"),
+            AgentIdentity::new("reader", AgentRole::Primary).with_capability("database"),
         );
 
         // db_agent shares a discovery tagged "database"
@@ -1656,17 +1682,11 @@ mod tests {
         coordinator.register_agent(AgentIdentity::new("reader", AgentRole::Primary));
 
         coordinator
-            .share_discovery(
-                &"agent_a".to_string(),
-                make_discovery("visible", "test"),
-            )
+            .share_discovery(&"agent_a".to_string(), make_discovery("visible", "test"))
             .expect("should succeed");
 
         coordinator
-            .share_discovery(
-                &"agent_b".to_string(),
-                make_discovery("hidden", "test"),
-            )
+            .share_discovery(&"agent_b".to_string(), make_discovery("hidden", "test"))
             .expect("should succeed");
 
         let context = coordinator.get_shared_context(&"reader".to_string());
@@ -1679,10 +1699,8 @@ mod tests {
     async fn test_unregistered_agent_cannot_share() {
         let coordinator = AgentCoordinator::new();
 
-        let result = coordinator.share_discovery(
-            &"ghost".to_string(),
-            make_discovery("test", "test"),
-        );
+        let result =
+            coordinator.share_discovery(&"ghost".to_string(), make_discovery("test", "test"));
 
         assert!(matches!(result, Err(CoordinationError::AgentNotFound(_))));
     }
@@ -1693,10 +1711,7 @@ mod tests {
         coordinator.register_agent(AgentIdentity::new("writer", AgentRole::Primary));
 
         coordinator
-            .share_discovery(
-                &"writer".to_string(),
-                make_discovery("test", "test"),
-            )
+            .share_discovery(&"writer".to_string(), make_discovery("test", "test"))
             .expect("should succeed");
 
         // Unregistered reader gets empty (not error)
@@ -1739,11 +1754,7 @@ mod tests {
 
         let mut event_rx = coordinator.subscribe_events();
 
-        let _ = coordinator.yield_to(
-            &"agent_1".to_string(),
-            None,
-            make_yield_context("done"),
-        );
+        let _ = coordinator.yield_to(&"agent_1".to_string(), None, make_yield_context("done"));
 
         let event = event_rx.try_recv().expect("should have event");
         assert!(matches!(event, CoordinationEvent::AgentYielded { .. }));
@@ -1758,10 +1769,7 @@ mod tests {
         let mut event_rx = coordinator.subscribe_events();
 
         coordinator
-            .share_discovery(
-                &"agent_1".to_string(),
-                make_discovery("finding", "test"),
-            )
+            .share_discovery(&"agent_1".to_string(), make_discovery("finding", "test"))
             .expect("should succeed");
 
         let event = event_rx.try_recv().expect("should have event");
@@ -1779,10 +1787,7 @@ mod tests {
         let mut rx3 = coordinator.subscribe_events();
 
         coordinator
-            .share_discovery(
-                &"agent_1".to_string(),
-                make_discovery("test", "test"),
-            )
+            .share_discovery(&"agent_1".to_string(), make_discovery("test", "test"))
             .expect("should succeed");
 
         // All three subscribers receive the event
@@ -1799,10 +1804,8 @@ mod tests {
         let mut event_rx = coordinator.subscribe_events();
 
         // Assistance from unregistered agent — fails
-        let _ = coordinator.request_assistance(
-            &"ghost".to_string(),
-            blocking_assistance_request("help"),
-        );
+        let _ = coordinator
+            .request_assistance(&"ghost".to_string(), blocking_assistance_request("help"));
 
         // No event should have been emitted
         assert!(event_rx.try_recv().is_err());
@@ -1820,11 +1823,7 @@ mod tests {
 
         // Yield
         coordinator
-            .yield_to(
-                &"agent_1".to_string(),
-                None,
-                make_yield_context("done"),
-            )
+            .yield_to(&"agent_1".to_string(), None, make_yield_context("done"))
             .expect("should not error");
 
         // Unregister

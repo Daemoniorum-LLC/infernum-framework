@@ -563,7 +563,8 @@ fn scan_infernum_cache_recursive(dir: &Path, models: &mut Vec<CachedModel>, dept
                 let name = entry.file_name().to_string_lossy().to_string();
                 let size = get_dir_size(&path);
                 let is_holo = is_holotensor_model(&path);
-                let (architecture, context_length, hidden_size, num_layers) = parse_model_config(&path);
+                let (architecture, context_length, hidden_size, num_layers) =
+                    parse_model_config(&path);
 
                 models.push(CachedModel {
                     id: name.clone(),
@@ -643,7 +644,7 @@ pub async fn delete_cached_model(
             Ok(_) => {
                 deleted = true;
                 message = format!("Deleted {model_id} from HuggingFace cache");
-            }
+            },
             Err(e) => {
                 return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -654,14 +655,14 @@ pub async fn delete_cached_model(
                         }
                     })),
                 ));
-            }
+            },
         }
     } else if infernum_path.exists() {
         match fs::remove_dir_all(&infernum_path) {
             Ok(_) => {
                 deleted = true;
                 message = format!("Deleted {model_id} from Infernum cache");
-            }
+            },
             Err(e) => {
                 return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -672,7 +673,7 @@ pub async fn delete_cached_model(
                         }
                     })),
                 ));
-            }
+            },
         }
     }
 
@@ -759,7 +760,7 @@ pub async fn convert_model(
                     metadata: None,
                 }));
                 return;
-            }
+            },
         };
 
         // Check if already HoloTensor
@@ -768,7 +769,10 @@ pub async fn convert_model(
                 event_type: "error".to_string(),
                 operation: None,
                 percent: None,
-                message: Some(format!("Model '{}' is already in HoloTensor format", model_id)),
+                message: Some(format!(
+                    "Model '{}' is already in HoloTensor format",
+                    model_id
+                )),
                 file: None,
                 tensor: None,
                 tensors_done: None,
@@ -791,7 +795,9 @@ pub async fn convert_model(
         let encoder = CompressiveSpectralEncoder::new(num_fragments, retention_ratio);
 
         // Output directory
-        let output_dir = cache_state.infernum_cache_dir.join(format!("{}-hct", model_id.replace('/', "_")));
+        let output_dir = cache_state
+            .infernum_cache_dir
+            .join(format!("{}-hct", model_id.replace('/', "_")));
         if let Err(e) = fs::create_dir_all(&output_dir) {
             let _ = rt.block_on(tx.send(ConvertProgress {
                 event_type: "error".to_string(),
@@ -819,7 +825,12 @@ pub async fn convert_model(
             .map(|entries| {
                 entries
                     .flatten()
-                    .filter(|e| e.path().extension().map(|ext| ext == "safetensors").unwrap_or(false))
+                    .filter(|e| {
+                        e.path()
+                            .extension()
+                            .map(|ext| ext == "safetensors")
+                            .unwrap_or(false)
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -875,7 +886,8 @@ pub async fn convert_model(
         // Convert each safetensors file
         for entry in safetensor_files {
             let file_path = entry.path();
-            let file_name = file_path.file_stem()
+            let file_name = file_path
+                .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| "tensor".to_string());
 
@@ -911,7 +923,7 @@ pub async fn convert_model(
                     tracing::warn!(file = %file_path.display(), error = %e, "Failed to read file, skipping");
                     files_done += 1;
                     continue;
-                }
+                },
             };
 
             total_original_size += data.len() as u64;
@@ -937,14 +949,15 @@ pub async fn convert_model(
                     tracing::warn!(file = %file_path.display(), error = %e, "Failed to parse header");
                     files_done += 1;
                     continue;
-                }
+                },
             };
 
             let tensor_data_start = 8 + header_len;
             let tensor_data = &data[tensor_data_start..];
 
             // Get list of tensors to process
-            let tensors_in_file: Vec<_> = header.as_object()
+            let tensors_in_file: Vec<_> = header
+                .as_object()
                 .into_iter()
                 .flatten()
                 .filter(|(name, _)| *name != "__metadata__")
@@ -957,8 +970,11 @@ pub async fn convert_model(
                 let _ = rt.block_on(tx.send(ConvertProgress {
                     event_type: "progress".to_string(),
                     operation: Some("encoding".to_string()),
-                    percent: Some(5.0 + (files_done as f32 / files_total as f32) * 90.0 +
-                        (idx as f32 / tensors_in_file_count as f32) * (90.0 / files_total as f32)),
+                    percent: Some(
+                        5.0 + (files_done as f32 / files_total as f32) * 90.0
+                            + (idx as f32 / tensors_in_file_count as f32)
+                                * (90.0 / files_total as f32),
+                    ),
                     message: Some(format!("Encoding {}/{}", file_name, tensor_name)),
                     file: Some(file_name.clone()),
                     tensor: Some(tensor_name.clone()),
@@ -978,7 +994,8 @@ pub async fn convert_model(
                     metadata: None,
                 }));
 
-                let offsets = tensor_info.get("data_offsets")
+                let offsets = tensor_info
+                    .get("data_offsets")
                     .and_then(|v| v.as_array())
                     .and_then(|arr| {
                         let start = arr.first()?.as_u64()? as usize;
@@ -986,11 +1003,17 @@ pub async fn convert_model(
                         Some((start, end))
                     });
 
-                let shape = tensor_info.get("shape")
+                let shape = tensor_info
+                    .get("shape")
                     .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_u64().map(|n| n as usize)).collect::<Vec<_>>());
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_u64().map(|n| n as usize))
+                            .collect::<Vec<_>>()
+                    });
 
-                let dtype = tensor_info.get("dtype")
+                let dtype = tensor_info
+                    .get("dtype")
                     .and_then(|v| v.as_str())
                     .unwrap_or("F32");
 
@@ -1039,12 +1062,14 @@ pub async fn convert_model(
                                 hct_data.extend_from_slice(&fragment.index.to_le_bytes());
                                 hct_data.extend_from_slice(&fragment.flags.to_le_bytes());
                                 hct_data.extend_from_slice(&fragment.checksum.to_le_bytes());
-                                hct_data.extend_from_slice(&(fragment.data.len() as u32).to_le_bytes());
+                                hct_data
+                                    .extend_from_slice(&(fragment.data.len() as u32).to_le_bytes());
                                 hct_data.extend_from_slice(&fragment.data);
                             }
 
                             let safe_name = tensor_name.replace(['/', '\\', '.'], "_");
-                            let hct_path = output_dir.join(format!("{}_{}.hct", file_name, safe_name));
+                            let hct_path =
+                                output_dir.join(format!("{}_{}.hct", file_name, safe_name));
                             if let Err(e) = fs::write(&hct_path, &hct_data) {
                                 tracing::warn!(tensor = %tensor_name, error = %e, "Failed to write HCT file");
                                 continue;
@@ -1052,10 +1077,10 @@ pub async fn convert_model(
 
                             total_hct_size += hct_data.len() as u64;
                             tensors_converted += 1;
-                        }
+                        },
                         Err(e) => {
                             tracing::warn!(tensor = %tensor_name, error = %e, "Failed to encode tensor");
-                        }
+                        },
                     }
                 }
             }
@@ -1083,7 +1108,12 @@ pub async fn convert_model(
             metadata: None,
         }));
 
-        for file in ["config.json", "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json"] {
+        for file in [
+            "config.json",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "special_tokens_map.json",
+        ] {
             let src = model_path.join(file);
             if src.exists() {
                 let dst = output_dir.join(file);
@@ -1209,7 +1239,9 @@ pub fn find_model_path(state: &ModelCacheState, model_id: &str) -> Option<PathBu
     let normalized_id = model_id.replace('/', "--");
 
     // Check HuggingFace cache
-    let hf_path = state.hf_cache_dir.join(format!("models--{}", normalized_id));
+    let hf_path = state
+        .hf_cache_dir
+        .join(format!("models--{}", normalized_id));
     if hf_path.exists() {
         // Find the snapshot directory
         let snapshots_dir = hf_path.join("snapshots");
@@ -1286,7 +1318,8 @@ pub async fn download_model(
     let model_id = request.model.clone();
     let revision = request.revision.clone();
     let convert_to_holo = request.convert_to_holo;
-    let _cache_state = state.clone();
+    #[allow(unused_variables)]
+    let cache_state = state.clone();
 
     // Spawn download task
     tokio::task::spawn_blocking(move || {
@@ -1323,7 +1356,7 @@ pub async fn download_model(
                     status: Some("failed".to_string()),
                 }));
                 return;
-            }
+            },
         };
 
         // Get model repo
@@ -1386,10 +1419,10 @@ pub async fn download_model(
                     }
                     downloaded_files += 1;
                     downloaded_paths.push(path);
-                }
+                },
                 Err(e) => {
                     tracing::debug!(file = %filename, error = %e, "Metadata file not found (may be optional)");
-                }
+                },
             }
         }
 
@@ -1418,7 +1451,11 @@ pub async fn download_model(
                         shard_names.dedup();
                         weight_files = shard_names;
 
-                        tracing::info!(num_shards = weight_files.len(), "Detected sharded model with {} weight files", weight_files.len());
+                        tracing::info!(
+                            num_shards = weight_files.len(),
+                            "Detected sharded model with {} weight files",
+                            weight_files.len()
+                        );
                     }
                 }
             }
@@ -1445,7 +1482,11 @@ pub async fn download_model(
                         shard_names.dedup();
                         weight_files = shard_names;
 
-                        tracing::info!(num_shards = weight_files.len(), "Detected sharded PyTorch model with {} weight files", weight_files.len());
+                        tracing::info!(
+                            num_shards = weight_files.len(),
+                            "Detected sharded PyTorch model with {} weight files",
+                            weight_files.len()
+                        );
                     }
                 }
             }
@@ -1488,7 +1529,12 @@ pub async fn download_model(
                 event_type: "progress".to_string(),
                 operation: Some("downloading".to_string()),
                 percent: Some(progress_percent),
-                message: Some(format!("Downloading {} ({}/{})", filename, idx + 1, total_weight_files)),
+                message: Some(format!(
+                    "Downloading {} ({}/{})",
+                    filename,
+                    idx + 1,
+                    total_weight_files
+                )),
                 file: Some(filename.clone()),
                 files_done: Some(downloaded_files),
                 files_total: Some((downloaded_files + total_weight_files as u32) as u32),
@@ -1505,14 +1551,17 @@ pub async fn download_model(
                     }
                     downloaded_files += 1;
                     downloaded_paths.push(path);
-                }
+                },
                 Err(e) => {
                     tracing::error!(file = %filename, error = %e, "Failed to download weight file");
                     let _ = rt.block_on(tx.send(DownloadProgress {
                         event_type: "error".to_string(),
                         operation: None,
                         percent: None,
-                        message: Some(format!("Failed to download weight file '{}': {}", filename, e)),
+                        message: Some(format!(
+                            "Failed to download weight file '{}': {}",
+                            filename, e
+                        )),
                         file: Some(filename.clone()),
                         files_done: Some(downloaded_files),
                         files_total: Some((downloaded_files + total_weight_files as u32) as u32),
@@ -1521,7 +1570,7 @@ pub async fn download_model(
                         status: Some("failed".to_string()),
                     }));
                     return;
-                }
+                },
             }
         }
 
@@ -1530,7 +1579,10 @@ pub async fn download_model(
                 event_type: "error".to_string(),
                 operation: None,
                 percent: None,
-                message: Some(format!("No files downloaded for model '{}'. Check if the model exists on HuggingFace.", model_id)),
+                message: Some(format!(
+                    "No files downloaded for model '{}'. Check if the model exists on HuggingFace.",
+                    model_id
+                )),
                 file: None,
                 files_done: Some(0),
                 files_total: None,
@@ -1549,7 +1601,11 @@ pub async fn download_model(
                 "Downloaded {} files ({}){}",
                 downloaded_files,
                 format_bytes(total_bytes),
-                if is_sharded { format!(" - {} shards", total_weight_files) } else { String::new() }
+                if is_sharded {
+                    format!(" - {} shards", total_weight_files)
+                } else {
+                    String::new()
+                }
             )),
             file: None,
             files_done: Some(downloaded_files),
@@ -1577,8 +1633,8 @@ pub async fn download_model(
             #[cfg(feature = "holotensor")]
             {
                 // Find downloaded model path and run conversion
-                if let Some(model_path) = find_model_path(&cache_state, &model_id) {
-                    let request = ConvertModelRequest {
+                if let Some(_model_path) = find_model_path(&cache_state, &model_id) {
+                    let _request = ConvertModelRequest {
                         model: model_id.clone(),
                         target_format: "holotensor".to_string(),
                         quantization: None,
@@ -1616,7 +1672,9 @@ pub async fn download_model(
             percent: Some(100.0),
             message: Some(format!(
                 "Successfully downloaded {} ({} files, {})",
-                model_id, downloaded_files, format_bytes(total_bytes)
+                model_id,
+                downloaded_files,
+                format_bytes(total_bytes)
             )),
             file: None,
             files_done: Some(downloaded_files),
@@ -1644,7 +1702,6 @@ pub async fn download_model(
 
     Sse::new(stream)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1829,7 +1886,10 @@ mod tests {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use axum::{routing::{get, post}, Router};
+    use axum::{
+        routing::{get, post},
+        Router,
+    };
     use axum_test::TestServer;
     use tempfile::TempDir;
 
@@ -1905,7 +1965,11 @@ mod integration_tests {
         let model_dir = temp.path().join("models--test--mock-model");
         let snapshot_dir = model_dir.join("snapshots").join("abc123");
         std::fs::create_dir_all(&snapshot_dir).unwrap();
-        std::fs::write(snapshot_dir.join("config.json"), r#"{"model_type": "llama"}"#).unwrap();
+        std::fs::write(
+            snapshot_dir.join("config.json"),
+            r#"{"model_type": "llama"}"#,
+        )
+        .unwrap();
         std::fs::write(snapshot_dir.join("model.safetensors"), "mock tensor data").unwrap();
 
         // The actual endpoint uses system HF cache path, so this test verifies

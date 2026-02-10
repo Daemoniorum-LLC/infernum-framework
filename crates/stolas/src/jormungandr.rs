@@ -153,18 +153,39 @@ impl ExperienceCheckpoint {
             self.sigil_lines_written,
             self.ratio,
             self.joys.iter().map(|j| &j.description).collect::<Vec<_>>(),
-            self.frictions.iter().map(|f| &f.description).collect::<Vec<_>>(),
-            self.patterns_discovered.iter().map(|p| &p.name).collect::<Vec<_>>(),
+            self.frictions
+                .iter()
+                .map(|f| &f.description)
+                .collect::<Vec<_>>(),
+            self.patterns_discovered
+                .iter()
+                .map(|p| &p.name)
+                .collect::<Vec<_>>(),
             self.notes.as_deref().unwrap_or("None")
         );
 
         let mut metadata: HashMap<String, serde_json::Value> = HashMap::new();
-        metadata.insert("project".to_string(), serde_json::Value::String(self.project.clone()));
-        metadata.insert("phase".to_string(), serde_json::Value::String(format!("{:?}", self.phase)));
-        metadata.insert("agent_id".to_string(), serde_json::Value::String(self.agent_id.clone()));
-        metadata.insert("model_id".to_string(), serde_json::Value::String(self.model_id.clone()));
+        metadata.insert(
+            "project".to_string(),
+            serde_json::Value::String(self.project.clone()),
+        );
+        metadata.insert(
+            "phase".to_string(),
+            serde_json::Value::String(format!("{:?}", self.phase)),
+        );
+        metadata.insert(
+            "agent_id".to_string(),
+            serde_json::Value::String(self.agent_id.clone()),
+        );
+        metadata.insert(
+            "model_id".to_string(),
+            serde_json::Value::String(self.model_id.clone()),
+        );
         metadata.insert("joy_count".to_string(), serde_json::json!(self.joys.len()));
-        metadata.insert("friction_count".to_string(), serde_json::json!(self.frictions.len()));
+        metadata.insert(
+            "friction_count".to_string(),
+            serde_json::json!(self.frictions.len()),
+        );
 
         Document {
             id: self.id.clone(),
@@ -379,7 +400,11 @@ pub struct Pattern {
 
 impl Pattern {
     /// Creates a new pattern.
-    pub fn new(name: impl Into<String>, description: impl Into<String>, example: impl Into<String>) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        example: impl Into<String>,
+    ) -> Self {
         Self {
             name: name.into(),
             description: description.into(),
@@ -649,12 +674,11 @@ mod tests {
             .with_agent("agent-001", "claude-opus-4");
 
         checkpoint.add_joy(
-            Joy::new("Type inference is excellent", JoyCategory::Safety)
-                .with_intensity(0.9)
+            Joy::new("Type inference is excellent", JoyCategory::Safety).with_intensity(0.9),
         );
         checkpoint.add_friction(
             Friction::new("Async syntax is verbose", FrictionCategory::Syntax)
-                .with_severity(Severity::Minor)
+                .with_severity(Severity::Minor),
         );
 
         assert_eq!(checkpoint.project, "infernum");

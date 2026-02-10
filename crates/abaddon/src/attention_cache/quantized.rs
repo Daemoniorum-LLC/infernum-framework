@@ -9,8 +9,8 @@
 //! - Quantized = round(x / scale) + 128 (offset to U8 range)
 //! - Dequantized = (quantized - 128) * scale
 
-use candle_core::{DType, Result as CandleResult, Tensor, D};
 use super::KvCache;
+use candle_core::{DType, Result as CandleResult, Tensor, D};
 
 /// Quantization granularity for KV cache.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -62,11 +62,7 @@ pub struct QuantizedCache {
 
 impl QuantizedCache {
     /// Create a new empty quantized cache.
-    pub fn new(
-        num_kv_heads: usize,
-        head_dim: usize,
-        granularity: QuantizationGranularity,
-    ) -> Self {
+    pub fn new(num_kv_heads: usize, head_dim: usize, granularity: QuantizationGranularity) -> Self {
         Self {
             k_quantized: None,
             v_quantized: None,
@@ -92,16 +88,16 @@ impl QuantizedCache {
             QuantizationGranularity::PerToken => {
                 // [batch, heads, seq, head_dim] -> [batch, heads, seq, 1]
                 abs_tensor.max_keepdim(D::Minus1)?
-            }
+            },
             QuantizationGranularity::PerHead => {
                 // [batch, heads, seq, head_dim] -> [batch, heads, 1, 1]
                 abs_tensor.max_keepdim(D::Minus1)?.max_keepdim(D::Minus2)?
-            }
+            },
             QuantizationGranularity::PerTensor => {
                 // [batch, heads, seq, head_dim] -> [1, 1, 1, 1]
                 let max_val = abs_tensor.max_all()?;
                 max_val.reshape((1, 1, 1, 1))?
-            }
+            },
         };
 
         // Avoid division by zero
@@ -123,7 +119,12 @@ impl QuantizedCache {
     }
 
     /// Dequantize U8 tensor back to original dtype.
-    fn dequantize(&self, quantized: &Tensor, scales: &Tensor, dtype: DType) -> CandleResult<Tensor> {
+    fn dequantize(
+        &self,
+        quantized: &Tensor,
+        scales: &Tensor,
+        dtype: DType,
+    ) -> CandleResult<Tensor> {
         // (quantized - 128) * scale
         let float_vals = quantized.to_dtype(dtype)?;
         let unoffset = (float_vals - 128.0)?;
@@ -148,7 +149,7 @@ impl KvCache for QuantizedCache {
                 let k = Tensor::cat(&[prev_k, &k_quant], 2)?;
                 let scale = Tensor::cat(&[prev_scale, &k_scale], 2)?;
                 (k, scale)
-            }
+            },
             _ => (k_quant, k_scale),
         };
 
@@ -157,7 +158,7 @@ impl KvCache for QuantizedCache {
                 let v = Tensor::cat(&[prev_v, &v_quant], 2)?;
                 let scale = Tensor::cat(&[prev_scale, &v_scale], 2)?;
                 (v, scale)
-            }
+            },
             _ => (v_quant, v_scale),
         };
 
@@ -170,10 +171,7 @@ impl KvCache for QuantizedCache {
     }
 
     fn seq_len(&self) -> usize {
-        self.k_quantized
-            .as_ref()
-            .map(|t| t.dims()[2])
-            .unwrap_or(0)
+        self.k_quantized.as_ref().map(|t| t.dims()[2]).unwrap_or(0)
     }
 
     fn clear(&mut self) {
@@ -185,13 +183,23 @@ impl KvCache for QuantizedCache {
     }
 
     fn memory_bytes(&self) -> usize {
-        let k_mem = self.k_quantized.as_ref().map(|t| t.elem_count()).unwrap_or(0);
-        let v_mem = self.v_quantized.as_ref().map(|t| t.elem_count()).unwrap_or(0);
-        let k_scale_mem = self.k_scales
+        let k_mem = self
+            .k_quantized
+            .as_ref()
+            .map(|t| t.elem_count())
+            .unwrap_or(0);
+        let v_mem = self
+            .v_quantized
+            .as_ref()
+            .map(|t| t.elem_count())
+            .unwrap_or(0);
+        let k_scale_mem = self
+            .k_scales
             .as_ref()
             .map(|t| t.elem_count() * t.dtype().size_in_bytes())
             .unwrap_or(0);
-        let v_scale_mem = self.v_scales
+        let v_scale_mem = self
+            .v_scales
             .as_ref()
             .map(|t| t.elem_count() * t.dtype().size_in_bytes())
             .unwrap_or(0);
@@ -203,12 +211,17 @@ impl KvCache for QuantizedCache {
     fn get_kv(&self) -> CandleResult<Option<(Tensor, Tensor)>> {
         let dtype = self.dtype.unwrap_or(DType::BF16);
 
-        match (&self.k_quantized, &self.k_scales, &self.v_quantized, &self.v_scales) {
+        match (
+            &self.k_quantized,
+            &self.k_scales,
+            &self.v_quantized,
+            &self.v_scales,
+        ) {
             (Some(k_q), Some(k_s), Some(v_q), Some(v_s)) => {
                 let k = self.dequantize(k_q, k_s, dtype)?;
                 let v = self.dequantize(v_q, v_s, dtype)?;
                 Ok(Some((k, v)))
-            }
+            },
             _ => Ok(None),
         }
     }
@@ -277,7 +290,13 @@ mod tests {
 
         for (o, r) in orig.iter().zip(recv.iter()) {
             let error = (o - r).abs();
-            assert!(error < 0.02, "Error too large: {} vs {} (error: {})", o, r, error);
+            assert!(
+                error < 0.02,
+                "Error too large: {} vs {} (error: {})",
+                o,
+                r,
+                error
+            );
         }
 
         Ok(())
@@ -296,7 +315,10 @@ mod tests {
         let full_mem = 2 * 1 * 8 * 100 * 128 * 2; // K + V, BF16
 
         let savings = full_mem as f32 / quant_mem as f32;
-        println!("Memory: quantized={}, full={}, savings={:.2}x", quant_mem, full_mem, savings);
+        println!(
+            "Memory: quantized={}, full={}, savings={:.2}x",
+            quant_mem, full_mem, savings
+        );
 
         assert!(savings > 1.5, "Expected at least 1.5x savings");
 

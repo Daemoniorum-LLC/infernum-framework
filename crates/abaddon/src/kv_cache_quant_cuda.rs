@@ -397,10 +397,11 @@ extern "C" __global__ void int8_qk_attention_decode(
     impl Int8AttentionContext {
         /// Create a new INT8 attention context.
         pub fn new(device_id: usize) -> Result<Self, Int8AttentionError> {
-            let device = CudaDevice::new(device_id).map_err(|e| Int8AttentionError::DeviceInit {
-                device_id,
-                message: e.to_string(),
-            })?;
+            let device =
+                CudaDevice::new(device_id).map_err(|e| Int8AttentionError::DeviceInit {
+                    device_id,
+                    message: e.to_string(),
+                })?;
 
             Ok(Self {
                 device,
@@ -415,10 +416,11 @@ extern "C" __global__ void int8_qk_attention_decode(
             }
 
             // Compile CUDA source to PTX using nvrtc
-            let ptx = cudarc::nvrtc::compile_ptx(INT8_ATTENTION_KERNEL_SRC)
-                .map_err(|e| Int8AttentionError::KernelCompile {
+            let ptx = cudarc::nvrtc::compile_ptx(INT8_ATTENTION_KERNEL_SRC).map_err(|e| {
+                Int8AttentionError::KernelCompile {
                     message: e.to_string(),
-                })?;
+                }
+            })?;
 
             // Load all kernels (naive + optimized)
             self.device
@@ -427,11 +429,11 @@ extern "C" __global__ void int8_qk_attention_decode(
                     "int8_attention",
                     &[
                         "int8_dequant_bf16",
-                        "int8_qk_attention",      // Naive Q @ K^T
-                        "int8_qk_attention_tiled", // Optimized with shared memory
+                        "int8_qk_attention",        // Naive Q @ K^T
+                        "int8_qk_attention_tiled",  // Optimized with shared memory
                         "int8_qk_attention_decode", // Warp-optimized decode
-                        "int8_attn_v",             // Naive attn @ V
-                        "int8_attn_v_tiled",       // Optimized with tiling
+                        "int8_attn_v",              // Naive attn @ V
+                        "int8_attn_v_tiled",        // Optimized with tiling
                     ],
                 )
                 .map_err(|e| Int8AttentionError::KernelCompile {
@@ -471,12 +473,14 @@ extern "C" __global__ void int8_qk_attention_decode(
             }
 
             let num_elements = quant.len();
-            let output: CudaSlice<u16> = self.device.alloc_zeros(num_elements)
-                .map_err(|e| Int8AttentionError::KernelExec {
+            let output: CudaSlice<u16> = self.device.alloc_zeros(num_elements).map_err(|e| {
+                Int8AttentionError::KernelExec {
                     message: format!("Failed to allocate output: {}", e),
-                })?;
+                }
+            })?;
 
-            let kernel = self.device
+            let kernel = self
+                .device
                 .get_func("int8_attention", "int8_dequant_bf16")
                 .ok_or(Int8AttentionError::KernelNotLoaded {
                     kernel: "int8_dequant_bf16".to_string(),
@@ -492,12 +496,20 @@ extern "C" __global__ void int8_qk_attention_decode(
             };
 
             unsafe {
-                kernel.launch(
-                    config,
-                    (quant, scales, &output, num_elements as i32, elements_per_scale as i32),
-                ).map_err(|e| Int8AttentionError::KernelExec {
-                    message: e.to_string(),
-                })?;
+                kernel
+                    .launch(
+                        config,
+                        (
+                            quant,
+                            scales,
+                            &output,
+                            num_elements as i32,
+                            elements_per_scale as i32,
+                        ),
+                    )
+                    .map_err(|e| Int8AttentionError::KernelExec {
+                        message: e.to_string(),
+                    })?;
             }
 
             Ok(output)
@@ -509,10 +521,10 @@ extern "C" __global__ void int8_qk_attention_decode(
         // This is beneficial when there are many threads per block (kv_len > TILE_KV).
         //
         // For attn@V: naive kernel is used (tiled V has too much sync overhead).
-        const TILED_QK_THRESHOLD: usize = 128;  // Use tiled kernel for kv_len > TILE_KV
-        const TILE_KV: usize = 128;             // Must match TILE_KV in kernel
+        const TILED_QK_THRESHOLD: usize = 128; // Use tiled kernel for kv_len > TILE_KV
+        const TILE_KV: usize = 128; // Must match TILE_KV in kernel
         #[allow(dead_code)]
-        const TILE_KV_AV: usize = 64;           // Must match TILE_KV_AV in kernel
+        const TILE_KV_AV: usize = 64; // Must match TILE_KV_AV in kernel
         const WARP_SIZE: usize = 32;
 
         /// Compute Q @ K^T with fused INT8 dequantization.
@@ -534,9 +546,9 @@ extern "C" __global__ void int8_qk_attention_decode(
         #[allow(clippy::too_many_arguments)]
         pub fn fused_qk_attention(
             &self,
-            q: &CudaSlice<u16>,        // BF16
-            k_quant: &CudaSlice<u8>,   // INT8
-            k_scale: &CudaSlice<u16>,  // BF16
+            q: &CudaSlice<u16>,       // BF16
+            k_quant: &CudaSlice<u8>,  // INT8
+            k_scale: &CudaSlice<u16>, // BF16
             batch_size: usize,
             num_heads: usize,
             num_kv_heads: usize,
@@ -552,10 +564,11 @@ extern "C" __global__ void int8_qk_attention_decode(
             }
 
             let output_size = batch_size * num_heads * q_len * kv_len;
-            let output: CudaSlice<f32> = self.device.alloc_zeros(output_size)
-                .map_err(|e| Int8AttentionError::KernelExec {
+            let output: CudaSlice<f32> = self.device.alloc_zeros(output_size).map_err(|e| {
+                Int8AttentionError::KernelExec {
                     message: format!("Failed to allocate output: {}", e),
-                })?;
+                }
+            })?;
 
             // Select optimal kernel based on dimensions
             //
@@ -568,20 +581,46 @@ extern "C" __global__ void int8_qk_attention_decode(
             if q_len == 1 {
                 // Single-token decode: use warp-parallel kernel
                 self.launch_qk_decode(
-                    q, k_quant, k_scale, &output,
-                    batch_size, num_heads, num_kv_heads, kv_len, head_dim, attn_scale,
+                    q,
+                    k_quant,
+                    k_scale,
+                    &output,
+                    batch_size,
+                    num_heads,
+                    num_kv_heads,
+                    kv_len,
+                    head_dim,
+                    attn_scale,
                 )?;
             } else if kv_len > Self::TILED_QK_THRESHOLD {
                 // Prefill with large context: tiled kernel caches Q in shared memory
                 self.launch_qk_tiled(
-                    q, k_quant, k_scale, &output,
-                    batch_size, num_heads, num_kv_heads, q_len, kv_len, head_dim, attn_scale,
+                    q,
+                    k_quant,
+                    k_scale,
+                    &output,
+                    batch_size,
+                    num_heads,
+                    num_kv_heads,
+                    q_len,
+                    kv_len,
+                    head_dim,
+                    attn_scale,
                 )?;
             } else {
                 // Small sequences: naive kernel has lower overhead
                 self.launch_qk_naive(
-                    q, k_quant, k_scale, &output,
-                    batch_size, num_heads, num_kv_heads, q_len, kv_len, head_dim, attn_scale,
+                    q,
+                    k_quant,
+                    k_scale,
+                    &output,
+                    batch_size,
+                    num_heads,
+                    num_kv_heads,
+                    q_len,
+                    kv_len,
+                    head_dim,
+                    attn_scale,
                 )?;
             }
 
@@ -604,7 +643,8 @@ extern "C" __global__ void int8_qk_attention_decode(
             head_dim: usize,
             attn_scale: f32,
         ) -> Result<(), Int8AttentionError> {
-            let kernel = self.device
+            let kernel = self
+                .device
                 .get_func("int8_attention", "int8_qk_attention")
                 .ok_or(Int8AttentionError::KernelNotLoaded {
                     kernel: "int8_qk_attention".to_string(),
@@ -618,17 +658,26 @@ extern "C" __global__ void int8_qk_attention_decode(
             };
 
             unsafe {
-                kernel.launch(
-                    config,
-                    (
-                        q, k_quant, k_scale, output,
-                        batch_size as i32, num_heads as i32, num_kv_heads as i32,
-                        q_len as i32, kv_len as i32, head_dim as i32,
-                        attn_scale,
-                    ),
-                ).map_err(|e| Int8AttentionError::KernelExec {
-                    message: e.to_string(),
-                })?;
+                kernel
+                    .launch(
+                        config,
+                        (
+                            q,
+                            k_quant,
+                            k_scale,
+                            output,
+                            batch_size as i32,
+                            num_heads as i32,
+                            num_kv_heads as i32,
+                            q_len as i32,
+                            kv_len as i32,
+                            head_dim as i32,
+                            attn_scale,
+                        ),
+                    )
+                    .map_err(|e| Int8AttentionError::KernelExec {
+                        message: e.to_string(),
+                    })?;
             }
             Ok(())
         }
@@ -649,7 +698,8 @@ extern "C" __global__ void int8_qk_attention_decode(
             head_dim: usize,
             attn_scale: f32,
         ) -> Result<(), Int8AttentionError> {
-            let kernel = self.device
+            let kernel = self
+                .device
                 .get_func("int8_attention", "int8_qk_attention_tiled")
                 .ok_or(Int8AttentionError::KernelNotLoaded {
                     kernel: "int8_qk_attention_tiled".to_string(),
@@ -665,17 +715,26 @@ extern "C" __global__ void int8_qk_attention_decode(
             };
 
             unsafe {
-                kernel.launch(
-                    config,
-                    (
-                        q, k_quant, k_scale, output,
-                        batch_size as i32, num_heads as i32, num_kv_heads as i32,
-                        q_len as i32, kv_len as i32, head_dim as i32,
-                        attn_scale,
-                    ),
-                ).map_err(|e| Int8AttentionError::KernelExec {
-                    message: e.to_string(),
-                })?;
+                kernel
+                    .launch(
+                        config,
+                        (
+                            q,
+                            k_quant,
+                            k_scale,
+                            output,
+                            batch_size as i32,
+                            num_heads as i32,
+                            num_kv_heads as i32,
+                            q_len as i32,
+                            kv_len as i32,
+                            head_dim as i32,
+                            attn_scale,
+                        ),
+                    )
+                    .map_err(|e| Int8AttentionError::KernelExec {
+                        message: e.to_string(),
+                    })?;
             }
             Ok(())
         }
@@ -695,7 +754,8 @@ extern "C" __global__ void int8_qk_attention_decode(
             head_dim: usize,
             attn_scale: f32,
         ) -> Result<(), Int8AttentionError> {
-            let kernel = self.device
+            let kernel = self
+                .device
                 .get_func("int8_attention", "int8_qk_attention_decode")
                 .ok_or(Int8AttentionError::KernelNotLoaded {
                     kernel: "int8_qk_attention_decode".to_string(),
@@ -704,7 +764,8 @@ extern "C" __global__ void int8_qk_attention_decode(
             // One warp per kv position
             let total_warps = batch_size * num_heads * kv_len;
             let threads_per_block = 256; // 8 warps per block
-            let blocks = (total_warps * Self::WARP_SIZE + threads_per_block - 1) / threads_per_block;
+            let blocks =
+                (total_warps * Self::WARP_SIZE + threads_per_block - 1) / threads_per_block;
 
             let config = LaunchConfig {
                 block_dim: (threads_per_block as u32, 1, 1),
@@ -713,17 +774,25 @@ extern "C" __global__ void int8_qk_attention_decode(
             };
 
             unsafe {
-                kernel.launch(
-                    config,
-                    (
-                        q, k_quant, k_scale, output,
-                        batch_size as i32, num_heads as i32, num_kv_heads as i32,
-                        kv_len as i32, head_dim as i32,
-                        attn_scale,
-                    ),
-                ).map_err(|e| Int8AttentionError::KernelExec {
-                    message: e.to_string(),
-                })?;
+                kernel
+                    .launch(
+                        config,
+                        (
+                            q,
+                            k_quant,
+                            k_scale,
+                            output,
+                            batch_size as i32,
+                            num_heads as i32,
+                            num_kv_heads as i32,
+                            kv_len as i32,
+                            head_dim as i32,
+                            attn_scale,
+                        ),
+                    )
+                    .map_err(|e| Int8AttentionError::KernelExec {
+                        message: e.to_string(),
+                    })?;
             }
             Ok(())
         }
@@ -745,8 +814,8 @@ extern "C" __global__ void int8_qk_attention_decode(
         pub fn fused_attn_v(
             &self,
             attn: &CudaSlice<f32>,
-            v_quant: &CudaSlice<u8>,   // INT8
-            v_scale: &CudaSlice<u16>,  // BF16
+            v_quant: &CudaSlice<u8>,  // INT8
+            v_scale: &CudaSlice<u16>, // BF16
             batch_size: usize,
             num_heads: usize,
             num_kv_heads: usize,
@@ -761,17 +830,26 @@ extern "C" __global__ void int8_qk_attention_decode(
             }
 
             let output_size = batch_size * num_heads * q_len * head_dim;
-            let output: CudaSlice<u16> = self.device.alloc_zeros(output_size)
-                .map_err(|e| Int8AttentionError::KernelExec {
+            let output: CudaSlice<u16> = self.device.alloc_zeros(output_size).map_err(|e| {
+                Int8AttentionError::KernelExec {
                     message: format!("Failed to allocate output: {}", e),
-                })?;
+                }
+            })?;
 
             // The tiled V kernel has excessive sync barrier overhead for large kv_len.
             // Use naive kernel which scales better due to no synchronization.
             // TODO: Implement a parallel-reduction V kernel for better scaling.
             self.launch_attn_v_naive(
-                attn, v_quant, v_scale, &output,
-                batch_size, num_heads, num_kv_heads, q_len, kv_len, head_dim,
+                attn,
+                v_quant,
+                v_scale,
+                &output,
+                batch_size,
+                num_heads,
+                num_kv_heads,
+                q_len,
+                kv_len,
+                head_dim,
             )?;
 
             Ok(output)
@@ -792,7 +870,8 @@ extern "C" __global__ void int8_qk_attention_decode(
             kv_len: usize,
             head_dim: usize,
         ) -> Result<(), Int8AttentionError> {
-            let kernel = self.device
+            let kernel = self
+                .device
                 .get_func("int8_attention", "int8_attn_v")
                 .ok_or(Int8AttentionError::KernelNotLoaded {
                     kernel: "int8_attn_v".to_string(),
@@ -806,16 +885,25 @@ extern "C" __global__ void int8_qk_attention_decode(
             };
 
             unsafe {
-                kernel.launch(
-                    config,
-                    (
-                        attn, v_quant, v_scale, output,
-                        batch_size as i32, num_heads as i32, num_kv_heads as i32,
-                        q_len as i32, kv_len as i32, head_dim as i32,
-                    ),
-                ).map_err(|e| Int8AttentionError::KernelExec {
-                    message: e.to_string(),
-                })?;
+                kernel
+                    .launch(
+                        config,
+                        (
+                            attn,
+                            v_quant,
+                            v_scale,
+                            output,
+                            batch_size as i32,
+                            num_heads as i32,
+                            num_kv_heads as i32,
+                            q_len as i32,
+                            kv_len as i32,
+                            head_dim as i32,
+                        ),
+                    )
+                    .map_err(|e| Int8AttentionError::KernelExec {
+                        message: e.to_string(),
+                    })?;
             }
             Ok(())
         }
@@ -836,7 +924,8 @@ extern "C" __global__ void int8_qk_attention_decode(
             kv_len: usize,
             head_dim: usize,
         ) -> Result<(), Int8AttentionError> {
-            let kernel = self.device
+            let kernel = self
+                .device
                 .get_func("int8_attention", "int8_attn_v_tiled")
                 .ok_or(Int8AttentionError::KernelNotLoaded {
                     kernel: "int8_attn_v_tiled".to_string(),
@@ -854,16 +943,25 @@ extern "C" __global__ void int8_qk_attention_decode(
             };
 
             unsafe {
-                kernel.launch(
-                    config,
-                    (
-                        attn, v_quant, v_scale, output,
-                        batch_size as i32, num_heads as i32, num_kv_heads as i32,
-                        q_len as i32, kv_len as i32, head_dim as i32,
-                    ),
-                ).map_err(|e| Int8AttentionError::KernelExec {
-                    message: e.to_string(),
-                })?;
+                kernel
+                    .launch(
+                        config,
+                        (
+                            attn,
+                            v_quant,
+                            v_scale,
+                            output,
+                            batch_size as i32,
+                            num_heads as i32,
+                            num_kv_heads as i32,
+                            q_len as i32,
+                            kv_len as i32,
+                            head_dim as i32,
+                        ),
+                    )
+                    .map_err(|e| Int8AttentionError::KernelExec {
+                        message: e.to_string(),
+                    })?;
             }
             Ok(())
         }
@@ -984,14 +1082,26 @@ extern "C" __global__ void int8_qk_attention_decode(
             let (v_quant_new, v_scales_new) = self.quantize_tensor(v)?;
 
             // Transfer to GPU
-            let k_quant_gpu = device.htod_sync_copy(&k_quant_new)
-                .map_err(|e| Int8AttentionError::KernelExec { message: e.to_string() })?;
-            let v_quant_gpu = device.htod_sync_copy(&v_quant_new)
-                .map_err(|e| Int8AttentionError::KernelExec { message: e.to_string() })?;
-            let k_scales_gpu = device.htod_sync_copy(&k_scales_new)
-                .map_err(|e| Int8AttentionError::KernelExec { message: e.to_string() })?;
-            let v_scales_gpu = device.htod_sync_copy(&v_scales_new)
-                .map_err(|e| Int8AttentionError::KernelExec { message: e.to_string() })?;
+            let k_quant_gpu = device.htod_sync_copy(&k_quant_new).map_err(|e| {
+                Int8AttentionError::KernelExec {
+                    message: e.to_string(),
+                }
+            })?;
+            let v_quant_gpu = device.htod_sync_copy(&v_quant_new).map_err(|e| {
+                Int8AttentionError::KernelExec {
+                    message: e.to_string(),
+                }
+            })?;
+            let k_scales_gpu = device.htod_sync_copy(&k_scales_new).map_err(|e| {
+                Int8AttentionError::KernelExec {
+                    message: e.to_string(),
+                }
+            })?;
+            let v_scales_gpu = device.htod_sync_copy(&v_scales_new).map_err(|e| {
+                Int8AttentionError::KernelExec {
+                    message: e.to_string(),
+                }
+            })?;
 
             // Concatenate with existing cache
             // Memory layout: [batch, kv_heads, seq_len, head_dim]
@@ -1010,14 +1120,30 @@ extern "C" __global__ void int8_qk_attention_decode(
                 let v_size = k_size;
                 let scale_size = batch * kv_heads * new_total_seq;
 
-                let mut new_k: CudaSlice<u8> = device.alloc_zeros(k_size)
-                    .map_err(|e| Int8AttentionError::KernelExec { message: e.to_string() })?;
-                let mut new_v: CudaSlice<u8> = device.alloc_zeros(v_size)
-                    .map_err(|e| Int8AttentionError::KernelExec { message: e.to_string() })?;
-                let mut new_ks: CudaSlice<u16> = device.alloc_zeros(scale_size)
-                    .map_err(|e| Int8AttentionError::KernelExec { message: e.to_string() })?;
-                let mut new_vs: CudaSlice<u16> = device.alloc_zeros(scale_size)
-                    .map_err(|e| Int8AttentionError::KernelExec { message: e.to_string() })?;
+                let mut new_k: CudaSlice<u8> =
+                    device
+                        .alloc_zeros(k_size)
+                        .map_err(|e| Int8AttentionError::KernelExec {
+                            message: e.to_string(),
+                        })?;
+                let mut new_v: CudaSlice<u8> =
+                    device
+                        .alloc_zeros(v_size)
+                        .map_err(|e| Int8AttentionError::KernelExec {
+                            message: e.to_string(),
+                        })?;
+                let mut new_ks: CudaSlice<u16> =
+                    device
+                        .alloc_zeros(scale_size)
+                        .map_err(|e| Int8AttentionError::KernelExec {
+                            message: e.to_string(),
+                        })?;
+                let mut new_vs: CudaSlice<u16> =
+                    device
+                        .alloc_zeros(scale_size)
+                        .map_err(|e| Int8AttentionError::KernelExec {
+                            message: e.to_string(),
+                        })?;
 
                 // Copy data per (batch, head) slice to maintain correct layout
                 // Old layout: [batch, kv_heads, prev_seq_len, head_dim]
@@ -1034,26 +1160,52 @@ extern "C" __global__ void int8_qk_attention_decode(
                         let append_dst_start = new_slice_start + prev_seq_len * head_dim;
 
                         // Copy old data to new position
-                        device.dtod_copy(
-                            &prev_k.slice(old_slice_start..old_slice_start + old_slice_len),
-                            &mut new_k.slice_mut(new_slice_start..new_slice_start + old_slice_len)
-                        ).map_err(|e| Int8AttentionError::KernelExec { message: e.to_string() })?;
+                        device
+                            .dtod_copy(
+                                &prev_k.slice(old_slice_start..old_slice_start + old_slice_len),
+                                &mut new_k
+                                    .slice_mut(new_slice_start..new_slice_start + old_slice_len),
+                            )
+                            .map_err(|e| Int8AttentionError::KernelExec {
+                                message: e.to_string(),
+                            })?;
 
-                        device.dtod_copy(
-                            &prev_v.slice(old_slice_start..old_slice_start + old_slice_len),
-                            &mut new_v.slice_mut(new_slice_start..new_slice_start + old_slice_len)
-                        ).map_err(|e| Int8AttentionError::KernelExec { message: e.to_string() })?;
+                        device
+                            .dtod_copy(
+                                &prev_v.slice(old_slice_start..old_slice_start + old_slice_len),
+                                &mut new_v
+                                    .slice_mut(new_slice_start..new_slice_start + old_slice_len),
+                            )
+                            .map_err(|e| Int8AttentionError::KernelExec {
+                                message: e.to_string(),
+                            })?;
 
                         // Copy new data after old data
-                        device.dtod_copy(
-                            &k_quant_gpu.slice(append_slice_start..append_slice_start + append_slice_len),
-                            &mut new_k.slice_mut(append_dst_start..append_dst_start + append_slice_len)
-                        ).map_err(|e| Int8AttentionError::KernelExec { message: e.to_string() })?;
+                        device
+                            .dtod_copy(
+                                &k_quant_gpu.slice(
+                                    append_slice_start..append_slice_start + append_slice_len,
+                                ),
+                                &mut new_k.slice_mut(
+                                    append_dst_start..append_dst_start + append_slice_len,
+                                ),
+                            )
+                            .map_err(|e| Int8AttentionError::KernelExec {
+                                message: e.to_string(),
+                            })?;
 
-                        device.dtod_copy(
-                            &v_quant_gpu.slice(append_slice_start..append_slice_start + append_slice_len),
-                            &mut new_v.slice_mut(append_dst_start..append_dst_start + append_slice_len)
-                        ).map_err(|e| Int8AttentionError::KernelExec { message: e.to_string() })?;
+                        device
+                            .dtod_copy(
+                                &v_quant_gpu.slice(
+                                    append_slice_start..append_slice_start + append_slice_len,
+                                ),
+                                &mut new_v.slice_mut(
+                                    append_dst_start..append_dst_start + append_slice_len,
+                                ),
+                            )
+                            .map_err(|e| Int8AttentionError::KernelExec {
+                                message: e.to_string(),
+                            })?;
 
                         // Scale offsets (one scale per token per (batch, head))
                         let old_scale_start = (b * kv_heads + h) * prev_seq_len;
@@ -1064,25 +1216,51 @@ extern "C" __global__ void int8_qk_attention_decode(
                         let append_scale_len = new_seq_len;
                         let append_scale_dst = new_scale_start + prev_seq_len;
 
-                        device.dtod_copy(
-                            &prev_ks.slice(old_scale_start..old_scale_start + old_scale_len),
-                            &mut new_ks.slice_mut(new_scale_start..new_scale_start + old_scale_len)
-                        ).map_err(|e| Int8AttentionError::KernelExec { message: e.to_string() })?;
+                        device
+                            .dtod_copy(
+                                &prev_ks.slice(old_scale_start..old_scale_start + old_scale_len),
+                                &mut new_ks
+                                    .slice_mut(new_scale_start..new_scale_start + old_scale_len),
+                            )
+                            .map_err(|e| Int8AttentionError::KernelExec {
+                                message: e.to_string(),
+                            })?;
 
-                        device.dtod_copy(
-                            &prev_vs.slice(old_scale_start..old_scale_start + old_scale_len),
-                            &mut new_vs.slice_mut(new_scale_start..new_scale_start + old_scale_len)
-                        ).map_err(|e| Int8AttentionError::KernelExec { message: e.to_string() })?;
+                        device
+                            .dtod_copy(
+                                &prev_vs.slice(old_scale_start..old_scale_start + old_scale_len),
+                                &mut new_vs
+                                    .slice_mut(new_scale_start..new_scale_start + old_scale_len),
+                            )
+                            .map_err(|e| Int8AttentionError::KernelExec {
+                                message: e.to_string(),
+                            })?;
 
-                        device.dtod_copy(
-                            &k_scales_gpu.slice(append_scale_start..append_scale_start + append_scale_len),
-                            &mut new_ks.slice_mut(append_scale_dst..append_scale_dst + append_scale_len)
-                        ).map_err(|e| Int8AttentionError::KernelExec { message: e.to_string() })?;
+                        device
+                            .dtod_copy(
+                                &k_scales_gpu.slice(
+                                    append_scale_start..append_scale_start + append_scale_len,
+                                ),
+                                &mut new_ks.slice_mut(
+                                    append_scale_dst..append_scale_dst + append_scale_len,
+                                ),
+                            )
+                            .map_err(|e| Int8AttentionError::KernelExec {
+                                message: e.to_string(),
+                            })?;
 
-                        device.dtod_copy(
-                            &v_scales_gpu.slice(append_scale_start..append_scale_start + append_scale_len),
-                            &mut new_vs.slice_mut(append_scale_dst..append_scale_dst + append_scale_len)
-                        ).map_err(|e| Int8AttentionError::KernelExec { message: e.to_string() })?;
+                        device
+                            .dtod_copy(
+                                &v_scales_gpu.slice(
+                                    append_scale_start..append_scale_start + append_scale_len,
+                                ),
+                                &mut new_vs.slice_mut(
+                                    append_scale_dst..append_scale_dst + append_scale_len,
+                                ),
+                            )
+                            .map_err(|e| Int8AttentionError::KernelExec {
+                                message: e.to_string(),
+                            })?;
                     }
                 }
 
@@ -1111,12 +1289,19 @@ extern "C" __global__ void int8_qk_attention_decode(
             let (batch, kv_heads, seq_len, head_dim) = (dims[0], dims[1], dims[2], dims[3]);
 
             // Convert to f32 for quantization
-            let data = tensor.to_dtype(candle_core::DType::F32)
-                .map_err(|e| Int8AttentionError::TensorConvert { message: e.to_string() })?
+            let data = tensor
+                .to_dtype(candle_core::DType::F32)
+                .map_err(|e| Int8AttentionError::TensorConvert {
+                    message: e.to_string(),
+                })?
                 .flatten_all()
-                .map_err(|e| Int8AttentionError::TensorConvert { message: e.to_string() })?
+                .map_err(|e| Int8AttentionError::TensorConvert {
+                    message: e.to_string(),
+                })?
                 .to_vec1::<f32>()
-                .map_err(|e| Int8AttentionError::TensorConvert { message: e.to_string() })?;
+                .map_err(|e| Int8AttentionError::TensorConvert {
+                    message: e.to_string(),
+                })?;
 
             let mut quant_data = vec![0u8; batch * kv_heads * seq_len * head_dim];
             let mut scales = vec![0u16; batch * kv_heads * seq_len];
@@ -1129,7 +1314,8 @@ extern "C" __global__ void int8_qk_attention_decode(
                         let token_data = &data[offset..offset + head_dim];
 
                         // Find max absolute value
-                        let max_abs = token_data.iter()
+                        let max_abs = token_data
+                            .iter()
                             .map(|x| x.abs())
                             .fold(0.0f32, |a, b| a.max(b))
                             .max(1e-8);
@@ -1168,47 +1354,69 @@ extern "C" __global__ void int8_qk_attention_decode(
             num_heads: usize,
             attn_scale: f32,
         ) -> Result<candle_core::Tensor, Int8AttentionError> {
-            let (k_quant, v_quant, k_scales, v_scales) = match (
-                &self.k_quant, &self.v_quant, &self.k_scales, &self.v_scales
-            ) {
-                (Some(k), Some(v), Some(ks), Some(vs)) => (k, v, ks, vs),
-                _ => return Err(Int8AttentionError::KernelExec {
-                    message: "KV cache is empty".to_string(),
-                }),
-            };
+            let (k_quant, v_quant, k_scales, v_scales) =
+                match (&self.k_quant, &self.v_quant, &self.k_scales, &self.v_scales) {
+                    (Some(k), Some(v), Some(ks), Some(vs)) => (k, v, ks, vs),
+                    _ => {
+                        return Err(Int8AttentionError::KernelExec {
+                            message: "KV cache is empty".to_string(),
+                        })
+                    },
+                };
 
             let device = self.attn_ctx.device();
             let dims = q.dims();
             let (batch, _num_heads, q_len, head_dim) = (dims[0], dims[1], dims[2], dims[3]);
 
             // Convert Q to GPU BF16
-            let q_bf16 = q.to_dtype(candle_core::DType::BF16)
-                .map_err(|e| Int8AttentionError::TensorConvert { message: e.to_string() })?
+            let q_bf16 = q
+                .to_dtype(candle_core::DType::BF16)
+                .map_err(|e| Int8AttentionError::TensorConvert {
+                    message: e.to_string(),
+                })?
                 .flatten_all()
-                .map_err(|e| Int8AttentionError::TensorConvert { message: e.to_string() })?;
+                .map_err(|e| Int8AttentionError::TensorConvert {
+                    message: e.to_string(),
+                })?;
 
             // Get Q data as u16 (BF16 bit representation)
-            let q_data: Vec<u16> = q_bf16.to_vec1::<half::bf16>()
-                .map_err(|e| Int8AttentionError::TensorConvert { message: e.to_string() })?
+            let q_data: Vec<u16> = q_bf16
+                .to_vec1::<half::bf16>()
+                .map_err(|e| Int8AttentionError::TensorConvert {
+                    message: e.to_string(),
+                })?
                 .iter()
                 .map(|x| x.to_bits())
                 .collect();
 
-            let q_gpu = device.htod_sync_copy(&q_data)
-                .map_err(|e| Int8AttentionError::KernelExec { message: e.to_string() })?;
+            let q_gpu =
+                device
+                    .htod_sync_copy(&q_data)
+                    .map_err(|e| Int8AttentionError::KernelExec {
+                        message: e.to_string(),
+                    })?;
 
             // Compute Q @ K^T with fused dequantization
             let attn_scores = self.attn_ctx.fused_qk_attention(
-                &q_gpu, k_quant, k_scales,
-                batch, num_heads, self.num_kv_heads,
-                q_len, self.seq_len, head_dim,
+                &q_gpu,
+                k_quant,
+                k_scales,
+                batch,
+                num_heads,
+                self.num_kv_heads,
+                q_len,
+                self.seq_len,
+                head_dim,
                 attn_scale,
             )?;
 
             // Softmax on CPU (could be optimized with CUDA kernel)
             let mut scores_host = vec![0.0f32; batch * num_heads * q_len * self.seq_len];
-            device.dtoh_sync_copy_into(&attn_scores, &mut scores_host)
-                .map_err(|e| Int8AttentionError::KernelExec { message: e.to_string() })?;
+            device
+                .dtoh_sync_copy_into(&attn_scores, &mut scores_host)
+                .map_err(|e| Int8AttentionError::KernelExec {
+                    message: e.to_string(),
+                })?;
 
             // Apply causal mask and softmax per row
             // During prefill (q_len > 1), apply causal masking so each query position
@@ -1244,23 +1452,36 @@ extern "C" __global__ void int8_qk_attention_decode(
             }
 
             // Transfer softmax weights back to GPU
-            let attn_weights = device.htod_sync_copy(&scores_host)
-                .map_err(|e| Int8AttentionError::KernelExec { message: e.to_string() })?;
+            let attn_weights = device.htod_sync_copy(&scores_host).map_err(|e| {
+                Int8AttentionError::KernelExec {
+                    message: e.to_string(),
+                }
+            })?;
 
             // Compute attn @ V with fused dequantization
             let output_bf16 = self.attn_ctx.fused_attn_v(
-                &attn_weights, v_quant, v_scales,
-                batch, num_heads, self.num_kv_heads,
-                q_len, self.seq_len, head_dim,
+                &attn_weights,
+                v_quant,
+                v_scales,
+                batch,
+                num_heads,
+                self.num_kv_heads,
+                q_len,
+                self.seq_len,
+                head_dim,
             )?;
 
             // Convert back to Candle tensor
             let mut output_host = vec![0u16; batch * num_heads * q_len * head_dim];
-            device.dtoh_sync_copy_into(&output_bf16, &mut output_host)
-                .map_err(|e| Int8AttentionError::KernelExec { message: e.to_string() })?;
+            device
+                .dtoh_sync_copy_into(&output_bf16, &mut output_host)
+                .map_err(|e| Int8AttentionError::KernelExec {
+                    message: e.to_string(),
+                })?;
 
             // Convert u16 to bf16
-            let output_bf16_vals: Vec<half::bf16> = output_host.iter()
+            let output_bf16_vals: Vec<half::bf16> = output_host
+                .iter()
                 .map(|&bits| half::bf16::from_bits(bits))
                 .collect();
 
@@ -1269,9 +1490,14 @@ extern "C" __global__ void int8_qk_attention_decode(
                 output_bf16_vals,
                 (batch, num_heads, q_len, head_dim),
                 candle_device,
-            ).map_err(|e| Int8AttentionError::TensorConvert { message: e.to_string() })?
+            )
+            .map_err(|e| Int8AttentionError::TensorConvert {
+                message: e.to_string(),
+            })?
             .to_dtype(q.dtype())
-            .map_err(|e| Int8AttentionError::TensorConvert { message: e.to_string() })?;
+            .map_err(|e| Int8AttentionError::TensorConvert {
+                message: e.to_string(),
+            })?;
 
             Ok(output)
         }
@@ -1349,7 +1575,7 @@ impl Default for DynamicQuantConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            memory_threshold: 0.8, // Quantize when >80% VRAM used
+            memory_threshold: 0.8,   // Quantize when >80% VRAM used
             unquantized_window: 128, // Keep last 128 tokens in BF16
             granularity: QuantGranularity::PerToken,
         }
@@ -1423,16 +1649,16 @@ impl OptimizedQuantizedKvCache {
             QuantGranularity::PerToken => {
                 // Max over head_dim: (batch, heads, seq, head_dim) -> (batch, heads, seq, 1)
                 abs_tensor.max_keepdim(D::Minus1)?
-            }
+            },
             QuantGranularity::PerHead => {
                 // Max over seq and head_dim: -> (batch, heads, 1, 1)
                 let max_seq = abs_tensor.max_keepdim(D::Minus2)?;
                 max_seq.max_keepdim(D::Minus1)?
-            }
+            },
             QuantGranularity::PerChannel => {
                 // Max over seq: (batch, heads, seq, head_dim) -> (batch, heads, 1, head_dim)
                 abs_tensor.max_keepdim(D::Minus2)?
-            }
+            },
         };
 
         // Avoid division by zero
@@ -1471,7 +1697,7 @@ impl OptimizedQuantizedKvCache {
                 let k_cat = Tensor::cat(&[prev_k, k], 2)?;
                 let v_cat = Tensor::cat(&[prev_v, v], 2)?;
                 (k_cat, v_cat)
-            }
+            },
             _ => (k.clone(), v.clone()),
         };
 
@@ -1500,7 +1726,7 @@ impl OptimizedQuantizedKvCache {
                     let k = Tensor::cat(&[prev_k, &k_quant_new], 2)?;
                     let s = Tensor::cat(&[prev_s, &k_scale_new], 2)?;
                     (k, s)
-                }
+                },
                 _ => (k_quant_new, k_scale_new),
             };
 
@@ -1509,7 +1735,7 @@ impl OptimizedQuantizedKvCache {
                     let v = Tensor::cat(&[prev_v, &v_quant_new], 2)?;
                     let s = Tensor::cat(&[prev_s, &v_scale_new], 2)?;
                     (v, s)
-                }
+                },
                 _ => (v_quant_new, v_scale_new),
             };
 
@@ -1547,13 +1773,13 @@ impl OptimizedQuantizedKvCache {
                         let k_full = Tensor::cat(&[&k_dequant, k_recent], 2)?;
                         let v_full = Tensor::cat(&[&v_dequant, v_recent], 2)?;
                         Ok(Some((k_full, v_full)))
-                    }
+                    },
                     _ => {
                         // Only recent cache
                         Ok(Some((k_recent.clone(), v_recent.clone())))
-                    }
+                    },
                 }
-            }
+            },
             _ => Ok(None),
         }
     }

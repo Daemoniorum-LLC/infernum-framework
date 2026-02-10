@@ -1,6 +1,6 @@
 //! Test script for INT4 quantization module
 
-use abaddon::quantize::{Quantizer, QuantizeConfig, QuantizeFormat};
+use abaddon::quantize::{QuantizeConfig, QuantizeFormat, Quantizer};
 use candle_core::{Device, Tensor};
 
 fn main() -> anyhow::Result<()> {
@@ -13,7 +13,11 @@ fn main() -> anyhow::Result<()> {
     let tensor = Tensor::from_vec(values.clone(), &[32, 32], &Device::Cpu)?;
 
     let quantized = quantizer.quantize_tensor(&tensor)?;
-    println!("  Original: {} values ({} bytes)", quantized.num_values, quantized.num_values * 4);
+    println!(
+        "  Original: {} values ({} bytes)",
+        quantized.num_values,
+        quantized.num_values * 4
+    );
     println!("  Quantized: {} bytes packed", quantized.data.len());
     println!("  Scales: {} blocks", quantized.scales.len());
     println!("  Compression: {:.2}x", quantized.stats.compression_ratio);
@@ -23,7 +27,8 @@ fn main() -> anyhow::Result<()> {
     // Verify roundtrip
     let dequantized = quantizer.dequantize(&quantized)?;
     let dequant_vec: Vec<f32> = dequantized.flatten_all()?.to_vec1()?;
-    let max_error = values.iter()
+    let max_error = values
+        .iter()
         .zip(dequant_vec.iter())
         .map(|(a, b)| (a - b).abs())
         .fold(0.0f32, f32::max);
@@ -41,7 +46,10 @@ fn main() -> anyhow::Result<()> {
     let quantized = quantizer.quantize_tensor(&tensor)?;
     println!("  Original: {} values", quantized.num_values);
     println!("  Compression: {:.2}x", quantized.stats.compression_ratio);
-    println!("  Zero points: {:?}", quantized.zero_points.as_ref().map(|zp| zp.len()));
+    println!(
+        "  Zero points: {:?}",
+        quantized.zero_points.as_ref().map(|zp| zp.len())
+    );
     println!("  RMSE: {:.6}", quantized.stats.rmse);
     println!("  SNR: {:.2} dB", quantized.stats.snr_db);
     println!("  ✓ Asymmetric quantization works\n");
@@ -63,7 +71,9 @@ fn main() -> anyhow::Result<()> {
     println!("=== Test 4: Large Weight Matrix (1536x1536) ===");
     let quantizer = Quantizer::int4_symmetric();
     let size = 1536 * 1536;
-    let values: Vec<f32> = (0..size).map(|i| ((i % 1000) as f32 - 500.0) * 0.001).collect();
+    let values: Vec<f32> = (0..size)
+        .map(|i| ((i % 1000) as f32 - 500.0) * 0.001)
+        .collect();
     let tensor = Tensor::from_vec(values, &[1536, 1536], &Device::Cpu)?;
 
     let start = std::time::Instant::now();
@@ -71,7 +81,8 @@ fn main() -> anyhow::Result<()> {
     let elapsed = start.elapsed();
 
     let original_mb = (size * 4) as f64 / (1024.0 * 1024.0);
-    let quantized_mb = (quantized.data.len() + quantized.scales.len() * 2) as f64 / (1024.0 * 1024.0);
+    let quantized_mb =
+        (quantized.data.len() + quantized.scales.len() * 2) as f64 / (1024.0 * 1024.0);
 
     println!("  Original: {:.2} MB", original_mb);
     println!("  Quantized: {:.2} MB", quantized_mb);

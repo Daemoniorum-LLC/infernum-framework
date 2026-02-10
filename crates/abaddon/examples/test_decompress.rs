@@ -15,10 +15,13 @@ fn main() {
     match zstd::decode_all(&compressed[..]) {
         Ok(decompressed) => {
             println!("Decompressed to {} bytes", decompressed.len());
-            println!("First 16 bytes: {:02x?}", &decompressed[..16.min(decompressed.len())]);
-        }
+            println!(
+                "First 16 bytes: {:02x?}",
+                &decompressed[..16.min(decompressed.len())]
+            );
+        },
         Err(e) => {
             println!("Decompression error: {}", e);
-        }
+        },
     }
 }

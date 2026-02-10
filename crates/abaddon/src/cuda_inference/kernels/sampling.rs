@@ -150,7 +150,9 @@ impl SamplingKernel {
         self.temperature_fn = Some(
             self.device
                 .get_func("sampling", "temperature_scale_f16")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get temperature_scale_f16".to_string()))?,
+                .ok_or_else(|| {
+                    InferenceError::Kernel("Failed to get temperature_scale_f16".to_string())
+                })?,
         );
 
         self.argmax_fn = Some(
@@ -181,7 +183,9 @@ impl SamplingKernel {
             return Ok(());
         }
 
-        let func = self.temperature_fn.as_ref()
+        let func = self
+            .temperature_fn
+            .as_ref()
             .ok_or_else(|| InferenceError::Kernel("Temperature kernel not loaded".to_string()))?;
 
         let n = logits.numel();
@@ -194,7 +198,8 @@ impl SamplingKernel {
         };
 
         unsafe {
-            func.clone().launch(cfg, (logits.device_ptr(), n as i32, inv_temp))
+            func.clone()
+                .launch(cfg, (logits.device_ptr(), n as i32, inv_temp))
                 .map_err(|e| InferenceError::Kernel(e.to_string()))?;
         }
 
@@ -212,7 +217,9 @@ impl SamplingKernel {
         logits: &GpuTensor,
         output: &mut GpuTensor,
     ) -> Result<(), InferenceError> {
-        let func = self.softmax_fn.as_ref()
+        let func = self
+            .softmax_fn
+            .as_ref()
             .ok_or_else(|| InferenceError::Kernel("Softmax kernel not loaded".to_string()))?;
 
         let vocab_size = logits.numel();
@@ -232,7 +239,11 @@ impl SamplingKernel {
         };
 
         unsafe {
-            func.clone().launch(cfg, (logits.device_ptr(), output.device_ptr(), vocab_size as i32))
+            func.clone()
+                .launch(
+                    cfg,
+                    (logits.device_ptr(), output.device_ptr(), vocab_size as i32),
+                )
                 .map_err(|e| InferenceError::Kernel(e.to_string()))?;
         }
 
@@ -243,13 +254,16 @@ impl SamplingKernel {
     ///
     /// Returns the token ID with highest probability.
     pub fn sample_greedy(&self, logits: &GpuTensor) -> Result<u32, InferenceError> {
-        let func = self.argmax_fn.as_ref()
+        let func = self
+            .argmax_fn
+            .as_ref()
             .ok_or_else(|| InferenceError::Kernel("Argmax kernel not loaded".to_string()))?;
 
         let n = logits.numel();
 
         // Allocate result on GPU
-        let result: CudaSlice<u32> = self.device
+        let result: CudaSlice<u32> = self
+            .device
             .alloc_zeros(1)
             .map_err(|e| InferenceError::Memory(e.to_string()))?;
 
@@ -260,7 +274,8 @@ impl SamplingKernel {
         };
 
         unsafe {
-            func.clone().launch(cfg, (logits.device_ptr(), *result.device_ptr(), n as i32))
+            func.clone()
+                .launch(cfg, (logits.device_ptr(), *result.device_ptr(), n as i32))
                 .map_err(|e| InferenceError::Kernel(e.to_string()))?;
         }
 
@@ -299,11 +314,7 @@ impl SamplingKernel {
         // A full GPU implementation would do top-k/top-p filtering on device
 
         // Compute softmax
-        let mut probs = GpuTensor::zeros(
-            vec![vocab_size],
-            GpuDType::F16,
-            self.device.clone(),
-        )?;
+        let mut probs = GpuTensor::zeros(vec![vocab_size], GpuDType::F16, self.device.clone())?;
         self.softmax(logits, &mut probs)?;
 
         // Copy to CPU for sampling
@@ -496,7 +507,7 @@ mod tests {
             Err(_) => {
                 return; // Skip test: no CUDA device available
                 return;
-            }
+            },
         };
         let kernel = SamplingKernel {
             device,
@@ -522,7 +533,7 @@ mod tests {
             Err(_) => {
                 return; // Skip test: no CUDA device available
                 return;
-            }
+            },
         };
         let kernel = SamplingKernel {
             device,

@@ -683,7 +683,9 @@ impl SpeculativeScheduler {
         if let Some(idx) = requests.iter().position(|r| r.request_id == request_id) {
             let request = requests.remove(idx);
             if request.state == SpeculativeState::Completed {
-                self.metrics.requests_success.fetch_add(1, Ordering::Relaxed);
+                self.metrics
+                    .requests_success
+                    .fetch_add(1, Ordering::Relaxed);
             } else {
                 self.metrics.requests_failed.fetch_add(1, Ordering::Relaxed);
             }
@@ -807,8 +809,10 @@ impl SpeculativeMetrics {
     /// Records a speculation round.
     pub fn record_round(&self, result: &VerificationResult, draft_time: Duration) {
         self.rounds_total.fetch_add(1, Ordering::Relaxed);
-        self.draft_tokens_total
-            .fetch_add((result.accepted + result.rejected) as u64, Ordering::Relaxed);
+        self.draft_tokens_total.fetch_add(
+            (result.accepted + result.rejected) as u64,
+            Ordering::Relaxed,
+        );
         self.accepted_tokens_total
             .fetch_add(result.accepted as u64, Ordering::Relaxed);
         self.rejected_tokens_total
@@ -901,8 +905,9 @@ impl SpeculativeMetrics {
             self.rounds_total()
         ));
 
-        output
-            .push_str("# HELP infernum_speculative_draft_tokens_total Total draft tokens generated\n");
+        output.push_str(
+            "# HELP infernum_speculative_draft_tokens_total Total draft tokens generated\n",
+        );
         output.push_str("# TYPE infernum_speculative_draft_tokens_total counter\n");
         output.push_str(&format!(
             "infernum_speculative_draft_tokens_total {}\n",
@@ -943,7 +948,8 @@ impl SpeculativeMetrics {
         ));
 
         let verify_time_ms = self.verify_time_ns.load(Ordering::Relaxed) as f64 / 1_000_000.0;
-        output.push_str("# HELP infernum_speculative_verify_time_seconds Total verification time\n");
+        output
+            .push_str("# HELP infernum_speculative_verify_time_seconds Total verification time\n");
         output.push_str("# TYPE infernum_speculative_verify_time_seconds counter\n");
         output.push_str(&format!(
             "infernum_speculative_verify_time_seconds {:.6}\n",
@@ -1168,14 +1174,8 @@ mod tests {
 
     #[test]
     fn test_speculative_request_new() {
-        let request = SpeculativeRequest::new(
-            "req-1",
-            "llama-8b",
-            "llama-1b",
-            vec![1, 2, 3],
-            100,
-            2,
-        );
+        let request =
+            SpeculativeRequest::new("req-1", "llama-8b", "llama-1b", vec![1, 2, 3], 100, 2);
 
         assert_eq!(request.request_id, "req-1");
         assert_eq!(request.main_model, "llama-8b");
@@ -1188,9 +1188,8 @@ mod tests {
 
     #[test]
     fn test_speculative_request_is_complete() {
-        let mut request = SpeculativeRequest::new(
-            "req-1", "llama-8b", "llama-1b", vec![1, 2, 3], 10, 2,
-        );
+        let mut request =
+            SpeculativeRequest::new("req-1", "llama-8b", "llama-1b", vec![1, 2, 3], 10, 2);
 
         assert!(!request.is_complete());
 
@@ -1204,9 +1203,8 @@ mod tests {
 
     #[test]
     fn test_speculative_request_record_round() {
-        let mut request = SpeculativeRequest::new(
-            "req-1", "llama-8b", "llama-1b", vec![1, 2, 3], 100, 2,
-        );
+        let mut request =
+            SpeculativeRequest::new("req-1", "llama-8b", "llama-1b", vec![1, 2, 3], 100, 2);
 
         let result = VerificationResult {
             accepted: 3,
@@ -1350,9 +1348,8 @@ mod tests {
         let config = SpeculativeConfig::default(); // mode = Disabled
         let scheduler = SpeculativeScheduler::new(config, batch_scheduler);
 
-        let request = SpeculativeRequest::new(
-            "req-1", "llama-8b", "llama-1b", vec![1, 2, 3], 100, 2,
-        );
+        let request =
+            SpeculativeRequest::new("req-1", "llama-8b", "llama-1b", vec![1, 2, 3], 100, 2);
 
         let result = scheduler.submit(request);
         assert!(matches!(result, Err(SpeculativeError::Disabled)));

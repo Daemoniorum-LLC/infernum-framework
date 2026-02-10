@@ -44,7 +44,8 @@ fn test_frequency_band_assignment() {
     let legion = Legion::new(LegionConfig {
         agent_count: 5,
         ..Default::default()
-    }).expect("Failed to create legion");
+    })
+    .expect("Failed to create legion");
 
     // With 5 agents, we should have one at each frequency band
     let agents = legion.agents.read();

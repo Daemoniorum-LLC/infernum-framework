@@ -8,9 +8,9 @@
 pub mod lazy_llama;
 pub mod lazy_qwen2;
 pub mod llama;
-pub mod qwen2;
 #[allow(dead_code)]
 mod quantized_llama;
+pub mod qwen2;
 
 pub use lazy_llama::{LazyLlama, LazyLoadError, LazyStats};
 pub use lazy_qwen2::LazyQwen2;
@@ -68,14 +68,14 @@ impl ModelKind {
                 Err(candle_core::Error::Msg(
                     "Embedding extraction not supported for LazyLlama".to_string(),
                 ))
-            }
+            },
             Self::Qwen2(model) => model.forward_embedding(input_ids),
             Self::LazyQwen2(_model) => {
                 // LazyQwen2 doesn't support embedding extraction yet
                 Err(candle_core::Error::Msg(
                     "Embedding extraction not supported for LazyQwen2".to_string(),
                 ))
-            }
+            },
         }
     }
 
@@ -88,14 +88,14 @@ impl ModelKind {
                 Err(candle_core::Error::Msg(
                     "Embedding extraction not supported for LazyLlama".to_string(),
                 ))
-            }
+            },
             Self::Qwen2(model) => model.extract_embeddings(input_ids),
             Self::LazyQwen2(_model) => {
                 // LazyQwen2 doesn't support embedding extraction yet
                 Err(candle_core::Error::Msg(
                     "Embedding extraction not supported for LazyQwen2".to_string(),
                 ))
-            }
+            },
         }
     }
 }

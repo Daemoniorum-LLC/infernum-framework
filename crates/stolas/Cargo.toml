@@ -15,9 +15,9 @@ postgres = []
 qdrant = []
 
 [dependencies]
-infernum-core = { path = "../infernum-core", version = "0.1.0" }
-abaddon = { path = "../abaddon", version = "0.1.0" }
-dantalion = { path = "../dantalion", version = "0.1.0" }
+infernum-core = { path = "../infernum-core", version = "0.2.0-rc.1" }
+abaddon = { path = "../abaddon", version = "0.2.0-rc.1" }
+dantalion = { path = "../dantalion", version = "0.2.0-rc.1" }
 
 # Async
 tokio = { workspace = true }
@@ -51,3 +51,6 @@ chrono = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
 tempfile = "3.14"
+
+[lints]
+workspace = true

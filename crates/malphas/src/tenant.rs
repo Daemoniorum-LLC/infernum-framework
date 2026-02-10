@@ -418,7 +418,7 @@ impl std::fmt::Display for QuotaDenialReason {
                     "Concurrent request limit exceeded: {}/{} requests",
                     current, limit
                 )
-            }
+            },
             Self::RequestRateLimitExceeded {
                 window,
                 current,
@@ -429,7 +429,7 @@ impl std::fmt::Display for QuotaDenialReason {
                     "Request rate limit exceeded for {}: {}/{} requests",
                     window, current, limit
                 )
-            }
+            },
             Self::TokenRateLimitExceeded {
                 window,
                 current,
@@ -440,17 +440,17 @@ impl std::fmt::Display for QuotaDenialReason {
                     "Token rate limit exceeded for {}: {}/{} tokens",
                     window, current, limit
                 )
-            }
+            },
             Self::ModelNotAllowed { model_id } => {
                 write!(f, "Model '{}' not allowed for this tenant", model_id)
-            }
+            },
             Self::ContextLengthExceeded { requested, limit } => {
                 write!(
                     f,
                     "Context length {} exceeds limit of {} tokens",
                     requested, limit
                 )
-            }
+            },
         }
     }
 }
@@ -509,11 +509,7 @@ impl TenantManager {
     }
 
     /// Creates and registers a tenant with default limits.
-    pub fn create_tenant(
-        &self,
-        id: impl Into<TenantId>,
-        name: impl Into<String>,
-    ) -> Arc<Tenant> {
+    pub fn create_tenant(&self, id: impl Into<TenantId>, name: impl Into<String>) -> Arc<Tenant> {
         let tenant = Tenant::new(id, name).with_limits(self.default_limits.clone());
         self.register(tenant)
     }

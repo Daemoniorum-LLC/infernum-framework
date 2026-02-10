@@ -43,9 +43,6 @@
 //! ```
 
 #![warn(missing_docs)]
-#![warn(clippy::all)]
-#![warn(clippy::pedantic)]
-#![deny(clippy::unwrap_used)]
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::must_use_candidate)]
 
@@ -59,21 +56,21 @@ pub mod registry;
 pub mod studio;
 
 // Re-export main types
-pub use studio::{Studio, StudioConfig, StudioError};
+pub use agents::{
+    coach::{RunAnalysis, RunHealth, TrainingMetrics},
+    AgentSuggestion, AugmentationStrategy, DataCuratorAgent, EvalAnalystAgent,
+    HyperparamOptimizerAgent, ImprovementPlan, TrainingCoachAgent, TrainingIssue,
+};
 pub use dataset::{Dataset, DatasetConfig, DatasetManager, DatasetSplit, Example};
 pub use experiment::{Experiment, ExperimentConfig, ExperimentTracker, Run, RunStatus};
-pub use persistence::{StudioDatabase, DatabaseConfig, PersistenceError};
+pub use persistence::{DatabaseConfig, PersistenceError, StudioDatabase};
 pub use prompt::{PromptStudio, PromptTemplate, PromptVersion, TestResult};
 pub use registry::{Model, ModelMetadata, ModelRegistry, ModelStage, ModelVersion};
-pub use agents::{
-    DataCuratorAgent, TrainingCoachAgent, EvalAnalystAgent, HyperparamOptimizerAgent,
-    AgentSuggestion, AugmentationStrategy, TrainingIssue, ImprovementPlan,
-    coach::{TrainingMetrics, RunHealth, RunAnalysis},
-};
+pub use studio::{Studio, StudioConfig, StudioError};
 
 /// Re-export analyst types for benchmark/roadmap functionality.
 pub mod analyst {
     pub use crate::agents::analyst::{
-        BenchmarkResults, BenchmarkScore, NarrativeReport, CompetitiveReport, ModelComparison,
+        BenchmarkResults, BenchmarkScore, CompetitiveReport, ModelComparison, NarrativeReport,
     };
 }

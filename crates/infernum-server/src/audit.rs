@@ -497,8 +497,12 @@ mod tests {
     async fn test_audit_logger_disabled() {
         let logger = AuditLogger::disabled();
         // Should not panic even when disabled
-        logger.auth_success("req-1", Some("127.0.0.1"), "sk-test", "/test").await;
-        logger.auth_failure("req-2", Some("127.0.0.1"), "bad key", "/test").await;
+        logger
+            .auth_success("req-1", Some("127.0.0.1"), "sk-test", "/test")
+            .await;
+        logger
+            .auth_failure("req-2", Some("127.0.0.1"), "bad key", "/test")
+            .await;
     }
 
     #[tokio::test]

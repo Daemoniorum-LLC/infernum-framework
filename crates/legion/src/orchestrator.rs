@@ -156,7 +156,7 @@ impl Orchestrator {
                 } else {
                     TaskRouting::Consensus(bands)
                 }
-            }
+            },
             other => other.clone(),
         }
     }

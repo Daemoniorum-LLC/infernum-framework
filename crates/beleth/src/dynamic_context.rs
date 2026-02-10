@@ -53,14 +53,28 @@ impl ContextComplexity {
 
         // Complex indicators
         let complex_keywords = [
-            "refactor", "redesign", "architect", "migrate", "implement feature",
-            "full system", "end-to-end", "comprehensive", "multi-step",
+            "refactor",
+            "redesign",
+            "architect",
+            "migrate",
+            "implement feature",
+            "full system",
+            "end-to-end",
+            "comprehensive",
+            "multi-step",
         ];
 
         // Simple indicators
         let simple_keywords = [
-            "fix typo", "rename", "add comment", "simple", "quick", "small",
-            "one line", "minor", "trivial",
+            "fix typo",
+            "rename",
+            "add comment",
+            "simple",
+            "quick",
+            "small",
+            "one line",
+            "minor",
+            "trivial",
         ];
 
         if complex_keywords.iter().any(|k| task_lower.contains(k)) {
@@ -150,8 +164,10 @@ pub fn score_message_relevance(
     }
 
     // Code detection
-    if message.content.contains("```") || message.content.contains("fn ")
-        || message.content.contains("function") || message.content.contains("class ")
+    if message.content.contains("```")
+        || message.content.contains("fn ")
+        || message.content.contains("function")
+        || message.content.contains("class ")
     {
         factors.has_code = 0.7;
     }
@@ -517,12 +533,8 @@ impl DynamicContextManager {
             .iter()
             .enumerate()
             .map(|(i, msg)| {
-                let factors = score_message_relevance(
-                    msg,
-                    i,
-                    messages.len(),
-                    self.current_task.as_deref(),
-                );
+                let factors =
+                    score_message_relevance(msg, i, messages.len(), self.current_task.as_deref());
                 (i, msg, factors.score())
             })
             .collect();
@@ -542,7 +554,9 @@ impl DynamicContextManager {
             let msg_tokens = estimate_tokens(&msg.content);
             if total_tokens + msg_tokens > self.config.max_input_tokens {
                 // Try to truncate the message to fit remaining budget
-                if let Some(truncated) = self.truncate_message(msg, self.config.max_input_tokens - total_tokens) {
+                if let Some(truncated) =
+                    self.truncate_message(msg, self.config.max_input_tokens - total_tokens)
+                {
                     selected.push((idx, truncated));
                 }
                 break;
@@ -631,11 +645,26 @@ mod tests {
     #[test]
     fn test_context_complexity_classification() {
         // "fix typo" matches the simple keyword, not "fix a typo"
-        assert_eq!(ContextComplexity::classify("fix typo in readme"), ContextComplexity::Simple);
-        assert_eq!(ContextComplexity::classify("rename variable"), ContextComplexity::Simple);
-        assert_eq!(ContextComplexity::classify("refactor the authentication system"), ContextComplexity::Complex);
-        assert_eq!(ContextComplexity::classify("implement feature X"), ContextComplexity::Complex);
-        assert_eq!(ContextComplexity::classify("add a function"), ContextComplexity::Moderate);
+        assert_eq!(
+            ContextComplexity::classify("fix typo in readme"),
+            ContextComplexity::Simple
+        );
+        assert_eq!(
+            ContextComplexity::classify("rename variable"),
+            ContextComplexity::Simple
+        );
+        assert_eq!(
+            ContextComplexity::classify("refactor the authentication system"),
+            ContextComplexity::Complex
+        );
+        assert_eq!(
+            ContextComplexity::classify("implement feature X"),
+            ContextComplexity::Complex
+        );
+        assert_eq!(
+            ContextComplexity::classify("add a function"),
+            ContextComplexity::Moderate
+        );
     }
 
     #[test]
@@ -730,8 +759,7 @@ mod tests {
 
     #[test]
     fn test_dynamic_context_manager_with_task() {
-        let manager = DynamicContextManager::new()
-            .with_task("refactor the entire codebase");
+        let manager = DynamicContextManager::new().with_task("refactor the entire codebase");
 
         assert_eq!(manager.complexity(), ContextComplexity::Complex);
         let (input, _output) = manager.budget();
@@ -740,13 +768,30 @@ mod tests {
 
     #[test]
     fn test_dynamic_context_manager_optimize() {
-        let manager = DynamicContextManager::new()
-            .with_complexity(ContextComplexity::Simple);
+        let manager = DynamicContextManager::new().with_complexity(ContextComplexity::Simple);
 
         let messages = vec![
-            Message { role: Role::System, content: "System prompt".to_string(), name: None, tool_calls: None, tool_call_id: None },
-            Message { role: Role::User, content: "User message".to_string(), name: None, tool_calls: None, tool_call_id: None },
-            Message { role: Role::Assistant, content: "Response".to_string(), name: None, tool_calls: None, tool_call_id: None },
+            Message {
+                role: Role::System,
+                content: "System prompt".to_string(),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            Message {
+                role: Role::User,
+                content: "User message".to_string(),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            Message {
+                role: Role::Assistant,
+                content: "Response".to_string(),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
         ];
 
         let optimized = manager.optimize(&messages);

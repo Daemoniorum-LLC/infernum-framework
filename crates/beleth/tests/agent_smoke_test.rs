@@ -38,16 +38,16 @@ async fn smoke_agent_react_loop() {
         .build()
         .expect("EngineConfig build failed");
 
-    let engine = Engine::new(config)
-        .await
-        .expect("Engine creation failed");
+    let engine = Engine::new(config).await.expect("Engine creation failed");
 
     let engine = Arc::new(engine);
 
     // Build an agent with built-in tools and the real engine.
     let mut agent = Agent::builder()
         .id("smoke-test-agent")
-        .system_prompt("You are a helpful assistant. Use the calculator tool when asked math questions.")
+        .system_prompt(
+            "You are a helpful assistant. Use the calculator tool when asked math questions.",
+        )
         .model(SMOKE_MODEL)
         .max_iterations(5)
         .tools(ToolRegistry::with_builtins())
@@ -68,15 +68,18 @@ async fn smoke_agent_react_loop() {
     match result {
         Ok(Ok(answer)) => {
             eprintln!("[smoke] Agent answer: {answer:?}");
-            assert!(!answer.is_empty(), "Agent should produce a non-empty answer");
-        }
+            assert!(
+                !answer.is_empty(),
+                "Agent should produce a non-empty answer"
+            );
+        },
         Ok(Err(e)) => {
             // Agent errors are acceptable for a 135M model that may not follow
             // ReAct format. The important thing is it didn't panic.
             eprintln!("[smoke] Agent returned error (acceptable for SmolLM2): {e}");
-        }
+        },
         Err(_) => {
             panic!("Agent timed out after 120 seconds - possible infinite loop");
-        }
+        },
     }
 }

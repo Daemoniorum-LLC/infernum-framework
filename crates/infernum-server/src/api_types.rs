@@ -606,25 +606,23 @@ mod tests {
     #[test]
     fn test_logprobs_serialization() {
         let logprobs = ChatLogProbs {
-            content: vec![
-                TokenLogProb {
-                    token: "Hello".to_string(),
-                    logprob: -0.5,
-                    bytes: Some(vec![72, 101, 108, 108, 111]),
-                    top_logprobs: Some(vec![
-                        TopLogProb {
-                            token: "Hello".to_string(),
-                            logprob: -0.5,
-                            bytes: None,
-                        },
-                        TopLogProb {
-                            token: "Hi".to_string(),
-                            logprob: -1.2,
-                            bytes: None,
-                        },
-                    ]),
-                },
-            ],
+            content: vec![TokenLogProb {
+                token: "Hello".to_string(),
+                logprob: -0.5,
+                bytes: Some(vec![72, 101, 108, 108, 111]),
+                top_logprobs: Some(vec![
+                    TopLogProb {
+                        token: "Hello".to_string(),
+                        logprob: -0.5,
+                        bytes: None,
+                    },
+                    TopLogProb {
+                        token: "Hi".to_string(),
+                        logprob: -1.2,
+                        bytes: None,
+                    },
+                ]),
+            }],
         };
 
         let json = serde_json::to_string(&logprobs).unwrap();

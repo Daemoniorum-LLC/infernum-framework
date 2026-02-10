@@ -179,18 +179,22 @@ impl FlashAttention {
         let (batch_size, num_heads, seq_len, head_dim) = q.dims4()?;
 
         // Compute softmax scale
-        let scale = self.config.softmax_scale
+        let scale = self
+            .config
+            .softmax_scale
             .unwrap_or(1.0 / (head_dim as f32).sqrt());
 
         // Route to appropriate implementation
         match device {
             Device::Cuda(_) if self.cuda_available => {
                 self.forward_cuda(q, k, v, mask, causal, scale)
-            }
+            },
             _ => {
                 // Use tiled implementation for memory-efficient attention
-                self.forward_tiled(q, k, v, mask, causal, scale, batch_size, num_heads, seq_len, head_dim)
-            }
+                self.forward_tiled(
+                    q, k, v, mask, causal, scale, batch_size, num_heads, seq_len, head_dim,
+                )
+            },
         }
     }
 
@@ -232,7 +236,18 @@ impl FlashAttention {
     ) -> CandleResult<Tensor> {
         // Fall back to tiled implementation
         let (batch_size, num_heads, seq_len, head_dim) = q.dims4()?;
-        self.forward_tiled(q, k, v, mask, causal, softmax_scale, batch_size, num_heads, seq_len, head_dim)
+        self.forward_tiled(
+            q,
+            k,
+            v,
+            mask,
+            causal,
+            softmax_scale,
+            batch_size,
+            num_heads,
+            seq_len,
+            head_dim,
+        )
     }
 
     /// Memory-efficient tiled attention implementation.
@@ -294,10 +309,18 @@ impl FlashAttention {
             // m: running max, shape (batch, heads, q_block_len)
             // l: running sum of exp, shape (batch, heads, q_block_len)
             // O: unnormalized output, shape (batch, heads, q_block_len, head_dim)
-            let mut m = Tensor::full(f32::NEG_INFINITY, (batch_size, num_heads, q_block_len), device)?
-                .to_dtype(dtype)?;
+            let mut m = Tensor::full(
+                f32::NEG_INFINITY,
+                (batch_size, num_heads, q_block_len),
+                device,
+            )?
+            .to_dtype(dtype)?;
             let mut l = Tensor::zeros((batch_size, num_heads, q_block_len), dtype, device)?;
-            let mut o = Tensor::zeros((batch_size, num_heads, q_block_len, head_dim), dtype, device)?;
+            let mut o = Tensor::zeros(
+                (batch_size, num_heads, q_block_len, head_dim),
+                dtype,
+                device,
+            )?;
 
             // Process K, V in blocks (inner loop)
             let kv_end_block = if causal { q_block_idx + 1 } else { num_blocks };
@@ -319,7 +342,13 @@ impl FlashAttention {
 
                 // Apply causal mask within block if needed
                 let scores = if causal && q_block_idx == kv_block_idx {
-                    self.apply_causal_mask_block(&scores, q_start, kv_start, q_block_len, kv_block_len)?
+                    self.apply_causal_mask_block(
+                        &scores,
+                        q_start,
+                        kv_start,
+                        q_block_len,
+                        kv_block_len,
+                    )?
                 } else if causal && kv_block_idx > q_block_idx {
                     // This entire block is masked - skip it
                     continue;
@@ -329,7 +358,8 @@ impl FlashAttention {
 
                 // Apply external mask if provided
                 let scores = if let Some(mask_tensor) = mask {
-                    let mask_block = mask_tensor.narrow(D::Minus2, q_start, q_block_len)?
+                    let mask_block = mask_tensor
+                        .narrow(D::Minus2, q_start, q_block_len)?
                         .narrow(D::Minus1, kv_start, kv_block_len)?;
                     scores.broadcast_add(&mask_block)?
                 } else {
@@ -349,16 +379,16 @@ impl FlashAttention {
                 // Need to broadcast m_new to (batch, heads, q_block_len, 1) for subtraction
                 let m_new_expanded = m_new.unsqueeze(D::Minus1)?;
                 let scores_shifted = scores.broadcast_sub(&m_new_expanded)?;
-                let p = scores_shifted.exp()?;  // Shape: (batch, heads, q_block_len, kv_block_len)
+                let p = scores_shifted.exp()?; // Shape: (batch, heads, q_block_len, kv_block_len)
 
                 // Step 5: l_new = α * l_old + rowsum(exp(S - m_new))
-                let p_rowsum = p.sum_keepdim(D::Minus1)?.squeeze(D::Minus1)?;  // Shape: (batch, heads, q_block_len)
+                let p_rowsum = p.sum_keepdim(D::Minus1)?.squeeze(D::Minus1)?; // Shape: (batch, heads, q_block_len)
                 let l_new = (l.broadcast_mul(&alpha)? + p_rowsum)?;
 
                 // Step 6: O_new = α * O_old + P @ V
                 // α needs to be expanded to (batch, heads, q_block_len, 1) for broadcasting with O
                 let alpha_expanded = alpha.unsqueeze(D::Minus1)?.contiguous()?;
-                let pv = p.matmul(&v_block)?;  // Shape: (batch, heads, q_block_len, head_dim)
+                let pv = p.matmul(&v_block)?; // Shape: (batch, heads, q_block_len, head_dim)
                 let o_new = (o.broadcast_mul(&alpha_expanded)? + pv)?;
 
                 // Update accumulators
@@ -425,11 +455,7 @@ impl FlashAttention {
         dtype: DType,
     ) -> CandleResult<Tensor> {
         let mask: Vec<f32> = (0..seq_len)
-            .flat_map(|i| {
-                (0..seq_len).map(move |j| {
-                    if j > i { f32::NEG_INFINITY } else { 0.0 }
-                })
-            })
+            .flat_map(|i| (0..seq_len).map(move |j| if j > i { f32::NEG_INFINITY } else { 0.0 }))
             .collect();
 
         Tensor::from_vec(mask, (1, 1, seq_len, seq_len), device)?.to_dtype(dtype)
@@ -452,7 +478,11 @@ impl FlashAttention {
                 let q_pos = q_start + qi;
                 (0..kv_len).map(move |ki| {
                     let k_pos = kv_start + ki;
-                    if k_pos > q_pos { f32::NEG_INFINITY } else { 0.0 }
+                    if k_pos > q_pos {
+                        f32::NEG_INFINITY
+                    } else {
+                        0.0
+                    }
                 })
             })
             .collect();
@@ -657,9 +687,24 @@ mod tests {
         let seq_len = 16;
         let head_dim = 32;
 
-        let q = Tensor::randn(0.0f32, 1.0, (batch_size, num_heads, seq_len, head_dim), &device)?;
-        let k = Tensor::randn(0.0f32, 1.0, (batch_size, num_heads, seq_len, head_dim), &device)?;
-        let v = Tensor::randn(0.0f32, 1.0, (batch_size, num_heads, seq_len, head_dim), &device)?;
+        let q = Tensor::randn(
+            0.0f32,
+            1.0,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
+        let k = Tensor::randn(
+            0.0f32,
+            1.0,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
+        let v = Tensor::randn(
+            0.0f32,
+            1.0,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
 
         let flash_attn = FlashAttention::new(FlashAttentionConfig::default());
         let output = flash_attn.forward(&q, &k, &v, None, Some(true))?;
@@ -676,9 +721,24 @@ mod tests {
         let seq_len = 1;
         let head_dim = 64;
 
-        let q = Tensor::randn(0.0f32, 1.0, (batch_size, num_heads, seq_len, head_dim), &device)?;
-        let k = Tensor::randn(0.0f32, 1.0, (batch_size, num_heads, seq_len, head_dim), &device)?;
-        let v = Tensor::randn(0.0f32, 1.0, (batch_size, num_heads, seq_len, head_dim), &device)?;
+        let q = Tensor::randn(
+            0.0f32,
+            1.0,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
+        let k = Tensor::randn(
+            0.0f32,
+            1.0,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
+        let v = Tensor::randn(
+            0.0f32,
+            1.0,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
 
         let flash_attn = FlashAttention::new(FlashAttentionConfig::default());
         let output = flash_attn.forward(&q, &k, &v, None, Some(true))?;
@@ -688,7 +748,11 @@ mod tests {
         // For single token with causal attention, output should equal V
         // (softmax of single element is 1.0)
         let diff = (&output - &v)?.abs()?.sum_all()?.to_scalar::<f32>()?;
-        assert!(diff < 1e-5, "Single token attention should return V, diff={}", diff);
+        assert!(
+            diff < 1e-5,
+            "Single token attention should return V, diff={}",
+            diff
+        );
         Ok(())
     }
 
@@ -705,9 +769,24 @@ mod tests {
         let head_dim = 16;
         let scale = 1.0 / (head_dim as f32).sqrt();
 
-        let q = Tensor::randn(0.0f32, 0.1, (batch_size, num_heads, seq_len, head_dim), &device)?;
-        let k = Tensor::randn(0.0f32, 0.1, (batch_size, num_heads, seq_len, head_dim), &device)?;
-        let v = Tensor::randn(0.0f32, 0.1, (batch_size, num_heads, seq_len, head_dim), &device)?;
+        let q = Tensor::randn(
+            0.0f32,
+            0.1,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
+        let k = Tensor::randn(
+            0.0f32,
+            0.1,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
+        let v = Tensor::randn(
+            0.0f32,
+            0.1,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
 
         let flash_attn = FlashAttention::new(FlashAttentionConfig::default());
         let standard_output = flash_attn.forward_standard(&q, &k, &v, None, true, scale)?;
@@ -716,8 +795,15 @@ mod tests {
         assert_eq!(standard_output.dims(), flash_output.dims());
 
         // Check numerical closeness
-        let diff = (&standard_output - &flash_output)?.abs()?.max_all()?.to_scalar::<f32>()?;
-        assert!(diff < 1e-4, "Flash and standard should match, max diff={}", diff);
+        let diff = (&standard_output - &flash_output)?
+            .abs()?
+            .max_all()?
+            .to_scalar::<f32>()?;
+        assert!(
+            diff < 1e-4,
+            "Flash and standard should match, max diff={}",
+            diff
+        );
         Ok(())
     }
 
@@ -726,7 +812,7 @@ mod tests {
         let device = Device::Cpu;
         let batch_size = 1;
         let num_heads = 2;
-        let seq_len = 256;  // Longer than default block_size forces tiling
+        let seq_len = 256; // Longer than default block_size forces tiling
         let head_dim = 32;
         let scale = 1.0 / (head_dim as f32).sqrt();
 
@@ -737,17 +823,39 @@ mod tests {
             ..Default::default()
         };
 
-        let q = Tensor::randn(0.0f32, 0.1, (batch_size, num_heads, seq_len, head_dim), &device)?;
-        let k = Tensor::randn(0.0f32, 0.1, (batch_size, num_heads, seq_len, head_dim), &device)?;
-        let v = Tensor::randn(0.0f32, 0.1, (batch_size, num_heads, seq_len, head_dim), &device)?;
+        let q = Tensor::randn(
+            0.0f32,
+            0.1,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
+        let k = Tensor::randn(
+            0.0f32,
+            0.1,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
+        let v = Tensor::randn(
+            0.0f32,
+            0.1,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
 
         let flash_attn = FlashAttention::new(config);
         let standard_output = flash_attn.forward_standard(&q, &k, &v, None, true, scale)?;
         let flash_output = flash_attn.forward(&q, &k, &v, None, Some(true))?;
 
         // Tiled computation may have slightly more numerical error
-        let diff = (&standard_output - &flash_output)?.abs()?.max_all()?.to_scalar::<f32>()?;
-        assert!(diff < 1e-3, "Flash (tiled) and standard should match, max diff={}", diff);
+        let diff = (&standard_output - &flash_output)?
+            .abs()?
+            .max_all()?
+            .to_scalar::<f32>()?;
+        assert!(
+            diff < 1e-3,
+            "Flash (tiled) and standard should match, max diff={}",
+            diff
+        );
         Ok(())
     }
 
@@ -763,15 +871,37 @@ mod tests {
         let config = FlashAttentionConfig::non_causal();
         let flash_attn = FlashAttention::new(config);
 
-        let q = Tensor::randn(0.0f32, 0.1, (batch_size, num_heads, seq_len, head_dim), &device)?;
-        let k = Tensor::randn(0.0f32, 0.1, (batch_size, num_heads, seq_len, head_dim), &device)?;
-        let v = Tensor::randn(0.0f32, 0.1, (batch_size, num_heads, seq_len, head_dim), &device)?;
+        let q = Tensor::randn(
+            0.0f32,
+            0.1,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
+        let k = Tensor::randn(
+            0.0f32,
+            0.1,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
+        let v = Tensor::randn(
+            0.0f32,
+            0.1,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
 
         let standard_output = flash_attn.forward_standard(&q, &k, &v, None, false, scale)?;
         let flash_output = flash_attn.forward(&q, &k, &v, None, Some(false))?;
 
-        let diff = (&standard_output - &flash_output)?.abs()?.max_all()?.to_scalar::<f32>()?;
-        assert!(diff < 1e-4, "Non-causal flash and standard should match, max diff={}", diff);
+        let diff = (&standard_output - &flash_output)?
+            .abs()?
+            .max_all()?
+            .to_scalar::<f32>()?;
+        assert!(
+            diff < 1e-4,
+            "Non-causal flash and standard should match, max diff={}",
+            diff
+        );
         Ok(())
     }
 
@@ -788,8 +918,16 @@ mod tests {
         let head_dim = 8;
 
         // Create distinct Q, K, V so we can verify attention patterns
-        let q = Tensor::ones((batch_size, num_heads, seq_len, head_dim), DType::F32, &device)?;
-        let k = Tensor::ones((batch_size, num_heads, seq_len, head_dim), DType::F32, &device)?;
+        let q = Tensor::ones(
+            (batch_size, num_heads, seq_len, head_dim),
+            DType::F32,
+            &device,
+        )?;
+        let k = Tensor::ones(
+            (batch_size, num_heads, seq_len, head_dim),
+            DType::F32,
+            &device,
+        )?;
 
         // V has distinct values per position so we can check which positions are attended
         let v_data: Vec<f32> = (0..seq_len)
@@ -810,12 +948,23 @@ mod tests {
 
         // Check first position attends only to itself (V value 1.0)
         let pos0_mean = output_flat[0..head_dim].iter().sum::<f32>() / head_dim as f32;
-        assert!((pos0_mean - 1.0).abs() < 0.1, "Position 0 should attend only to V[0], got {}", pos0_mean);
+        assert!(
+            (pos0_mean - 1.0).abs() < 0.1,
+            "Position 0 should attend only to V[0], got {}",
+            pos0_mean
+        );
 
         // Check last position attends to all (average = 2.5)
         let pos3_start = 3 * head_dim;
-        let pos3_mean = output_flat[pos3_start..pos3_start + head_dim].iter().sum::<f32>() / head_dim as f32;
-        assert!((pos3_mean - 2.5).abs() < 0.1, "Position 3 should average all V, got {}", pos3_mean);
+        let pos3_mean = output_flat[pos3_start..pos3_start + head_dim]
+            .iter()
+            .sum::<f32>()
+            / head_dim as f32;
+        assert!(
+            (pos3_mean - 2.5).abs() < 0.1,
+            "Position 3 should average all V, got {}",
+            pos3_mean
+        );
 
         Ok(())
     }
@@ -832,9 +981,24 @@ mod tests {
         let seq_len = 32;
         let head_dim = 64;
 
-        let q = Tensor::randn(0.0f32, 1.0, (batch_size, num_heads, seq_len, head_dim), &device)?;
-        let k = Tensor::randn(0.0f32, 1.0, (batch_size, num_heads, seq_len, head_dim), &device)?;
-        let v = Tensor::randn(0.0f32, 1.0, (batch_size, num_heads, seq_len, head_dim), &device)?;
+        let q = Tensor::randn(
+            0.0f32,
+            1.0,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
+        let k = Tensor::randn(
+            0.0f32,
+            1.0,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
+        let v = Tensor::randn(
+            0.0f32,
+            1.0,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
 
         let flash_attn = FlashAttention::new(FlashAttentionConfig::default());
         let output = flash_attn.forward(&q, &k, &v, None, Some(true))?;
@@ -842,7 +1006,11 @@ mod tests {
         assert_eq!(output.dims(), &[batch_size, num_heads, seq_len, head_dim]);
 
         // Output should be finite
-        let has_nan = output.flatten_all()?.to_vec1::<f32>()?.iter().any(|x| x.is_nan());
+        let has_nan = output
+            .flatten_all()?
+            .to_vec1::<f32>()?
+            .iter()
+            .any(|x| x.is_nan());
         assert!(!has_nan, "Output should not contain NaN");
 
         Ok(())
@@ -857,15 +1025,34 @@ mod tests {
             let num_heads = 4;
             let seq_len = 16;
 
-            let q = Tensor::randn(0.0f32, 1.0, (batch_size, num_heads, seq_len, head_dim), &device)?;
-            let k = Tensor::randn(0.0f32, 1.0, (batch_size, num_heads, seq_len, head_dim), &device)?;
-            let v = Tensor::randn(0.0f32, 1.0, (batch_size, num_heads, seq_len, head_dim), &device)?;
+            let q = Tensor::randn(
+                0.0f32,
+                1.0,
+                (batch_size, num_heads, seq_len, head_dim),
+                &device,
+            )?;
+            let k = Tensor::randn(
+                0.0f32,
+                1.0,
+                (batch_size, num_heads, seq_len, head_dim),
+                &device,
+            )?;
+            let v = Tensor::randn(
+                0.0f32,
+                1.0,
+                (batch_size, num_heads, seq_len, head_dim),
+                &device,
+            )?;
 
             let flash_attn = FlashAttention::new(FlashAttentionConfig::default());
             let output = flash_attn.forward(&q, &k, &v, None, Some(true))?;
 
-            assert_eq!(output.dims(), &[batch_size, num_heads, seq_len, head_dim],
-                       "Failed for head_dim={}", head_dim);
+            assert_eq!(
+                output.dims(),
+                &[batch_size, num_heads, seq_len, head_dim],
+                "Failed for head_dim={}",
+                head_dim
+            );
         }
         Ok(())
     }
@@ -883,9 +1070,24 @@ mod tests {
         let head_dim = 32;
         let scale = 1.0 / (head_dim as f32).sqrt();
 
-        let q = Tensor::randn(0.0f32, 0.1, (batch_size, num_heads, seq_len, head_dim), &device)?;
-        let k = Tensor::randn(0.0f32, 0.1, (batch_size, num_heads, seq_len, head_dim), &device)?;
-        let v = Tensor::randn(0.0f32, 0.1, (batch_size, num_heads, seq_len, head_dim), &device)?;
+        let q = Tensor::randn(
+            0.0f32,
+            0.1,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
+        let k = Tensor::randn(
+            0.0f32,
+            0.1,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
+        let v = Tensor::randn(
+            0.0f32,
+            0.1,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
 
         // Test different block sizes produce consistent results
         let mut reference: Option<Tensor> = None;
@@ -901,7 +1103,12 @@ mod tests {
 
             if let Some(ref prev) = reference {
                 let diff = (prev - &output)?.abs()?.max_all()?.to_scalar::<f32>()?;
-                assert!(diff < 1e-3, "Block size {} differs from reference, max diff={}", block_size, diff);
+                assert!(
+                    diff < 1e-3,
+                    "Block size {} differs from reference, max diff={}",
+                    block_size,
+                    diff
+                );
             } else {
                 reference = Some(output);
             }
@@ -914,18 +1121,33 @@ mod tests {
         let device = Device::Cpu;
         let batch_size = 1;
         let num_heads = 2;
-        let seq_len = 100;  // Not divisible by common block sizes
+        let seq_len = 100; // Not divisible by common block sizes
         let head_dim = 32;
 
         let config = FlashAttentionConfig {
-            block_size: 32,  // 100 / 32 = 3 full blocks + 1 partial
+            block_size: 32, // 100 / 32 = 3 full blocks + 1 partial
             causal: true,
             ..Default::default()
         };
 
-        let q = Tensor::randn(0.0f32, 1.0, (batch_size, num_heads, seq_len, head_dim), &device)?;
-        let k = Tensor::randn(0.0f32, 1.0, (batch_size, num_heads, seq_len, head_dim), &device)?;
-        let v = Tensor::randn(0.0f32, 1.0, (batch_size, num_heads, seq_len, head_dim), &device)?;
+        let q = Tensor::randn(
+            0.0f32,
+            1.0,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
+        let k = Tensor::randn(
+            0.0f32,
+            1.0,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
+        let v = Tensor::randn(
+            0.0f32,
+            1.0,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
 
         let flash_attn = FlashAttention::new(config.clone());
         let output = flash_attn.forward(&q, &k, &v, None, Some(true))?;
@@ -935,8 +1157,15 @@ mod tests {
         // Compare with standard to verify correctness
         let scale = 1.0 / (head_dim as f32).sqrt();
         let standard = flash_attn.forward_standard(&q, &k, &v, None, true, scale)?;
-        let diff = (&standard - &output)?.abs()?.max_all()?.to_scalar::<f32>()?;
-        assert!(diff < 1e-3, "Partial blocks should match standard, max diff={}", diff);
+        let diff = (&standard - &output)?
+            .abs()?
+            .max_all()?
+            .to_scalar::<f32>()?;
+        assert!(
+            diff < 1e-3,
+            "Partial blocks should match standard, max diff={}",
+            diff
+        );
 
         Ok(())
     }
@@ -953,9 +1182,24 @@ mod tests {
         let seq_len = 16;
         let head_dim = 64;
 
-        let q = Tensor::randn(0.0f32, 0.1, (batch_size, num_heads, seq_len, head_dim), &device)?;
-        let k = Tensor::randn(0.0f32, 0.1, (batch_size, num_heads, seq_len, head_dim), &device)?;
-        let v = Tensor::randn(0.0f32, 0.1, (batch_size, num_heads, seq_len, head_dim), &device)?;
+        let q = Tensor::randn(
+            0.0f32,
+            0.1,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
+        let k = Tensor::randn(
+            0.0f32,
+            0.1,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
+        let v = Tensor::randn(
+            0.0f32,
+            0.1,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
 
         // Default scale (1/sqrt(64) = 0.125) vs custom scale
         let default_config = FlashAttentionConfig::default();
@@ -968,8 +1212,14 @@ mod tests {
         let output_custom = flash_custom.forward(&q, &k, &v, None, Some(true))?;
 
         // Outputs should be different due to different scales
-        let diff = (&output_default - &output_custom)?.abs()?.max_all()?.to_scalar::<f32>()?;
-        assert!(diff > 1e-5, "Different scales should produce different outputs");
+        let diff = (&output_default - &output_custom)?
+            .abs()?
+            .max_all()?
+            .to_scalar::<f32>()?;
+        assert!(
+            diff > 1e-5,
+            "Different scales should produce different outputs"
+        );
 
         Ok(())
     }
@@ -988,9 +1238,24 @@ mod tests {
         let head_dim = 32;
 
         // F32 tensors - Flash Attention handles dtype internally
-        let q = Tensor::randn(0.0f32, 1.0, (batch_size, num_heads, seq_len, head_dim), &device)?;
-        let k = Tensor::randn(0.0f32, 1.0, (batch_size, num_heads, seq_len, head_dim), &device)?;
-        let v = Tensor::randn(0.0f32, 1.0, (batch_size, num_heads, seq_len, head_dim), &device)?;
+        let q = Tensor::randn(
+            0.0f32,
+            1.0,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
+        let k = Tensor::randn(
+            0.0f32,
+            1.0,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
+        let v = Tensor::randn(
+            0.0f32,
+            1.0,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?;
 
         let flash_attn = FlashAttention::new(FlashAttentionConfig::default());
         let output = flash_attn.forward(&q, &k, &v, None, Some(true))?;
@@ -1010,12 +1275,27 @@ mod tests {
         let seq_len = 32;
         let head_dim = 32;
 
-        let q = Tensor::randn(0.0f32, 1.0, (batch_size, num_heads, seq_len, head_dim), &device)?
-            .to_dtype(DType::BF16)?;
-        let k = Tensor::randn(0.0f32, 1.0, (batch_size, num_heads, seq_len, head_dim), &device)?
-            .to_dtype(DType::BF16)?;
-        let v = Tensor::randn(0.0f32, 1.0, (batch_size, num_heads, seq_len, head_dim), &device)?
-            .to_dtype(DType::BF16)?;
+        let q = Tensor::randn(
+            0.0f32,
+            1.0,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?
+        .to_dtype(DType::BF16)?;
+        let k = Tensor::randn(
+            0.0f32,
+            1.0,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?
+        .to_dtype(DType::BF16)?;
+        let v = Tensor::randn(
+            0.0f32,
+            1.0,
+            (batch_size, num_heads, seq_len, head_dim),
+            &device,
+        )?
+        .to_dtype(DType::BF16)?;
 
         let flash_attn = FlashAttention::new(FlashAttentionConfig::default());
         let output = flash_attn.forward(&q, &k, &v, None, Some(true))?;

@@ -45,8 +45,8 @@ mod mock;
 mod registry;
 
 pub use client::{
-    LlmClient, GenerateRequest, GenerateResponse, StreamChunk,
-    Message, MessageRole, GenerateOptions,
+    GenerateOptions, GenerateRequest, GenerateResponse, LlmClient, Message, MessageRole,
+    StreamChunk,
 };
 pub use mock::MockLlmClient;
 pub use registry::LlmClientRegistry;

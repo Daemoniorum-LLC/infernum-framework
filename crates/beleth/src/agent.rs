@@ -43,7 +43,10 @@ impl PersonaSource {
 
     /// Creates a new Grimoire persona source with a variant.
     #[must_use]
-    pub fn grimoire_with_variant(persona_id: impl Into<String>, variant: impl Into<String>) -> Self {
+    pub fn grimoire_with_variant(
+        persona_id: impl Into<String>,
+        variant: impl Into<String>,
+    ) -> Self {
         Self::Grimoire {
             persona_id: persona_id.into(),
             variant: Some(variant.into()),
@@ -56,7 +59,10 @@ impl PersonaSource {
     pub async fn resolve(&self) -> String {
         match self {
             Self::Inline(s) => s.clone(),
-            Self::Grimoire { persona_id, variant } => {
+            Self::Grimoire {
+                persona_id,
+                variant,
+            } => {
                 let loader = grimoire_loader::GrimoireLoader::new();
 
                 match loader.load(persona_id).await {
@@ -74,13 +80,13 @@ impl PersonaSource {
                         } else {
                             persona.system_prompt
                         }
-                    }
+                    },
                     Err(_) => {
                         // Try legacy filesystem path loading as fallback
                         Self::load_from_filesystem(persona_id, variant.as_deref())
-                    }
+                    },
                 }
-            }
+            },
         }
     }
 
@@ -107,7 +113,7 @@ impl PersonaSource {
                     "Grimoire persona not found, using default prompt"
                 );
                 format!("You are {} - an AI assistant.", persona_id)
-            }
+            },
         }
     }
 }
@@ -293,19 +299,44 @@ impl Agent {
         let mut ctx = ToolContext::new(&self.id);
         ctx.messages = messages.clone();
         if let Some(ref wd) = self.working_dir {
-            ctx.set_state("working_dir", serde_json::json!(wd.to_string_lossy().as_ref()));
+            ctx.set_state("working_dir", serde_json::json!(&*wd.to_string_lossy()));
         }
+
+        // Context size management: prevent OOM by limiting context growth
+        // For 24GB GPU with 7B model: ~14GB model in BF16, need ~10GB for activations + KV-cache
+        // KV cache size = 2 * layers * context * hidden_dim * dtype_size
+        // For 7B Qwen: 2 * 28 * 8192 * 3584 * 2 bytes = ~3.3GB at 8K tokens
+        // Safe limit: ~8K tokens = ~32K chars to leave headroom for activations
+        // Override with INFERNUM_AGENT_MAX_CONTEXT_CHARS and INFERNUM_AGENT_MAX_TOOL_OUTPUT
+        let max_context_chars: usize = std::env::var("INFERNUM_AGENT_MAX_CONTEXT_CHARS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(32_000); // ~8K tokens - conservative for 7B on 24GB
+        let max_tool_output_chars: usize = std::env::var("INFERNUM_AGENT_MAX_TOOL_OUTPUT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8_000); // Reduced to prevent large tool results from filling context
+
+        tracing::debug!(
+            max_context_chars,
+            max_tool_output_chars,
+            "Context budget limits"
+        );
 
         // ReAct loop
         let mut final_answer = String::new();
         for iteration in 0..self.persona.max_iterations {
             tracing::debug!(iteration, "ReAct iteration");
 
+            // Proactive context budget check - prevent OOM by trimming BEFORE generation
+            Self::ensure_context_budget(&mut messages, max_context_chars);
+
             // Generate response
             let request = GenerateRequest::chat(messages.clone()).with_sampling(
                 SamplingParams::default()
-                    .with_max_tokens(1024)
-                    .with_temperature(0.7),
+                    .with_max_tokens(2048)
+                    .with_temperature(0.7)
+                    .with_repetition_penalty(1.15),
             );
 
             let response = engine.generate(request).await?;
@@ -340,17 +371,17 @@ impl Agent {
                     let observation = match self.tools.execute(&tool_call, &ctx).await {
                         Ok(result) if result.success => {
                             format!("Observation: {}", result.output)
-                        }
+                        },
                         Ok(result) => {
                             format!(
                                 "Observation: Tool error - {}",
                                 result.error.unwrap_or_default()
                             )
-                        }
+                        },
                         Err(e) => {
                             tracing::warn!(tool = %tool_call.name, error = %e, "Tool execution failed");
                             format!("Observation: Tool execution failed - {}", e)
-                        }
+                        },
                     };
 
                     messages.push(Message {
@@ -388,7 +419,10 @@ impl Agent {
                 .iter()
                 .rev()
                 .find(|m| m.role == Role::Assistant)
-                .map_or_else(|| "No response generated.".to_string(), |m| m.content.clone());
+                .map_or_else(
+                    || "No response generated.".to_string(),
+                    |m| m.content.clone(),
+                );
         }
 
         Ok(final_answer)
@@ -420,7 +454,7 @@ impl Agent {
                     Always think step by step.",
                     base_prompt, tools_desc
                 )
-            }
+            },
             _ => {
                 let tools_desc = self.tools.to_prompt_description();
                 format!(
@@ -434,7 +468,7 @@ impl Agent {
                     Always think step by step. Use Thought: to express your reasoning.",
                     base_prompt, tools_desc
                 )
-            }
+            },
         }
     }
 
@@ -519,7 +553,10 @@ impl Agent {
 
         let parsed: serde_json::Value = serde_json::from_str(json_str).ok()?;
         let name = parsed.get("name")?.as_str()?.to_string();
-        let params = parsed.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+        let params = parsed
+            .get("arguments")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
 
         Some(ToolCall { name, params })
     }
@@ -560,7 +597,7 @@ impl Agent {
 
         let mut ctx = ToolContext::new(&self.id);
         if let Some(ref wd) = self.working_dir {
-            ctx.set_state("working_dir", serde_json::json!(wd.to_string_lossy().as_ref()));
+            ctx.set_state("working_dir", serde_json::json!(&*wd.to_string_lossy()));
         }
         let mut step_results = Vec::new();
         let mut final_output = String::new();
@@ -590,7 +627,10 @@ impl Agent {
                 // Add observation to context messages
                 ctx.messages.push(Message {
                     role: Role::User,
-                    content: format!("Step {}: {}\nResult: {}", step.id, step.description, observation),
+                    content: format!(
+                        "Step {}: {}\nResult: {}",
+                        step.id, step.description, observation
+                    ),
                     name: Some("system".to_string()),
                     tool_calls: None,
                     tool_call_id: None,
@@ -640,7 +680,7 @@ impl Agent {
                 let output = response
                     .choices
                     .first()
-                .map_or_else(String::new, |c| c.text.clone());
+                    .map_or_else(String::new, |c| c.text.clone());
 
                 ctx.messages.push(Message {
                     role: Role::Assistant,
@@ -730,7 +770,7 @@ impl Agent {
         let assistant_response = response
             .choices
             .first()
-                .map_or_else(String::new, |c| c.text.clone());
+            .map_or_else(String::new, |c| c.text.clone());
 
         // Add to memory
         self.memory
@@ -791,6 +831,140 @@ impl Agent {
                     .unwrap_or_default()
             })
         }))
+    }
+
+    /// Ensures context is within budget by compressing and trimming proactively.
+    /// Call this BEFORE each LLM generation to prevent OOM.
+    fn ensure_context_budget(messages: &mut Vec<Message>, max_chars: usize) {
+        let total: usize = messages.iter().map(|m| m.content.len()).sum();
+        let threshold = max_chars * 4 / 5; // 80% threshold for proactive trimming
+
+        if total > threshold {
+            tracing::info!(
+                total_chars = total,
+                threshold = threshold,
+                messages_count = messages.len(),
+                "Proactive context trimming triggered"
+            );
+
+            // First, compress older observations to save space
+            Self::compress_old_observations(messages);
+
+            // Check again after compression
+            let total_after_compress: usize = messages.iter().map(|m| m.content.len()).sum();
+
+            // Then remove oldest messages if still over threshold
+            if total_after_compress > threshold {
+                while messages.len() > 3
+                    && messages.iter().map(|m| m.content.len()).sum::<usize>() > threshold
+                {
+                    messages.remove(1); // Remove oldest non-system message
+                    tracing::debug!(
+                        remaining = messages.len(),
+                        "Removed oldest message during proactive trim"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Compresses older observations to save context space.
+    /// Keeps the last 2 observations intact, compresses older ones.
+    fn compress_old_observations(messages: &mut Vec<Message>) {
+        // Find all observation message indices
+        let observation_indices: Vec<usize> = messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.content.starts_with("Observation:"))
+            .map(|(i, _)| i)
+            .collect();
+
+        // Keep last 2 observations intact, compress older ones
+        let to_compress: Vec<usize> = observation_indices
+            .iter()
+            .rev()
+            .skip(2) // Skip the 2 most recent
+            .copied()
+            .collect();
+
+        for idx in to_compress {
+            if messages[idx].content.len() > 500 {
+                let compressed = Self::compress_observation(&messages[idx].content);
+                let saved = messages[idx].content.len() - compressed.len();
+                if saved > 100 {
+                    tracing::debug!(
+                        idx = idx,
+                        original_len = messages[idx].content.len(),
+                        compressed_len = compressed.len(),
+                        saved_chars = saved,
+                        "Compressed old observation"
+                    );
+                    messages[idx].content = compressed;
+                }
+            }
+        }
+    }
+
+    /// Compresses an observation to its key findings.
+    fn compress_observation(obs: &str) -> String {
+        let lines: Vec<&str> = obs.lines().collect();
+        if lines.len() <= 5 {
+            return obs.to_string();
+        }
+
+        // Keep first line (usually the summary header)
+        let first_line = lines.first().copied().unwrap_or("");
+
+        // Extract file paths mentioned (important context)
+        let paths: Vec<&str> = lines
+            .iter()
+            .filter(|l| {
+                l.contains('/')
+                    || l.ends_with(".rs")
+                    || l.ends_with(".ts")
+                    || l.ends_with(".py")
+                    || l.ends_with(".json")
+            })
+            .take(5)
+            .copied()
+            .collect();
+
+        // Extract key metadata lines (lines with counts, success/error)
+        let metadata: Vec<&str> = lines
+            .iter()
+            .filter(|l| {
+                l.contains("lines")
+                    || l.contains("files")
+                    || l.contains("matches")
+                    || l.contains("bytes")
+                    || l.contains("Success")
+                    || l.contains("Error")
+                    || l.contains("truncated")
+            })
+            .take(3)
+            .copied()
+            .collect();
+
+        let mut result = format!("{}\n[Compressed from {} lines]", first_line, lines.len());
+
+        if !paths.is_empty() {
+            result.push_str("\nKey files:\n");
+            for path in paths.iter().take(3) {
+                result.push_str("  ");
+                result.push_str(path.trim());
+                result.push('\n');
+            }
+            if paths.len() > 3 {
+                result.push_str(&format!("  ... and {} more\n", paths.len() - 3));
+            }
+        }
+
+        if !metadata.is_empty() {
+            result.push_str("Summary: ");
+            result.push_str(&metadata.join(" | "));
+        }
+
+        result
     }
 }
 
@@ -1076,12 +1250,13 @@ Action: search
 
     #[test]
     fn test_agent_builder_grimoire_persona() {
-        let agent = Agent::builder()
-            .grimoire_persona("test-persona")
-            .build();
+        let agent = Agent::builder().grimoire_persona("test-persona").build();
 
         match &agent.persona.system {
-            PersonaSource::Grimoire { persona_id, variant } => {
+            PersonaSource::Grimoire {
+                persona_id,
+                variant,
+            } => {
                 assert_eq!(persona_id, "test-persona");
                 assert!(variant.is_none());
             },
@@ -1182,7 +1357,10 @@ Action: search
             variant: Some("friendly".to_string()),
         };
         match source {
-            PersonaSource::Grimoire { persona_id, variant } => {
+            PersonaSource::Grimoire {
+                persona_id,
+                variant,
+            } => {
                 assert_eq!(persona_id, "assistant");
                 assert_eq!(variant, Some("friendly".to_string()));
             },
@@ -1197,7 +1375,10 @@ Action: search
             variant: None,
         };
         match source {
-            PersonaSource::Grimoire { persona_id, variant } => {
+            PersonaSource::Grimoire {
+                persona_id,
+                variant,
+            } => {
                 assert_eq!(persona_id, "default");
                 assert!(variant.is_none());
             },
@@ -1460,9 +1641,7 @@ Action: search
         use crate::tool::ToolRegistry;
 
         let registry = ToolRegistry::with_builtins();
-        let agent = Agent::builder()
-            .tools(registry)
-            .build();
+        let agent = Agent::builder().tools(registry).build();
 
         assert!(agent.tools.len() >= 3);
     }
@@ -1470,9 +1649,7 @@ Action: search
     #[test]
     fn test_agent_builder_with_planning_strategy() {
         let agent = Agent::builder()
-            .planning_strategy(PlanningStrategy::Hierarchical {
-                max_depth: 3,
-            })
+            .planning_strategy(PlanningStrategy::Hierarchical { max_depth: 3 })
             .build();
 
         // Agent should be built successfully with custom strategy
@@ -1481,9 +1658,7 @@ Action: search
 
     #[test]
     fn test_agent_builder_with_model() {
-        let agent = Agent::builder()
-            .model("gpt-4-turbo")
-            .build();
+        let agent = Agent::builder().model("gpt-4-turbo").build();
 
         assert_eq!(agent.persona.model, Some("gpt-4-turbo".into()));
     }
@@ -1701,9 +1876,7 @@ Action: search
 
     #[test]
     fn test_agent_builder_partial() {
-        let agent = Agent::builder()
-            .id("partial-agent")
-            .build();
+        let agent = Agent::builder().id("partial-agent").build();
 
         assert_eq!(agent.id, "partial-agent");
         // Other fields should use defaults
@@ -1727,7 +1900,10 @@ Action: search
     fn test_persona_source_grimoire_builder() {
         let source = PersonaSource::grimoire("code-reviewer");
         match source {
-            PersonaSource::Grimoire { persona_id, variant } => {
+            PersonaSource::Grimoire {
+                persona_id,
+                variant,
+            } => {
                 assert_eq!(persona_id, "code-reviewer");
                 assert!(variant.is_none());
             },
@@ -1739,7 +1915,10 @@ Action: search
     fn test_persona_source_grimoire_with_variant_builder() {
         let source = PersonaSource::grimoire_with_variant("assistant", "friendly");
         match source {
-            PersonaSource::Grimoire { persona_id, variant } => {
+            PersonaSource::Grimoire {
+                persona_id,
+                variant,
+            } => {
                 assert_eq!(persona_id, "assistant");
                 assert_eq!(variant, Some("friendly".to_string()));
             },
@@ -1780,7 +1959,10 @@ Action: search
     fn test_persona_from_grimoire() {
         let persona = Persona::from_grimoire("code-reviewer");
         match &persona.system {
-            PersonaSource::Grimoire { persona_id, variant } => {
+            PersonaSource::Grimoire {
+                persona_id,
+                variant,
+            } => {
                 assert_eq!(persona_id, "code-reviewer");
                 assert!(variant.is_none());
             },
@@ -1792,7 +1974,10 @@ Action: search
     fn test_persona_from_grimoire_variant() {
         let persona = Persona::from_grimoire_variant("assistant", "concise");
         match &persona.system {
-            PersonaSource::Grimoire { persona_id, variant } => {
+            PersonaSource::Grimoire {
+                persona_id,
+                variant,
+            } => {
                 assert_eq!(persona_id, "assistant");
                 assert_eq!(variant.as_deref(), Some("concise"));
             },
@@ -1877,9 +2062,7 @@ Action: search
         let mut registry = ToolRegistry::new();
         registry.register(Arc::new(crate::tool::CalculatorTool));
 
-        let agent = Agent::builder()
-            .tools(registry)
-            .build();
+        let agent = Agent::builder().tools(registry).build();
 
         let prompt = agent.build_system_prompt();
 
@@ -1892,9 +2075,7 @@ Action: search
 
     #[test]
     fn test_parse_action_detects_native_tool_call_tags() {
-        let agent = Agent::builder()
-            .model("Qwen/Qwen2.5-7B-Instruct")
-            .build();
+        let agent = Agent::builder().model("Qwen/Qwen2.5-7B-Instruct").build();
 
         let response = r#"<tool_call>
 {"name": "calculator", "arguments": {"expression": "2+2"}}
@@ -1904,16 +2085,14 @@ Action: search
             AgentAction::ToolCall(call) => {
                 assert_eq!(call.name, "calculator");
                 assert_eq!(call.params["expression"], "2+2");
-            }
+            },
             other => panic!("Expected ToolCall from native format, got {:?}", other),
         }
     }
 
     #[test]
     fn test_parse_action_detects_native_with_text_before() {
-        let agent = Agent::builder()
-            .model("Qwen/Qwen2.5-7B-Instruct")
-            .build();
+        let agent = Agent::builder().model("Qwen/Qwen2.5-7B-Instruct").build();
 
         let response = r#"I'll calculate that for you.
 <tool_call>
@@ -1924,7 +2103,7 @@ Action: search
             AgentAction::ToolCall(call) => {
                 assert_eq!(call.name, "calculator");
                 assert_eq!(call.params["expression"], "15*7");
-            }
+            },
             other => panic!("Expected ToolCall, got {:?}", other),
         }
     }
@@ -1932,16 +2111,14 @@ Action: search
     #[test]
     fn test_parse_action_generic_still_works_with_qwen_model() {
         // §5.6: Backwards compatibility — generic format should still parse
-        let agent = Agent::builder()
-            .model("Qwen/Qwen2.5-7B-Instruct")
-            .build();
+        let agent = Agent::builder().model("Qwen/Qwen2.5-7B-Instruct").build();
 
         let response = "Thought: I need to calculate.\nAction: calculator\nAction Input: {\"expression\": \"3+3\"}";
 
         match agent.parse_action(response) {
             AgentAction::ToolCall(call) => {
                 assert_eq!(call.name, "calculator");
-            }
+            },
             other => panic!("Expected ToolCall from generic format, got {:?}", other),
         }
     }

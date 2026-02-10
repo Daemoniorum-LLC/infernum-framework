@@ -46,31 +46,25 @@ async fn main() {
                 // and an intervention is recommended
                 match &intervention {
                     Intervention::Pause { reason, duration } => {
-                        println!(
-                            "⏸️  Intervention: Pause for {:?} - {}",
-                            duration, reason
-                        );
-                    }
+                        println!("⏸️  Intervention: Pause for {:?} - {}", duration, reason);
+                    },
                     Intervention::GroundingPrompt { message } => {
                         println!("🧘 Intervention: Grounding - {}", message);
-                    }
+                    },
                     Intervention::SimplifyTask { suggestion } => {
                         println!("📝 Intervention: Simplify - {}", suggestion);
-                    }
+                    },
                     Intervention::ClearRecentContext { steps_to_clear } => {
-                        println!(
-                            "🔄 Intervention: Clear {} recent steps",
-                            steps_to_clear
-                        );
-                    }
+                        println!("🔄 Intervention: Clear {} recent steps", steps_to_clear);
+                    },
                     Intervention::RequestHuman { situation, .. } => {
                         println!("👤 Intervention: Request human help - {}", situation);
-                    }
+                    },
                     Intervention::GracefulTermination { reason, summary } => {
                         println!("🛑 Intervention: Graceful termination");
                         println!("   Reason: {}", reason);
                         println!("   Summary: {}", summary);
-                    }
+                    },
                 }
             },
         )),

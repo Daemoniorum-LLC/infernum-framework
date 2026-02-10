@@ -234,15 +234,18 @@ impl AdaptiveLoader {
         let start = Instant::now();
 
         // Get allocation for this tensor (fallback to NVMe if not in plan)
-        let alloc = self.plan.allocations.get(name).cloned().unwrap_or_else(|| {
-            TensorAllocation {
+        let alloc = self
+            .plan
+            .allocations
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| TensorAllocation {
                 tier: MemoryTier::Nvme,
                 precision: TensorPrecision::BF16,
                 priority: 0.0,
                 prefetch: false,
                 storage_size: 0,
-            }
-        });
+            });
 
         // Check VRAM cache first
         if let Some(cached) = self.try_get_cached(name, MemoryTier::Vram)? {
@@ -364,15 +367,15 @@ impl AdaptiveLoader {
                 if let Ok(mut cache) = self.vram_cache.write() {
                     cache.insert(name.to_string(), entry);
                 }
-            }
+            },
             MemoryTier::Ram => {
                 if let Ok(mut cache) = self.ram_cache.write() {
                     cache.insert(name.to_string(), entry);
                 }
-            }
+            },
             MemoryTier::Nvme => {
                 // Don't cache NVMe tensors
-            }
+            },
         }
 
         Ok(())

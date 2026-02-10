@@ -95,7 +95,7 @@ fn validation_router() -> axum::Router {
                             }
                         })),
                     );
-                }
+                },
                 Some(p) if p.is_array() && p.as_array().map_or(true, |a| a.is_empty()) => {
                     return (
                         StatusCode::BAD_REQUEST,
@@ -107,8 +107,8 @@ fn validation_router() -> axum::Router {
                             }
                         })),
                     );
-                }
-                _ => {}
+                },
+                _ => {},
             }
 
             // Validate sampling.temperature
@@ -240,8 +240,14 @@ fn validate_generate_response(body: &serde_json::Value) {
 /// Validates an error response matches Infernum error spec.
 fn validate_error_response(body: &serde_json::Value) {
     assert!(body["error"].is_object(), "error must be object");
-    assert!(body["error"]["message"].is_string(), "error.message must be string");
-    assert!(body["error"]["type"].is_string(), "error.type must be string");
+    assert!(
+        body["error"]["message"].is_string(),
+        "error.message must be string"
+    );
+    assert!(
+        body["error"]["type"].is_string(),
+        "error.type must be string"
+    );
 }
 
 #[tokio::test]
@@ -415,8 +421,8 @@ async fn test_tokenize_no_input_error() {
 fn typed_validation_router() -> axum::Router {
     use axum::http::StatusCode;
     use axum::routing::post;
-    use infernum_server::ChatCompletionRequest;
     use infernum_server::validation::validate_chat_request;
+    use infernum_server::ChatCompletionRequest;
     use infernum_server::ValidationLimits;
 
     axum::Router::new().route(
@@ -436,7 +442,7 @@ fn typed_validation_router() -> axum::Router {
                             }
                         })),
                     );
-                }
+                },
             };
 
             // Use strict limits for testing
@@ -450,7 +456,10 @@ fn typed_validation_router() -> axum::Router {
             // Validate using the real validation module
             if let Err(err) = validate_chat_request(&req, &limits) {
                 let api_error = err.to_api_error("test-request-id");
-                return (StatusCode::BAD_REQUEST, Json(serde_json::to_value(api_error).unwrap_or_default()));
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::to_value(api_error).unwrap_or_default()),
+                );
             }
 
             // Success response
@@ -602,7 +611,7 @@ fn auth_router() -> axum::Router {
                                 }
                             })),
                         );
-                    }
+                    },
                     Some(value) => {
                         let value_str = value.to_str().unwrap_or("");
                         if !value_str.starts_with("Bearer sk-") {
@@ -617,7 +626,7 @@ fn auth_router() -> axum::Router {
                                 })),
                             );
                         }
-                    }
+                    },
                 }
 
                 // Valid request
@@ -1071,7 +1080,10 @@ async fn test_status_includes_version() {
 
     // Status should include version
     assert!(body["version"].is_string(), "status should include version");
-    assert!(!body["version"].as_str().unwrap().is_empty(), "version should not be empty");
+    assert!(
+        !body["version"].as_str().unwrap().is_empty(),
+        "version should not be empty"
+    );
 
     // Also verify other required fields
     assert!(body["status"].is_string());

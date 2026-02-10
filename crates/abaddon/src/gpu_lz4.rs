@@ -107,11 +107,7 @@ pub mod cuda {
             {
                 let warp_ptx = Self::get_lz4_warp_ptx();
                 self.device
-                    .load_ptx(
-                        warp_ptx,
-                        "lz4_warp",
-                        &["lz4_decompress_blocks_warp"],
-                    )
+                    .load_ptx(warp_ptx, "lz4_warp", &["lz4_decompress_blocks_warp"])
                     .map_err(|e| GpuLz4Error::KernelLoad {
                         message: e.to_string(),
                     })?;
@@ -148,18 +144,17 @@ pub mod cuda {
             uncompressed_size: usize,
         ) -> Result<CudaSlice<u8>, GpuLz4Error> {
             // Allocate GPU memory for input and output
-            let d_input = self
-                .device
-                .htod_copy(compressed.to_vec())
-                .map_err(|e| GpuLz4Error::MemoryAlloc {
+            let d_input = self.device.htod_copy(compressed.to_vec()).map_err(|e| {
+                GpuLz4Error::MemoryAlloc {
                     message: e.to_string(),
-                })?;
+                }
+            })?;
 
-            let d_output: CudaSlice<u8> = self
-                .device
-                .alloc_zeros(uncompressed_size)
-                .map_err(|e| GpuLz4Error::MemoryAlloc {
-                    message: e.to_string(),
+            let d_output: CudaSlice<u8> =
+                self.device.alloc_zeros(uncompressed_size).map_err(|e| {
+                    GpuLz4Error::MemoryAlloc {
+                        message: e.to_string(),
+                    }
                 })?;
 
             // Launch decompression kernel
@@ -242,47 +237,46 @@ pub mod cuda {
             }
 
             // Copy to GPU
-            let d_compressed = self
-                .device
-                .htod_copy(all_compressed)
-                .map_err(|e| GpuLz4Error::MemoryAlloc {
-                    message: e.to_string(),
+            let d_compressed =
+                self.device
+                    .htod_copy(all_compressed)
+                    .map_err(|e| GpuLz4Error::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
+
+            let d_output: CudaSlice<u8> =
+                self.device.alloc_zeros(total_uncompressed).map_err(|e| {
+                    GpuLz4Error::MemoryAlloc {
+                        message: e.to_string(),
+                    }
                 })?;
 
-            let d_output: CudaSlice<u8> = self
-                .device
-                .alloc_zeros(total_uncompressed)
-                .map_err(|e| GpuLz4Error::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let d_offsets_in =
+                self.device
+                    .htod_copy(block_offsets_in)
+                    .map_err(|e| GpuLz4Error::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
-            let d_offsets_in = self
-                .device
-                .htod_copy(block_offsets_in)
-                .map_err(|e| GpuLz4Error::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let d_offsets_out =
+                self.device
+                    .htod_copy(block_offsets_out)
+                    .map_err(|e| GpuLz4Error::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
-            let d_offsets_out = self
-                .device
-                .htod_copy(block_offsets_out)
-                .map_err(|e| GpuLz4Error::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let d_compressed_sizes =
+                self.device
+                    .htod_copy(compressed_sizes)
+                    .map_err(|e| GpuLz4Error::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
-            let d_compressed_sizes = self
-                .device
-                .htod_copy(compressed_sizes)
-                .map_err(|e| GpuLz4Error::MemoryAlloc {
+            let d_uncompressed_sizes = self.device.htod_copy(uncompressed_sizes).map_err(|e| {
+                GpuLz4Error::MemoryAlloc {
                     message: e.to_string(),
-                })?;
-
-            let d_uncompressed_sizes = self
-                .device
-                .htod_copy(uncompressed_sizes)
-                .map_err(|e| GpuLz4Error::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+                }
+            })?;
 
             // Launch parallel decompression kernel
             let func = self
@@ -394,47 +388,46 @@ pub mod cuda {
             }
 
             // Copy to GPU
-            let d_compressed = self
-                .device
-                .htod_copy(all_compressed)
-                .map_err(|e| GpuLz4Error::MemoryAlloc {
-                    message: e.to_string(),
+            let d_compressed =
+                self.device
+                    .htod_copy(all_compressed)
+                    .map_err(|e| GpuLz4Error::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
+
+            let d_output: CudaSlice<u8> =
+                self.device.alloc_zeros(total_uncompressed).map_err(|e| {
+                    GpuLz4Error::MemoryAlloc {
+                        message: e.to_string(),
+                    }
                 })?;
 
-            let d_output: CudaSlice<u8> = self
-                .device
-                .alloc_zeros(total_uncompressed)
-                .map_err(|e| GpuLz4Error::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let d_offsets_in =
+                self.device
+                    .htod_copy(block_offsets_in)
+                    .map_err(|e| GpuLz4Error::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
-            let d_offsets_in = self
-                .device
-                .htod_copy(block_offsets_in)
-                .map_err(|e| GpuLz4Error::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let d_offsets_out =
+                self.device
+                    .htod_copy(block_offsets_out)
+                    .map_err(|e| GpuLz4Error::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
-            let d_offsets_out = self
-                .device
-                .htod_copy(block_offsets_out)
-                .map_err(|e| GpuLz4Error::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let d_compressed_sizes =
+                self.device
+                    .htod_copy(compressed_sizes)
+                    .map_err(|e| GpuLz4Error::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
-            let d_compressed_sizes = self
-                .device
-                .htod_copy(compressed_sizes)
-                .map_err(|e| GpuLz4Error::MemoryAlloc {
+            let d_uncompressed_sizes = self.device.htod_copy(uncompressed_sizes).map_err(|e| {
+                GpuLz4Error::MemoryAlloc {
                     message: e.to_string(),
-                })?;
-
-            let d_uncompressed_sizes = self
-                .device
-                .htod_copy(uncompressed_sizes)
-                .map_err(|e| GpuLz4Error::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+                }
+            })?;
 
             // Launch warp-parallel decompression kernel (from lz4_warp module)
             let func = self
@@ -598,26 +591,26 @@ pub mod cuda {
                         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                         .collect();
                     Tensor::from_vec(floats, shape, candle_device)
-                }
+                },
                 DType::F16 => {
                     let halfs: Vec<half::f16> = host_data
                         .chunks_exact(2)
                         .map(|c| half::f16::from_le_bytes([c[0], c[1]]))
                         .collect();
                     Tensor::from_vec(halfs, shape, candle_device)
-                }
+                },
                 DType::BF16 => {
                     let bfloats: Vec<half::bf16> = host_data
                         .chunks_exact(2)
                         .map(|c| half::bf16::from_le_bytes([c[0], c[1]]))
                         .collect();
                     Tensor::from_vec(bfloats, shape, candle_device)
-                }
+                },
                 _ => {
                     return Err(GpuLz4Error::UnsupportedDtype {
                         dtype: format!("{:?}", dtype),
                     })
-                }
+                },
             }
             .map_err(|e| GpuLz4Error::TensorCreate {
                 message: e.to_string(),
@@ -653,10 +646,13 @@ pub mod cuda {
             let mut streams = Vec::with_capacity(num_streams);
 
             for i in 0..num_streams {
-                let stream = device.fork_default_stream().map_err(|e| GpuLz4Error::StreamCreate {
-                    stream_id: i,
-                    message: e.to_string(),
-                })?;
+                let stream =
+                    device
+                        .fork_default_stream()
+                        .map_err(|e| GpuLz4Error::StreamCreate {
+                            stream_id: i,
+                            message: e.to_string(),
+                        })?;
                 streams.push(stream);
             }
 
@@ -716,8 +712,7 @@ pub mod cuda {
             let mut ctx = GpuLz4Context::new(device_id)?;
             ctx.load_kernel()?;
 
-            let stream_pool =
-                CudaStreamPool::new(Arc::clone(&ctx.device), pipeline_depth)?;
+            let stream_pool = CudaStreamPool::new(Arc::clone(&ctx.device), pipeline_depth)?;
 
             Ok(Self {
                 ctx,
@@ -762,13 +757,13 @@ pub mod cuda {
             let total_uncompressed: usize = blocks.iter().map(|(_, s)| *s).sum();
 
             // Allocate output buffer
-            let d_output: CudaSlice<u8> = self
-                .ctx
-                .device
-                .alloc_zeros(total_uncompressed)
-                .map_err(|e| GpuLz4Error::MemoryAlloc {
-                    message: e.to_string(),
-                })?;
+            let d_output: CudaSlice<u8> =
+                self.ctx
+                    .device
+                    .alloc_zeros(total_uncompressed)
+                    .map_err(|e| GpuLz4Error::MemoryAlloc {
+                        message: e.to_string(),
+                    })?;
 
             // Process blocks in groups based on pipeline depth
             let group_size = self.pipeline_depth;
@@ -810,13 +805,11 @@ pub mod cuda {
                 let _stream = self.stream_pool.get_stream(i);
 
                 // Allocate input buffer
-                let d_input = self
-                    .ctx
-                    .device
-                    .htod_copy(compressed.clone())
-                    .map_err(|e| GpuLz4Error::MemoryAlloc {
+                let d_input = self.ctx.device.htod_copy(compressed.clone()).map_err(|e| {
+                    GpuLz4Error::MemoryAlloc {
                         message: e.to_string(),
-                    })?;
+                    }
+                })?;
                 d_inputs.push(d_input);
 
                 // Allocate output buffer for this block
@@ -865,9 +858,7 @@ pub mod cuda {
 
             // Phase 3: Copy decompressed blocks into the main output buffer
             let mut block_offset = output_offset;
-            for ((_, uncompressed_size), d_block_output) in
-                blocks.iter().zip(d_outputs.iter())
-            {
+            for ((_, uncompressed_size), d_block_output) in blocks.iter().zip(d_outputs.iter()) {
                 if *uncompressed_size > 0 {
                     unsafe {
                         cudarc::driver::result::memcpy_dtod_sync(
@@ -1677,6 +1668,7 @@ WARP_DONE:
     #[cfg(test)]
     mod tests {
         use super::*;
+        use cudarc::driver::DeviceSlice;
 
         /// Helper to check if CUDA is available for testing.
         fn cuda_available() -> bool {
@@ -1726,9 +1718,9 @@ WARP_DONE:
             // Literals: "ABCD"
             // Offset: 4 (little-endian: 0x04, 0x00)
             let compressed = vec![
-                0x40,                   // Token: 4 literals, 0 match base (0 + 4 = 4)
+                0x40, // Token: 4 literals, 0 match base (0 + 4 = 4)
                 b'A', b'B', b'C', b'D', // Literals
-                0x04, 0x00,             // Offset: 4 bytes back
+                0x04, 0x00, // Offset: 4 bytes back
             ];
 
             (compressed, original)
@@ -1744,11 +1736,11 @@ WARP_DONE:
 
             let compressed = vec![
                 // First sequence: 5 literals "Hello", then match
-                0x51,                         // Token: 5 literals, 1 match base (1+4=5)
+                0x51, // Token: 5 literals, 1 match base (1+4=5)
                 b'H', b'e', b'l', b'l', b'o', // Literals
-                0x05, 0x00,                   // Offset: 5 bytes back
+                0x05, 0x00, // Offset: 5 bytes back
                 // Second sequence: 5 literals "World", no match (end of block)
-                0x50,                         // Token: 5 literals, 0 match (last sequence)
+                0x50, // Token: 5 literals, 0 match (last sequence)
                 b'W', b'o', b'r', b'l', b'd', // Literals
             ];
 
@@ -1762,11 +1754,11 @@ WARP_DONE:
             match GpuLz4Context::new(0) {
                 Ok(ctx) => {
                     assert_eq!(ctx.device_id(), 0);
-                }
+                },
                 Err(GpuLz4Error::DeviceInit { .. }) => {
                     // No CUDA device available, skip
                     eprintln!("Skipping test: no CUDA device available");
-                }
+                },
                 Err(e) => panic!("Unexpected error: {:?}", e),
             }
         }
@@ -1805,7 +1797,7 @@ WARP_DONE:
             match result {
                 Err(GpuLz4Error::InvalidInput { message }) => {
                     assert!(message.contains("No blocks"));
-                }
+                },
                 _ => panic!("Expected InvalidInput error for empty blocks"),
             }
         }
@@ -1911,7 +1903,9 @@ WARP_DONE:
                 })
                 .collect();
 
-            let result = ctx.decompress_blocks_parallel(&blocks).expect("parallel decompression");
+            let result = ctx
+                .decompress_blocks_parallel(&blocks)
+                .expect("parallel decompression");
 
             // Copy back and verify each block
             let total_size: usize = originals.iter().map(|o| o.len()).sum();
@@ -1923,7 +1917,11 @@ WARP_DONE:
             let mut offset = 0;
             for original in &originals {
                 let decompressed = &host_data[offset..offset + original.len()];
-                assert_eq!(decompressed, *original, "Block at offset {} mismatch", offset);
+                assert_eq!(
+                    decompressed, *original,
+                    "Block at offset {} mismatch",
+                    offset
+                );
                 offset += original.len();
             }
         }
@@ -1984,7 +1982,10 @@ WARP_DONE:
 
             // Verify contents
             let result: Vec<Vec<f32>> = tensor.to_vec2().expect("extract 2d tensor data");
-            assert_eq!(result, vec![vec![1.0, 2.0, 3.0, 4.0], vec![5.0, 6.0, 7.0, 8.0]]);
+            assert_eq!(
+                result,
+                vec![vec![1.0, 2.0, 3.0, 4.0], vec![5.0, 6.0, 7.0, 8.0]]
+            );
         }
 
         #[test]
@@ -2007,7 +2008,7 @@ WARP_DONE:
             match result {
                 Err(GpuLz4Error::UnsupportedDtype { dtype }) => {
                     assert!(dtype.contains("I64"));
-                }
+                },
                 _ => panic!("Expected UnsupportedDtype error"),
             }
         }
@@ -2034,7 +2035,7 @@ WARP_DONE:
             // 15 + 5 = 20
             assert_eq!(compressed.len(), 22); // 1 token + 1 ext + 20 data
             assert_eq!(compressed[0], 0xF0); // 15 in high nibble
-            assert_eq!(compressed[1], 5);    // Extension: 20 - 15 = 5
+            assert_eq!(compressed[1], 5); // Extension: 20 - 15 = 5
         }
 
         #[test]
@@ -2056,13 +2057,13 @@ WARP_DONE:
             match result {
                 Err(GpuLz4Error::DeviceInit { device_id, .. }) => {
                     assert_eq!(device_id, 999);
-                }
+                },
                 Ok(_) => {
                     // Somehow 999 devices exist? Unlikely but not an error
-                }
+                },
                 Err(other) => {
                     panic!("Expected DeviceInit error, got: {other:?}");
-                }
+                },
             }
         }
 
@@ -2117,7 +2118,9 @@ WARP_DONE:
                 })
                 .collect();
 
-            let result = ctx.decompress_blocks_parallel(&blocks).expect("parallel decompression");
+            let result = ctx
+                .decompress_blocks_parallel(&blocks)
+                .expect("parallel decompression");
 
             // Verify total size
             let total_size: usize = originals.iter().map(|o| o.len()).sum();
@@ -2131,9 +2134,11 @@ WARP_DONE:
             for (i, original) in originals.iter().enumerate() {
                 let decompressed = &host_data[offset..offset + original.len()];
                 assert_eq!(
-                    decompressed, original.as_slice(),
+                    decompressed,
+                    original.as_slice(),
                     "Block {} at offset {} mismatch",
-                    i, offset
+                    i,
+                    offset
                 );
                 offset += original.len();
             }
@@ -2169,8 +2174,12 @@ WARP_DONE:
                 .collect();
 
             // Decompress with both methods
-            let single_result = ctx.decompress_blocks_parallel(&blocks).expect("single-thread");
-            let warp_result = ctx.decompress_blocks_warp_parallel(&blocks).expect("warp-parallel");
+            let single_result = ctx
+                .decompress_blocks_parallel(&blocks)
+                .expect("single-thread");
+            let warp_result = ctx
+                .decompress_blocks_warp_parallel(&blocks)
+                .expect("warp-parallel");
 
             // Copy both to host
             let total_size: usize = originals.iter().map(|o| o.len()).sum();
@@ -2185,7 +2194,10 @@ WARP_DONE:
                 .expect("copy warp");
 
             // Verify identical output
-            assert_eq!(single_host, warp_host, "Warp-parallel should match single-threaded");
+            assert_eq!(
+                single_host, warp_host,
+                "Warp-parallel should match single-threaded"
+            );
         }
 
         #[test]
@@ -2204,7 +2216,9 @@ WARP_DONE:
             let compressed = create_literals_only_lz4(&data);
             let blocks = vec![(compressed, data.len())];
 
-            let result = ctx.decompress_blocks_warp_parallel(&blocks).expect("warp decompress");
+            let result = ctx
+                .decompress_blocks_warp_parallel(&blocks)
+                .expect("warp decompress");
 
             let mut host_data = vec![0u8; data.len()];
             ctx.device
@@ -2231,7 +2245,7 @@ WARP_DONE:
             match result {
                 Err(GpuLz4Error::InvalidInput { message }) => {
                     assert!(message.contains("No blocks"));
-                }
+                },
                 _ => panic!("Expected InvalidInput error for empty blocks"),
             }
         }
@@ -2262,7 +2276,9 @@ WARP_DONE:
                 })
                 .collect();
 
-            let result = ctx.decompress_blocks_warp_parallel(&blocks).expect("warp parallel");
+            let result = ctx
+                .decompress_blocks_warp_parallel(&blocks)
+                .expect("warp parallel");
 
             let total_size: usize = originals.iter().map(|o| o.len()).sum();
             let mut host_data = vec![0u8; total_size];
@@ -2275,9 +2291,11 @@ WARP_DONE:
             for (i, original) in originals.iter().enumerate() {
                 let decompressed = &host_data[offset..offset + original.len()];
                 assert_eq!(
-                    decompressed, original.as_slice(),
+                    decompressed,
+                    original.as_slice(),
                     "Warp block {} at offset {} mismatch",
-                    i, offset
+                    i,
+                    offset
                 );
                 offset += original.len();
             }
@@ -2296,11 +2314,11 @@ WARP_DONE:
 
             // Mix of small and large blocks
             let originals: Vec<Vec<u8>> = vec![
-                vec![0x11; 10],      // Small
-                vec![0x22; 1000],    // Medium
-                vec![0x33; 50000],   // Large
-                vec![0x44; 5],       // Tiny
-                vec![0x55; 10000],   // Medium-large
+                vec![0x11; 10],    // Small
+                vec![0x22; 1000],  // Medium
+                vec![0x33; 50000], // Large
+                vec![0x44; 5],     // Tiny
+                vec![0x55; 10000], // Medium-large
             ];
 
             let blocks: Vec<(Vec<u8>, usize)> = originals
@@ -2311,7 +2329,9 @@ WARP_DONE:
                 })
                 .collect();
 
-            let result = ctx.decompress_blocks_warp_parallel(&blocks).expect("warp parallel");
+            let result = ctx
+                .decompress_blocks_warp_parallel(&blocks)
+                .expect("warp parallel");
 
             let total_size: usize = originals.iter().map(|o| o.len()).sum();
             let mut host_data = vec![0u8; total_size];
@@ -2324,7 +2344,8 @@ WARP_DONE:
             for (i, original) in originals.iter().enumerate() {
                 let decompressed = &host_data[offset..offset + original.len()];
                 assert_eq!(
-                    decompressed, original.as_slice(),
+                    decompressed,
+                    original.as_slice(),
                     "Mixed size block {} mismatch",
                     i
                 );
@@ -2373,7 +2394,8 @@ WARP_DONE:
                 .expect("copy warp");
 
             assert_eq!(
-                warp_host, parallel_host,
+                warp_host,
+                parallel_host,
                 "DD-5: Warp kernel diverges from parallel kernel for 20-byte literals.\n\
                  Expected: {:?}\n\
                  Got:      {:?}\n\
@@ -2507,7 +2529,8 @@ WARP_DONE:
 
             assert_eq!(parallel_host, original, "Parallel kernel correctness");
             assert_eq!(
-                warp_host, parallel_host,
+                warp_host,
+                parallel_host,
                 "Warp kernel must match parallel for 64KB data with matches.\n\
                  First divergence at byte {}",
                 warp_host
@@ -2532,10 +2555,10 @@ WARP_DONE:
 
             // Multiple blocks with different patterns
             let originals: Vec<Vec<u8>> = vec![
-                (0..256).map(|i| (i % 7) as u8).collect(),     // small, repetitive
-                (0..4096).map(|i| (i % 37) as u8).collect(),   // medium, moderate compression
+                (0..256).map(|i| (i % 7) as u8).collect(), // small, repetitive
+                (0..4096).map(|i| (i % 37) as u8).collect(), // medium, moderate compression
                 (0..512).map(|i| ((i * 7 + 3) % 256) as u8).collect(), // pseudo-random
-                vec![0xAA; 2048],                                // highly repetitive
+                vec![0xAA; 2048],                          // highly repetitive
             ];
 
             let blocks: Vec<(Vec<u8>, usize)> = originals
@@ -2566,14 +2589,10 @@ WARP_DONE:
                 let p_block = &parallel_host[offset..offset + orig.len()];
                 let w_block = &warp_host[offset..offset + orig.len()];
 
+                assert_eq!(p_block, orig.as_slice(), "Parallel block {} incorrect", i);
                 assert_eq!(
+                    w_block,
                     p_block,
-                    orig.as_slice(),
-                    "Parallel block {} incorrect",
-                    i
-                );
-                assert_eq!(
-                    w_block, p_block,
                     "Warp block {} diverges from parallel at byte {}",
                     i,
                     w_block
@@ -2601,9 +2620,7 @@ WARP_DONE:
 
             // Data designed to produce small-offset matches:
             // Repeating short pattern → LZ4 offset will be small (e.g., 4)
-            let original: Vec<u8> = "ABCDABCDABCDABCDABCDABCDABCDABCD"
-                .repeat(100)
-                .into_bytes();
+            let original: Vec<u8> = "ABCDABCDABCDABCDABCDABCDABCDABCD".repeat(100).into_bytes();
 
             let compressed = lz4_flex::block::compress_prepend_size(&original);
             let raw_compressed = &compressed[4..];
@@ -2662,7 +2679,10 @@ WARP_DONE:
             // We don't need CUDA hardware — just confirm the symbol resolves.
             fn _assert_method_exists(ctx: &GpuLz4Context) {
                 // This will fail to compile if the method doesn't exist
-                let _: fn(&GpuLz4Context, &[(Vec<u8>, usize)]) -> Result<CudaSlice<u8>, GpuLz4Error> =
+                let _: fn(
+                    &GpuLz4Context,
+                    &[(Vec<u8>, usize)],
+                ) -> Result<CudaSlice<u8>, GpuLz4Error> =
                     GpuLz4Context::decompress_blocks_warp_parallel;
             }
         }
@@ -2684,20 +2704,34 @@ WARP_DONE:
 
             let scenarios: Vec<(&str, Vec<u8>)> = vec![
                 // Literals-only (incompressible random-ish data)
-                ("4KB literals", (0..4096).map(|i| ((i * 7 + 13) % 256) as u8).collect()),
+                (
+                    "4KB literals",
+                    (0..4096).map(|i| ((i * 7 + 13) % 256) as u8).collect(),
+                ),
                 // Patterned data (good compression ratio, many matches)
-                ("64KB patterned", (0..65536).map(|i| (i % 251) as u8).collect()),
+                (
+                    "64KB patterned",
+                    (0..65536).map(|i| (i % 251) as u8).collect(),
+                ),
                 // Repeated data (extreme compression)
                 ("64KB repeated", vec![0xAB_u8; 65536]),
                 // Multi-block: 16 x 4KB blocks
-                ("16x4KB mixed", (0..65536).map(|i| ((i * 31 + i / 256) % 256) as u8).collect()),
+                (
+                    "16x4KB mixed",
+                    (0..65536)
+                        .map(|i| ((i * 31 + i / 256) % 256) as u8)
+                        .collect(),
+                ),
             ];
 
             let warmup_iters = 3;
             let bench_iters = 20;
 
             eprintln!("\n=== K2 vs K3 Throughput Benchmark ===");
-            eprintln!("{:<18} {:>12} {:>12} {:>10}", "Scenario", "K2 (GB/s)", "K3 (GB/s)", "Speedup");
+            eprintln!(
+                "{:<18} {:>12} {:>12} {:>10}",
+                "Scenario", "K2 (GB/s)", "K3 (GB/s)", "Speedup"
+            );
             eprintln!("{}", "-".repeat(56));
 
             for (name, original) in &scenarios {
@@ -2716,7 +2750,10 @@ WARP_DONE:
                     let total = original.len();
                     (chunks, total)
                 } else {
-                    (vec![(raw_compressed.to_vec(), original.len())], original.len())
+                    (
+                        vec![(raw_compressed.to_vec(), original.len())],
+                        original.len(),
+                    )
                 };
 
                 // Warmup
@@ -2798,7 +2835,9 @@ WARP_DONE:
             let blocks = vec![(compressed, bytes.len())];
 
             // Decompress directly to f16 slice
-            let d_f16 = ctx.decompress_to_f16_slice(&blocks).expect("decompress to f16");
+            let d_f16 = ctx
+                .decompress_to_f16_slice(&blocks)
+                .expect("decompress to f16");
 
             // Verify length
             assert_eq!(d_f16.len(), 8);
@@ -2830,7 +2869,9 @@ WARP_DONE:
             let blocks = vec![(compressed, bytes.len())];
 
             // Decompress directly to f32 slice
-            let d_f32 = ctx.decompress_to_f32_slice(&blocks).expect("decompress to f32");
+            let d_f32 = ctx
+                .decompress_to_f32_slice(&blocks)
+                .expect("decompress to f32");
 
             // Verify length
             assert_eq!(d_f32.len(), 4);
@@ -2996,7 +3037,7 @@ WARP_DONE:
             match result {
                 Err(GpuLz4Error::InvalidInput { message }) => {
                     assert!(message.contains("No blocks"));
-                }
+                },
                 _ => panic!("Expected InvalidInput error"),
             }
         }
@@ -3081,12 +3122,7 @@ WARP_DONE:
             let mut offset = 0;
             for (i, original) in originals.iter().enumerate() {
                 let decompressed = &host_data[offset..offset + original.len()];
-                assert_eq!(
-                    decompressed,
-                    original.as_slice(),
-                    "Block {} mismatch",
-                    i
-                );
+                assert_eq!(decompressed, original.as_slice(), "Block {} mismatch", i);
                 offset += original.len();
             }
         }
@@ -3212,7 +3248,9 @@ WARP_DONE:
                 .map(|block| {
                     let compressed = lz4_flex::block::compress_prepend_size(block);
                     let raw = &compressed[4..];
-                    let result = ctx.decompress_block(raw, block.len()).expect("K1 decompress");
+                    let result = ctx
+                        .decompress_block(raw, block.len())
+                        .expect("K1 decompress");
                     let mut host = vec![0u8; block.len()];
                     ctx.device
                         .dtoh_sync_copy_into(&result, &mut host)
@@ -3345,7 +3383,7 @@ pub mod cuda {
             match result {
                 Err(GpuLz4Error::CudaNotEnabled) => {
                     // Expected
-                }
+                },
                 Ok(_) => panic!("Stub should always return error"),
             }
         }
@@ -3385,7 +3423,7 @@ pub mod cuda {
             match result {
                 Err(GpuLz4Error::CudaNotEnabled) => {
                     // Expected
-                }
+                },
                 Ok(_) => panic!("Stub should always return error"),
             }
         }

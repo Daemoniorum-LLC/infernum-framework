@@ -1,7 +1,7 @@
 //! Test loading a single HoloTensor file on CPU
 
 use abaddon::hct::HctLoader;
-use candle_core::{Device, DType};
+use candle_core::{DType, Device};
 use std::env;
 
 fn main() -> anyhow::Result<()> {
@@ -20,7 +20,10 @@ fn main() -> anyhow::Result<()> {
     println!("  Shape: {:?}", loader.metadata().shape);
     println!("  DType: {:?}", loader.metadata().dtype);
     println!("  Original size: {} bytes", loader.metadata().original_size);
-    println!("  Compressed size: {} bytes", loader.metadata().compressed_size);
+    println!(
+        "  Compressed size: {} bytes",
+        loader.metadata().compressed_size
+    );
 
     println!("\nAttempting CPU reconstruction...");
 
@@ -39,10 +42,10 @@ fn main() -> anyhow::Result<()> {
             let inf_count = values.iter().filter(|v| v.is_infinite()).count();
             println!("  NaN count: {}", nan_count);
             println!("  Inf count: {}", inf_count);
-        }
+        },
         Err(e) => {
             println!("  ✗ Failed to reconstruct: {}", e);
-        }
+        },
     }
 
     println!("\nTotal time: {:?}", start.elapsed());

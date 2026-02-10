@@ -286,12 +286,18 @@ fn main() -> anyhow::Result<()> {
 
     println!("=== Speculative Decoding Benchmark ===\n");
 
-    let model_dir = Path::new("/home/crook/dev2/workspace/nyx/infernum/infernum-complete/test_models/qwen2.5-7b-int4-v3");
+    let model_dir = Path::new(
+        "/home/crook/dev2/workspace/nyx/infernum/infernum-complete/test_models/qwen2.5-7b-int4-v3",
+    );
     let config_path = model_dir.join("config.json");
     let tokenizer_path = model_dir.join("tokenizer.json");
 
     let device = Device::cuda_if_available(0).unwrap_or(Device::Cpu);
-    let dtype = if device.is_cuda() { DType::BF16 } else { DType::F32 };
+    let dtype = if device.is_cuda() {
+        DType::BF16
+    } else {
+        DType::F32
+    };
 
     println!("Device: {:?}, DType: {:?}", device, dtype);
     println!(
@@ -315,7 +321,11 @@ fn main() -> anyhow::Result<()> {
     println!("\nLoading INT4 weights...");
     let start = Instant::now();
     let tensors = load_hct_directory_parallel(model_dir, &device, dtype)?;
-    println!("  Loaded {} tensors in {:.1}s", tensors.len(), start.elapsed().as_secs_f64());
+    println!(
+        "  Loaded {} tensors in {:.1}s",
+        tensors.len(),
+        start.elapsed().as_secs_f64()
+    );
 
     // Build model
     println!("\nBuilding model...");
@@ -365,18 +375,40 @@ fn main() -> anyhow::Result<()> {
         println!("SPECULATIVE DECODING RESULTS:");
         println!("  Rounds: {}", result.stats.rounds);
         println!("  Draft tokens: {}", result.stats.draft_tokens);
-        println!("  Accepted: {} ({:.1}%)", result.stats.accepted_tokens, result.stats.acceptance_rate() * 100.0);
+        println!(
+            "  Accepted: {} ({:.1}%)",
+            result.stats.accepted_tokens,
+            result.stats.acceptance_rate() * 100.0
+        );
         println!("  Rejected: {}", result.stats.rejected_tokens);
         println!("  Tokens per round: {:.2}", tokens_per_round);
-        println!("  Decode: {}ms ({:.1} tok/s)", result.stats.decode_time_ms, decode_tps);
+        println!(
+            "  Decode: {}ms ({:.1} tok/s)",
+            result.stats.decode_time_ms, decode_tps
+        );
         println!("  Generated: {} tokens", result.tokens.len());
         println!("{}", "=".repeat(60));
         println!("\nOVERHEAD ANALYSIS:");
-        println!("  Standard would use: {:.0} forward passes", standard_passes);
-        println!("  Speculative used:   {:.0} forward passes", effective_passes);
-        println!("  Overhead ratio:     {:.2}x (>1.0 = slower)", overhead_ratio);
-        println!("\n  NOTE: Same-model speculative is {}",
-            if overhead_ratio > 1.0 { "SLOWER (expected)" } else { "faster (unexpected)" });
+        println!(
+            "  Standard would use: {:.0} forward passes",
+            standard_passes
+        );
+        println!(
+            "  Speculative used:   {:.0} forward passes",
+            effective_passes
+        );
+        println!(
+            "  Overhead ratio:     {:.2}x (>1.0 = slower)",
+            overhead_ratio
+        );
+        println!(
+            "\n  NOTE: Same-model speculative is {}",
+            if overhead_ratio > 1.0 {
+                "SLOWER (expected)"
+            } else {
+                "faster (unexpected)"
+            }
+        );
         println!("  For actual speedup, use a separate smaller draft model.");
         println!("{}", "=".repeat(60));
 
@@ -386,14 +418,23 @@ fn main() -> anyhow::Result<()> {
         println!("\nGenerated text:\n{}{}", prompt, text);
     } else {
         // Standard decoding
-        let result = generate_standard(&mut model, &prompt_tokens, max_tokens, eos_token_id, &device)?;
+        let result = generate_standard(
+            &mut model,
+            &prompt_tokens,
+            max_tokens,
+            eos_token_id,
+            &device,
+        )?;
 
         let decode_tps = result.tokens.len() as f64 / (result.decode_time_ms as f64 / 1000.0);
 
         println!("\n{}", "=".repeat(60));
         println!("STANDARD DECODING RESULTS:");
         println!("  Prefill: {}ms", result.prefill_time_ms);
-        println!("  Decode: {}ms ({:.1} tok/s)", result.decode_time_ms, decode_tps);
+        println!(
+            "  Decode: {}ms ({:.1} tok/s)",
+            result.decode_time_ms, decode_tps
+        );
         println!("  Generated: {} tokens", result.tokens.len());
         println!("{}", "=".repeat(60));
 

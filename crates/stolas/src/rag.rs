@@ -387,11 +387,9 @@ impl RagPipeline {
                 hybrid_results
                     .into_iter()
                     .filter_map(|hr| {
-                        record_map.get(&hr.id).map(|r| {
-                            crate::store::SearchResult {
-                                record: r.record.clone(),
-                                score: hr.hybrid_score,
-                            }
+                        record_map.get(&hr.id).map(|r| crate::store::SearchResult {
+                            record: r.record.clone(),
+                            score: hr.hybrid_score,
                         })
                     })
                     .collect()
@@ -703,7 +701,10 @@ mod tests {
             .with_metadata("version", serde_json::json!(1));
 
         assert_eq!(doc.metadata.len(), 2);
-        assert_eq!(doc.metadata.get("author").unwrap(), &serde_json::json!("Alice"));
+        assert_eq!(
+            doc.metadata.get("author").unwrap(),
+            &serde_json::json!("Alice")
+        );
         assert_eq!(doc.metadata.get("version").unwrap(), &serde_json::json!(1));
     }
 
@@ -720,7 +721,8 @@ mod tests {
 
     #[test]
     fn test_document_clone() {
-        let doc1 = Document::new("doc1", "content").with_metadata("key", serde_json::json!("value"));
+        let doc1 =
+            Document::new("doc1", "content").with_metadata("key", serde_json::json!("value"));
         let doc2 = doc1.clone();
         assert_eq!(doc1.id, doc2.id);
         assert_eq!(doc1.content, doc2.content);
@@ -1007,7 +1009,10 @@ mod tests {
 
         // Ingest multiple documents
         for i in 0..5 {
-            let doc = Document::new(format!("doc{}", i), format!("Document number {} content.", i));
+            let doc = Document::new(
+                format!("doc{}", i),
+                format!("Document number {} content.", i),
+            );
             pipeline.ingest(doc).await.unwrap();
         }
 
@@ -1049,7 +1054,10 @@ mod tests {
         let pipeline = RagPipeline::new(embedder, store, config);
 
         for i in 0..5 {
-            let doc = Document::new(format!("doc{}", i), format!("Document {} about programming.", i));
+            let doc = Document::new(
+                format!("doc{}", i),
+                format!("Document {} about programming.", i),
+            );
             pipeline.ingest(doc).await.unwrap();
         }
 
@@ -1211,7 +1219,10 @@ mod tests {
         pipeline.ingest(doc).await.unwrap();
 
         let custom_prompt = "You are a programming expert.";
-        let prompt = pipeline.augment("Tell me about Python", Some(custom_prompt)).await.unwrap();
+        let prompt = pipeline
+            .augment("Tell me about Python", Some(custom_prompt))
+            .await
+            .unwrap();
 
         assert!(prompt.contains("You are a programming expert"));
         assert!(prompt.contains("Question: Tell me about Python"));
@@ -1353,9 +1364,18 @@ mod tests {
     #[test]
     fn test_retrieval_config_hybrid_search_default() {
         let config = RetrievalConfig::default();
-        assert!(!config.hybrid_search, "Hybrid search should be disabled by default");
-        assert!((config.bm25_weight - 0.3).abs() < 0.001, "Default BM25 weight should be 0.3");
-        assert!((config.dense_weight - 0.7).abs() < 0.001, "Default dense weight should be 0.7");
+        assert!(
+            !config.hybrid_search,
+            "Hybrid search should be disabled by default"
+        );
+        assert!(
+            (config.bm25_weight - 0.3).abs() < 0.001,
+            "Default BM25 weight should be 0.3"
+        );
+        assert!(
+            (config.dense_weight - 0.7).abs() < 0.001,
+            "Default dense weight should be 0.7"
+        );
     }
 
     #[test]
@@ -1554,15 +1574,24 @@ mod tests {
         // Get all results and verify content changed
         let results = pipeline.retrieve("any query").await.unwrap();
         assert!(!results.is_empty());
-        assert!(results[0].content.contains("Updated"), "Should contain updated content");
-        assert!(!results[0].content.contains("Original"), "Should not contain original content");
+        assert!(
+            results[0].content.contains("Updated"),
+            "Should contain updated content"
+        );
+        assert!(
+            !results[0].content.contains("Original"),
+            "Should not contain original content"
+        );
     }
 
     #[tokio::test]
     async fn test_update_document_shorter() {
         let embedder = Arc::new(MockEmbedder::new(384));
         let store = Arc::new(InMemoryStore::new());
-        let chunker = Chunker::new(ChunkingStrategy::FixedTokens { size: 10, overlap: 0 });
+        let chunker = Chunker::new(ChunkingStrategy::FixedTokens {
+            size: 10,
+            overlap: 0,
+        });
         let config = RetrievalConfig {
             min_score: 0.0,
             ..Default::default()
@@ -1570,7 +1599,8 @@ mod tests {
         let pipeline = RagPipeline::with_chunker(embedder, store.clone(), chunker, config);
 
         // Ingest a long document (will create multiple chunks)
-        let long_content = "This is chunk one. This is chunk two. This is chunk three. This is chunk four.";
+        let long_content =
+            "This is chunk one. This is chunk two. This is chunk three. This is chunk four.";
         let doc = Document::new("doc1", long_content);
         let original_chunks = pipeline.ingest(doc).await.unwrap();
         assert!(original_chunks > 1, "Should create multiple chunks");
@@ -1585,7 +1615,10 @@ mod tests {
         let count_after = store.count().await.unwrap();
 
         // Should have fewer chunks now
-        assert!(count_after < count_before, "Shorter document should have fewer chunks");
+        assert!(
+            count_after < count_before,
+            "Shorter document should have fewer chunks"
+        );
     }
 
     #[tokio::test]
@@ -1657,7 +1690,9 @@ mod tests {
 
         // Old keyword should not match
         let results = pipeline.retrieve("UniqueKeyword123").await.unwrap();
-        let has_old = results.iter().any(|r| r.content.contains("UniqueKeyword123"));
+        let has_old = results
+            .iter()
+            .any(|r| r.content.contains("UniqueKeyword123"));
         assert!(!has_old, "Old content should be removed from BM25 index");
     }
 }

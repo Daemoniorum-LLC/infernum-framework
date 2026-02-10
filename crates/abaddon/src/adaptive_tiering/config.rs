@@ -63,8 +63,8 @@ pub struct AdaptiveTieringConfig {
 impl Default for AdaptiveTieringConfig {
     fn default() -> Self {
         Self {
-            vram_budget: 0,  // Auto-detect
-            ram_budget: 0,   // Auto-detect
+            vram_budget: 0, // Auto-detect
+            ram_budget: 0,  // Auto-detect
             quality_target: 0.95,
             max_swap_latency_ms: 100,
             enable_adaptation: true,
@@ -138,7 +138,9 @@ impl AdaptiveTieringConfig {
             return Err(ConfigError::InvalidQualityTarget(self.quality_target));
         }
         if self.vram_importance_threshold < 0.0 || self.vram_importance_threshold > 1.0 {
-            return Err(ConfigError::InvalidImportanceThreshold(self.vram_importance_threshold));
+            return Err(ConfigError::InvalidImportanceThreshold(
+                self.vram_importance_threshold,
+            ));
         }
         Ok(())
     }

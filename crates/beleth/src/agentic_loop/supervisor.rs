@@ -1,4 +1,4 @@
-//! Multi-agent supervisor — orchestrates concurrent [`LoopExecutor`] instances.
+//! Multi-agent supervisor — orchestrates concurrent [`super::LoopExecutor`] instances.
 //!
 //! The supervisor decomposes a complex objective into subtasks, manages their
 //! lifecycle (spawn, monitor, reroute, aggregate), and enforces global resource
@@ -339,16 +339,31 @@ impl BudgetAllocator {
     /// Returns remaining resources.
     pub fn remaining(&self) -> ResourceConsumption {
         ResourceConsumption {
-            iterations: self.budget.total_iterations.saturating_sub(self.consumed.iterations),
-            tool_calls: self.budget.total_tool_calls.saturating_sub(self.consumed.tool_calls),
-            tokens: self.budget.total_tokens.saturating_sub(self.consumed.tokens),
+            iterations: self
+                .budget
+                .total_iterations
+                .saturating_sub(self.consumed.iterations),
+            tool_calls: self
+                .budget
+                .total_tool_calls
+                .saturating_sub(self.consumed.tool_calls),
+            tokens: self
+                .budget
+                .total_tokens
+                .saturating_sub(self.consumed.tokens),
         }
     }
 
     /// Records consumption from a completed child agent.
     pub fn record_consumption(&mut self, consumption: &ResourceConsumption) {
-        self.consumed.iterations = self.consumed.iterations.saturating_add(consumption.iterations);
-        self.consumed.tool_calls = self.consumed.tool_calls.saturating_add(consumption.tool_calls);
+        self.consumed.iterations = self
+            .consumed
+            .iterations
+            .saturating_add(consumption.iterations);
+        self.consumed.tool_calls = self
+            .consumed
+            .tool_calls
+            .saturating_add(consumption.tool_calls);
         self.consumed.tokens = self.consumed.tokens.saturating_add(consumption.tokens);
     }
 
@@ -377,9 +392,7 @@ impl BudgetAllocator {
             .round()
             .max(1.0) as u32;
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let max_tokens = (f64::from(remaining.tokens) * fraction)
-            .round()
-            .max(1.0) as u32;
+        let max_tokens = (f64::from(remaining.tokens) * fraction).round().max(1.0) as u32;
 
         LoopConfig {
             max_iterations,
@@ -453,10 +466,8 @@ pub struct DependencyResolver {
 impl DependencyResolver {
     /// Creates a resolver from a list of subtasks.
     pub fn new(subtasks: Vec<Subtask>) -> Self {
-        let map: HashMap<String, Subtask> = subtasks
-            .into_iter()
-            .map(|s| (s.id.clone(), s))
-            .collect();
+        let map: HashMap<String, Subtask> =
+            subtasks.into_iter().map(|s| (s.id.clone(), s)).collect();
         Self {
             subtasks: map,
             completed: HashSet::new(),
@@ -557,9 +568,7 @@ impl DependencyResolver {
         let mut in_stack = HashSet::new();
 
         for id in self.subtasks.keys() {
-            if !visited.contains(id)
-                && self.has_cycle(id, &mut visited, &mut in_stack)
-            {
+            if !visited.contains(id) && self.has_cycle(id, &mut visited, &mut in_stack) {
                 return Err(SupervisorError::CyclicDependency {
                     subtask: id.clone(),
                 });
@@ -778,7 +787,11 @@ impl RerouteResolver {
             let matching_caps = subtask
                 .capabilities
                 .iter()
-                .filter(|cap| requested_expertise.iter().any(|req| cap.contains(req.as_str())))
+                .filter(|cap| {
+                    requested_expertise
+                        .iter()
+                        .any(|req| cap.contains(req.as_str()))
+                })
                 .count();
 
             if matching_caps > 0 {
@@ -1115,8 +1128,7 @@ pub fn supervisor_level_response(aggregate: &WellbeingAggregate) -> SupervisorWe
 
     // Majority concerned → pause and replan
     #[allow(clippy::cast_precision_loss)]
-    let concerned_fraction =
-        aggregate.agents_concerned as f64 / aggregate.agents_total as f64;
+    let concerned_fraction = aggregate.agents_concerned as f64 / aggregate.agents_total as f64;
     if concerned_fraction > 0.5 {
         return SupervisorWellbeingAction::PauseAndReplan;
     }
@@ -1136,7 +1148,7 @@ pub fn supervisor_wellbeing_response(
             let response = match state {
                 AgentWellbeingState::Healthy | AgentWellbeingState::Cautious => {
                     return None; // No action needed
-                }
+                },
                 AgentWellbeingState::Concerned => WellbeingResponse::Pause,
                 AgentWellbeingState::Distressed => WellbeingResponse::Reassign,
             };
@@ -1171,11 +1183,7 @@ mod tests {
         }
     }
 
-    fn subtask_with_capabilities(
-        id: &str,
-        deps: Vec<&str>,
-        capabilities: Vec<&str>,
-    ) -> Subtask {
+    fn subtask_with_capabilities(id: &str, deps: Vec<&str>, capabilities: Vec<&str>) -> Subtask {
         Subtask {
             id: id.to_string(),
             objective: format!("Do {id}"),
@@ -1390,9 +1398,7 @@ mod tests {
 
     #[test]
     fn test_validate_missing_dependency() {
-        let resolver = DependencyResolver::new(vec![
-            subtask("A", vec!["Z"], Complexity::Low),
-        ]);
+        let resolver = DependencyResolver::new(vec![subtask("A", vec!["Z"], Complexity::Low)]);
 
         let result = resolver.validate();
         assert!(result.is_err());
@@ -1541,27 +1547,21 @@ mod tests {
         ];
 
         let exclude = HashSet::from(["research".to_string()]);
-        let result = RerouteResolver::find_match(
-            &["database".to_string()],
-            &subtasks,
-            &exclude,
-        );
+        let result = RerouteResolver::find_match(&["database".to_string()], &subtasks, &exclude);
 
         assert_eq!(result, Some("implement".to_string()));
     }
 
     #[test]
     fn test_reroute_no_match_returns_none() {
-        let subtasks = vec![
-            subtask_with_capabilities("research", vec![], vec!["general"]),
-        ];
+        let subtasks = vec![subtask_with_capabilities(
+            "research",
+            vec![],
+            vec!["general"],
+        )];
 
         let exclude = HashSet::from(["research".to_string()]);
-        let result = RerouteResolver::find_match(
-            &["database".to_string()],
-            &subtasks,
-            &exclude,
-        );
+        let result = RerouteResolver::find_match(&["database".to_string()], &subtasks, &exclude);
 
         assert!(result.is_none());
     }
@@ -1713,12 +1713,12 @@ mod tests {
         assert_eq!(summary.subtask_results.len(), 2);
 
         // Verify completed result is preserved
-        let a_result = summary
-            .subtask_results
-            .iter()
-            .find(|r| r.subtask_id == "A");
+        let a_result = summary.subtask_results.iter().find(|r| r.subtask_id == "A");
         assert!(a_result.is_some());
-        assert!(matches!(a_result.map(|r| &r.status), Some(SubtaskStatus::Completed)));
+        assert!(matches!(
+            a_result.map(|r| &r.status),
+            Some(SubtaskStatus::Completed)
+        ));
     }
 
     #[test]
@@ -1863,9 +1863,7 @@ mod tests {
         let actions = supervisor_wellbeing_response(&states);
 
         // Should have an action for the distressed agent
-        let distressed_action = actions
-            .iter()
-            .find(|a| a.agent_id == "agent_1");
+        let distressed_action = actions.iter().find(|a| a.agent_id == "agent_1");
         assert!(distressed_action.is_some());
 
         // Should be Reassign (not punitive)
@@ -1969,13 +1967,13 @@ mod tests {
         }
 
         fn arb_resource_budget() -> impl Strategy<Value = ResourceBudget> {
-            (10u32..1000, 10u32..5000, 1000u32..200_000).prop_map(
-                |(iters, calls, tokens)| ResourceBudget {
+            (10u32..1000, 10u32..5000, 1000u32..200_000).prop_map(|(iters, calls, tokens)| {
+                ResourceBudget {
                     total_iterations: iters,
                     total_tool_calls: calls,
                     total_tokens: tokens,
-                },
-            )
+                }
+            })
         }
 
         fn arb_failure_type() -> impl Strategy<Value = FailureType> {

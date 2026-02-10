@@ -3,9 +3,9 @@
 //! The coordinator dynamically adjusts quality targets based on
 //! memory pressure and workload priorities.
 
-use serde::{Deserialize, Serialize};
 use crate::priority::{Priority, WorkloadType};
 use crate::quality::{QualityCalculator, QualityPolicy};
+use serde::{Deserialize, Serialize};
 
 /// Configuration for the coordinator.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,10 +72,8 @@ pub struct Coordinator {
 impl Coordinator {
     /// Creates a new coordinator.
     pub fn new(config: CoordinatorConfig) -> Self {
-        let calculator = QualityCalculator::new(
-            config.llm_min_quality,
-            config.diffusion_min_quality,
-        );
+        let calculator =
+            QualityCalculator::new(config.llm_min_quality, config.diffusion_min_quality);
 
         Self { config, calculator }
     }
@@ -106,22 +104,18 @@ impl Coordinator {
         match self.config.policy {
             QualityPolicy::Fixed => 1.0,
             QualityPolicy::Adaptive => base_quality,
-            QualityPolicy::LlmFirst => {
-                match workload {
-                    WorkloadType::LlmInference => base_quality.max(0.7),
-                    _ => base_quality * 0.9,
-                }
-            }
-            QualityPolicy::DiffusionFirst => {
-                match workload {
-                    WorkloadType::LlmInference => base_quality * 0.9,
-                    _ => base_quality.max(0.7),
-                }
-            }
+            QualityPolicy::LlmFirst => match workload {
+                WorkloadType::LlmInference => base_quality.max(0.7),
+                _ => base_quality * 0.9,
+            },
+            QualityPolicy::DiffusionFirst => match workload {
+                WorkloadType::LlmInference => base_quality * 0.9,
+                _ => base_quality.max(0.7),
+            },
             QualityPolicy::Balanced => {
                 // Compress range to 0.5-0.95
                 0.5 + base_quality * 0.45
-            }
+            },
         }
     }
 
@@ -131,7 +125,7 @@ impl Coordinator {
             WorkloadType::LlmInference => self.config.llm_min_quality,
             WorkloadType::ImageGeneration | WorkloadType::VideoGeneration => {
                 self.config.diffusion_min_quality
-            }
+            },
         }
     }
 

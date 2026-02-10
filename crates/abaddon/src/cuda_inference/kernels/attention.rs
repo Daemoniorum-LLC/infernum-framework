@@ -35,8 +35,15 @@ use super::compile_cuda_kernel;
 use crate::cuda_inference::tensor::GpuTensor;
 use crate::cuda_inference::InferenceError;
 
-/// Block size for attention computation.
-const BLOCK_SIZE: usize = 64;
+/// Block size for attention computation (Q tile size, matches BLOCK_M in kernel).
+/// Reduced from 64 to 32 to fit shared memory within 48KB default limit.
+const BLOCK_M: usize = 32;
+
+/// KV tile size (matches BLOCK_N in kernel).
+const BLOCK_N: usize = 32;
+
+/// Number of threads per block (2 warps = 64 threads, reduced to match smaller tiles).
+const THREADS_PER_BLOCK: usize = 64;
 
 /// CUDA C source for Flash Attention v2 kernel.
 ///
@@ -50,10 +57,10 @@ const BLOCK_SIZE: usize = 64;
 const FLASH_ATTENTION_CUDA: &str = r#"
 #include <cuda_fp16.h>
 
-#define BLOCK_M 64      // Query tile size
-#define BLOCK_N 64      // KV tile size
+#define BLOCK_M 32      // Query tile size (reduced for shared memory limit)
+#define BLOCK_N 32      // KV tile size
 #define WARP_SIZE 32
-#define NUM_WARPS 4     // 128 threads per block
+#define NUM_WARPS 2     // 64 threads per block (reduced to match smaller tiles)
 
 // Vectorized load helper
 __device__ __forceinline__ float4 load_float4(const float* ptr) {
@@ -438,19 +445,31 @@ impl FlashAttentionKernel {
 
         // Load PTX into device with both kernels
         self.device
-            .load_ptx(ptx, "flash_attention", &["flash_attention_f16", "flash_attention_cached_f16"])
-            .map_err(|e| InferenceError::Kernel(format!("Failed to load Flash Attention: {}", e)))?;
+            .load_ptx(
+                ptx,
+                "flash_attention",
+                &["flash_attention_f16", "flash_attention_cached_f16"],
+            )
+            .map_err(|e| {
+                InferenceError::Kernel(format!("Failed to load Flash Attention: {}", e))
+            })?;
 
         self.func = Some(
             self.device
                 .get_func("flash_attention", "flash_attention_f16")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get flash_attention_f16 function".to_string()))?,
+                .ok_or_else(|| {
+                    InferenceError::Kernel("Failed to get flash_attention_f16 function".to_string())
+                })?,
         );
 
         self.cached_func = Some(
             self.device
                 .get_func("flash_attention", "flash_attention_cached_f16")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get flash_attention_cached_f16 function".to_string()))?,
+                .ok_or_else(|| {
+                    InferenceError::Kernel(
+                        "Failed to get flash_attention_cached_f16 function".to_string(),
+                    )
+                })?,
         );
 
         Ok(())
@@ -480,7 +499,9 @@ impl FlashAttentionKernel {
         output: &mut GpuTensor,
         causal: bool,
     ) -> Result<(), InferenceError> {
-        let func = self.func.as_ref()
+        let func = self
+            .func
+            .as_ref()
             .ok_or_else(|| InferenceError::Kernel("Flash Attention not loaded".to_string()))?;
 
         let q_shape = q.shape();
@@ -510,19 +531,36 @@ impl FlashAttentionKernel {
         let scale = 1.0 / (head_dim as f32).sqrt();
 
         // Grid: (heads, batch, seq_blocks)
-        let seq_blocks = (seq_len + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        // Each block processes BLOCK_M query positions
+        let seq_blocks = (seq_len + BLOCK_M - 1) / BLOCK_M;
 
         // Shared memory for v2: K tile + V tile with padding + max/sum arrays
-        // [BLOCK_SIZE][head_dim+1] for K and V (padded for bank conflicts)
-        // [BLOCK_SIZE] for max, [BLOCK_SIZE] for sum
+        // [BLOCK_N][head_dim+1] for K and V (padded for bank conflicts)
+        // [BLOCK_M] for max, [BLOCK_M] for sum
         let head_dim_padded = head_dim + 1;
-        let shared_mem = (2 * BLOCK_SIZE * head_dim_padded + 2 * BLOCK_SIZE) * std::mem::size_of::<f32>();
+        let shared_mem = (2 * BLOCK_N * head_dim_padded + 2 * BLOCK_M) * std::mem::size_of::<f32>();
 
         let cfg = LaunchConfig {
             grid_dim: (heads as u32, batch as u32, seq_blocks as u32),
-            block_dim: (BLOCK_SIZE as u32, 1, 1),
+            block_dim: (THREADS_PER_BLOCK as u32, 1, 1),
             shared_mem_bytes: shared_mem as u32,
         };
+
+        tracing::debug!(
+            "Flash Attention launch: grid=({}, {}, {}), block=({}, 1, 1), shared_mem={} bytes, \
+             batch={}, heads={}, kv_heads={}, seq_len={}, head_dim={}, scale={}",
+            heads,
+            batch,
+            seq_blocks,
+            THREADS_PER_BLOCK,
+            shared_mem,
+            batch,
+            heads,
+            kv_heads,
+            seq_len,
+            head_dim,
+            scale
+        );
 
         unsafe {
             func.clone().launch(
@@ -564,8 +602,9 @@ impl FlashAttentionKernel {
         v_cache: &GpuTensor,
         output: &mut GpuTensor,
     ) -> Result<(), InferenceError> {
-        let func = self.cached_func.as_ref()
-            .ok_or_else(|| InferenceError::Kernel("Flash Attention cached kernel not loaded".to_string()))?;
+        let func = self.cached_func.as_ref().ok_or_else(|| {
+            InferenceError::Kernel("Flash Attention cached kernel not loaded".to_string())
+        })?;
 
         let q_shape = q.shape();
         let k_shape = k_cache.shape();
@@ -619,7 +658,9 @@ impl FlashAttentionKernel {
                 ),
             )
         }
-        .map_err(|e| InferenceError::Kernel(format!("Flash Attention cached launch failed: {}", e)))?;
+        .map_err(|e| {
+            InferenceError::Kernel(format!("Flash Attention cached launch failed: {}", e))
+        })?;
 
         Ok(())
     }

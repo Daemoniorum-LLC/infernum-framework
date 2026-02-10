@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use infernum_core::Result;
 use serde_json::Value;
 
-use crate::tool::{RiskLevel, Tool, ToolContext, ToolResult};
 use super::{optional_u64_param, require_str_param, validate_path};
+use crate::tool::{RiskLevel, Tool, ToolContext, ToolResult};
 
 /// Reads file contents with optional line range.
 pub struct ReadFileTool;
@@ -67,7 +67,7 @@ impl Tool for ReadFileTool {
                     "Failed to read '{}': {}",
                     path_str, e
                 )));
-            }
+            },
         };
 
         // Binary detection: if >10% of first 8KB are null bytes, treat as binary
@@ -165,7 +165,11 @@ mod tests {
         let result = tool.execute(params, &ctx).await.expect("execute");
 
         assert!(!result.success);
-        assert!(result.error.as_deref().unwrap_or("").contains("Failed to read"));
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("Failed to read"));
     }
 
     #[tokio::test]

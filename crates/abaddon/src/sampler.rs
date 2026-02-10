@@ -436,7 +436,9 @@ mod tests {
     fn test_high_temperature_more_random() {
         // With very high temperature, distribution should be more uniform
         // Hard to test randomness, but we can verify it doesn't crash
-        let params = SamplingParams::default().with_temperature(2.0).with_seed(42);
+        let params = SamplingParams::default()
+            .with_temperature(2.0)
+            .with_seed(42);
         let mut sampler = Sampler::new(params);
 
         let logits = vec![1.0, 1.0, 1.0, 1.0];

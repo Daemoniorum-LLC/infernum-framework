@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use infernum_core::Result;
 use serde_json::Value;
 
-use crate::tool::{RiskLevel, Tool, ToolContext, ToolResult};
 use super::{optional_bool_param, require_str_param, validate_path};
+use crate::tool::{RiskLevel, Tool, ToolContext, ToolResult};
 
 /// Performs search-and-replace edits within a file.
 pub struct EditFileTool;
@@ -72,7 +72,7 @@ impl Tool for EditFileTool {
                     "Failed to read '{}': {}",
                     path_str, e
                 )));
-            }
+            },
         };
 
         let match_count = content.matches(old_string).count();
@@ -110,7 +110,7 @@ impl Tool for EditFileTool {
                     "path": path_str,
                     "replacements": match_count,
                 })))
-            }
+            },
             Err(e) => Ok(ToolResult::error(format!(
                 "Failed to write '{}': {}",
                 path_str, e
@@ -127,8 +127,11 @@ mod tests {
     #[tokio::test]
     async fn test_edit_file_basic() {
         let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("code.rs"), "fn hello() {\n    println!(\"hello\");\n}\n")
-            .expect("write");
+        std::fs::write(
+            dir.path().join("code.rs"),
+            "fn hello() {\n    println!(\"hello\");\n}\n",
+        )
+        .expect("write");
 
         let ctx = make_ctx_with_dir(dir.path());
         let tool = EditFileTool;
@@ -198,11 +201,7 @@ mod tests {
         let result = tool.execute(params, &ctx).await.expect("execute");
 
         assert!(!result.success);
-        assert!(result
-            .error
-            .as_deref()
-            .unwrap_or("")
-            .contains("not found"));
+        assert!(result.error.as_deref().unwrap_or("").contains("not found"));
     }
 
     #[tokio::test]
@@ -220,10 +219,6 @@ mod tests {
         let result = tool.execute(params, &ctx).await.expect("execute");
 
         assert!(!result.success);
-        assert!(result
-            .error
-            .as_deref()
-            .unwrap_or("")
-            .contains("identical"));
+        assert!(result.error.as_deref().unwrap_or("").contains("identical"));
     }
 }

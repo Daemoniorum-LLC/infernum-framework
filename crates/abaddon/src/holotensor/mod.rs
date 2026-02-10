@@ -158,19 +158,19 @@ impl MemoryTier {
     pub fn typical_latency_ns(&self) -> u64 {
         match self {
             MemoryTier::Vram => 100,           // ~100ns
-            MemoryTier::Ram => 100_000,         // ~100µs
-            MemoryTier::Nvme => 10_000_000,     // ~10ms
-            MemoryTier::Network => 50_000_000,  // ~50ms
+            MemoryTier::Ram => 100_000,        // ~100µs
+            MemoryTier::Nvme => 10_000_000,    // ~10ms
+            MemoryTier::Network => 50_000_000, // ~50ms
         }
     }
 
     /// Typical bandwidth in GB/s for this tier.
     pub fn typical_bandwidth_gbps(&self) -> f64 {
         match self {
-            MemoryTier::Vram => 900.0,    // HBM3
-            MemoryTier::Ram => 50.0,      // DDR5
-            MemoryTier::Nvme => 7.0,      // Gen4 NVMe
-            MemoryTier::Network => 1.0,   // 10GbE
+            MemoryTier::Vram => 900.0,  // HBM3
+            MemoryTier::Ram => 50.0,    // DDR5
+            MemoryTier::Nvme => 7.0,    // Gen4 NVMe
+            MemoryTier::Network => 1.0, // 10GbE
         }
     }
 }
@@ -284,7 +284,8 @@ impl QualityMetrics {
     pub fn record_fragment_loaded(&mut self, new_quality: f32) {
         self.fragments_loaded += 1;
         self.current_quality = new_quality;
-        self.quality_history.push((std::time::Instant::now(), new_quality));
+        self.quality_history
+            .push((std::time::Instant::now(), new_quality));
     }
 
     /// Returns whether target quality has been reached.
@@ -503,7 +504,7 @@ impl Default for HoloInferenceConfig {
             enable_streaming: true,
             num_fragments: 32,
             vram_budget: 22 * 1024 * 1024 * 1024, // 22GB
-            ram_budget: 64 * 1024 * 1024 * 1024,   // 64GB
+            ram_budget: 64 * 1024 * 1024 * 1024,  // 64GB
             memory_config: MemoryConfig::auto_detect(),
         }
     }
@@ -720,11 +721,18 @@ impl HoloMemoryManager {
     /// Registers a fragment location.
     pub fn register_fragment(&self, layer: usize, fragment_id: u16, tier: MemoryTier) {
         let mut locations = self.fragment_locations.write();
-        locations.insert((layer, fragment_id), FragmentLocation::new(fragment_id, tier));
+        locations.insert(
+            (layer, fragment_id),
+            FragmentLocation::new(fragment_id, tier),
+        );
     }
 
     /// Gets location of a fragment.
-    pub fn get_fragment_location(&self, layer: usize, fragment_id: u16) -> Option<FragmentLocation> {
+    pub fn get_fragment_location(
+        &self,
+        layer: usize,
+        fragment_id: u16,
+    ) -> Option<FragmentLocation> {
         let locations = self.fragment_locations.read();
         locations.get(&(layer, fragment_id)).cloned()
     }
@@ -732,14 +740,13 @@ impl HoloMemoryManager {
 
 // Re-export converter types (the full GPU-capable implementation)
 pub use converter::{
-    ConversionConfig, ConversionProgress, ConversionPhase,
-    HoloModelConverter, ConvertedTensor, TensorInfo, ConversionMetadata,
-    ValidationReport, validate_hct_directory,
+    validate_hct_directory, ConversionConfig, ConversionMetadata, ConversionPhase,
+    ConversionProgress, ConvertedTensor, HoloModelConverter, TensorInfo, ValidationReport,
 };
 
 // Re-export tiered loading types for progressive inference
 pub use tiered_loading::{
-    TieredConfig, TieredHoloLoader, TieredStats, PlacementDecision, LayerWeightInfo,
+    LayerWeightInfo, PlacementDecision, TieredConfig, TieredHoloLoader, TieredStats,
 };
 
 // ==================== ProgressiveWeightProvider ====================

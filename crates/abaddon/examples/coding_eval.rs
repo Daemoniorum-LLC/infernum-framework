@@ -1,8 +1,8 @@
 //! Comprehensive coding evaluation: Original vs 70% HCT compressed
 //! Tests progressively harder coding tasks
 
-use std::path::Path;
 use std::collections::HashMap;
+use std::path::Path;
 
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
@@ -40,25 +40,28 @@ fn load_safetensors(path: &Path, device: &Device) -> Result<HashMap<String, Tens
         let data = st_tensor.data();
         let tensor = match st_tensor.dtype() {
             safetensors::Dtype::BF16 => {
-                let halfs: Vec<half::bf16> = data.chunks_exact(2)
+                let halfs: Vec<half::bf16> = data
+                    .chunks_exact(2)
                     .map(|chunk| half::bf16::from_le_bytes([chunk[0], chunk[1]]))
                     .collect();
                 let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
                 Tensor::from_vec(floats, shape.as_slice(), device)?
-            }
+            },
             safetensors::Dtype::F32 => {
-                let floats: Vec<f32> = data.chunks_exact(4)
+                let floats: Vec<f32> = data
+                    .chunks_exact(4)
                     .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                     .collect();
                 Tensor::from_vec(floats, shape.as_slice(), device)?
-            }
+            },
             safetensors::Dtype::F16 => {
-                let halfs: Vec<half::f16> = data.chunks_exact(2)
+                let halfs: Vec<half::f16> = data
+                    .chunks_exact(2)
                     .map(|chunk| half::f16::from_le_bytes([chunk[0], chunk[1]]))
                     .collect();
                 let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
                 Tensor::from_vec(floats, shape.as_slice(), device)?
-            }
+            },
             _ => continue,
         };
         tensors.insert(name.to_string(), tensor);
@@ -66,7 +69,12 @@ fn load_safetensors(path: &Path, device: &Device) -> Result<HashMap<String, Tens
     Ok(tensors)
 }
 
-fn load_hybrid(hct_dir: &Path, safetensors_path: &Path, device: &Device, dtype: DType) -> Result<HashMap<String, Tensor>> {
+fn load_hybrid(
+    hct_dir: &Path,
+    safetensors_path: &Path,
+    device: &Device,
+    dtype: DType,
+) -> Result<HashMap<String, Tensor>> {
     let mut tensors = load_hct_directory_sequential(hct_dir, device, dtype)?;
     let file_content = std::fs::read(safetensors_path)?;
     let st = SafeTensors::deserialize(&file_content)?;
@@ -78,25 +86,28 @@ fn load_hybrid(hct_dir: &Path, safetensors_path: &Path, device: &Device, dtype: 
             let data = st_tensor.data();
             let tensor = match st_tensor.dtype() {
                 safetensors::Dtype::BF16 => {
-                    let halfs: Vec<half::bf16> = data.chunks_exact(2)
+                    let halfs: Vec<half::bf16> = data
+                        .chunks_exact(2)
                         .map(|chunk| half::bf16::from_le_bytes([chunk[0], chunk[1]]))
                         .collect();
                     let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
                     Tensor::from_vec(floats, shape.as_slice(), device)?
-                }
+                },
                 safetensors::Dtype::F32 => {
-                    let floats: Vec<f32> = data.chunks_exact(4)
+                    let floats: Vec<f32> = data
+                        .chunks_exact(4)
                         .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                         .collect();
                     Tensor::from_vec(floats, shape.as_slice(), device)?
-                }
+                },
                 safetensors::Dtype::F16 => {
-                    let halfs: Vec<half::f16> = data.chunks_exact(2)
+                    let halfs: Vec<half::f16> = data
+                        .chunks_exact(2)
                         .map(|chunk| half::f16::from_le_bytes([chunk[0], chunk[1]]))
                         .collect();
                     let floats: Vec<f32> = halfs.iter().map(|h| h.to_f32()).collect();
                     Tensor::from_vec(floats, shape.as_slice(), device)?
-                }
+                },
                 _ => continue,
             };
             tensors.insert(tensor_name, tensor);
@@ -131,26 +142,43 @@ impl ModelPair {
         let comp_vb = VarBuilder::from_tensors(comp_tensors, dtype, device);
         let compressed = Llama::load(get_config(), comp_vb)?;
 
-        Ok(Self { original, compressed, tokenizer })
+        Ok(Self {
+            original,
+            compressed,
+            tokenizer,
+        })
     }
 
     fn encode(&self, text: &str) -> Result<Vec<u32>> {
-        let encoding = self.tokenizer.encode(text, false)
+        let encoding = self
+            .tokenizer
+            .encode(text, false)
             .map_err(|e| anyhow::anyhow!("Encode error: {}", e))?;
         Ok(encoding.get_ids().to_vec())
     }
 
     fn decode(&self, tokens: &[u32]) -> Result<String> {
-        self.tokenizer.decode(tokens, true)
+        self.tokenizer
+            .decode(tokens, true)
             .map_err(|e| anyhow::anyhow!("Decode error: {}", e))
     }
 
-    fn generate(&mut self, prompt: &str, max_tokens: usize, device: &Device, use_compressed: bool) -> Result<(String, Vec<u32>)> {
+    fn generate(
+        &mut self,
+        prompt: &str,
+        max_tokens: usize,
+        device: &Device,
+        use_compressed: bool,
+    ) -> Result<(String, Vec<u32>)> {
         // Encode first before borrowing model mutably
         let mut tokens = self.encode(prompt)?;
         let prompt_len = tokens.len();
 
-        let model = if use_compressed { &mut self.compressed } else { &mut self.original };
+        let model = if use_compressed {
+            &mut self.compressed
+        } else {
+            &mut self.original
+        };
 
         // Clear KV cache before each generation
         model.clear_cache();
@@ -191,16 +219,24 @@ impl ModelPair {
 }
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() { return 0.0; }
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
     let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
     let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
     let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a > 0.0 && norm_b > 0.0 { dot / (norm_a * norm_b) } else { 0.0 }
+    if norm_a > 0.0 && norm_b > 0.0 {
+        dot / (norm_a * norm_b)
+    } else {
+        0.0
+    }
 }
 
 fn token_match_rate(orig: &[u32], comp: &[u32]) -> f32 {
     let min_len = orig.len().min(comp.len());
-    if min_len == 0 { return 0.0; }
+    if min_len == 0 {
+        return 0.0;
+    }
     let matches = orig.iter().zip(comp.iter()).filter(|(a, b)| a == b).count();
     matches as f32 / min_len as f32
 }
@@ -219,7 +255,10 @@ struct TestResult {
 impl TestResult {
     fn print(&self) {
         let status = if self.passed { "PASS" } else { "FAIL" };
-        println!("\n{} [{}] - {} prompt tokens", status, self.name, self.prompt_tokens);
+        println!(
+            "\n{} [{}] - {} prompt tokens",
+            status, self.name, self.prompt_tokens
+        );
         println!("  Token match rate: {:.1}%", self.token_match * 100.0);
         println!("  Original ({} tokens):", self.orig_tokens.len());
         println!("    {}", truncate(&self.orig_output, 200));
@@ -229,8 +268,11 @@ impl TestResult {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max { s.to_string() }
-    else { format!("{}...", &s[..max]) }
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max])
+    }
 }
 
 fn main() -> Result<()> {
@@ -316,7 +358,9 @@ fn main() -> Result<()> {
     println!("{}", "=".repeat(60));
 
     let level3_prompts = [
-        ("Off by one", r#"# Bug: off-by-one error
+        (
+            "Off by one",
+            r#"# Bug: off-by-one error
 def sum_range(n):
     total = 0
     for i in range(n):  # Should include n
@@ -326,22 +370,29 @@ def sum_range(n):
 # Fixed version:
 def sum_range_fixed(n):
     total = 0
-    for i in range("#),
-        ("Missing return", r#"# Bug: missing return statement
+    for i in range("#,
+        ),
+        (
+            "Missing return",
+            r#"# Bug: missing return statement
 def double(x):
     result = x * 2
 
 # Fixed version:
 def double_fixed(x):
     result = x * 2
-    "#),
-        ("Wrong operator", r#"# Bug: using + instead of *
+    "#,
+        ),
+        (
+            "Wrong operator",
+            r#"# Bug: using + instead of *
 def multiply(a, b):
     return a + b
 
 # Fixed version:
 def multiply_fixed(a, b):
-    return "#),
+    return "#,
+        ),
     ];
 
     for (name, prompt) in &level3_prompts {
@@ -370,13 +421,18 @@ def multiply_fixed(a, b):
     println!("{}", "=".repeat(60));
 
     let level4_prompts = [
-        ("Binary Search", r#"```python
+        (
+            "Binary Search",
+            r#"```python
 def binary_search(arr, target):
     """Return index of target in sorted array, or -1 if not found."""
     left, right = 0, len(arr) - 1
     while left <= right:
-        mid = "#),
-        ("Merge Sort", r#"```python
+        mid = "#,
+        ),
+        (
+            "Merge Sort",
+            r#"```python
 def merge_sort(arr):
     """Sort array using merge sort."""
     if len(arr) <= 1:
@@ -384,8 +440,11 @@ def merge_sort(arr):
     mid = len(arr) // 2
     left = merge_sort(arr[:mid])
     right = merge_sort(arr[mid:])
-    return "#),
-        ("BFS", r#"```python
+    return "#,
+        ),
+        (
+            "BFS",
+            r#"```python
 from collections import deque
 
 def bfs(graph, start):
@@ -393,7 +452,8 @@ def bfs(graph, start):
     visited = set()
     queue = deque([start])
     while queue:
-        node = "#),
+        node = "#,
+        ),
     ];
 
     for (name, prompt) in &level4_prompts {
@@ -422,7 +482,9 @@ def bfs(graph, start):
     println!("{}", "=".repeat(60));
 
     let level5_prompts = [
-        ("Class implementation", r#"```python
+        (
+            "Class implementation",
+            r#"```python
 class Stack:
     """Stack data structure with push, pop, peek, is_empty."""
 
@@ -430,15 +492,21 @@ class Stack:
         self.items = []
 
     def push(self, item):
-        "#),
-        ("Decorator", r#"```python
+        "#,
+        ),
+        (
+            "Decorator",
+            r#"```python
 def memoize(func):
     """Decorator that caches function results."""
     cache = {}
     def wrapper(*args):
         if args not in cache:
-            "#),
-        ("Context manager", r#"```python
+            "#,
+        ),
+        (
+            "Context manager",
+            r#"```python
 class FileManager:
     """Context manager for file operations."""
 
@@ -448,7 +516,8 @@ class FileManager:
         self.file = None
 
     def __enter__(self):
-        "#),
+        "#,
+        ),
     ];
 
     for (name, prompt) in &level5_prompts {
@@ -485,14 +554,20 @@ class FileManager:
 
     // By level
     for level in 1..=5 {
-        let level_results: Vec<_> = results.iter()
+        let level_results: Vec<_> = results
+            .iter()
             .filter(|r| r.name.starts_with(&format!("L{}", level)))
             .collect();
         let level_passed = level_results.iter().filter(|r| r.passed).count();
-        let level_avg: f32 = level_results.iter().map(|r| r.token_match).sum::<f32>()
-            / level_results.len() as f32;
-        println!("  Level {}: {}/{} passed, {:.1}% avg match",
-                 level, level_passed, level_results.len(), level_avg * 100.0);
+        let level_avg: f32 =
+            level_results.iter().map(|r| r.token_match).sum::<f32>() / level_results.len() as f32;
+        println!(
+            "  Level {}: {}/{} passed, {:.1}% avg match",
+            level,
+            level_passed,
+            level_results.len(),
+            level_avg * 100.0
+        );
     }
 
     if passed == total {

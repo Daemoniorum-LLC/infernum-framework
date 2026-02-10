@@ -11,9 +11,9 @@
 //! Flash Attention is automatically used for sequences > 2048 tokens,
 //! or can be forced via `attention_with_cache_mode`.
 
-use candle_core::{Result as CandleResult, Tensor, D};
 use super::KvCache;
-use crate::flash_attention::{FlashAttention, FlashAttentionConfig, AttentionVariant};
+use crate::flash_attention::{AttentionVariant, FlashAttention, FlashAttentionConfig};
+use candle_core::{Result as CandleResult, Tensor, D};
 
 /// Threshold for automatic Flash Attention selection (tokens).
 #[allow(dead_code)]
@@ -74,11 +74,11 @@ pub fn attention_with_cache(
             AttentionVariant::Flash => {
                 // Use memory-efficient Flash Attention for long sequences
                 attention_flash(q, &k_full, &v_full, mask)
-            }
+            },
             _ => {
                 // Use standard attention for short sequences
                 attention_standard(q, &k_full, &v_full, mask)
-            }
+            },
         }
     }
 }
@@ -205,15 +205,7 @@ pub fn create_causal_mask(
     device: &candle_core::Device,
 ) -> CandleResult<Tensor> {
     let mask: Vec<f32> = (0..seq_len)
-        .flat_map(|i| {
-            (0..seq_len).map(move |j| {
-                if j > i {
-                    f32::NEG_INFINITY
-                } else {
-                    0.0
-                }
-            })
-        })
+        .flat_map(|i| (0..seq_len).map(move |j| if j > i { f32::NEG_INFINITY } else { 0.0 }))
         .collect();
 
     Tensor::from_vec(mask, (1, 1, seq_len, seq_len), device)?.to_dtype(dtype)
@@ -264,7 +256,7 @@ impl AttentionConfig {
 mod tests {
     use super::*;
     use crate::attention_cache::StandardCache;
-    use candle_core::{Device, DType};
+    use candle_core::{DType, Device};
 
     #[test]
     fn test_repeat_kv_no_repeat() -> CandleResult<()> {
@@ -294,13 +286,13 @@ mod tests {
         let values: Vec<f32> = mask.flatten_all()?.to_vec1()?;
 
         // Check diagonal and below are 0
-        assert_eq!(values[0], 0.0);  // (0,0)
-        assert_eq!(values[4], 0.0);  // (1,0)
-        assert_eq!(values[5], 0.0);  // (1,1)
+        assert_eq!(values[0], 0.0); // (0,0)
+        assert_eq!(values[4], 0.0); // (1,0)
+        assert_eq!(values[5], 0.0); // (1,1)
 
         // Check above diagonal is -inf
-        assert!(values[1].is_infinite() && values[1] < 0.0);  // (0,1)
-        assert!(values[2].is_infinite() && values[2] < 0.0);  // (0,2)
+        assert!(values[1].is_infinite() && values[1] < 0.0); // (0,1)
+        assert!(values[2].is_infinite() && values[2] < 0.0); // (0,2)
 
         Ok(())
     }
@@ -317,15 +309,20 @@ mod tests {
         let mut cache = StandardCache::new();
 
         let q = Tensor::randn(0.0f32, 0.1, (batch, num_heads, seq_len, head_dim), &device)?;
-        let k = Tensor::randn(0.0f32, 0.1, (batch, num_kv_heads, seq_len, head_dim), &device)?;
-        let v = Tensor::randn(0.0f32, 0.1, (batch, num_kv_heads, seq_len, head_dim), &device)?;
-
-        let output = attention_with_cache(
-            &q, &k, &v,
-            &mut cache,
-            num_heads, num_kv_heads,
-            None,
+        let k = Tensor::randn(
+            0.0f32,
+            0.1,
+            (batch, num_kv_heads, seq_len, head_dim),
+            &device,
         )?;
+        let v = Tensor::randn(
+            0.0f32,
+            0.1,
+            (batch, num_kv_heads, seq_len, head_dim),
+            &device,
+        )?;
+
+        let output = attention_with_cache(&q, &k, &v, &mut cache, num_heads, num_kv_heads, None)?;
 
         assert_eq!(output.dims(), &[batch, num_heads, seq_len, head_dim]);
         assert_eq!(cache.seq_len(), seq_len);

@@ -294,8 +294,16 @@ impl ModelLoader {
     }
 
     /// Resolves a HoloTensor HCT model directory with progressive quality settings.
-    fn resolve_holotensor(&self, path: &Path, min_quality: f32, target_quality: f32) -> Result<ModelFiles> {
-        debug!(?path, min_quality, target_quality, "Resolving HoloTensor model with progressive quality");
+    fn resolve_holotensor(
+        &self,
+        path: &Path,
+        min_quality: f32,
+        target_quality: f32,
+    ) -> Result<ModelFiles> {
+        debug!(
+            ?path,
+            min_quality, target_quality, "Resolving HoloTensor model with progressive quality"
+        );
 
         if !path.exists() {
             return Err(infernum_core::Error::ModelNotFound {
@@ -332,7 +340,10 @@ impl ModelLoader {
         let config = path.join("config.json");
         if !config.exists() {
             return Err(infernum_core::Error::ModelLoad {
-                message: format!("config.json not found in HoloTensor directory: {}", path.display()),
+                message: format!(
+                    "config.json not found in HoloTensor directory: {}",
+                    path.display()
+                ),
             });
         }
 
@@ -444,9 +455,14 @@ impl ModelLoader {
         let tokenizer_config_key = format!("{}/tokenizer_config.json", key.trim_end_matches('/'));
         let tokenizer_config_path = model_cache_dir.join("tokenizer_config.json");
         let tokenizer_config = if !tokenizer_config_path.exists() {
-            self.download_s3_file(bucket, &tokenizer_config_key, region, &tokenizer_config_path)
-                .ok()
-                .map(|_| tokenizer_config_path.clone())
+            self.download_s3_file(
+                bucket,
+                &tokenizer_config_key,
+                region,
+                &tokenizer_config_path,
+            )
+            .ok()
+            .map(|_| tokenizer_config_path.clone())
         } else {
             Some(tokenizer_config_path)
         };
@@ -473,16 +489,17 @@ impl ModelLoader {
         // Construct S3 URL (works for public buckets)
         // Format: https://{bucket}.s3.{region}.amazonaws.com/{key}
         // Or path-style: https://s3.{region}.amazonaws.com/{bucket}/{key}
-        let url = format!(
-            "https://{}.s3.{}.amazonaws.com/{}",
-            bucket, region, key
-        );
+        let url = format!("https://{}.s3.{}.amazonaws.com/{}", bucket, region, key);
 
         info!(url = %url, "Downloading from S3");
 
-        // Use blocking HTTP request
-        let response = ureq::get(&url)
-            .timeout(std::time::Duration::from_secs(300))
+        // Use blocking HTTP request with timeout via agent config
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(300)))
+            .build()
+            .new_agent();
+        let response = agent
+            .get(&url)
             .call()
             .map_err(|e: ureq::Error| {
                 // Check if it's an auth error
@@ -506,7 +523,7 @@ impl ModelLoader {
 
         // Stream the response to file
         let mut file = std::fs::File::create(local_path)?;
-        let mut reader = response.into_reader();
+        let mut reader = response.into_body().into_reader();
         std::io::copy(&mut reader, &mut file).map_err(|e| infernum_core::Error::ModelLoad {
             message: format!("Failed to write S3 file: {}", e),
         })?;
@@ -528,15 +545,22 @@ impl ModelLoader {
         // Try single safetensors
         let st_key = format!("{}/model.safetensors", key);
         let st_path = cache_dir.join("model.safetensors");
-        if self.download_s3_file(bucket, &st_key, region, &st_path).is_ok() {
+        if self
+            .download_s3_file(bucket, &st_key, region, &st_path)
+            .is_ok()
+        {
             return Ok(WeightFiles::SingleSafetensors(st_path));
         }
 
         // Try sharded safetensors - first get the index
         let st_index_key = format!("{}/model.safetensors.index.json", key);
         let st_index_path = cache_dir.join("model.safetensors.index.json");
-        if self.download_s3_file(bucket, &st_index_key, region, &st_index_path).is_ok() {
-            let shards = self.download_s3_shards_from_index(bucket, key, region, &st_index_path, cache_dir)?;
+        if self
+            .download_s3_file(bucket, &st_index_key, region, &st_index_path)
+            .is_ok()
+        {
+            let shards =
+                self.download_s3_shards_from_index(bucket, key, region, &st_index_path, cache_dir)?;
             return Ok(WeightFiles::ShardedSafetensors {
                 index: st_index_path,
                 shards,
@@ -546,7 +570,10 @@ impl ModelLoader {
         // Try single PyTorch file
         let pt_key = format!("{}/pytorch_model.bin", key);
         let pt_path = cache_dir.join("pytorch_model.bin");
-        if self.download_s3_file(bucket, &pt_key, region, &pt_path).is_ok() {
+        if self
+            .download_s3_file(bucket, &pt_key, region, &pt_path)
+            .is_ok()
+        {
             warn!("Using PyTorch format from S3 - safetensors preferred");
             return Ok(WeightFiles::PyTorch(pt_path));
         }
@@ -554,8 +581,12 @@ impl ModelLoader {
         // Try sharded PyTorch
         let pt_index_key = format!("{}/pytorch_model.bin.index.json", key);
         let pt_index_path = cache_dir.join("pytorch_model.bin.index.json");
-        if self.download_s3_file(bucket, &pt_index_key, region, &pt_index_path).is_ok() {
-            let shards = self.download_s3_shards_from_index(bucket, key, region, &pt_index_path, cache_dir)?;
+        if self
+            .download_s3_file(bucket, &pt_index_key, region, &pt_index_path)
+            .is_ok()
+        {
+            let shards =
+                self.download_s3_shards_from_index(bucket, key, region, &pt_index_path, cache_dir)?;
             return Ok(WeightFiles::ShardedPyTorch {
                 index: pt_index_path,
                 shards,
@@ -578,13 +609,13 @@ impl ModelLoader {
     ) -> Result<Vec<PathBuf>> {
         let key = key.trim_end_matches('/');
 
-        let index_content = std::fs::read_to_string(index_path)
-            .map_err(|e| infernum_core::Error::ModelLoad {
+        let index_content =
+            std::fs::read_to_string(index_path).map_err(|e| infernum_core::Error::ModelLoad {
                 message: format!("Failed to read index: {}", e),
             })?;
 
-        let index: serde_json::Value = serde_json::from_str(&index_content)
-            .map_err(|e| infernum_core::Error::ModelLoad {
+        let index: serde_json::Value =
+            serde_json::from_str(&index_content).map_err(|e| infernum_core::Error::ModelLoad {
                 message: format!("Failed to parse index: {}", e),
             })?;
 
@@ -604,7 +635,10 @@ impl ModelLoader {
         shard_names.sort();
         shard_names.dedup();
 
-        info!(num_shards = shard_names.len(), "Downloading S3 model shards");
+        info!(
+            num_shards = shard_names.len(),
+            "Downloading S3 model shards"
+        );
 
         let mut shard_paths = Vec::new();
         for (i, shard_name) in shard_names.iter().enumerate() {

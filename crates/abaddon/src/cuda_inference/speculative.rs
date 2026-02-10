@@ -142,8 +142,10 @@ impl SpeculativeDecoder {
         let draft_config = draft_weights.config.clone();
         let target_config = target_weights.config.clone();
 
-        let draft_engine = ComputeEngine::new(draft_config.clone(), max_seq_len, Arc::clone(&device))?;
-        let target_engine = ComputeEngine::new(target_config.clone(), max_seq_len, Arc::clone(&device))?;
+        let draft_engine =
+            ComputeEngine::new(draft_config.clone(), max_seq_len, Arc::clone(&device))?;
+        let target_engine =
+            ComputeEngine::new(target_config.clone(), max_seq_len, Arc::clone(&device))?;
 
         let draft_kv = KvCache::new(&draft_config, max_seq_len, Arc::clone(&device))?;
         let target_kv = KvCache::new(&target_config, max_seq_len, Arc::clone(&device))?;
@@ -222,7 +224,9 @@ impl SpeculativeDecoder {
 
         for _ in 0..self.config.num_candidates {
             // Forward through draft model
-            let logits = self.draft_engine.forward(&draft_ids, &self.draft_weights, pos)?;
+            let logits = self
+                .draft_engine
+                .forward(&draft_ids, &self.draft_weights, pos)?;
 
             // Sample token from logits
             let (token, prob) = self.sample_from_logits(&logits, &draft_params)?;
@@ -258,7 +262,9 @@ impl SpeculativeDecoder {
         }
 
         // Forward all positions at once through target model
-        let logits = self.target_engine.forward(&verify_ids, &self.target_weights, position)?;
+        let logits = self
+            .target_engine
+            .forward(&verify_ids, &self.target_weights, position)?;
 
         // For now, simple verification: accept all candidates if logits look reasonable
         // Full implementation would do proper rejection sampling
@@ -302,7 +308,9 @@ impl SpeculativeDecoder {
         input_ids: &[u32],
         position: usize,
     ) -> Result<u32, InferenceError> {
-        let logits = self.target_engine.forward(input_ids, &self.target_weights, position)?;
+        let logits = self
+            .target_engine
+            .forward(input_ids, &self.target_weights, position)?;
 
         // Simple argmax for fallback
         let cpu_logits = self.logits_to_cpu(&logits)?;
@@ -325,10 +333,7 @@ impl SpeculativeDecoder {
         let cpu_logits = self.logits_to_cpu(logits)?;
 
         // Apply temperature
-        let scaled: Vec<f32> = cpu_logits
-            .iter()
-            .map(|&x| x / params.temperature)
-            .collect();
+        let scaled: Vec<f32> = cpu_logits.iter().map(|&x| x / params.temperature).collect();
 
         // Softmax
         let max = scaled.iter().cloned().fold(f32::NEG_INFINITY, f32::max);

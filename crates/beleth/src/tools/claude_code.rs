@@ -14,8 +14,8 @@ use infernum_core::Result;
 use serde_json::Value;
 use tokio::process::Command;
 
-use crate::tool::{RiskLevel, Tool, ToolContext, ToolResult};
 use super::{optional_str_param, optional_u64_param, require_str_param};
+use crate::tool::{RiskLevel, Tool, ToolContext, ToolResult};
 
 /// Default timeout for Claude Code invocations (5 minutes).
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
@@ -142,7 +142,7 @@ impl Tool for ClaudeCodeTool {
                 return Ok(ToolResult::error(format!(
                     "Failed to launch claude CLI (is it installed and on $PATH?): {e}"
                 )));
-            }
+            },
         };
 
         let timeout = Duration::from_secs(timeout_secs);
@@ -214,7 +214,7 @@ impl Tool for ClaudeCodeTool {
                     }
                     Ok(ToolResult::success(output_text))
                 }
-            }
+            },
             Ok(Err(e)) => Ok(ToolResult::error(format!(
                 "Claude Code execution failed: {e}"
             ))),

@@ -27,13 +27,12 @@
 //! GPU reconstruction is 10-50x faster than CPU for large weight matrices.
 
 use std::collections::{HashMap, VecDeque};
-use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
 use candle_core::{DType, Device, Tensor};
-use haagenti::holotensor::{HoloTensorReader, QualityCurve};
+use haagenti::holotensor::QualityCurve;
 
 use super::memory::{HoloMemoryManager, MemoryConfig, MemoryTier};
 use super::streaming::StreamManager;
@@ -45,10 +44,10 @@ use crate::lazy_varbuilder::TensorProvider;
 use crate::gpu_holo::cuda::GpuHoloContext;
 
 #[cfg(feature = "haagenti-gpu")]
-use haagenti_cuda::{GpuContext as HaagentiGpuContext, DecompressionPipeline, PipelineConfig};
+use haagenti_cuda::{DecompressionPipeline, GpuContext as HaagentiGpuContext, PipelineConfig};
 
 #[cfg(feature = "neural-compression")]
-use haagenti_neural::{NeuralDecoder, DecoderConfig, LayerCodebook, NctFile};
+use haagenti_neural::{DecoderConfig, LayerCodebook, NctFile, NeuralDecoder};
 
 /// Configuration for tiered loading.
 #[derive(Debug, Clone)]
@@ -316,37 +315,35 @@ impl TieredHoloLoader {
                             tracing::info!("GPU HoloTensor reconstruction enabled");
                             Some(RwLock::new(ctx))
                         }
-                    }
+                    },
                     Err(e) => {
                         tracing::warn!(
                             error = %e,
                             "Failed to create GPU context, using CPU fallback"
                         );
                         None
-                    }
+                    },
                 }
-            }
+            },
             _ => None,
         };
 
         // Initialize haagenti-cuda zero-copy decompression pipeline
         #[cfg(feature = "haagenti-gpu")]
         let decompression_ctx = match &device {
-            Device::Cuda(_) => {
-                match HaagentiGpuContext::new(0) {
-                    Ok(ctx) => {
-                        tracing::info!("Haagenti GPU decompression pipeline enabled (zero-copy)");
-                        Some(Arc::new(ctx))
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "Failed to create haagenti GPU context, using CPU decompression"
-                        );
-                        None
-                    }
-                }
-            }
+            Device::Cuda(_) => match HaagentiGpuContext::new(0) {
+                Ok(ctx) => {
+                    tracing::info!("Haagenti GPU decompression pipeline enabled (zero-copy)");
+                    Some(Arc::new(ctx))
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "Failed to create haagenti GPU context, using CPU decompression"
+                    );
+                    None
+                },
+            },
             _ => None,
         };
 
@@ -461,13 +458,13 @@ impl TieredHoloLoader {
                 );
                 self.neural_decoder = Some(Arc::new(decoder));
                 self.nct_dir = Some(path);
-            }
+            },
             Err(e) => {
                 tracing::warn!(
                     error = %e,
                     "Failed to load NCT codebooks, using HoloTensor"
                 );
-            }
+            },
         }
 
         self
@@ -507,10 +504,8 @@ impl TieredHoloLoader {
         // Estimate quality gain from having this tensor in VRAM vs RAM
         // For a typical 32-fragment tensor, first fragments are worth more
         let estimated_fragments = 32u16; // Typical fragment count
-        let min_fragments_for_quality = quality_curve.fragments_for_quality(
-            self.config.min_quality,
-            estimated_fragments,
-        );
+        let min_fragments_for_quality =
+            quality_curve.fragments_for_quality(self.config.min_quality, estimated_fragments);
 
         // Quality impact score: higher for attention weights and important tensors
         // This replaces the hardcoded 0.3 threshold with a dynamic calculation
@@ -520,7 +515,8 @@ impl TieredHoloLoader {
         } else {
             // Use importance directly, scaled by quality curve insight
             // Higher importance tensors have higher singular values -> more quality impact
-            info.importance * (1.0 + quality_curve.predict(min_fragments_for_quality, estimated_fragments))
+            info.importance
+                * (1.0 + quality_curve.predict(min_fragments_for_quality, estimated_fragments))
         };
 
         // Dynamic threshold based on min_quality target
@@ -607,7 +603,7 @@ impl TieredHoloLoader {
                         );
                         self.cache_and_place_tensor(name, tensor.clone(), size_bytes)?;
                         return Ok(tensor);
-                    }
+                    },
                     Err(e) => {
                         tracing::warn!(
                             tensor = %name,
@@ -615,7 +611,7 @@ impl TieredHoloLoader {
                             "Safetensor load failed, falling back to HoloTensor"
                         );
                         // Fall through to HoloTensor path
-                    }
+                    },
                 }
             }
         }
@@ -632,9 +628,7 @@ impl TieredHoloLoader {
         }
 
         // Check if file is truncated and needs recovery
-        let file_size = std::fs::metadata(&path)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
 
         // Files < 200 bytes are truncated (just headers)
         if file_size < 200 {
@@ -728,7 +722,7 @@ impl TieredHoloLoader {
                             size_mb = size_bytes / (1024 * 1024),
                             "Cached tensor to NVMe (next load will be ~1000x faster)"
                         );
-                    }
+                    },
                     Err(e) => {
                         // Cache write failure is not fatal - just log and continue
                         tracing::warn!(
@@ -736,7 +730,7 @@ impl TieredHoloLoader {
                             error = %e,
                             "Failed to cache tensor to NVMe, will reconstruct from HCT next time"
                         );
-                    }
+                    },
                 }
             }
         }
@@ -750,7 +744,8 @@ impl TieredHoloLoader {
         }
 
         // Update RAM usage counter
-        self.cpu_cache_bytes.fetch_add(size_bytes as usize, Ordering::Relaxed);
+        self.cpu_cache_bytes
+            .fetch_add(size_bytes as usize, Ordering::Relaxed);
 
         // Update stats
         {
@@ -824,7 +819,8 @@ impl TieredHoloLoader {
             if let Some(size) = size {
                 freed += size;
                 evicted_count += 1;
-                self.cpu_cache_bytes.fetch_sub(size as usize, Ordering::Relaxed);
+                self.cpu_cache_bytes
+                    .fetch_sub(size as usize, Ordering::Relaxed);
 
                 // Update stats
                 if let Ok(mut stats) = self.stats.write() {
@@ -880,16 +876,23 @@ impl TieredHoloLoader {
         })?;
 
         // Get the first (and only) tensor entry
-        let tensor_info = header_json.as_object()
+        let tensor_info = header_json
+            .as_object()
             .and_then(|obj| obj.values().next())
             .and_then(|v| v.as_object())
-            .ok_or_else(|| HoloInferenceError::FragmentLoad("Invalid safetensor header".to_string()))?;
+            .ok_or_else(|| {
+                HoloInferenceError::FragmentLoad("Invalid safetensor header".to_string())
+            })?;
 
-        let dtype_str = tensor_info.get("dtype")
+        let dtype_str = tensor_info
+            .get("dtype")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| HoloInferenceError::FragmentLoad("Missing dtype in header".to_string()))?;
+            .ok_or_else(|| {
+                HoloInferenceError::FragmentLoad("Missing dtype in header".to_string())
+            })?;
 
-        let shape: Vec<usize> = tensor_info.get("shape")
+        let shape: Vec<usize> = tensor_info
+            .get("shape")
             .and_then(|v| v.as_array())
             .ok_or_else(|| HoloInferenceError::FragmentLoad("Missing shape in header".to_string()))?
             .iter()
@@ -897,16 +900,21 @@ impl TieredHoloLoader {
             .map(|v| v as usize)
             .collect();
 
-        let data_offsets: Vec<usize> = tensor_info.get("data_offsets")
+        let data_offsets: Vec<usize> = tensor_info
+            .get("data_offsets")
             .and_then(|v| v.as_array())
-            .ok_or_else(|| HoloInferenceError::FragmentLoad("Missing data_offsets in header".to_string()))?
+            .ok_or_else(|| {
+                HoloInferenceError::FragmentLoad("Missing data_offsets in header".to_string())
+            })?
             .iter()
             .filter_map(|v| v.as_u64())
             .map(|v| v as usize)
             .collect();
 
         if data_offsets.len() < 2 {
-            return Err(HoloInferenceError::FragmentLoad("Invalid data_offsets".to_string()));
+            return Err(HoloInferenceError::FragmentLoad(
+                "Invalid data_offsets".to_string(),
+            ));
         }
 
         let data_size = data_offsets[1] - data_offsets[0];
@@ -930,29 +938,29 @@ impl TieredHoloLoader {
                     .map(|b| half::f16::from_le_bytes([b[0], b[1]]))
                     .collect();
                 Tensor::from_vec(f16_data, shape.as_slice(), &self.inference_device)
-            }
+            },
             "F32" => {
                 let f32_data: Vec<f32> = data
                     .chunks_exact(4)
                     .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                     .collect();
                 Tensor::from_vec(f32_data, shape.as_slice(), &self.inference_device)
-            }
+            },
             "BF16" => {
                 let bf16_data: Vec<half::bf16> = data
                     .chunks_exact(2)
                     .map(|b| half::bf16::from_le_bytes([b[0], b[1]]))
                     .collect();
                 Tensor::from_vec(bf16_data, shape.as_slice(), &self.inference_device)
-            }
+            },
             _ => {
-                return Err(HoloInferenceError::FragmentLoad(
-                    format!("Unsupported dtype in safetensor: {}", dtype_str)
-                ));
-            }
-        }.map_err(|e| {
-            HoloInferenceError::FragmentLoad(format!("Failed to create tensor: {}", e))
-        })?;
+                return Err(HoloInferenceError::FragmentLoad(format!(
+                    "Unsupported dtype in safetensor: {}",
+                    dtype_str
+                )));
+            },
+        }
+        .map_err(|e| HoloInferenceError::FragmentLoad(format!("Failed to create tensor: {}", e)))?;
 
         // Convert to target dtype if needed
         if tensor.dtype() != self.dtype {
@@ -1008,7 +1016,8 @@ impl TieredHoloLoader {
         }
 
         // Update RAM usage counter
-        self.cpu_cache_bytes.fetch_add(size_bytes as usize, Ordering::Relaxed);
+        self.cpu_cache_bytes
+            .fetch_add(size_bytes as usize, Ordering::Relaxed);
 
         // Update stats
         {
@@ -1020,14 +1029,14 @@ impl TieredHoloLoader {
                 MemoryTier::Vram => {
                     stats.vram_tensors += 1;
                     stats.vram_bytes += size_bytes;
-                }
+                },
                 MemoryTier::Ram => {
                     stats.ram_tensors += 1;
                     stats.ram_bytes += size_bytes;
-                }
+                },
                 MemoryTier::Disk => {
                     stats.disk_tensors += 1;
-                }
+                },
             }
         }
 
@@ -1093,12 +1102,13 @@ impl TieredHoloLoader {
                             data,
                             &[rows, cols],
                             &Device::Cpu, // Transfer to CPU for now
-                        ).map_err(|e| HoloInferenceError::Conversion(e.to_string()))?;
+                        )
+                        .map_err(|e| HoloInferenceError::Conversion(e.to_string()))?;
                         return Ok(tensor);
-                    }
+                    },
                     Err(e) => {
                         tracing::debug!("GPU reconstruction failed, falling back to CPU: {}", e);
-                    }
+                    },
                 }
             }
         }
@@ -1115,8 +1125,8 @@ impl TieredHoloLoader {
         rows: usize,
         cols: usize,
     ) -> Result<candle_core::Tensor> {
-        use std::time::Instant;
         use haagenti::holotensor::LrdfDecoder;
+        use std::time::Instant;
 
         let start = Instant::now();
 
@@ -1134,11 +1144,8 @@ impl TieredHoloLoader {
             stats.cpu_time_ms += elapsed.as_millis() as u64;
         }
 
-        let tensor = candle_core::Tensor::from_vec(
-            data,
-            &[rows, cols],
-            &Device::Cpu,
-        ).map_err(|e| HoloInferenceError::Conversion(e.to_string()))?;
+        let tensor = candle_core::Tensor::from_vec(data, &[rows, cols], &Device::Cpu)
+            .map_err(|e| HoloInferenceError::Conversion(e.to_string()))?;
 
         Ok(tensor)
     }
@@ -1165,11 +1172,8 @@ impl TieredHoloLoader {
             stats.cpu_reconstructions += 1;
         }
 
-        let tensor = candle_core::Tensor::from_vec(
-            data,
-            &[rows, cols],
-            &Device::Cpu,
-        ).map_err(|e| HoloInferenceError::Conversion(e.to_string()))?;
+        let tensor = candle_core::Tensor::from_vec(data, &[rows, cols], &Device::Cpu)
+            .map_err(|e| HoloInferenceError::Conversion(e.to_string()))?;
 
         Ok(tensor)
     }
@@ -1204,11 +1208,10 @@ impl TieredHoloLoader {
     /// Returns (tensor, used_gpu) where used_gpu indicates if GPU was used.
     fn load_tensor_internal(&self, path: &std::path::Path, name: &str) -> Result<(Tensor, bool)> {
         // Check if file is a HoloTensor format
-        let loader = HctLoader::from_file(path).map_err(|e| {
-            HoloInferenceError::FragmentLoad(format!("Failed to load HCT: {}", e))
-        })?;
+        let loader = HctLoader::from_file(path)
+            .map_err(|e| HoloInferenceError::FragmentLoad(format!("Failed to load HCT: {}", e)))?;
 
-        let is_holographic = loader.metadata().is_holographic();
+        let _is_holographic = loader.metadata().is_holographic();
 
         // Try GPU reconstruction for HoloTensor files if enabled
         #[cfg(feature = "cuda")]
@@ -1221,7 +1224,7 @@ impl TieredHoloLoader {
                         "GPU HoloTensor reconstruction complete"
                     );
                     return Ok((tensor, true));
-                }
+                },
                 Err(e) => {
                     tracing::warn!(
                         tensor = %name,
@@ -1229,19 +1232,21 @@ impl TieredHoloLoader {
                         "GPU reconstruction failed, falling back to CPU"
                     );
                     // Fall through to CPU path
-                }
+                },
             }
         }
 
         // CPU path (fallback or primary)
-        let tensor = loader.to_tensor(&self.inference_device, Some(self.dtype)).map_err(|e| {
-            if self.is_recoverable_tensor(name) {
-                // Return a recovery error that will be handled by caller
-                HoloInferenceError::FragmentLoad(format!("Recoverable: {}", e))
-            } else {
-                HoloInferenceError::FragmentLoad(format!("Failed to create tensor: {}", e))
-            }
-        });
+        let tensor = loader
+            .to_tensor(&self.inference_device, Some(self.dtype))
+            .map_err(|e| {
+                if self.is_recoverable_tensor(name) {
+                    // Return a recovery error that will be handled by caller
+                    HoloInferenceError::FragmentLoad(format!("Recoverable: {}", e))
+                } else {
+                    HoloInferenceError::FragmentLoad(format!("Failed to create tensor: {}", e))
+                }
+            });
 
         match tensor {
             Ok(t) => Ok((t, false)),
@@ -1253,7 +1258,7 @@ impl TieredHoloLoader {
                 } else {
                     Err(e)
                 }
-            }
+            },
         }
     }
 
@@ -1273,9 +1278,8 @@ impl TieredHoloLoader {
         let _guard = InflightGuard(&self.gpu_inflight);
 
         // Open file and read HoloTensor
-        let file = File::open(path).map_err(|e| {
-            HoloInferenceError::FragmentLoad(format!("Failed to open file: {}", e))
-        })?;
+        let file = File::open(path)
+            .map_err(|e| HoloInferenceError::FragmentLoad(format!("Failed to open file: {}", e)))?;
 
         let reader = BufReader::new(file);
         let mut holo_reader = HoloTensorReader::new(reader).map_err(|e| {
@@ -1308,9 +1312,10 @@ impl TieredHoloLoader {
 
         // Create Candle tensor from host data
         let shape: Vec<usize> = header.shape.iter().map(|&d| d as usize).collect();
-        let tensor = Tensor::from_vec(host_data, shape.as_slice(), &self.inference_device).map_err(|e| {
-            HoloInferenceError::FragmentLoad(format!("Failed to create tensor: {}", e))
-        })?;
+        let tensor = Tensor::from_vec(host_data, shape.as_slice(), &self.inference_device)
+            .map_err(|e| {
+                HoloInferenceError::FragmentLoad(format!("Failed to create tensor: {}", e))
+            })?;
 
         // Convert to target dtype if needed
         let tensor = if self.dtype != candle_core::DType::F32 {
@@ -1353,13 +1358,13 @@ impl TieredHoloLoader {
                     Err(e) => {
                         tracing::warn!(error = %e, "GPU decompression D2H copy failed");
                         None
-                    }
+                    },
                 }
-            }
+            },
             Err(e) => {
                 tracing::warn!(error = %e, "GPU zero-copy decompression failed, falling back to CPU");
                 None
-            }
+            },
         }
     }
 
@@ -1399,10 +1404,7 @@ impl TieredHoloLoader {
                 .and_then(|t| t.affine(fill_value as f64, 0.0))
         }
         .map_err(|e| {
-            HoloInferenceError::FragmentLoad(format!(
-                "Failed to create recovery tensor: {}",
-                e
-            ))
+            HoloInferenceError::FragmentLoad(format!("Failed to create recovery tensor: {}", e))
         })?;
 
         // Cache the recovered tensor on CPU
@@ -1433,7 +1435,8 @@ impl TieredHoloLoader {
         }
 
         // Update RAM usage counter
-        self.cpu_cache_bytes.fetch_add(size_bytes as usize, Ordering::Relaxed);
+        self.cpu_cache_bytes
+            .fetch_add(size_bytes as usize, Ordering::Relaxed);
 
         // Update stats
         {
@@ -1506,7 +1509,12 @@ impl TieredHoloLoader {
 
 /// Implement TensorProvider for TieredHoloLoader.
 impl TensorProvider for TieredHoloLoader {
-    fn get(&self, name: &str, _device: &Device, _dtype: DType) -> std::result::Result<Tensor, HctError> {
+    fn get(
+        &self,
+        name: &str,
+        _device: &Device,
+        _dtype: DType,
+    ) -> std::result::Result<Tensor, HctError> {
         self.load_tensor(name).map_err(|e| HctError::Tensor {
             message: e.to_string(),
         })
@@ -1573,7 +1581,8 @@ impl TensorProvider for TieredHoloLoader {
         }
 
         // Update RAM usage counter
-        self.cpu_cache_bytes.fetch_sub(evicted_bytes as usize, Ordering::Relaxed);
+        self.cpu_cache_bytes
+            .fetch_sub(evicted_bytes as usize, Ordering::Relaxed);
 
         // Remove from LRU order
         if let Ok(mut lru) = self.cpu_lru_order.write() {
@@ -1619,6 +1628,8 @@ fn dtype_size(dtype: DType) -> u64 {
         DType::F64 | DType::I64 => 8,
         DType::F16 | DType::BF16 => 2,
         DType::U8 => 1,
+        // Handle new candle_core DType variants (I16, I32, F8E4M3, etc.)
+        _ => 4,
     }
 }
 
@@ -1638,6 +1649,8 @@ fn save_tensor_to_safetensors(tensor: &Tensor, name: &str, path: &Path) -> Resul
         DType::U8 => "U8",
         DType::U32 => "U32",
         DType::I64 => "I64",
+        // Handle new candle_core DType variants
+        _ => "F32",
     };
 
     // Get tensor dimensions
@@ -1645,22 +1658,28 @@ fn save_tensor_to_safetensors(tensor: &Tensor, name: &str, path: &Path) -> Resul
     let data_size = tensor.elem_count() * tensor.dtype().size_in_bytes();
 
     // Get raw tensor data
-    let data = tensor.flatten_all()
+    let data = tensor
+        .flatten_all()
         .map_err(|e| HoloInferenceError::Conversion(format!("Failed to flatten tensor: {}", e)))?
         .to_vec1::<u8>()
         .or_else(|_| {
             // Try getting raw bytes for non-u8 dtypes
             match tensor.dtype() {
-                DType::F32 => tensor.flatten_all()
+                DType::F32 => tensor
+                    .flatten_all()
                     .and_then(|t| t.to_vec1::<f32>())
                     .map(|v| v.iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<u8>>()),
-                DType::F16 => tensor.flatten_all()
+                DType::F16 => tensor
+                    .flatten_all()
                     .and_then(|t| t.to_vec1::<half::f16>())
                     .map(|v| v.iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<u8>>()),
-                DType::BF16 => tensor.flatten_all()
+                DType::BF16 => tensor
+                    .flatten_all()
                     .and_then(|t| t.to_vec1::<half::bf16>())
                     .map(|v| v.iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<u8>>()),
-                _ => Err(candle_core::Error::Msg("Unsupported dtype for cache".to_string())),
+                _ => Err(candle_core::Error::Msg(
+                    "Unsupported dtype for cache".to_string(),
+                )),
             }
         })
         .map_err(|e| HoloInferenceError::Conversion(format!("Failed to get tensor data: {}", e)))?;
@@ -1682,8 +1701,7 @@ fn save_tensor_to_safetensors(tensor: &Tensor, name: &str, path: &Path) -> Resul
     let padded_header_len = header_len + padding;
 
     // Write file: [8-byte header len] [header] [padding] [data]
-    let mut file = std::fs::File::create(path)
-        .map_err(|e| HoloInferenceError::Io(e))?;
+    let mut file = std::fs::File::create(path).map_err(|e| HoloInferenceError::Io(e))?;
 
     file.write_all(&padded_header_len.to_le_bytes())
         .map_err(|e| HoloInferenceError::Io(e))?;
@@ -1700,9 +1718,9 @@ fn save_tensor_to_safetensors(tensor: &Tensor, name: &str, path: &Path) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::fs;
     use std::io::Write;
+    use tempfile::TempDir;
 
     /// Helper to create a minimal valid HCT file.
     fn create_test_hct_file(dir: &Path, name: &str, shape: &[u64]) -> PathBuf {
@@ -1721,10 +1739,13 @@ mod tests {
             CompressionAlgorithm::Lz4,
             HctDType::F32,
             shape.to_vec(),
-        ).with_block_size(64 * 1024);
+        )
+        .with_block_size(64 * 1024);
 
         let compressor = Lz4Compressor::new();
-        writer.compress_data(&bytes, &compressor).expect("write data");
+        writer
+            .compress_data(&bytes, &compressor)
+            .expect("write data");
         writer.finish().expect("finish");
 
         path
@@ -1754,15 +1775,13 @@ mod tests {
             background_streams: 0,
         };
 
-        let loader = TieredHoloLoader::new(
-            temp_dir.path(),
-            config,
-            Device::Cpu,
-            DType::F32,
-        ).expect("create loader");
+        let loader = TieredHoloLoader::new(temp_dir.path(), config, Device::Cpu, DType::F32)
+            .expect("create loader");
 
         // Load tensor
-        let tensor = loader.load_tensor("model.layers.0.q_proj.weight").expect("load");
+        let tensor = loader
+            .load_tensor("model.layers.0.q_proj.weight")
+            .expect("load");
         assert_eq!(tensor.dims(), &[16, 16]);
 
         // Check it's tracked
@@ -1776,12 +1795,8 @@ mod tests {
 
         let config = TieredConfig::for_24gb_80gb();
 
-        let loader = TieredHoloLoader::new(
-            temp_dir.path(),
-            config,
-            Device::Cpu,
-            DType::F32,
-        ).expect("create loader");
+        let loader = TieredHoloLoader::new(temp_dir.path(), config, Device::Cpu, DType::F32)
+            .expect("create loader");
 
         // Attention weight should prefer VRAM
         let attn_info = LayerWeightInfo {
@@ -1813,7 +1828,9 @@ mod tests {
     #[test]
     fn test_layer_weight_importance() {
         // Attention weights should be more important
-        assert!(LayerWeightInfo::is_attention_weight("self_attn.q_proj.weight"));
+        assert!(LayerWeightInfo::is_attention_weight(
+            "self_attn.q_proj.weight"
+        ));
         assert!(LayerWeightInfo::is_attention_weight("k_proj"));
         assert!(!LayerWeightInfo::is_attention_weight("mlp.down_proj"));
 
@@ -1825,8 +1842,14 @@ mod tests {
 
     #[test]
     fn test_extract_layer_from_name() {
-        assert_eq!(extract_layer_from_name("model.layers.0.self_attn.q_proj"), Some(0));
-        assert_eq!(extract_layer_from_name("model.layers.125.mlp.down_proj"), Some(125));
+        assert_eq!(
+            extract_layer_from_name("model.layers.0.self_attn.q_proj"),
+            Some(0)
+        );
+        assert_eq!(
+            extract_layer_from_name("model.layers.125.mlp.down_proj"),
+            Some(125)
+        );
         assert_eq!(extract_layer_from_name("model.embed_tokens.weight"), None);
     }
 
@@ -1840,14 +1863,15 @@ mod tests {
         let config = TieredConfig::default();
         let loader = Arc::new(
             TieredHoloLoader::new(temp_dir.path(), config, Device::Cpu, DType::F32)
-                .expect("create loader")
+                .expect("create loader"),
         );
 
         // Use as TensorProvider
         let provider: Arc<dyn TensorProvider> = loader;
 
         assert!(provider.contains("model.embed_tokens.weight"));
-        let tensor = provider.get("model.embed_tokens.weight", &Device::Cpu, DType::F32)
+        let tensor = provider
+            .get("model.embed_tokens.weight", &Device::Cpu, DType::F32)
             .expect("get tensor");
         assert_eq!(tensor.dims(), &[256]);
     }

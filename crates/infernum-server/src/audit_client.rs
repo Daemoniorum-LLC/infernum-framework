@@ -86,8 +86,8 @@ use moloch_core::event::AuditEvent;
 
 // Re-export HoloCrypt types for encryption
 pub use moloch_holocrypt::{
-    EncryptedEvent, EncryptedEventBuilder, EncryptionPolicy, FieldVisibility,
-    EventSealingKey, EventOpeningKey, generate_keypair as generate_encryption_keypair,
+    generate_keypair as generate_encryption_keypair, EncryptedEvent, EncryptedEventBuilder,
+    EncryptionPolicy, EventOpeningKey, EventSealingKey, FieldVisibility,
 };
 
 /// Preset encryption policies for common use cases.
@@ -286,7 +286,8 @@ impl AuditClient {
     /// Submit a signed audit event to Moloch.
     pub async fn submit(&self, event: AuditEvent) -> Result<SubmitEventResponse> {
         // Validate event signature before submission
-        event.validate()
+        event
+            .validate()
             .map_err(|e| AuditClientError::Rejected(format!("invalid event signature: {e}")))?;
 
         self.submit_with_retry(event).await
@@ -329,7 +330,8 @@ impl AuditClient {
 
         debug!(url = %url, "submitting encrypted event");
 
-        let response = self.http_client
+        let response = self
+            .http_client
             .post(&url)
             .json(&event)
             .send()
@@ -380,18 +382,23 @@ impl AuditClient {
                     } else {
                         // Event was rejected - don't retry
                         return Err(AuditClientError::Rejected(
-                            response.message.unwrap_or_else(|| "unknown reason".to_string())
+                            response
+                                .message
+                                .unwrap_or_else(|| "unknown reason".to_string()),
                         ));
                     }
-                }
+                },
                 Err(e) => {
                     // Only retry on transient errors
-                    if matches!(e, AuditClientError::Connection(_) | AuditClientError::Timeout) {
+                    if matches!(
+                        e,
+                        AuditClientError::Connection(_) | AuditClientError::Timeout
+                    ) {
                         last_error = Some(e);
                     } else {
                         return Err(e);
                     }
-                }
+                },
             }
         }
 
@@ -408,7 +415,8 @@ impl AuditClient {
 
         debug!(url = %url, event_id = %hex::encode(event.id().0.as_bytes()), "submitting event");
 
-        let response = self.http_client
+        let response = self
+            .http_client
             .post(&url)
             .json(&request)
             .send()

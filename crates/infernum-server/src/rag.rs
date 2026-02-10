@@ -199,13 +199,14 @@ pub struct DeleteResponse {
 // =============================================================================
 
 /// GET /api/rag/health - Get RAG status.
-pub async fn rag_health(
-    State(rag): State<Arc<RwLock<RagState>>>,
-) -> impl IntoResponse {
+pub async fn rag_health(State(rag): State<Arc<RwLock<RagState>>>) -> impl IntoResponse {
     let state = rag.read().await;
 
     let (document_count, chunk_count) = if state.initialized {
-        (state.documents.len(), state.documents.values().map(|d| d.chunk_count).sum())
+        (
+            state.documents.len(),
+            state.documents.values().map(|d| d.chunk_count).sum(),
+        )
     } else {
         (0, 0)
     };
@@ -235,15 +236,16 @@ pub async fn rag_health(
 }
 
 /// GET /api/rag/documents - List indexed documents.
-pub async fn list_documents(
-    State(rag): State<Arc<RwLock<RagState>>>,
-) -> impl IntoResponse {
+pub async fn list_documents(State(rag): State<Arc<RwLock<RagState>>>) -> impl IntoResponse {
     let state = rag.read().await;
 
     if !state.initialized {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(api_error(ErrorCode::ServiceUnavailable, "RAG not initialized")),
+            Json(api_error(
+                ErrorCode::ServiceUnavailable,
+                "RAG not initialized",
+            )),
         )
             .into_response();
     }
@@ -253,9 +255,7 @@ pub async fn list_documents(
 }
 
 /// GET /api/rag/documents/count - Get document count.
-pub async fn document_count(
-    State(rag): State<Arc<RwLock<RagState>>>,
-) -> impl IntoResponse {
+pub async fn document_count(State(rag): State<Arc<RwLock<RagState>>>) -> impl IntoResponse {
     let state = rag.read().await;
     Json(DocumentCountResponse {
         count: state.documents.len(),
@@ -271,7 +271,10 @@ pub async fn index_document(
     if req.name.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(api_error(ErrorCode::InvalidRequest, "Document name is required")),
+            Json(api_error(
+                ErrorCode::InvalidRequest,
+                "Document name is required",
+            )),
         )
             .into_response();
     }
@@ -279,7 +282,10 @@ pub async fn index_document(
     if req.content.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(api_error(ErrorCode::InvalidRequest, "Document content is required")),
+            Json(api_error(
+                ErrorCode::InvalidRequest,
+                "Document content is required",
+            )),
         )
             .into_response();
     }
@@ -296,10 +302,13 @@ pub async fn index_document(
         None => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(api_error(ErrorCode::ServiceUnavailable, "RAG pipeline not available")),
+                Json(api_error(
+                    ErrorCode::ServiceUnavailable,
+                    "RAG pipeline not available",
+                )),
             )
                 .into_response();
-        }
+        },
     };
 
     // Generate document ID
@@ -324,7 +333,7 @@ pub async fn index_document(
                 )),
             )
                 .into_response();
-        }
+        },
     };
 
     // Store document metadata
@@ -356,7 +365,10 @@ pub async fn delete_document(
     if !state.initialized {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(api_error(ErrorCode::ServiceUnavailable, "RAG not initialized")),
+            Json(api_error(
+                ErrorCode::ServiceUnavailable,
+                "RAG not initialized",
+            )),
         )
             .into_response();
     }
@@ -370,7 +382,7 @@ pub async fn delete_document(
                 Json(api_error(ErrorCode::NotFound, "Document not found")),
             )
                 .into_response();
-        }
+        },
     };
 
     // Note: InMemoryStore doesn't support deletion by ID yet, so we just remove metadata
@@ -400,7 +412,10 @@ pub async fn search(
     if !state.initialized {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(api_error(ErrorCode::ServiceUnavailable, "RAG not initialized")),
+            Json(api_error(
+                ErrorCode::ServiceUnavailable,
+                "RAG not initialized",
+            )),
         )
             .into_response();
     }
@@ -410,10 +425,13 @@ pub async fn search(
         None => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(api_error(ErrorCode::ServiceUnavailable, "RAG pipeline not available")),
+                Json(api_error(
+                    ErrorCode::ServiceUnavailable,
+                    "RAG pipeline not available",
+                )),
             )
                 .into_response();
-        }
+        },
     };
 
     // Retrieve results
@@ -428,7 +446,7 @@ pub async fn search(
                 )),
             )
                 .into_response();
-        }
+        },
     };
 
     // Convert to response format

@@ -29,22 +29,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Test 1: Initializing CUDA context...");
         let start = Instant::now();
         let mut ctx = Int8AttentionContext::new(0)?;
-        println!("  Context created in {:.2}ms", start.elapsed().as_secs_f64() * 1000.0);
+        println!(
+            "  Context created in {:.2}ms",
+            start.elapsed().as_secs_f64() * 1000.0
+        );
 
         println!("\nTest 2: Compiling INT8 attention kernels via nvrtc...");
         let start = Instant::now();
         match ctx.load_kernels() {
             Ok(()) => {
-                println!("  Kernels compiled and loaded in {:.2}ms", start.elapsed().as_secs_f64() * 1000.0);
+                println!(
+                    "  Kernels compiled and loaded in {:.2}ms",
+                    start.elapsed().as_secs_f64() * 1000.0
+                );
                 println!("  Fused kernels available: {}", ctx.has_fused_kernels());
-            }
+            },
             Err(e) => {
                 println!("  Failed to compile kernels: {}", e);
                 println!("\n  This may be because:");
                 println!("  - nvrtc is not installed or not in PATH");
                 println!("  - CUDA toolkit is not properly configured");
                 return Err(e.into());
-            }
+            },
         }
 
         // Test 3: INT8 dequantization
@@ -57,7 +63,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Quantized values: 0, 1, 2, ..., 127 (after subtracting 128: -128, -127, ..., -1)
         // Wait, we want symmetric around 0, so let's use 64 to 191 (maps to -64 to 63)
-        let quant_data: Vec<u8> = (0..num_elements as u8).map(|i| 128u8.wrapping_add(i.wrapping_sub(64))).collect();
+        let quant_data: Vec<u8> = (0..num_elements as u8)
+            .map(|i| 128u8.wrapping_add(i.wrapping_sub(64)))
+            .collect();
 
         // Scale: 1.0 in BF16 = 0x3F80
         let scale_bf16 = 0x3F80u16; // 1.0 in BF16
@@ -90,9 +98,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        println!("  Dequantized {} elements in {:.3}ms", num_elements, dequant_time.as_secs_f64() * 1000.0);
-        println!("  Max error: {:.6} (expected ~0 for exact scale=1.0)", max_error);
-        println!("  Status: {}", if max_error < 0.1 { "PASS" } else { "FAIL" });
+        println!(
+            "  Dequantized {} elements in {:.3}ms",
+            num_elements,
+            dequant_time.as_secs_f64() * 1000.0
+        );
+        println!(
+            "  Max error: {:.6} (expected ~0 for exact scale=1.0)",
+            max_error
+        );
+        println!(
+            "  Status: {}",
+            if max_error < 0.1 { "PASS" } else { "FAIL" }
+        );
 
         // Test 4: Fused Q @ K^T attention
         println!("\nTest 4: Testing fused Q @ K^T attention kernel...");
@@ -135,9 +153,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Run fused attention
         let start = Instant::now();
         let d_attn_scores = ctx.fused_qk_attention(
-            &d_q, &d_k_quant, &d_k_scales,
-            batch_size, num_heads, num_kv_heads,
-            q_len, kv_len, head_dim,
+            &d_q,
+            &d_k_quant,
+            &d_k_scales,
+            batch_size,
+            num_heads,
+            num_kv_heads,
+            q_len,
+            kv_len,
+            head_dim,
             attn_scale,
         )?;
         device.synchronize()?;
@@ -145,15 +169,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Verify output size
         let expected_size = batch_size * num_heads * q_len * kv_len;
-        println!("  Output size: {} (expected {})", d_attn_scores.len(), expected_size);
-        println!("  Computed Q @ K^T in {:.3}ms", qk_time.as_secs_f64() * 1000.0);
+        println!(
+            "  Output size: {} (expected {})",
+            d_attn_scores.len(),
+            expected_size
+        );
+        println!(
+            "  Computed Q @ K^T in {:.3}ms",
+            qk_time.as_secs_f64() * 1000.0
+        );
 
         // Copy back a sample
         let mut h_attn_scores = vec![0.0f32; expected_size];
         device.dtoh_sync_copy_into(&d_attn_scores, &mut h_attn_scores)?;
-        println!("  Sample scores: [{:.4}, {:.4}, {:.4}, ...]",
-            h_attn_scores[0], h_attn_scores[1], h_attn_scores[2]);
-        println!("  Status: {}", if d_attn_scores.len() == expected_size { "PASS" } else { "FAIL" });
+        println!(
+            "  Sample scores: [{:.4}, {:.4}, {:.4}, ...]",
+            h_attn_scores[0], h_attn_scores[1], h_attn_scores[2]
+        );
+        println!(
+            "  Status: {}",
+            if d_attn_scores.len() == expected_size {
+                "PASS"
+            } else {
+                "FAIL"
+            }
+        );
 
         // Test 5: Fused attn @ V
         println!("\nTest 5: Testing fused attn @ V kernel...");
@@ -175,45 +215,77 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Run fused attn @ V
         let start = Instant::now();
         let d_output = ctx.fused_attn_v(
-            &d_attn_uniform, &d_v_quant, &d_v_scales,
-            batch_size, num_heads, num_kv_heads,
-            q_len, kv_len, head_dim,
+            &d_attn_uniform,
+            &d_v_quant,
+            &d_v_scales,
+            batch_size,
+            num_heads,
+            num_kv_heads,
+            q_len,
+            kv_len,
+            head_dim,
         )?;
         device.synchronize()?;
         let av_time = start.elapsed();
 
         // Verify output size
         let expected_out_size = batch_size * num_heads * q_len * head_dim;
-        println!("  Output size: {} (expected {})", d_output.len(), expected_out_size);
-        println!("  Computed attn @ V in {:.3}ms", av_time.as_secs_f64() * 1000.0);
+        println!(
+            "  Output size: {} (expected {})",
+            d_output.len(),
+            expected_out_size
+        );
+        println!(
+            "  Computed attn @ V in {:.3}ms",
+            av_time.as_secs_f64() * 1000.0
+        );
 
         // Copy back and check first few values
         let mut h_output = vec![0u16; expected_out_size];
         device.dtoh_sync_copy_into(&d_output, &mut h_output)?;
 
         // Convert first few BF16 values to F32
-        let sample_f32: Vec<f32> = h_output[0..3].iter()
+        let sample_f32: Vec<f32> = h_output[0..3]
+            .iter()
             .map(|&bf16| f32::from_bits((bf16 as u32) << 16))
             .collect();
-        println!("  Sample output: [{:.4}, {:.4}, {:.4}, ...]",
-            sample_f32[0], sample_f32[1], sample_f32[2]);
-        println!("  Status: {}", if d_output.len() == expected_out_size { "PASS" } else { "FAIL" });
+        println!(
+            "  Sample output: [{:.4}, {:.4}, {:.4}, ...]",
+            sample_f32[0], sample_f32[1], sample_f32[2]
+        );
+        println!(
+            "  Status: {}",
+            if d_output.len() == expected_out_size {
+                "PASS"
+            } else {
+                "FAIL"
+            }
+        );
 
         // Performance summary
         println!("\n{}", "=".repeat(60));
         println!("PERFORMANCE SUMMARY:");
-        println!("  INT8 Dequant:   {:.3}ms for {} elements ({:.1}M elem/s)",
+        println!(
+            "  INT8 Dequant:   {:.3}ms for {} elements ({:.1}M elem/s)",
             dequant_time.as_secs_f64() * 1000.0,
             num_elements,
             num_elements as f64 / dequant_time.as_secs_f64() / 1_000_000.0
         );
-        println!("  Fused Q @ K^T:  {:.3}ms ({} x {} x {} x {})",
+        println!(
+            "  Fused Q @ K^T:  {:.3}ms ({} x {} x {} x {})",
             qk_time.as_secs_f64() * 1000.0,
-            batch_size, num_heads, q_len, kv_len
+            batch_size,
+            num_heads,
+            q_len,
+            kv_len
         );
-        println!("  Fused attn @ V: {:.3}ms ({} x {} x {} x {})",
+        println!(
+            "  Fused attn @ V: {:.3}ms ({} x {} x {} x {})",
             av_time.as_secs_f64() * 1000.0,
-            batch_size, num_heads, q_len, head_dim
+            batch_size,
+            num_heads,
+            q_len,
+            head_dim
         );
         println!("{}", "=".repeat(60));
 

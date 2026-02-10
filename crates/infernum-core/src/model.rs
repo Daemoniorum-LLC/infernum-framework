@@ -446,7 +446,7 @@ mod tests {
             ModelSource::HuggingFace { repo_id, revision } => {
                 assert_eq!(repo_id, "meta-llama/Llama-3.2-3B");
                 assert!(revision.is_none());
-            }
+            },
             _ => panic!("Expected HuggingFace source"),
         }
     }
@@ -459,7 +459,7 @@ mod tests {
             ModelSource::HuggingFace { repo_id, revision } => {
                 assert_eq!(repo_id, "microsoft/phi-3");
                 assert_eq!(revision, Some("v1.0".to_string()));
-            }
+            },
             _ => panic!("Expected HuggingFace source"),
         }
     }
@@ -471,7 +471,7 @@ mod tests {
         match source {
             ModelSource::LocalPath { path } => {
                 assert_eq!(path, PathBuf::from("/models/llama"));
-            }
+            },
             _ => panic!("Expected LocalPath source"),
         }
     }
@@ -483,7 +483,7 @@ mod tests {
         match source {
             ModelSource::Gguf { path } => {
                 assert_eq!(path, PathBuf::from("/models/model.gguf"));
-            }
+            },
             _ => panic!("Expected Gguf source"),
         }
     }
@@ -497,11 +497,15 @@ mod tests {
         };
 
         match source {
-            ModelSource::S3 { bucket, key, region } => {
+            ModelSource::S3 {
+                bucket,
+                key,
+                region,
+            } => {
                 assert_eq!(bucket, "my-bucket");
                 assert_eq!(key, "models/llama.bin");
                 assert_eq!(region, Some("us-west-2".to_string()));
-            }
+            },
             _ => panic!("Expected S3 source"),
         }
     }
@@ -517,7 +521,7 @@ mod tests {
         match parsed {
             ModelSource::HuggingFace { repo_id, .. } => {
                 assert_eq!(repo_id, "test/model");
-            }
+            },
             _ => panic!("Wrong variant"),
         }
     }
@@ -597,7 +601,7 @@ mod tests {
         match parsed {
             ModelArchitecture::Llama { version } => {
                 assert_eq!(version, LlamaVersion::V3_2);
-            }
+            },
             _ => panic!("Wrong variant"),
         }
     }
@@ -660,11 +664,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "source must be set")]
     fn test_model_metadata_builder_no_source_panics() {
-        let _metadata = ModelMetadata::builder(
-            "test",
-            ModelArchitecture::Bert,
-        )
-        .build();
+        let _metadata = ModelMetadata::builder("test", ModelArchitecture::Bert).build();
     }
 
     #[test]
@@ -729,7 +729,7 @@ mod tests {
                 ModelArchitecture::DeepSeek { version: v2 },
             ) => {
                 assert_eq!(v1, v2);
-            }
+            },
             _ => panic!("Clone failed"),
         }
     }

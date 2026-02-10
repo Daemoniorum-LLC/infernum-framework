@@ -3,7 +3,7 @@
 use std::time::Duration;
 use thiserror::Error;
 
-/// Result type alias using [`Error`].
+/// Result type alias using [`enum@Error`].
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Unified error type for the Infernum ecosystem.
@@ -226,7 +226,7 @@ mod tests {
             Error::Backend { backend, message } => {
                 assert_eq!(backend, "cuda");
                 assert_eq!(message, "CUDA out of memory");
-            }
+            },
             _ => panic!("Expected Backend error"),
         }
     }

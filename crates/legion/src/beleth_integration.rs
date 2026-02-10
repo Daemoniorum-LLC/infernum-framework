@@ -97,7 +97,10 @@ pub trait LegionBackend: Send + Sync {
     async fn think(&self, query: &str) -> Result<MultiPerspectiveThought, LegionBackendError>;
 
     /// Resolves multiple agent proposals into a single action.
-    async fn resolve_action(&self, proposals: Vec<AgentProposal>) -> Result<ResolvedAction, LegionBackendError>;
+    async fn resolve_action(
+        &self,
+        proposals: Vec<AgentProposal>,
+    ) -> Result<ResolvedAction, LegionBackendError>;
 
     /// Returns the current quality level (0.0 - 1.0).
     fn quality(&self) -> f32;
@@ -174,11 +177,10 @@ impl LegionReactBackend {
     ///
     /// Returns an error if Legion creation fails.
     pub fn new(agent_count: usize) -> Result<Self, LegionBackendError> {
-        let config = Legion::builder()
-            .with_agent_count(agent_count)
-            .build();
+        let config = Legion::builder().with_agent_count(agent_count).build();
 
-        let legion = Legion::new(config).map_err(|e| LegionBackendError::LegionError(e.to_string()))?;
+        let legion =
+            Legion::new(config).map_err(|e| LegionBackendError::LegionError(e.to_string()))?;
 
         // Default perspectives mapped to frequency bands
         let perspectives = vec![
@@ -265,7 +267,8 @@ impl LegionReactBackend {
         // Check for unanimous agreement
         if action_votes.len() == 1 {
             let (action, voters) = action_votes.iter().next().expect("checked non-empty");
-            let avg_confidence: f32 = voters.iter().map(|p| p.confidence).sum::<f32>() / voters.len() as f32;
+            let avg_confidence: f32 =
+                voters.iter().map(|p| p.confidence).sum::<f32>() / voters.len() as f32;
 
             return ResolvedAction {
                 action: (*action).to_string(),
@@ -323,7 +326,10 @@ impl LegionReactBackend {
         }
 
         // Calculate coherence based on how much agreement there was
-        let selected_voters = action_votes.get(best_action.as_str()).map(|v| v.len()).unwrap_or(0);
+        let selected_voters = action_votes
+            .get(best_action.as_str())
+            .map(|v| v.len())
+            .unwrap_or(0);
         let coherence = selected_voters as f32 / proposals.len() as f32;
 
         ResolvedAction {
@@ -387,7 +393,10 @@ impl LegionBackend for LegionReactBackend {
         })
     }
 
-    async fn resolve_action(&self, proposals: Vec<AgentProposal>) -> Result<ResolvedAction, LegionBackendError> {
+    async fn resolve_action(
+        &self,
+        proposals: Vec<AgentProposal>,
+    ) -> Result<ResolvedAction, LegionBackendError> {
         // Filter out proposals from failed agents
         let active_proposals: Vec<AgentProposal> = proposals
             .into_iter()
@@ -654,14 +663,18 @@ mod tests {
         let json = serde_json::to_string(&proposal);
         assert!(json.is_ok());
 
-        let restored: Result<AgentProposal, _> = serde_json::from_str(&json.expect("Serialize failed"));
+        let restored: Result<AgentProposal, _> =
+            serde_json::from_str(&json.expect("Serialize failed"));
         assert!(restored.is_ok());
     }
 
     #[test]
     fn test_resolution_method_variants() {
         assert_ne!(ResolutionMethod::Unanimous, ResolutionMethod::Majority);
-        assert_ne!(ResolutionMethod::Interference, ResolutionMethod::SingleAgent);
+        assert_ne!(
+            ResolutionMethod::Interference,
+            ResolutionMethod::SingleAgent
+        );
         assert_ne!(ResolutionMethod::Fallback, ResolutionMethod::Unanimous);
     }
 

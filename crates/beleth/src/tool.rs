@@ -290,7 +290,8 @@ fn json_depth(value: &Value) -> usize {
 
 /// Checks if a string contains control characters.
 fn has_control_chars(s: &str) -> bool {
-    s.chars().any(|c| c.is_control() && c != '\n' && c != '\r' && c != '\t')
+    s.chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\r' && c != '\t')
 }
 
 /// Strips control characters from a string.
@@ -386,9 +387,7 @@ impl ToolTimeoutConfig {
             .copied()
             .unwrap_or(self.default_timeout);
 
-        let adjusted = Duration::from_secs_f32(
-            base.as_secs_f32() * self.complexity_multiplier
-        );
+        let adjusted = Duration::from_secs_f32(base.as_secs_f32() * self.complexity_multiplier);
 
         // Clamp to min/max bounds
         adjusted.clamp(self.min_timeout, self.max_timeout)
@@ -418,10 +417,18 @@ impl ToolTimeoutConfig {
     #[must_use]
     pub fn io_bound() -> Self {
         let mut config = Self::default();
-        config.tool_timeouts.insert("http".to_string(), Duration::from_secs(60));
-        config.tool_timeouts.insert("file_read".to_string(), Duration::from_secs(30));
-        config.tool_timeouts.insert("file_write".to_string(), Duration::from_secs(30));
-        config.tool_timeouts.insert("database".to_string(), Duration::from_secs(60));
+        config
+            .tool_timeouts
+            .insert("http".to_string(), Duration::from_secs(60));
+        config
+            .tool_timeouts
+            .insert("file_read".to_string(), Duration::from_secs(30));
+        config
+            .tool_timeouts
+            .insert("file_write".to_string(), Duration::from_secs(30));
+        config
+            .tool_timeouts
+            .insert("database".to_string(), Duration::from_secs(60));
         config
     }
 }
@@ -509,6 +516,71 @@ impl ToolContext {
     pub fn set_state(&mut self, key: impl Into<String>, value: Value) {
         self.state.insert(key.into(), value);
     }
+
+    /// Gets the file read cache.
+    #[must_use]
+    pub fn get_file_cache(&self) -> HashMap<String, FileReadCacheEntry> {
+        self.state
+            .get(FILE_READ_CACHE_KEY)
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default()
+    }
+
+    /// Updates the file read cache.
+    pub fn update_file_cache(&mut self, path: &str, entry: FileReadCacheEntry) {
+        let mut cache = self.get_file_cache();
+        cache.insert(path.to_string(), entry);
+        if let Ok(value) = serde_json::to_value(&cache) {
+            self.state.insert(FILE_READ_CACHE_KEY.to_string(), value);
+        }
+    }
+}
+
+/// Key for file read cache in ToolContext state.
+const FILE_READ_CACHE_KEY: &str = "__file_read_cache";
+
+/// Cache entry for file read deduplication.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileReadCacheEntry {
+    /// Hash of file content.
+    pub content_hash: u64,
+    /// Total line count.
+    pub line_count: usize,
+    /// Last read offset.
+    pub last_offset: usize,
+    /// Last read limit.
+    pub last_limit: usize,
+    /// Timestamp of last read (for cache invalidation).
+    pub read_at_ms: u64,
+}
+
+impl FileReadCacheEntry {
+    /// Creates a new cache entry.
+    #[must_use]
+    pub fn new(content_hash: u64, line_count: usize, offset: usize, limit: usize) -> Self {
+        let read_at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        Self {
+            content_hash,
+            line_count,
+            last_offset: offset,
+            last_limit: limit,
+            read_at_ms,
+        }
+    }
+}
+
+/// Computes a hash for file content.
+/// Used by file caching to detect unchanged files.
+#[allow(dead_code)] // Will be used when Tool::execute takes &mut ToolContext
+pub fn hash_content(content: &str) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Trait for tools that agents can use.
@@ -1157,8 +1229,18 @@ fn format_with_pattern(secs: u64, pattern: &str) -> String {
         "November",
         "December",
     ];
-    let month_abbrev = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    let day_names = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    let month_abbrev = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let day_names = [
+        "Sunday",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+    ];
     let day_abbrev = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
     let mut result = pattern.to_string();
@@ -1214,10 +1296,7 @@ fn parse_iso8601(s: &str) -> Option<u64> {
         return None;
     }
 
-    let time_parts: Vec<u32> = parts[1]
-        .split(':')
-        .filter_map(|p| p.parse().ok())
-        .collect();
+    let time_parts: Vec<u32> = parts[1].split(':').filter_map(|p| p.parse().ok()).collect();
     if time_parts.len() < 2 {
         return None;
     }
@@ -1355,7 +1434,9 @@ mod tests {
         assert!(!validation.is_valid());
 
         let issues = validation.issues().unwrap();
-        assert!(issues.iter().any(|i| matches!(i, ValidationIssue::SensitiveData { .. })));
+        assert!(issues
+            .iter()
+            .any(|i| matches!(i, ValidationIssue::SensitiveData { .. })));
     }
 
     #[test]
@@ -1367,7 +1448,9 @@ mod tests {
         assert!(!validation.is_valid());
 
         let issues = validation.issues().unwrap();
-        assert!(issues.iter().any(|i| matches!(i, ValidationIssue::ContainsControlChars)));
+        assert!(issues
+            .iter()
+            .any(|i| matches!(i, ValidationIssue::ContainsControlChars)));
     }
 
     #[test]
@@ -1481,8 +1564,8 @@ mod tests {
 
     #[test]
     fn test_tool_timeout_config_complexity_multiplier() {
-        let config = ToolTimeoutConfig::new(Duration::from_secs(30))
-            .with_complexity_multiplier(2.0);
+        let config =
+            ToolTimeoutConfig::new(Duration::from_secs(30)).with_complexity_multiplier(2.0);
 
         // 30s * 2.0 = 60s
         assert_eq!(config.get_timeout("any_tool"), Duration::from_secs(60));
@@ -1491,13 +1574,13 @@ mod tests {
     #[test]
     fn test_tool_timeout_config_clamping() {
         // Test max clamping
-        let config = ToolTimeoutConfig::new(Duration::from_secs(400))
-            .with_complexity_multiplier(1.0);
+        let config =
+            ToolTimeoutConfig::new(Duration::from_secs(400)).with_complexity_multiplier(1.0);
         assert_eq!(config.get_timeout("tool"), Duration::from_secs(300)); // clamped to max
 
         // Test min clamping
-        let config2 = ToolTimeoutConfig::new(Duration::from_millis(10))
-            .with_complexity_multiplier(1.0);
+        let config2 =
+            ToolTimeoutConfig::new(Duration::from_millis(10)).with_complexity_multiplier(1.0);
         assert_eq!(config2.get_timeout("tool"), Duration::from_millis(100)); // clamped to min
     }
 
@@ -1532,11 +1615,10 @@ mod tests {
 
     #[test]
     fn test_tool_context_with_timeout() {
-        let config = ToolTimeoutConfig::default()
-            .with_tool_timeout("search", Duration::from_secs(60));
+        let config =
+            ToolTimeoutConfig::default().with_tool_timeout("search", Duration::from_secs(60));
 
-        let ctx = ToolContext::new("agent-1")
-            .with_timeout_config(config);
+        let ctx = ToolContext::new("agent-1").with_timeout_config(config);
 
         assert_eq!(ctx.get_tool_timeout("search"), Duration::from_secs(60));
         assert_eq!(ctx.get_tool_timeout("other"), Duration::from_secs(30));
@@ -1544,8 +1626,7 @@ mod tests {
 
     #[test]
     fn test_tool_context_with_complexity() {
-        let ctx = ToolContext::new("agent-1")
-            .with_complexity(TaskComplexity::Complex);
+        let ctx = ToolContext::new("agent-1").with_complexity(TaskComplexity::Complex);
 
         assert_eq!(ctx.task_complexity, TaskComplexity::Complex);
         // 30s default * 2.0 complexity = 60s
@@ -1554,8 +1635,8 @@ mod tests {
 
     #[test]
     fn test_tool_context_complexity_affects_all_timeouts() {
-        let config = ToolTimeoutConfig::default()
-            .with_tool_timeout("slow", Duration::from_secs(100));
+        let config =
+            ToolTimeoutConfig::default().with_tool_timeout("slow", Duration::from_secs(100));
 
         let ctx = ToolContext::new("agent-1")
             .with_timeout_config(config)
@@ -1627,8 +1708,7 @@ mod tests {
 
     #[test]
     fn test_tool_result_with_data() {
-        let result = ToolResult::success("test")
-            .with_data(serde_json::json!({"key": "value"}));
+        let result = ToolResult::success("test").with_data(serde_json::json!({"key": "value"}));
         assert!(result.data.is_some());
         assert_eq!(result.data.unwrap()["key"], "value");
     }
@@ -1737,7 +1817,10 @@ mod tests {
 
     #[test]
     fn test_validation_issue_output_too_large() {
-        let issue = ValidationIssue::OutputTooLarge { size: 200, max: 100 };
+        let issue = ValidationIssue::OutputTooLarge {
+            size: 200,
+            max: 100,
+        };
         if let ValidationIssue::OutputTooLarge { size, max } = issue {
             assert_eq!(size, 200);
             assert_eq!(max, 100);
@@ -1755,7 +1838,9 @@ mod tests {
 
     #[test]
     fn test_validation_issue_sensitive_data() {
-        let issue = ValidationIssue::SensitiveData { pattern: "password".to_string() };
+        let issue = ValidationIssue::SensitiveData {
+            pattern: "password".to_string(),
+        };
         if let ValidationIssue::SensitiveData { pattern } = issue {
             assert_eq!(pattern, "password");
         }
@@ -1763,7 +1848,9 @@ mod tests {
 
     #[test]
     fn test_validation_issue_invalid_json() {
-        let issue = ValidationIssue::InvalidJson { error: "unexpected token".to_string() };
+        let issue = ValidationIssue::InvalidJson {
+            error: "unexpected token".to_string(),
+        };
         if let ValidationIssue::InvalidJson { error } = issue {
             assert_eq!(error, "unexpected token");
         }
@@ -2386,8 +2473,11 @@ mod tests {
 
         for test in test_cases {
             let result = ToolResult::success(test);
-            assert!(!result.validate(&config).is_valid(),
-                "Should detect sensitive data in: {}", test);
+            assert!(
+                !result.validate(&config).is_valid(),
+                "Should detect sensitive data in: {}",
+                test
+            );
         }
     }
 }

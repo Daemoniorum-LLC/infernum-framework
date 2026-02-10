@@ -14,7 +14,8 @@ name = "infernum"
 path = "src/main.rs"
 
 [features]
-default = ["server", "cuda", "llama-cpp"]
+# Note: cuda not in default - requires explicit opt-in for GPU support
+default = ["server", "llama-cpp"]
 server = ["infernum-server"]
 # GPU features - propagate to abaddon
 cuda = ["abaddon/cuda"]
@@ -27,16 +28,16 @@ llama-cpp-metal = ["llama-cpp", "abaddon/llama-cpp-metal"]
 llama-cpp-vulkan = ["llama-cpp", "abaddon/llama-cpp-vulkan"]
 
 [dependencies]
-infernum-core = { path = "../infernum-core", version = "0.1.0" }
-abaddon = { path = "../abaddon", version = "0.1.0" }
-malphas = { path = "../malphas", version = "0.1.0" }
-stolas = { path = "../stolas", version = "0.1.0", default-features = false }
-beleth = { path = "../beleth", version = "0.1.0" }
-asmodeus = { path = "../asmodeus", version = "0.1.0" }
-dantalion = { path = "../dantalion", version = "0.1.0" }
-grimoire-loader = { path = "../grimoire-loader", version = "0.1.0" }
-paimon = { path = "../paimon", version = "0.1.0" }
-infernum-server = { path = "../infernum-server", version = "0.1.0", optional = true }
+infernum-core = { path = "../infernum-core", version = "0.2.0-rc.1" }
+abaddon = { path = "../abaddon", version = "0.2.0-rc.1" }
+malphas = { path = "../malphas", version = "0.2.0-rc.1" }
+stolas = { path = "../stolas", version = "0.2.0-rc.1", default-features = false }
+beleth = { path = "../beleth", version = "0.2.0-rc.1" }
+asmodeus = { path = "../asmodeus", version = "0.2.0-rc.1" }
+dantalion = { path = "../dantalion", version = "0.2.0-rc.1" }
+grimoire-loader = { path = "../grimoire-loader", version = "0.2.0-rc.1" }
+paimon = { path = "../paimon", version = "0.2.0-rc.1" }
+infernum-server = { path = "../infernum-server", version = "0.2.0-rc.1", optional = true }
 
 # Async
 tokio = { workspace = true }
@@ -83,3 +84,6 @@ tokio = { workspace = true, features = ["test-util", "macros"] }
 assert_cmd = "2.0"
 predicates = "3.1"
 tempfile = "3.19"
+
+[lints]
+workspace = true

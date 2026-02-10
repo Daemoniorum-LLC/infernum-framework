@@ -9,7 +9,9 @@ use std::sync::Arc;
 use thiserror::Error;
 use tracing::{info, info_span};
 
-use crate::agents::{DataCuratorAgent, EvalAnalystAgent, HyperparamOptimizerAgent, TrainingCoachAgent};
+use crate::agents::{
+    DataCuratorAgent, EvalAnalystAgent, HyperparamOptimizerAgent, TrainingCoachAgent,
+};
 use crate::dataset::DatasetManager;
 use crate::experiment::ExperimentTracker;
 use crate::prompt::PromptStudio;
@@ -162,17 +164,22 @@ impl Studio {
         let model_registry = Arc::new(ModelRegistry::new(config.models_dir.clone()));
 
         // Initialize agents if enabled
-        let (data_curator, training_coach, eval_analyst, hyperparam_optimizer) = if config.enable_agents {
-            info!("Initializing agent familiars");
-            (
-                Some(Arc::new(DataCuratorAgent::new(config.agent_model.clone()))),
-                Some(Arc::new(TrainingCoachAgent::new(config.agent_model.clone()))),
-                Some(Arc::new(EvalAnalystAgent::new(config.agent_model.clone()))),
-                Some(Arc::new(HyperparamOptimizerAgent::new(config.agent_model.clone()))),
-            )
-        } else {
-            (None, None, None, None)
-        };
+        let (data_curator, training_coach, eval_analyst, hyperparam_optimizer) =
+            if config.enable_agents {
+                info!("Initializing agent familiars");
+                (
+                    Some(Arc::new(DataCuratorAgent::new(config.agent_model.clone()))),
+                    Some(Arc::new(TrainingCoachAgent::new(
+                        config.agent_model.clone(),
+                    ))),
+                    Some(Arc::new(EvalAnalystAgent::new(config.agent_model.clone()))),
+                    Some(Arc::new(HyperparamOptimizerAgent::new(
+                        config.agent_model.clone(),
+                    ))),
+                )
+            } else {
+                (None, None, None, None)
+            };
 
         Ok(Self {
             config,
@@ -289,8 +296,7 @@ mod tests {
     #[tokio::test]
     async fn test_studio_without_agents() {
         let temp = TempDir::new().expect("Failed to create temp dir");
-        let config = StudioConfig::with_base_dir(temp.path().to_path_buf())
-            .without_agents();
+        let config = StudioConfig::with_base_dir(temp.path().to_path_buf()).without_agents();
 
         let studio = Studio::new(config).await.expect("Failed to create studio");
 
