@@ -5890,10 +5890,10 @@ dependencies = [
  "indicatif 0.18.3",
  "infernum-asmodeus",
  "infernum-core",
+ "infernum-paimon",
  "infernum-server",
  "malphas",
  "num_cpus",
- "paimon",
  "predicates",
  "safetensors 0.7.0",
  "serde",
@@ -5982,6 +5982,34 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tracing",
+]
+
+[[package]]
+name = "infernum-paimon"
+version = "0.2.0-rc.1"
+dependencies = [
+ "abaddon",
+ "anyhow",
+ "async-trait",
+ "beleth",
+ "chrono",
+ "dantalion",
+ "dashmap",
+ "dirs 6.0.0",
+ "futures",
+ "infernum-asmodeus",
+ "infernum-core",
+ "parking_lot",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "stolas",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -8313,34 +8341,6 @@ dependencies = [
  "primeorder",
  "serdect",
  "sha2",
-]
-
-[[package]]
-name = "paimon"
-version = "0.2.0-rc.1"
-dependencies = [
- "abaddon",
- "anyhow",
- "async-trait",
- "beleth",
- "chrono",
- "dantalion",
- "dashmap",
- "dirs 6.0.0",
- "futures",
- "infernum-asmodeus",
- "infernum-core",
- "parking_lot",
- "rusqlite",
- "serde",
- "serde_json",
- "stolas",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-stream",
- "tracing",
- "uuid",
 ]
 
 [[package]]

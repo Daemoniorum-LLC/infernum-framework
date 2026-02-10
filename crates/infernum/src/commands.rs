@@ -2670,7 +2670,7 @@ fn studio_dir() -> std::path::PathBuf {
 
 /// Show studio statistics.
 pub async fn studio_stats() -> Result<()> {
-    use paimon::{DatasetManager, ExperimentTracker, ModelRegistry, PromptStudio};
+    use infernum_paimon::{DatasetManager, ExperimentTracker, ModelRegistry, PromptStudio};
 
     println!("\x1b[1m📊 Infernum Studio\x1b[0m");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -2720,7 +2720,7 @@ pub async fn studio_stats() -> Result<()> {
 
 /// List datasets.
 pub async fn dataset_list() -> Result<()> {
-    use paimon::DatasetManager;
+    use infernum_paimon::DatasetManager;
 
     let manager = DatasetManager::new(studio_dir().join("datasets"));
     let datasets = manager.list().await;
@@ -2765,7 +2765,7 @@ pub async fn dataset_list() -> Result<()> {
 
 /// Create a dataset.
 pub async fn dataset_create(name: String, description: Option<String>) -> Result<()> {
-    use paimon::{DatasetConfig, DatasetManager};
+    use infernum_paimon::{DatasetConfig, DatasetManager};
 
     let manager = DatasetManager::new(studio_dir().join("datasets"));
 
@@ -2798,7 +2798,7 @@ pub async fn dataset_create(name: String, description: Option<String>) -> Result
 
 /// Import data into a dataset.
 pub async fn dataset_import(name: String, file: String) -> Result<()> {
-    use paimon::{DatasetConfig, DatasetManager, Example};
+    use infernum_paimon::{DatasetConfig, DatasetManager, Example};
     use std::io::BufRead;
 
     let manager = DatasetManager::new(studio_dir().join("datasets"));
@@ -2854,7 +2854,7 @@ pub async fn dataset_import(name: String, file: String) -> Result<()> {
 
 /// Show dataset info.
 pub async fn dataset_info(name: String) -> Result<()> {
-    use paimon::DatasetManager;
+    use infernum_paimon::DatasetManager;
 
     let manager = DatasetManager::new(studio_dir().join("datasets"));
     let datasets = manager.list().await;
@@ -2895,7 +2895,7 @@ pub async fn dataset_info(name: String) -> Result<()> {
 
 /// Validate dataset.
 pub async fn dataset_validate(name: String) -> Result<()> {
-    use paimon::DatasetManager;
+    use infernum_paimon::DatasetManager;
 
     let manager = DatasetManager::new(studio_dir().join("datasets"));
     let datasets = manager.list().await;
@@ -2941,7 +2941,7 @@ pub async fn dataset_validate(name: String) -> Result<()> {
 
 /// Analyze dataset with Data Curator agent.
 pub async fn dataset_analyze(name: String) -> Result<()> {
-    use paimon::{DataCuratorAgent, DatasetManager};
+    use infernum_paimon::{DataCuratorAgent, DatasetManager};
 
     let manager = DatasetManager::new(studio_dir().join("datasets"));
     let datasets = manager.list().await;
@@ -3030,7 +3030,7 @@ pub async fn dataset_analyze(name: String) -> Result<()> {
 
 /// List experiments.
 pub async fn experiment_list() -> Result<()> {
-    use paimon::ExperimentTracker;
+    use infernum_paimon::ExperimentTracker;
 
     let tracker = ExperimentTracker::new(studio_dir().join("experiments"));
     let experiments = tracker.list_experiments().await;
@@ -3076,7 +3076,7 @@ pub async fn experiment_list() -> Result<()> {
 
 /// Create an experiment.
 pub async fn experiment_create(name: String, description: Option<String>) -> Result<()> {
-    use paimon::{ExperimentConfig, ExperimentTracker};
+    use infernum_paimon::{ExperimentConfig, ExperimentTracker};
 
     let tracker = ExperimentTracker::new(studio_dir().join("experiments"));
 
@@ -3101,7 +3101,7 @@ pub async fn experiment_create(name: String, description: Option<String>) -> Res
 
 /// Show experiment info.
 pub async fn experiment_info(name: String) -> Result<()> {
-    use paimon::ExperimentTracker;
+    use infernum_paimon::ExperimentTracker;
 
     let tracker = ExperimentTracker::new(studio_dir().join("experiments"));
     let experiments = tracker.list_experiments().await;
@@ -3137,7 +3137,7 @@ pub async fn experiment_info(name: String) -> Result<()> {
 
 /// List runs in an experiment.
 pub async fn experiment_runs(name: String) -> Result<()> {
-    use paimon::ExperimentTracker;
+    use infernum_paimon::ExperimentTracker;
 
     let tracker = ExperimentTracker::new(studio_dir().join("experiments"));
     let experiments = tracker.list_experiments().await;
@@ -3182,7 +3182,7 @@ pub async fn experiment_runs(name: String) -> Result<()> {
 
 /// Analyze experiment with Training Coach.
 pub async fn experiment_analyze(name: String) -> Result<()> {
-    use paimon::{ExperimentTracker, TrainingCoachAgent, TrainingMetrics};
+    use infernum_paimon::{ExperimentTracker, TrainingCoachAgent, TrainingMetrics};
 
     let tracker = ExperimentTracker::new(studio_dir().join("experiments"));
     let experiments = tracker.list_experiments().await;
@@ -3248,9 +3248,9 @@ pub async fn experiment_analyze(name: String) -> Result<()> {
         println!(
             "  Health: {}",
             match analysis.health {
-                paimon::RunHealth::Healthy => "\x1b[32mHealthy\x1b[0m",
-                paimon::RunHealth::Warning => "\x1b[33mWarning\x1b[0m",
-                paimon::RunHealth::Critical => "\x1b[31mCritical\x1b[0m",
+                infernum_paimon::RunHealth::Healthy => "\x1b[32mHealthy\x1b[0m",
+                infernum_paimon::RunHealth::Warning => "\x1b[33mWarning\x1b[0m",
+                infernum_paimon::RunHealth::Critical => "\x1b[31mCritical\x1b[0m",
             }
         );
 
@@ -3286,7 +3286,7 @@ pub async fn experiment_analyze(name: String) -> Result<()> {
 
 /// List prompts.
 pub async fn prompt_list() -> Result<()> {
-    use paimon::PromptStudio;
+    use infernum_paimon::PromptStudio;
 
     let studio = PromptStudio::new(studio_dir().join("prompts"));
     let templates = studio.list_templates().await;
@@ -3335,7 +3335,7 @@ pub async fn prompt_create(
     content: String,
     description: Option<String>,
 ) -> Result<()> {
-    use paimon::PromptStudio;
+    use infernum_paimon::PromptStudio;
 
     let studio = PromptStudio::new(studio_dir().join("prompts"));
 
@@ -3380,7 +3380,7 @@ pub async fn prompt_create(
 
 /// Show a prompt template.
 pub async fn prompt_show(name: String, version: Option<u32>) -> Result<()> {
-    use paimon::PromptStudio;
+    use infernum_paimon::PromptStudio;
 
     let studio = PromptStudio::new(studio_dir().join("prompts"));
 
@@ -3429,7 +3429,7 @@ pub async fn prompt_show(name: String, version: Option<u32>) -> Result<()> {
 
 /// Test a prompt template.
 pub async fn prompt_test(name: String, input: Option<String>) -> Result<()> {
-    use paimon::PromptStudio;
+    use infernum_paimon::PromptStudio;
 
     let studio = PromptStudio::new(studio_dir().join("prompts"));
 
@@ -3470,7 +3470,7 @@ pub async fn prompt_test(name: String, input: Option<String>) -> Result<()> {
 
 /// List registered models.
 pub async fn registry_list() -> Result<()> {
-    use paimon::ModelRegistry;
+    use infernum_paimon::ModelRegistry;
 
     let registry = ModelRegistry::new(studio_dir().join("registry"));
     let models = registry.list_models();
@@ -3524,7 +3524,7 @@ pub async fn registry_register(
     path: String,
     description: Option<String>,
 ) -> Result<()> {
-    use paimon::{Model, ModelMetadata, ModelRegistry};
+    use infernum_paimon::{Model, ModelMetadata, ModelRegistry};
 
     let registry = ModelRegistry::new(studio_dir().join("registry"));
 
@@ -3556,7 +3556,7 @@ pub async fn registry_register(
 
 /// Show model info.
 pub async fn registry_info(name: String) -> Result<()> {
-    use paimon::ModelRegistry;
+    use infernum_paimon::ModelRegistry;
 
     let registry = ModelRegistry::new(studio_dir().join("registry"));
 
@@ -3598,7 +3598,7 @@ pub async fn registry_info(name: String) -> Result<()> {
 
 /// Promote model to a stage.
 pub async fn registry_promote(name: String, stage: String) -> Result<()> {
-    use paimon::{ModelRegistry, ModelStage};
+    use infernum_paimon::{ModelRegistry, ModelStage};
 
     let registry = ModelRegistry::new(studio_dir().join("registry"));
 
@@ -3645,7 +3645,7 @@ pub async fn registry_promote(name: String, stage: String) -> Result<()> {
 
 /// Get improvement roadmap from Eval Analyst.
 pub async fn registry_roadmap(name: String) -> Result<()> {
-    use paimon::{
+    use infernum_paimon::{
         analyst::{BenchmarkResults, BenchmarkScore},
         EvalAnalystAgent, ModelRegistry,
     };
