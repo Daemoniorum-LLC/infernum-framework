@@ -12,7 +12,7 @@ entry_points:
 
 ## Purpose
 
-Local LLM inference framework written in Rust, providing OpenAI-compatible API and CLI for running large language models locally.
+Local LLM inference framework written in Rust, providing industry-standard API and CLI for running large language models locally.
 
 ## Architecture
 
@@ -100,7 +100,7 @@ infernum doctor
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/v1/chat/completions` | POST | Chat completion (OpenAI-compatible) |
+| `/v1/chat/completions` | POST | Chat completion |
 | `/v1/completions` | POST | Text completion |
 | `/v1/embeddings` | POST | Generate embeddings |
 | `/v1/models` | GET | List loaded models |

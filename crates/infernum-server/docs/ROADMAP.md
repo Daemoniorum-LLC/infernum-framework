@@ -77,7 +77,7 @@ Enable `logprobs` parameter in chat completions.
 ### 1.3 Function Calling / Tool Use [HIGH]
 **Complexity**: High | **Priority**: High | **Est**: 5 days
 
-Add OpenAI-compatible function calling.
+Add function calling with model-aware formatting.
 
 ```rust
 // New types needed

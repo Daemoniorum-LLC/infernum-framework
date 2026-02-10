@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Downloads all shards with per-file progress tracking
 - Token counting endpoint (`POST /v1/tokenize`) for pre-flight validation
 - Logprobs support in chat completions (`logprobs` and `top_logprobs` parameters)
-- Function calling / tool use support with OpenAI-compatible types
+- Function calling / tool use support with standard types
   - `Tool`, `FunctionDefinition`, `ToolCall`, `FunctionCall` types
   - `tools` and `tool_choice` parameters in chat completions
   - Support for tool response messages (`role: "tool"`)
@@ -168,7 +168,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Initial release
-- OpenAI-compatible REST API
+- REST API with standard `/v1/*` endpoints
   - `POST /v1/chat/completions`
   - `POST /v1/completions`
   - `POST /v1/embeddings`

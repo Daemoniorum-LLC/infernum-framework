@@ -31,7 +31,7 @@ struct ModelInfo {
     id: String,
 }
 
-/// Chat completion request (OpenAI-compatible).
+/// Chat completion request.
 #[derive(Debug, Serialize)]
 struct ChatRequest {
     model: String,

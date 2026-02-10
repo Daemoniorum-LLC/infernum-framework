@@ -23,7 +23,7 @@ infernum chat
 ## Features
 
 - **Local Inference**: Run LLMs entirely on your machine - no API keys, no cloud
-- **OpenAI Compatible API**: Drop-in replacement server at `localhost:8080`
+- **Standard API**: Industry-standard `/v1/*` server at `localhost:8080`
 - **Interactive Chat**: Full-featured CLI chat with history and session management
 - **Multi-Backend**: CPU, CUDA (NVIDIA), and Metal (Apple Silicon) support
 - **Smart Caching**: Models download once via HuggingFace Hub
@@ -72,7 +72,7 @@ Infernum is built from specialized components:
 - **beleth**: Agent framework for autonomous AI
 - **asmodeus**: Model fine-tuning and adaptation
 - **dantalion**: Observability and telemetry
-- **infernum-server**: OpenAI-compatible HTTP API
+- **infernum-server**: HTTP API server
 
 ## Documentation
 

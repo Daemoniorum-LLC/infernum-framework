@@ -23,7 +23,7 @@ exercised outside of unit tests.
 | Crate | LOC | Tests | Description |
 |-------|-----|-------|-------------|
 | **abaddon** | 56,453 | 339 | Inference engine (Candle, HoloTensor, CUDA) |
-| **infernum-server** | 33,924 | 704 | OpenAI-compatible HTTP API server |
+| **infernum-server** | 33,924 | 704 | HTTP API server |
 | **beleth** | 15,270 | 475 | Agent framework (ReAct, OODA, wellbeing) |
 | **paimon** | 11,979 | 45 | LLM Studio (datasets, experiments, registry) |
 | **legion** | 7,703 | 103 | Holographic agent swarm |
@@ -64,7 +64,7 @@ The heart of Infernum. Provides:
 - `speculative_405b.rs` - 405B speculative decoding support
 
 #### **infernum-server** - HTTP Server (34K LOC)
-*OpenAI-compatible API server*
+*HTTP API server*
 
 Full-featured HTTP API:
 - `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`

@@ -16,7 +16,7 @@ Infernum is a local LLM inference framework written in Rust. The codebase is org
 | `beleth` | Agent framework |
 | `asmodeus` | Fine-tuning and LoRA |
 | `dantalion` | Observability and metrics |
-| `infernum-server` | HTTP API server (OpenAI compatible) |
+| `infernum-server` | HTTP API server |
 | `grimoire-loader` | Persona/prompt loading |
 
 ## Development Workflow

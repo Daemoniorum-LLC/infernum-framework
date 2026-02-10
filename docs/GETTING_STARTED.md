@@ -553,7 +553,7 @@ let engine = MultiGPUEngine::new(MultiGPUConfig {
 
 ## Production Deployment
 
-### OpenAI-Compatible Server
+### HTTP API Server
 
 ```sigil
 use infernum::server::{Server, ServerConfig}
@@ -569,7 +569,7 @@ let config = ServerConfig {
 Server::new(config)?.run()?
 ```
 
-Access via OpenAI API:
+Access via standard `/v1/*` endpoints:
 
 ```bash
 curl http://localhost:8080/v1/chat/completions \
