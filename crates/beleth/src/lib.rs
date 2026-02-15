@@ -133,6 +133,7 @@ pub use agentic_loop::{
     Subtask,
     SubtaskResult,
     SubtaskStatus,
+    Supervisor,
     SupervisorConfig,
     SupervisorError,
     SupervisorEvent,

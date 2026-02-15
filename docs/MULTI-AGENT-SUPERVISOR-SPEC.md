@@ -1,8 +1,8 @@
 # Multi-Agent Supervisor Specification
 
-**Version:** 0.1.0
-**Status:** Draft
-**Date:** 2026-02-04
+**Version:** 0.2.0
+**Status:** Implementing (Phase 4 pending)
+**Date:** 2026-02-15
 **Prerequisite:** AGENTIC-LOOP-SPEC.md v0.2.0
 
 ---
@@ -853,36 +853,36 @@ impl Supervisor {
 
 ## 10. Implementation Phases
 
-### Phase 1: Single-Agent Supervisor
+### Phase 1: Single-Agent Supervisor ✅
 
-- [ ] `Supervisor` struct with `SingleAgent` decomposition
-- [ ] Spawn one `LoopExecutor`, monitor events, collect results
-- [ ] Retry on failure
-- [ ] `POST /api/agent/supervise` endpoint
-- [ ] `SupervisorEvent` SSE stream
+- [x] `Supervisor` struct with `SingleAgent` decomposition
+- [x] Spawn one `LoopExecutor`, monitor events, collect results
+- [x] Retry on failure
+- [x] `POST /api/agent/supervise` endpoint
+- [x] `SupervisorEvent` SSE stream
 
-### Phase 2: Multi-Agent Parallel
+### Phase 2: Multi-Agent Parallel ✅
 
 **Prerequisite:** Add communication primitives to `AgentCoordinator`:
-- [ ] `request_assistance(from, to, context)` method
-- [ ] `yield_to(from, partial_progress, suggested_expertise)` method
-- [ ] `share_discovery(from, discovery)` method
-- [ ] `get_shared_context(agent_id)` method
+- [x] `request_assistance(from, to, context)` method
+- [x] `yield_to(from, partial_progress, suggested_expertise)` method
+- [x] `share_discovery(from, discovery)` method
+- [x] `get_shared_context(agent_id)` method
 
 Then:
-- [ ] `LlmPlanned` decomposition with planning prompt
-- [ ] Parallel dispatch with concurrency limits
-- [ ] `AgentCoordinator` integration for identity and tool locks
-- [ ] Resource budget allocation and tracking
-- [ ] Dependency-aware routing
+- [x] `LlmPlanned` decomposition with planning prompt
+- [x] Parallel dispatch with concurrency limits
+- [x] `AgentCoordinator` integration for identity and tool locks
+- [x] Resource budget allocation and tracking
+- [x] Dependency-aware routing
 
-### Phase 3: Rerouting and Recovery
+### Phase 3: Rerouting and Recovery ✅
 
-- [ ] Yield handling with partial progress forwarding
-- [ ] Stuck handling with context injection
-- [ ] Recovery strategies (retry, reassign, skip, escalate)
-- [ ] Dynamic budget rebalancing
-- [ ] Cascading failure prevention
+- [x] Yield handling with partial progress forwarding
+- [x] Stuck handling with context injection
+- [x] Recovery strategies (retry, reassign, skip, escalate)
+- [x] Dynamic budget rebalancing
+- [x] Cascading failure prevention (circuit breaker, 50% threshold)
 
 ### Phase 4: Shared Context and Aggregation
 
@@ -944,3 +944,4 @@ Fresh agents are used for independent subtasks.
 | Version | Date | Changes |
 |---------|------|---------|
 | 0.1.0 | 2026-02-04 | Initial draft. Architecture, lifecycle, API, resource management, failure recovery, wellbeing integration. |
+| 0.2.0 | 2026-02-15 | Phase 1-3 complete. Single-agent supervisor, multi-agent parallel dispatch, rerouting/recovery with structured failure types, circuit breaker, 50% failure threshold. |
