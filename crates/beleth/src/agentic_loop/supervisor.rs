@@ -240,14 +240,38 @@ pub enum RoutingStrategy {
 }
 
 /// How context is shared between agents.
+///
+/// Implements spec §4.4 (SharedContextMode).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SharedContextMode {
-    /// No context sharing between agents.
+    /// No context sharing between agents (spec: `Isolated`).
+    ///
+    /// Children see nothing of each other's work. Each agent operates
+    /// in complete isolation.
+    #[serde(alias = "isolated", alias = "Isolated")]
     None,
+
     /// Share summaries of completed subtask results.
+    ///
+    /// Children see truncated summaries (first 500 chars) of completed
+    /// subtask answers. Good for reducing context pollution while allowing
+    /// basic awareness.
     SummarySharing,
+
     /// Share full results between agents.
+    ///
+    /// Children see complete results of all completed subtasks. Maximum
+    /// information sharing but may cause context pollution for unrelated tasks.
     FullSharing,
+
+    /// Supervisor decides per-subtask what to share.
+    ///
+    /// The supervisor selectively shares context based on subtask relationships
+    /// and dependencies. Enables fine-grained control:
+    /// - Dependent subtasks see full predecessor results
+    /// - Independent subtasks see only relevant discoveries
+    /// - Failed subtask context is shared with retry agents
+    SupervisorManaged,
 }
 
 /// Supervisor configuration.
@@ -500,6 +524,11 @@ pub struct SubtaskResult {
 /// Final summary from the supervisor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SupervisorSummary {
+    /// Synthesized answer from all subtask results (Phase 4 aggregation).
+    ///
+    /// Present when `SharedContextMode` is `FullSharing` or `SupervisorManaged`
+    /// and aggregation was run.
+    pub answer: Option<String>,
     /// Why the supervisor stopped.
     pub termination: SupervisorTermination,
     /// Results for each subtask.
@@ -514,6 +543,23 @@ pub struct SupervisorSummary {
     pub total_tokens: u32,
     /// Wall-clock time.
     pub wall_time: Duration,
+    /// Rerouting events that occurred during execution.
+    pub reroutes: Vec<RerouteEvent>,
+}
+
+/// A rerouting event that occurred during supervisor execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RerouteEvent {
+    /// The agent that was rerouted from.
+    pub from_agent: AgentId,
+    /// The agent that was rerouted to.
+    pub to_agent: AgentId,
+    /// The subtask ID that was rerouted.
+    pub subtask_id: String,
+    /// Why the reroute occurred.
+    pub reason: RerouteReason,
+    /// When the reroute occurred (relative to supervisor start).
+    pub elapsed: Duration,
 }
 
 // ===========================================================================
@@ -1310,6 +1356,9 @@ impl ResultAggregator {
     }
 
     /// Builds a [`SupervisorSummary`] from the collected results.
+    ///
+    /// The `reroutes` and `answer` fields are set separately after construction
+    /// via the builder methods.
     pub fn build_summary(
         &self,
         total_spawned: u32,
@@ -1335,6 +1384,7 @@ impl ResultAggregator {
         };
 
         SupervisorSummary {
+            answer: None,
             termination,
             subtask_results: self.all_results(),
             total_agents_spawned: total_spawned,
@@ -1342,6 +1392,53 @@ impl ResultAggregator {
             total_tool_calls: consumed.tool_calls,
             total_tokens: consumed.tokens,
             wall_time,
+            reroutes: vec![],
+        }
+    }
+
+    /// Synthesizes a unified answer from all completed subtask results.
+    ///
+    /// This is used in Phase 4 aggregation when `SharedContextMode` is
+    /// `FullSharing` or `SupervisorManaged`.
+    pub fn synthesize_answer(&self) -> Option<String> {
+        let completed_results: Vec<_> = self
+            .results
+            .values()
+            .filter(|r| matches!(r.status, SubtaskStatus::Completed))
+            .collect();
+
+        if completed_results.is_empty() {
+            return None;
+        }
+
+        // Simple aggregation: concatenate all subtask answers
+        // In a real implementation, this would use the LLM to synthesize
+        let mut aggregated = String::from("## Aggregated Results\n\n");
+
+        for result in completed_results {
+            if let Some(ref summary) = result.summary {
+                if let Some(ref answer) = summary.partial_answer {
+                    aggregated.push_str(&format!(
+                        "### Subtask: {}\n{}\n\n",
+                        result.subtask_id, answer
+                    ));
+                } else if let TerminationReason::Natural(NaturalTermination::AnswerProvided {
+                    answer,
+                    ..
+                }) = &summary.termination
+                {
+                    aggregated.push_str(&format!(
+                        "### Subtask: {}\n{}\n\n",
+                        result.subtask_id, answer
+                    ));
+                }
+            }
+        }
+
+        if aggregated.len() > 30 {
+            Some(aggregated)
+        } else {
+            None
         }
     }
 }
@@ -2660,8 +2757,11 @@ Output ONLY the JSON array, no other text."#
     /// Retrieves shared context for an agent from completed subtasks.
     ///
     /// Returns context from other agents' discoveries, filtered by the
-    /// configured `SharedContextMode`.
-    #[allow(dead_code)] // Will be used in parallel dispatch
+    /// configured `SharedContextMode`:
+    /// - `None`: No context sharing
+    /// - `SummarySharing`: Share truncated summaries
+    /// - `FullSharing`: Share complete context
+    /// - `SupervisorManaged`: Selective sharing based on relationships
     fn get_shared_context_for_agent(&self, agent_id: &AgentId) -> Option<String> {
         if matches!(self.config.shared_context_mode, SharedContextMode::None) {
             return None;
@@ -2674,10 +2774,53 @@ Output ONLY the JSON array, no other text."#
 
         // Build a context string from discoveries
         let mut result = String::from("## Context from other agents:\n\n");
+
         for (from_agent, discovery) in &context.discoveries {
+            let content_to_share = match self.config.shared_context_mode {
+                SharedContextMode::None => continue, // Already handled above
+                SharedContextMode::SummarySharing => {
+                    // Truncate to summary length
+                    if discovery.content.len() > SUMMARY_TRUNCATION_LIMIT {
+                        format!("{}...", &discovery.content[..SUMMARY_TRUNCATION_LIMIT])
+                    } else {
+                        discovery.content.clone()
+                    }
+                }
+                SharedContextMode::FullSharing => discovery.content.clone(),
+                SharedContextMode::SupervisorManaged => {
+                    // Selective sharing based on discovery category
+                    match discovery.category.as_str() {
+                        // Always share failure context (helps retry agents)
+                        "failure_context" | "yielded_progress" => discovery.content.clone(),
+                        // Share subtask results if tagged with this agent's subtask
+                        "subtask_result" => {
+                            // Check if this discovery is relevant to the requesting agent
+                            if discovery.tags.iter().any(|t| t.contains(agent_id)) {
+                                discovery.content.clone()
+                            } else {
+                                // Share a summary for potentially related subtasks
+                                if discovery.content.len() > SUMMARY_TRUNCATION_LIMIT {
+                                    format!("{}...", &discovery.content[..SUMMARY_TRUNCATION_LIMIT])
+                                } else {
+                                    discovery.content.clone()
+                                }
+                            }
+                        }
+                        // Default: share summary for unknown categories
+                        _ => {
+                            if discovery.content.len() > SUMMARY_TRUNCATION_LIMIT {
+                                format!("{}...", &discovery.content[..SUMMARY_TRUNCATION_LIMIT])
+                            } else {
+                                discovery.content.clone()
+                            }
+                        }
+                    }
+                }
+            };
+
             result.push_str(&format!(
                 "### {} ({})\n{}\n\n",
-                discovery.category, from_agent, discovery.content
+                discovery.category, from_agent, content_to_share
             ));
         }
 

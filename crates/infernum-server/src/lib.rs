@@ -133,7 +133,11 @@ pub use agent_identity::{
     AgentIdentity, AgentIdentityError, AgentIdentityExport, EncryptedIdentity,
     EncryptedIdentityStore,
 };
-pub use agentic::{run_agent, AgenticRunError, AgenticRunRequest};
+pub use agentic::{
+    inspect_agent, override_subtask, run_agent, run_supervisor, AgentInspectionResponse,
+    AgenticRunError, AgenticRunRequest, SubtaskAction, SubtaskOverrideRequest,
+    SubtaskOverrideResponse, SubtaskSpec, SuperviseRequest,
+};
 pub use api_types::{
     ChatChoice, ChatCompletionRequest, ChatCompletionResponse, ChatLogProbs, ChatMessage,
     CompletionChoice, CompletionRequest, CompletionResponse, EmbeddingData, EmbeddingInput,

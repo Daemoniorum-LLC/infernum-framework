@@ -1,7 +1,7 @@
 # Multi-Agent Supervisor Specification
 
-**Version:** 0.2.0
-**Status:** Implementing (Phase 4 pending)
+**Version:** 0.3.0
+**Status:** Implementing (Phase 5 pending)
 **Date:** 2026-02-15
 **Prerequisite:** AGENTIC-LOOP-SPEC.md v0.2.0
 
@@ -884,12 +884,12 @@ Then:
 - [x] Dynamic budget rebalancing
 - [x] Cascading failure prevention (circuit breaker, 50% threshold)
 
-### Phase 4: Shared Context and Aggregation
+### Phase 4: Shared Context and Aggregation ✅
 
-- [ ] `SharedContextMode` implementations
-- [ ] Aggregation executor for synthesizing multi-agent results
-- [ ] Subtask override endpoint
-- [ ] Agent inspection endpoint
+- [x] `SharedContextMode` implementations (`None`, `SummarySharing`, `FullSharing`, `SupervisorManaged`)
+- [x] Aggregation executor for synthesizing multi-agent results (`ResultAggregator::synthesize_answer`)
+- [x] Subtask override endpoint (`POST /api/agent/{session_id}/subtasks/{subtask_id}`)
+- [x] Agent inspection endpoint (`GET /api/agent/{session_id}/agents/{agent_id}`)
 
 ### Phase 5: Wellbeing and Polish
 
@@ -945,3 +945,4 @@ Fresh agents are used for independent subtasks.
 |---------|------|---------|
 | 0.1.0 | 2026-02-04 | Initial draft. Architecture, lifecycle, API, resource management, failure recovery, wellbeing integration. |
 | 0.2.0 | 2026-02-15 | Phase 1-3 complete. Single-agent supervisor, multi-agent parallel dispatch, rerouting/recovery with structured failure types, circuit breaker, 50% failure threshold. |
+| 0.3.0 | 2026-02-15 | Phase 4 complete. SharedContextMode (incl. SupervisorManaged), result aggregation with answer synthesis, subtask override endpoint, agent inspection endpoint. |

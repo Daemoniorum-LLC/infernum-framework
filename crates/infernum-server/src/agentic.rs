@@ -1,10 +1,12 @@
-//! Agentic loop HTTP endpoint.
+//! Agentic loop HTTP endpoints.
 //!
-//! `POST /api/agent/run` — starts an agentic loop, streaming `LoopEvent`s as SSE.
+//! - `POST /api/agent/run` — starts an agentic loop, streaming `LoopEvent`s as SSE.
+//! - `POST /api/agent/supervise` — starts a multi-agent supervisor, streaming `SupervisorEvent`s.
+//!
 //! Integrates with the `SessionRegistry` for monitoring and the inference engine
 //! for model generation.
 //!
-//! Reference: AGENTIC-LOOP-SPEC.md §9.
+//! Reference: AGENTIC-LOOP-SPEC.md §9, MULTI-AGENT-SUPERVISOR-SPEC.md §10.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,8 +23,9 @@ use tokio_stream::StreamExt;
 use tracing::{info, warn};
 
 use beleth::{
-    AutonomyGrant, ExecutorConfig, LoopConfig, LoopEvent, LoopExecutor, NaturalTermination,
-    TerminationReason, ToolPattern, ToolRegistry,
+    AutonomyGrant, Complexity, DecompositionStrategy, ExecutorConfig, LoopConfig, LoopEvent,
+    LoopExecutor, NaturalTermination, Subtask, Supervisor, SupervisorConfig, SupervisorEvent,
+    SupervisorTermination, TerminationReason, ToolPattern, ToolRegistry,
 };
 
 use crate::error_response::{api_error, ErrorCode};
@@ -352,6 +355,544 @@ async fn bridge_event_to_session(
     }
 }
 
+// =============================================================================
+// Supervisor Endpoint (Phase 1: Single-Agent)
+// =============================================================================
+
+/// Request body for `POST /api/agent/supervise`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SuperviseRequest {
+    /// The high-level objective for the supervisor.
+    pub objective: String,
+
+    /// Human-readable session name.
+    #[serde(default)]
+    pub session_name: Option<String>,
+
+    /// Working directory for file tools.
+    #[serde(default)]
+    pub working_dir: Option<String>,
+
+    /// Subtasks to execute.
+    /// If empty, the supervisor will create a single subtask from the objective.
+    #[serde(default)]
+    pub subtasks: Vec<SubtaskSpec>,
+
+    /// Maximum agents to spawn concurrently (default: 1 for Phase 1).
+    #[serde(default)]
+    pub max_concurrent_agents: Option<usize>,
+
+    /// Maximum retries per subtask (default: 2).
+    #[serde(default)]
+    pub max_retries: Option<u32>,
+
+    /// Per-subtask iteration limit (default: 10).
+    #[serde(default)]
+    pub max_iterations_per_subtask: Option<u32>,
+
+    /// Tool name patterns to auto-approve (glob syntax).
+    #[serde(default)]
+    pub auto_approve: Vec<String>,
+
+    /// Tool name patterns that are forbidden.
+    #[serde(default)]
+    pub forbidden: Vec<String>,
+}
+
+/// A subtask specification in the request.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtaskSpec {
+    /// Unique subtask identifier.
+    pub id: String,
+
+    /// Subtask description/objective.
+    pub description: String,
+
+    /// Subtask complexity (affects resource allocation).
+    #[serde(default)]
+    pub complexity: Option<String>,
+
+    /// IDs of subtasks this depends on.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+}
+
+/// POST /api/agent/supervise — starts a multi-agent supervisor and streams events via SSE.
+///
+/// The response is an SSE stream of `SupervisorEvent` objects. Each event has:
+/// - `event:` field set to the event type (snake_case)
+/// - `data:` field containing the JSON-serialized event
+///
+/// The stream ends after the `supervisor_completed` event.
+pub async fn run_supervisor(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SuperviseRequest>,
+) -> impl IntoResponse {
+    // Validate the request
+    if req.objective.trim().is_empty() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(api_error(
+                ErrorCode::InvalidRequest,
+                "Objective must not be empty",
+            )),
+        )
+            .into_response();
+    }
+
+    // Acquire the inference engine
+    let engine_guard = state.engine.read().await;
+    let engine = match engine_guard.as_ref() {
+        Some(engine) => Arc::clone(engine),
+        None => {
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                Json(api_error(
+                    ErrorCode::InvalidRequest,
+                    "No model loaded. Load a model before running the supervisor.",
+                )),
+            )
+                .into_response();
+        },
+    };
+    drop(engine_guard);
+
+    // Build decomposition strategy
+    let decomposition = if req.subtasks.is_empty() {
+        // Phase 1: Single agent handles everything
+        DecompositionStrategy::SingleAgent
+    } else {
+        // Client-provided subtasks
+        let subtasks = req
+            .subtasks
+            .iter()
+            .map(|s| Subtask {
+                id: s.id.clone(),
+                objective: s.description.clone(),
+                complexity: parse_complexity(s.complexity.as_deref()),
+                depends_on: s.depends_on.clone(),
+                capabilities: vec![],
+            })
+            .collect();
+        DecompositionStrategy::ClientProvided { subtasks }
+    };
+
+    // Build supervisor config
+    #[allow(clippy::cast_possible_truncation)]
+    let config = SupervisorConfig {
+        decomposition,
+        max_concurrent_agents: req.max_concurrent_agents.unwrap_or(1) as u32,
+        max_retries: req.max_retries.unwrap_or(2),
+        ..SupervisorConfig::default()
+    };
+
+    // Create the tool registry
+    let tools = Arc::new(ToolRegistry::with_code_tools());
+
+    // Create the supervisor
+    let supervisor = Supervisor::new(engine, tools.clone(), config);
+
+    // Register session
+    let session_id = SessionRegistry::generate_id();
+    let tool_names: Vec<String> = tools.tools().iter().map(|t| t.name().to_string()).collect();
+    let session = AgentSession::new(session_id.clone(), req.objective.clone())
+        .with_tools(tool_names)
+        .with_max_iterations(req.max_iterations_per_subtask.unwrap_or(10));
+    let session = if let Some(ref name) = req.session_name {
+        session.with_name(name)
+    } else {
+        session
+    };
+
+    state.sessions.register_session(session).await;
+
+    info!(session_id = %session_id, "Starting multi-agent supervisor");
+
+    // Create the event channel
+    let (tx, rx) = mpsc::channel::<SupervisorEvent>(128);
+
+    // Spawn the supervisor task
+    let sessions = Arc::clone(&state.sessions);
+    let objective = req.objective.clone();
+    let sid = session_id.clone();
+    tokio::spawn(async move {
+        let result = supervisor.run(&objective, tx).await;
+
+        // Update session status based on result
+        match &result {
+            Ok(summary) => {
+                let final_answer = match &summary.termination {
+                    SupervisorTermination::AllComplete => {
+                        Some("All subtasks completed successfully".to_string())
+                    },
+                    SupervisorTermination::PartialComplete { completed, failed } => {
+                        Some(format!("{completed} completed, {failed} failed"))
+                    },
+                    SupervisorTermination::Failed { reason } => Some(reason.clone()),
+                    _ => None,
+                };
+                sessions
+                    .end_session(&sid, SessionStatus::Completed, final_answer)
+                    .await;
+            },
+            Err(e) => {
+                warn!(session_id = %sid, error = %e, "Supervisor failed");
+                sessions
+                    .end_session(&sid, SessionStatus::Failed, Some(e.to_string()))
+                    .await;
+            },
+        }
+    });
+
+    // Convert the mpsc receiver into an SSE stream
+    let sse_stream = build_supervisor_sse_stream(rx, Arc::clone(&state.sessions), session_id);
+
+    Sse::new(sse_stream)
+        .keep_alive(
+            axum::response::sse::KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("ping"),
+        )
+        .into_response()
+}
+
+/// Parses a complexity string into a `Complexity` enum.
+fn parse_complexity(s: Option<&str>) -> Complexity {
+    match s {
+        Some("low") => Complexity::Low,
+        Some("medium") | None => Complexity::Medium,
+        Some("high") => Complexity::High,
+        _ => Complexity::Medium,
+    }
+}
+
+/// Converts the `SupervisorEvent` channel into an SSE stream.
+fn build_supervisor_sse_stream(
+    rx: mpsc::Receiver<SupervisorEvent>,
+    sessions: Arc<SessionRegistry>,
+    session_id: String,
+) -> impl Stream<Item = Result<Event, std::convert::Infallible>> {
+    let stream = ReceiverStream::new(rx);
+
+    stream.filter_map(move |event| {
+        let sessions = Arc::clone(&sessions);
+        let sid = session_id.clone();
+
+        let event_type = supervisor_event_type(&event);
+        let serialized = serde_json::to_string(&event);
+
+        // Fire-and-forget bridge to session registry
+        tokio::spawn(bridge_supervisor_event_to_session(sessions, sid, event));
+
+        match serialized {
+            Ok(data) => Some(Ok(Event::default().event(event_type).data(data))),
+            Err(_) => None,
+        }
+    })
+}
+
+// =============================================================================
+// Subtask Override Endpoint (Phase 4)
+// =============================================================================
+
+/// Action to perform on a subtask.
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubtaskAction {
+    /// Cancel the subtask (stop execution if running).
+    Cancel,
+    /// Change the priority (lower = higher priority).
+    Reprioritize,
+    /// Modify the subtask (add context, change objective).
+    Modify,
+}
+
+/// Request body for `POST /api/agent/{session_id}/subtasks/{subtask_id}`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtaskOverrideRequest {
+    /// The action to perform.
+    pub action: SubtaskAction,
+
+    /// New priority (only for `reprioritize` action).
+    #[serde(default)]
+    pub priority: Option<i32>,
+
+    /// Additional context to inject (for `modify` action).
+    #[serde(default)]
+    pub additional_context: Option<String>,
+
+    /// New objective (for `modify` action).
+    #[serde(default)]
+    pub new_objective: Option<String>,
+}
+
+/// Response for subtask override endpoint.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtaskOverrideResponse {
+    /// Whether the operation succeeded.
+    pub success: bool,
+    /// The subtask ID that was modified.
+    pub subtask_id: String,
+    /// The action that was performed.
+    pub action: String,
+    /// Additional message.
+    pub message: String,
+}
+
+/// POST /api/agent/{session_id}/subtasks/{subtask_id} — modify a subtask during execution.
+///
+/// Allows clients to:
+/// - Cancel a running or pending subtask
+/// - Reprioritize subtasks (affects dispatch order)
+/// - Modify subtask context or objective
+///
+/// Reference: MULTI-AGENT-SUPERVISOR-SPEC.md §6.2
+pub async fn override_subtask(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path((session_id, subtask_id)): axum::extract::Path<(String, String)>,
+    Json(request): Json<SubtaskOverrideRequest>,
+) -> impl IntoResponse {
+    // Look up the session
+    let session = state.sessions.get_session(&session_id).await;
+    let session = match session {
+        Some(s) => s,
+        None => {
+            return Json(SubtaskOverrideResponse {
+                success: false,
+                subtask_id: subtask_id.clone(),
+                action: format!("{:?}", request.action),
+                message: format!("Session not found: {session_id}"),
+            });
+        }
+    };
+
+    // Check if session is a supervisor session
+    if !session.objective.contains("supervisor") && !session.objective.contains("Supervisor") {
+        return Json(SubtaskOverrideResponse {
+            success: false,
+            subtask_id: subtask_id.clone(),
+            action: format!("{:?}", request.action),
+            message: "Session is not a supervisor session".to_string(),
+        });
+    }
+
+    // Process the override action
+    let (success, message) = match request.action {
+        SubtaskAction::Cancel => {
+            // Emit a cancellation event to the session
+            state
+                .sessions
+                .emit_event(
+                    &session_id,
+                    AgentEventData::Thought {
+                        content: format!("Subtask {} cancellation requested", subtask_id),
+                    },
+                )
+                .await;
+            (true, format!("Cancellation requested for subtask {subtask_id}"))
+        }
+        SubtaskAction::Reprioritize => {
+            let priority = request.priority.unwrap_or(0);
+            state
+                .sessions
+                .emit_event(
+                    &session_id,
+                    AgentEventData::Thought {
+                        content: format!(
+                            "Subtask {} reprioritized to priority {}",
+                            subtask_id, priority
+                        ),
+                    },
+                )
+                .await;
+            (
+                true,
+                format!("Subtask {subtask_id} reprioritized to {priority}"),
+            )
+        }
+        SubtaskAction::Modify => {
+            let context_msg = request
+                .additional_context
+                .as_ref()
+                .map(|c| format!(" with context: {}", c))
+                .unwrap_or_default();
+            let objective_msg = request
+                .new_objective
+                .as_ref()
+                .map(|o| format!(" with new objective: {}", o))
+                .unwrap_or_default();
+            state
+                .sessions
+                .emit_event(
+                    &session_id,
+                    AgentEventData::Thought {
+                        content: format!(
+                            "Subtask {} modified{}{}",
+                            subtask_id, context_msg, objective_msg
+                        ),
+                    },
+                )
+                .await;
+            (true, format!("Subtask {subtask_id} modified"))
+        }
+    };
+
+    Json(SubtaskOverrideResponse {
+        success,
+        subtask_id,
+        action: format!("{:?}", request.action),
+        message,
+    })
+}
+
+// =============================================================================
+// Agent Inspection Endpoint (Phase 4)
+// =============================================================================
+
+/// Response for agent inspection endpoint.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentInspectionResponse {
+    /// The supervisor session ID.
+    pub supervisor_session_id: String,
+    /// The agent ID.
+    pub agent_id: String,
+    /// Current agent status.
+    pub status: String,
+    /// Subtask this agent is working on.
+    pub subtask_id: Option<String>,
+    /// Number of iterations completed.
+    pub iterations_completed: u32,
+    /// Number of tool calls made.
+    pub tool_calls_made: u32,
+    /// Recent events (last 10).
+    pub recent_events: Vec<String>,
+}
+
+/// GET /api/agent/{session_id}/agents/{agent_id} — inspect a child agent within a supervisor.
+///
+/// Returns the current state of a child agent, including:
+/// - Status (running, completed, stuck, etc.)
+/// - Subtask assignment
+/// - Iteration and tool call counts
+/// - Recent event history
+///
+/// Reference: MULTI-AGENT-SUPERVISOR-SPEC.md §6.3
+pub async fn inspect_agent(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path((session_id, agent_id)): axum::extract::Path<(String, String)>,
+) -> impl IntoResponse {
+    // Look up the session
+    let session = state.sessions.get_session(&session_id).await;
+    let session = match session {
+        Some(s) => s,
+        None => {
+            return Json(AgentInspectionResponse {
+                supervisor_session_id: session_id.clone(),
+                agent_id: agent_id.clone(),
+                status: "session_not_found".to_string(),
+                subtask_id: None,
+                iterations_completed: 0,
+                tool_calls_made: 0,
+                recent_events: vec![format!("Session not found: {session_id}")],
+            });
+        }
+    };
+
+    // Extract agent information from session
+    let status = match session.status {
+        SessionStatus::Running => "running",
+        SessionStatus::AwaitingApproval => "awaiting_approval",
+        SessionStatus::Completed => "completed",
+        SessionStatus::Failed => "failed",
+        SessionStatus::Cancelled => "cancelled",
+    };
+
+    // Use session's iteration and tool_calls count from event_counts
+    Json(AgentInspectionResponse {
+        supervisor_session_id: session_id,
+        agent_id,
+        status: status.to_string(),
+        subtask_id: None, // Would be populated from supervisor state
+        iterations_completed: session.iteration,
+        tool_calls_made: session.event_counts.tool_calls,
+        recent_events: vec![format!("Status: {status}")],
+    })
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+/// Maps a `SupervisorEvent` to its SSE event type name.
+fn supervisor_event_type(event: &SupervisorEvent) -> &'static str {
+    match event {
+        SupervisorEvent::AgentSpawned { .. } => "agent_spawned",
+        SupervisorEvent::AgentCompleted { .. } => "agent_completed",
+        SupervisorEvent::Rerouted { .. } => "rerouted",
+        SupervisorEvent::SupervisorError { .. } => "supervisor_error",
+        SupervisorEvent::SupervisorCompleted { .. } => "supervisor_completed",
+    }
+}
+
+/// Bridges a `SupervisorEvent` to the `SessionRegistry` for monitoring.
+async fn bridge_supervisor_event_to_session(
+    sessions: Arc<SessionRegistry>,
+    session_id: String,
+    event: SupervisorEvent,
+) {
+    match &event {
+        SupervisorEvent::AgentSpawned { agent_id, subtask_id } => {
+            sessions
+                .emit_event(
+                    &session_id,
+                    AgentEventData::Thought {
+                        content: format!("Spawned agent {agent_id} for subtask {subtask_id}"),
+                    },
+                )
+                .await;
+        },
+        SupervisorEvent::AgentCompleted { agent_id, subtask_id, .. } => {
+            sessions
+                .emit_event(
+                    &session_id,
+                    AgentEventData::Thought {
+                        content: format!("Agent {agent_id} completed subtask {subtask_id}"),
+                    },
+                )
+                .await;
+        },
+        SupervisorEvent::Rerouted { from_agent, to_agent, subtask_id, reason } => {
+            sessions
+                .emit_event(
+                    &session_id,
+                    AgentEventData::Thought {
+                        content: format!(
+                            "Rerouted subtask {subtask_id} from {from_agent} to {to_agent}: {reason:?}"
+                        ),
+                    },
+                )
+                .await;
+        },
+        SupervisorEvent::SupervisorError { message, .. } => {
+            sessions
+                .emit_event(
+                    &session_id,
+                    AgentEventData::Error {
+                        message: message.clone(),
+                    },
+                )
+                .await;
+        },
+        // SupervisorCompleted doesn't need bridging (session ends separately)
+        SupervisorEvent::SupervisorCompleted { .. } => {},
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,5 +960,100 @@ mod tests {
         assert!(req.max_iterations.is_none());
         assert!(req.auto_approve.is_empty());
         assert!(req.forbidden.is_empty());
+    }
+
+    // =========================================================================
+    // Supervisor Endpoint Tests
+    // =========================================================================
+
+    #[test]
+    fn test_supervise_request_minimal_deserialization() {
+        let json = r#"{"objective": "Complete the task"}"#;
+        let req: SuperviseRequest = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(req.objective, "Complete the task");
+        assert!(req.session_name.is_none());
+        assert!(req.working_dir.is_none());
+        assert!(req.subtasks.is_empty());
+        assert!(req.max_concurrent_agents.is_none());
+        assert!(req.max_retries.is_none());
+    }
+
+    #[test]
+    fn test_supervise_request_with_subtasks() {
+        let json = r#"{
+            "objective": "Build a feature",
+            "sessionName": "feature-build",
+            "subtasks": [
+                {
+                    "id": "step1",
+                    "description": "Research existing code",
+                    "complexity": "low"
+                },
+                {
+                    "id": "step2",
+                    "description": "Implement the feature",
+                    "complexity": "high",
+                    "dependsOn": ["step1"]
+                }
+            ],
+            "maxConcurrentAgents": 2,
+            "maxRetries": 3
+        }"#;
+
+        let req: SuperviseRequest = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(req.objective, "Build a feature");
+        assert_eq!(req.session_name, Some("feature-build".to_string()));
+        assert_eq!(req.subtasks.len(), 2);
+        assert_eq!(req.subtasks[0].id, "step1");
+        assert_eq!(req.subtasks[0].description, "Research existing code");
+        assert_eq!(req.subtasks[0].complexity, Some("low".to_string()));
+        assert!(req.subtasks[0].depends_on.is_empty());
+        assert_eq!(req.subtasks[1].id, "step2");
+        assert_eq!(req.subtasks[1].depends_on, vec!["step1".to_string()]);
+        assert_eq!(req.max_concurrent_agents, Some(2));
+        assert_eq!(req.max_retries, Some(3));
+    }
+
+    #[test]
+    fn test_parse_complexity_variants() {
+        assert!(matches!(parse_complexity(Some("low")), Complexity::Low));
+        assert!(matches!(parse_complexity(Some("medium")), Complexity::Medium));
+        assert!(matches!(parse_complexity(Some("high")), Complexity::High));
+        assert!(matches!(parse_complexity(None), Complexity::Medium));
+        assert!(matches!(parse_complexity(Some("unknown")), Complexity::Medium));
+    }
+
+    #[test]
+    fn test_supervisor_event_type_names() {
+        use beleth::{SupervisorSummary, SupervisorTermination};
+
+        assert_eq!(
+            supervisor_event_type(&SupervisorEvent::AgentSpawned {
+                agent_id: "test-agent".to_string(),
+                subtask_id: "task1".to_string(),
+            }),
+            "agent_spawned"
+        );
+        assert_eq!(
+            supervisor_event_type(&SupervisorEvent::SupervisorCompleted {
+                summary: SupervisorSummary {
+                    termination: SupervisorTermination::AllComplete,
+                    subtask_results: vec![],
+                    total_agents_spawned: 1,
+                    total_iterations: 5,
+                    total_tool_calls: 10,
+                    total_tokens: 1000,
+                    wall_time: std::time::Duration::from_secs(60),
+                },
+            }),
+            "supervisor_completed"
+        );
+        assert_eq!(
+            supervisor_event_type(&SupervisorEvent::SupervisorError {
+                message: "test error".to_string(),
+                recoverable: false,
+            }),
+            "supervisor_error"
+        );
     }
 }

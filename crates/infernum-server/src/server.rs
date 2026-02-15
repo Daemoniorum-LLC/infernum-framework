@@ -27,7 +27,7 @@ use abaddon::{Engine, EngineConfig, InferenceEngine};
 use dantalion::{MetricsCollector, TelemetryConfig};
 use infernum_core::{GenerateRequest, ModelSource, Result, SamplingParams};
 
-use crate::agentic::run_agent;
+use crate::agentic::{inspect_agent, override_subtask, run_agent, run_supervisor};
 use crate::api_types::{
     ChatChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage, CompletionChoice,
     CompletionRequest, CompletionResponse, EmbeddingData, EmbeddingInput, EmbeddingRequest,
@@ -517,6 +517,18 @@ impl Server {
             .nest("/api/agent/sessions", sessions_router)
             // Agentic loop endpoint (Beleth executor)
             .route("/api/agent/run", post(run_agent))
+            // Multi-agent supervisor endpoint (Beleth supervisor)
+            .route("/api/agent/supervise", post(run_supervisor))
+            // Subtask override endpoint (Phase 4)
+            .route(
+                "/api/agent/:session_id/subtasks/:subtask_id",
+                post(override_subtask),
+            )
+            // Agent inspection endpoint (Phase 4)
+            .route(
+                "/api/agent/:session_id/agents/:agent_id",
+                get(inspect_agent),
+            )
             // Model cache management endpoints
             .nest("/api/cache", cache_router)
             .with_state(self.state.clone());
