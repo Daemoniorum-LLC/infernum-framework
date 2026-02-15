@@ -341,6 +341,15 @@ pub enum SupervisorEvent {
         /// Why the reroute happened.
         reason: RerouteReason,
     },
+    /// Aggregate wellbeing update across all agents (Phase 5).
+    WellbeingUpdate {
+        /// Current aggregate wellbeing state.
+        aggregate: WellbeingAggregate,
+        /// Action being taken based on wellbeing.
+        action: SupervisorWellbeingAction,
+        /// Per-agent actions (if any).
+        agent_actions: Vec<AgentWellbeingAction>,
+    },
     /// A supervisor-level error occurred.
     SupervisorError {
         /// Error description.
@@ -1585,6 +1594,147 @@ pub fn supervisor_wellbeing_response(
 }
 
 // ===========================================================================
+// §12.6 Wellbeing Tracker (Phase 5)
+// ===========================================================================
+
+/// Tracks wellbeing state across all child agents during execution.
+///
+/// The tracker monitors agent execution outcomes and derives wellbeing state
+/// from their results. It computes aggregate wellbeing and determines when
+/// supervisor-level intervention is needed.
+pub struct WellbeingTracker {
+    /// Per-agent wellbeing states.
+    agent_states: HashMap<AgentId, AgentWellbeingState>,
+    /// Current aggregate wellbeing.
+    current_aggregate: Option<WellbeingAggregate>,
+    /// Current supervisor-level action.
+    current_action: SupervisorWellbeingAction,
+    /// Whether wellbeing has changed since last check.
+    changed: bool,
+}
+
+impl WellbeingTracker {
+    /// Creates a new tracker.
+    pub fn new() -> Self {
+        Self {
+            agent_states: HashMap::new(),
+            current_aggregate: None,
+            current_action: SupervisorWellbeingAction::Continue,
+            changed: false,
+        }
+    }
+
+    /// Updates wellbeing state for an agent based on subtask result.
+    ///
+    /// Derives wellbeing from execution outcome:
+    /// - Completed → Healthy
+    /// - Partial (progress made) → Cautious
+    /// - Partial (stuck/yielded) → Concerned
+    /// - Failed → Distressed
+    pub fn update_from_result(&mut self, agent_id: &str, result: &SubtaskResult) {
+        let new_state = match &result.status {
+            SubtaskStatus::Completed => AgentWellbeingState::Healthy,
+            SubtaskStatus::Partial { progress } => {
+                // Determine concern level based on failure type
+                match result.failure_type {
+                    Some(FailureType::AgentStuck) | Some(FailureType::AgentYielded) => {
+                        AgentWellbeingState::Concerned
+                    }
+                    _ if progress.len() > 50 => AgentWellbeingState::Cautious, // Made progress
+                    _ => AgentWellbeingState::Concerned,
+                }
+            }
+            SubtaskStatus::Skipped { .. } => AgentWellbeingState::Cautious, // Skipped but not distressed
+            SubtaskStatus::Failed { .. } => AgentWellbeingState::Distressed,
+        };
+
+        let prev_state = self.agent_states.get(agent_id);
+        if prev_state != Some(&new_state) {
+            self.changed = true;
+        }
+
+        self.agent_states.insert(agent_id.to_string(), new_state);
+        self.recompute_aggregate();
+    }
+
+    /// Marks an agent as spawned (default: Healthy).
+    pub fn record_spawn(&mut self, agent_id: &str) {
+        self.agent_states
+            .insert(agent_id.to_string(), AgentWellbeingState::Healthy);
+        self.changed = true;
+        self.recompute_aggregate();
+    }
+
+    /// Recomputes aggregate wellbeing from current agent states.
+    fn recompute_aggregate(&mut self) {
+        let states: Vec<_> = self.agent_states.values().cloned().collect();
+        let aggregate = compute_aggregate_wellbeing(&states);
+        let action = supervisor_level_response(&aggregate);
+
+        if self.current_action != action {
+            self.changed = true;
+        }
+
+        self.current_aggregate = Some(aggregate);
+        self.current_action = action;
+    }
+
+    /// Returns whether wellbeing state has changed since last clear.
+    pub fn has_changed(&self) -> bool {
+        self.changed
+    }
+
+    /// Clears the changed flag.
+    pub fn clear_changed(&mut self) {
+        self.changed = false;
+    }
+
+    /// Returns the current aggregate wellbeing.
+    pub fn aggregate(&self) -> Option<&WellbeingAggregate> {
+        self.current_aggregate.as_ref()
+    }
+
+    /// Returns the current supervisor action.
+    pub fn action(&self) -> SupervisorWellbeingAction {
+        self.current_action
+    }
+
+    /// Returns per-agent actions for concerned/distressed agents.
+    pub fn agent_actions(&self) -> Vec<AgentWellbeingAction> {
+        let states_with_ids: Vec<_> = self
+            .agent_states
+            .iter()
+            .map(|(id, state)| (id.clone(), state.clone()))
+            .collect();
+        supervisor_wellbeing_response(&states_with_ids)
+    }
+
+    /// Returns agent IDs that should be paused (Concerned state).
+    pub fn agents_to_pause(&self) -> Vec<AgentId> {
+        self.agent_states
+            .iter()
+            .filter(|(_, state)| **state == AgentWellbeingState::Concerned)
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    /// Returns agent IDs that should be reassigned (Distressed state).
+    pub fn agents_to_reassign(&self) -> Vec<AgentId> {
+        self.agent_states
+            .iter()
+            .filter(|(_, state)| **state == AgentWellbeingState::Distressed)
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+}
+
+impl Default for WellbeingTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ===========================================================================
 // Supervisor Implementation
 // ===========================================================================
 
@@ -1686,6 +1836,7 @@ impl Supervisor {
         let mut lifecycle_tracker = LifecycleTracker::new();
         let mut result_aggregator = ResultAggregator::new();
         let mut circuit_breaker = CircuitBreaker::new(self.config.circuit_breaker_threshold);
+        let mut wellbeing_tracker = WellbeingTracker::new();
 
         // Decompose objective into subtasks
         let subtasks = match &self.config.decomposition {
@@ -1729,6 +1880,7 @@ impl Supervisor {
                 &mut lifecycle_tracker,
                 &mut circuit_breaker,
                 &mut result_aggregator,
+                &mut wellbeing_tracker,
                 &event_tx,
             )
             .await?;
@@ -1740,6 +1892,7 @@ impl Supervisor {
                 &mut lifecycle_tracker,
                 &mut circuit_breaker,
                 &mut result_aggregator,
+                &mut wellbeing_tracker,
                 &event_tx,
             )
             .await?;
@@ -1787,11 +1940,29 @@ impl Supervisor {
         lifecycle_tracker: &mut LifecycleTracker,
         circuit_breaker: &mut CircuitBreaker,
         result_aggregator: &mut ResultAggregator,
+        wellbeing_tracker: &mut WellbeingTracker,
         event_tx: &mpsc::Sender<SupervisorEvent>,
     ) -> Result<(), SupervisorError> {
         let total_subtasks = resolver.total();
 
         while !resolver.is_done() {
+            // Check wellbeing before spawning new subtasks (Phase 5)
+            match wellbeing_tracker.action() {
+                SupervisorWellbeingAction::EscalateToClient => {
+                    warn!("Wellbeing escalation: halting sequential dispatch");
+                    return Ok(());
+                }
+                SupervisorWellbeingAction::PauseAndReplan => {
+                    // In sequential mode, pausing means we stop entirely
+                    // since there are no concurrent tasks to wait for
+                    warn!("Wellbeing pause: stopping sequential dispatch for replanning");
+                    return Ok(());
+                }
+                SupervisorWellbeingAction::Continue => {
+                    // Normal operation
+                }
+            }
+
             let ready = resolver.ready();
             if ready.is_empty() {
                 warn!("No subtasks ready, but resolver not done. Possible deadlock.");
@@ -1825,6 +1996,7 @@ impl Supervisor {
                         budget_allocator,
                         circuit_breaker,
                         result_aggregator,
+                        wellbeing_tracker,
                         event_tx,
                         total_subtasks,
                     )
@@ -1852,6 +2024,7 @@ impl Supervisor {
         lifecycle_tracker: &mut LifecycleTracker,
         circuit_breaker: &mut CircuitBreaker,
         result_aggregator: &mut ResultAggregator,
+        wellbeing_tracker: &mut WellbeingTracker,
         event_tx: &mpsc::Sender<SupervisorEvent>,
     ) -> Result<(), SupervisorError> {
         let total_subtasks = resolver.total();
@@ -1867,8 +2040,35 @@ impl Supervisor {
                 break;
             }
 
+            // Check wellbeing before spawning new subtasks (Phase 5)
+            match wellbeing_tracker.action() {
+                SupervisorWellbeingAction::EscalateToClient => {
+                    warn!("Wellbeing escalation: halting parallel dispatch");
+                    break;
+                }
+                SupervisorWellbeingAction::PauseAndReplan => {
+                    // Don't spawn new tasks while paused, but let running ones complete
+                    if !running_futures.is_empty() {
+                        debug!(
+                            "Wellbeing pause: waiting for {} running tasks to complete",
+                            running_futures.len()
+                        );
+                        // Skip the spawn loop and wait for completion
+                    } else {
+                        // No running tasks and still paused - unlikely but handle it
+                        warn!("Wellbeing pause with no running tasks, continuing");
+                    }
+                }
+                SupervisorWellbeingAction::Continue => {
+                    // Normal operation - proceed to spawn
+                }
+            }
+
             // Spawn new subtasks if we have capacity and ready subtasks
-            while concurrency_limiter.try_acquire() {
+            // Skip spawning if we're in pause mode
+            while wellbeing_tracker.action() == SupervisorWellbeingAction::Continue
+                && concurrency_limiter.try_acquire()
+            {
                 let ready = resolver.ready();
                 if ready.is_empty() {
                     // No subtasks ready, release the slot we just acquired
@@ -1947,6 +2147,7 @@ impl Supervisor {
                             budget_allocator,
                             circuit_breaker,
                             result_aggregator,
+                            wellbeing_tracker,
                             event_tx,
                             total_subtasks,
                         )
@@ -1994,11 +2195,12 @@ impl Supervisor {
         budget_allocator: &mut BudgetAllocator,
         circuit_breaker: &mut CircuitBreaker,
         result_aggregator: &mut ResultAggregator,
+        wellbeing_tracker: &mut WellbeingTracker,
         event_tx: &mpsc::Sender<SupervisorEvent>,
         total_subtasks: usize,
     ) -> Result<bool, SupervisorError> {
         match result {
-            Ok(subtask_result) => {
+            Ok(ref subtask_result) => {
                 circuit_breaker.record_success();
 
                 // Record resource consumption from the summary
@@ -2016,7 +2218,12 @@ impl Supervisor {
                     resolver.mark_failed(subtask_id);
                 }
 
-                result_aggregator.record_result(subtask_result);
+                // Update wellbeing tracker (Phase 5)
+                if let Some(ref agent_id) = subtask_result.agent_id {
+                    wellbeing_tracker.update_from_result(agent_id, subtask_result);
+                }
+
+                result_aggregator.record_result(subtask_result.clone());
             }
             Err(e) => {
                 error!("Subtask {} failed: {}", subtask_id, e);
@@ -2025,7 +2232,7 @@ impl Supervisor {
                 // Record failure with circuit breaker
                 circuit_breaker.record_failure(FailureType::EngineError)?;
 
-                result_aggregator.record_result(SubtaskResult {
+                let error_result = SubtaskResult {
                     subtask_id: subtask_id.to_string(),
                     status: SubtaskStatus::Failed {
                         reason: e.to_string(),
@@ -2033,7 +2240,9 @@ impl Supervisor {
                     summary: None,
                     agent_id: None,
                     failure_type: Some(FailureType::EngineError),
-                });
+                };
+
+                result_aggregator.record_result(error_result);
 
                 if circuit_breaker.is_open() {
                     if event_tx
@@ -2048,6 +2257,52 @@ impl Supervisor {
                     }
                 }
             }
+        }
+
+        // Emit wellbeing update event if state changed (Phase 5)
+        if wellbeing_tracker.has_changed() {
+            if let Some(aggregate) = wellbeing_tracker.aggregate() {
+                let action = wellbeing_tracker.action();
+                let agent_actions = wellbeing_tracker.agent_actions();
+
+                if event_tx
+                    .send(SupervisorEvent::WellbeingUpdate {
+                        aggregate: aggregate.clone(),
+                        action,
+                        agent_actions,
+                    })
+                    .await
+                    .is_err()
+                {
+                    debug!("Event channel closed, unable to send wellbeing update");
+                }
+
+                // Log wellbeing changes
+                match action {
+                    SupervisorWellbeingAction::Continue => {
+                        debug!(
+                            "Wellbeing: {} healthy, {} cautious, {} concerned, {} distressed",
+                            aggregate.agents_healthy,
+                            aggregate.agents_cautious,
+                            aggregate.agents_concerned,
+                            aggregate.agents_distressed
+                        );
+                    }
+                    SupervisorWellbeingAction::PauseAndReplan => {
+                        warn!(
+                            "Wellbeing concern: pausing to replan ({} concerned agents)",
+                            aggregate.agents_concerned
+                        );
+                    }
+                    SupervisorWellbeingAction::EscalateToClient => {
+                        warn!(
+                            "Wellbeing escalation: {} distressed agents require intervention",
+                            aggregate.agents_distressed
+                        );
+                    }
+                }
+            }
+            wellbeing_tracker.clear_changed();
         }
 
         // Check if we've exceeded the failure threshold (spec §8.2)
@@ -3910,6 +4165,94 @@ mod tests {
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0].agent_id, "agent_1");
         assert_eq!(actions[0].response, WellbeingResponse::Pause);
+    }
+
+    // =======================================================================
+    // §12.9 Wellbeing Tracker (Phase 5)
+    // =======================================================================
+
+    #[test]
+    fn test_wellbeing_tracker_updates_from_completed_result() {
+        let mut tracker = WellbeingTracker::new();
+
+        let result = SubtaskResult {
+            subtask_id: "task_1".to_string(),
+            status: SubtaskStatus::Completed,
+            summary: None,
+            agent_id: Some("agent_1".to_string()),
+            failure_type: None,
+        };
+
+        tracker.update_from_result("agent_1", &result);
+
+        assert!(tracker.has_changed());
+        assert_eq!(tracker.action(), SupervisorWellbeingAction::Continue);
+
+        let agg = tracker.aggregate().unwrap();
+        assert_eq!(agg.agents_healthy, 1);
+        assert_eq!(agg.agents_distressed, 0);
+    }
+
+    #[test]
+    fn test_wellbeing_tracker_distressed_on_failure() {
+        let mut tracker = WellbeingTracker::new();
+
+        let result = SubtaskResult {
+            subtask_id: "task_1".to_string(),
+            status: SubtaskStatus::Failed {
+                reason: "Engine error".to_string(),
+            },
+            summary: None,
+            agent_id: Some("agent_1".to_string()),
+            failure_type: Some(FailureType::EngineError),
+        };
+
+        tracker.update_from_result("agent_1", &result);
+
+        let agg = tracker.aggregate().unwrap();
+        assert_eq!(agg.agents_distressed, 1);
+        assert_eq!(tracker.action(), SupervisorWellbeingAction::EscalateToClient);
+    }
+
+    #[test]
+    fn test_wellbeing_tracker_agents_to_reassign() {
+        let mut tracker = WellbeingTracker::new();
+
+        // Add a failed agent (distressed)
+        let failed_result = SubtaskResult {
+            subtask_id: "task_1".to_string(),
+            status: SubtaskStatus::Failed {
+                reason: "Error".to_string(),
+            },
+            summary: None,
+            agent_id: Some("agent_1".to_string()),
+            failure_type: Some(FailureType::EngineError),
+        };
+        tracker.update_from_result("agent_1", &failed_result);
+
+        // Add a successful agent
+        let success_result = SubtaskResult {
+            subtask_id: "task_2".to_string(),
+            status: SubtaskStatus::Completed,
+            summary: None,
+            agent_id: Some("agent_2".to_string()),
+            failure_type: None,
+        };
+        tracker.update_from_result("agent_2", &success_result);
+
+        let to_reassign = tracker.agents_to_reassign();
+        assert_eq!(to_reassign.len(), 1);
+        assert!(to_reassign.contains(&"agent_1".to_string()));
+    }
+
+    #[test]
+    fn test_wellbeing_tracker_clear_changed() {
+        let mut tracker = WellbeingTracker::new();
+        tracker.record_spawn("agent_1");
+
+        assert!(tracker.has_changed());
+        tracker.clear_changed();
+        assert!(!tracker.has_changed());
     }
 
     // =======================================================================

@@ -154,8 +154,12 @@ pub use agentic_loop::{
     WellbeingAggregate,
     WellbeingBridge,
     WellbeingResponse,
+    // Phase 5: Wellbeing tracker
+    WellbeingTracker,
     YieldContext,
     YieldResult,
+    // Phase 4: Result aggregation
+    RerouteEvent,
 };
 pub use dynamic_context::{
     score_message_relevance, semantic_chunk, ChunkType, ContextComplexity, ContextConfig,

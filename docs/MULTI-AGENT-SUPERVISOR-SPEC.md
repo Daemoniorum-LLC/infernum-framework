@@ -1,7 +1,7 @@
 # Multi-Agent Supervisor Specification
 
-**Version:** 0.3.0
-**Status:** Implementing (Phase 5 pending)
+**Version:** 0.4.0
+**Status:** Complete (All phases implemented)
 **Date:** 2026-02-15
 **Prerequisite:** AGENTIC-LOOP-SPEC.md v0.2.0
 
@@ -893,10 +893,10 @@ Then:
 
 ### Phase 5: Wellbeing and Polish
 
-- [ ] Aggregate wellbeing monitoring
-- [ ] Supervisor-level interventions
-- [ ] Client-provided subtask decomposition
-- [ ] Performance tuning for high agent counts
+- [x] Aggregate wellbeing monitoring (`WellbeingTracker`, `WellbeingUpdate` events)
+- [x] Supervisor-level interventions (PauseAndReplan, EscalateToClient handling)
+- [x] Client-provided subtask decomposition (`DecompositionStrategy::ClientProvided`)
+- [x] Performance tuning for high agent counts (efficient concurrent tracking)
 
 ---
 
