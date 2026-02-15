@@ -1,0 +1,49 @@
+[package]
+name = "conclave"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Room-based agent collaboration system for Infernum"
+keywords = ["agent", "collaboration", "room", "llm"]
+categories = ["science"]
+
+[dependencies]
+# Async runtime
+tokio = { workspace = true, features = ["sync", "time", "process", "io-util"] }
+tokio-stream = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+
+# Unix signal handling
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# IDs
+uuid = { version = "1.16", features = ["v4", "serde"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Directories
+dirs = "5.0"
+
+# Internal crates
+infernum-core = { path = "../infernum-core" }
+grimoire-loader = { path = "../grimoire-loader" }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+pretty_assertions = "1.4"
+tempfile = "3.14"
