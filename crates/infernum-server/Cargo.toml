@@ -102,8 +102,8 @@ tonic-build = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
 axum-test = "18.7"
 reqwest = { version = "0.13", features = ["json"] }
-tempfile = "3.19"
-criterion = { version = "0.6", features = ["async_tokio"] }
+tempfile = "3.25"
+criterion = { version = "0.8", features = ["async_tokio"] }
 
 [[bench]]
 name = "server_benchmarks"
