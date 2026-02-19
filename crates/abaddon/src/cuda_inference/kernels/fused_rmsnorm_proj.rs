@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use cudarc::driver::{CudaDevice, CudaFunction, LaunchAsync, LaunchConfig};
+use cudarc::driver::{CudaContext, CudaFunction, CudaModule, CudaStream, LaunchConfig, PushKernelArg};
 
 use super::compile_cuda_kernel;
 use crate::cuda_inference::tensor::GpuTensor;
@@ -350,7 +350,10 @@ const BLOCK_SIZE: usize = 256;
 /// Combines RMSNorm with subsequent linear projection in a single kernel
 /// to reduce memory bandwidth by eliminating intermediate storage.
 pub struct FusedRMSNormProjKernel {
-    device: Arc<CudaDevice>,
+    ctx: Arc<CudaContext>,
+    stream: Arc<CudaStream>,
+    #[allow(dead_code)]
+    module: Option<Arc<CudaModule>>,
     f16_func: Option<CudaFunction>,
     int4_func: Option<CudaFunction>,
     bt_func: Option<CudaFunction>,
@@ -368,9 +371,11 @@ impl std::fmt::Debug for FusedRMSNormProjKernel {
 
 impl FusedRMSNormProjKernel {
     /// Create a new fused RMSNorm + projection kernel.
-    pub fn new(device: Arc<CudaDevice>) -> Result<Self, InferenceError> {
+    pub fn new(ctx: Arc<CudaContext>, stream: Arc<CudaStream>) -> Result<Self, InferenceError> {
         let mut kernel = Self {
-            device,
+            ctx,
+            stream,
+            module: None,
             f16_func: None,
             int4_func: None,
             bt_func: None,
@@ -384,42 +389,29 @@ impl FusedRMSNormProjKernel {
         let ptx = compile_cuda_kernel(FUSED_RMSNORM_PROJ_CUDA)
             .map_err(|e| InferenceError::Kernel(format!("NVRTC compilation failed: {}", e)))?;
 
-        self.device
-            .load_ptx(
-                ptx,
-                "fused_rmsnorm_proj",
-                &[
-                    "fused_rmsnorm_gemm_f16",
-                    "fused_rmsnorm_int4_gemm_f16",
-                    "fused_rmsnorm_gemm_bt_f16",
-                ],
-            )
+        let module = self.ctx
+            .load_module(ptx)
             .map_err(|e| InferenceError::Kernel(format!("Failed to load PTX: {}", e)))?;
 
         self.f16_func = Some(
-            self.device
-                .get_func("fused_rmsnorm_proj", "fused_rmsnorm_gemm_f16")
-                .ok_or_else(|| {
-                    InferenceError::Kernel("Failed to get fused_rmsnorm_gemm_f16".to_string())
-                })?,
+            module
+                .load_function("fused_rmsnorm_gemm_f16")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to get fused_rmsnorm_gemm_f16: {}", e)))?,
         );
 
         self.int4_func = Some(
-            self.device
-                .get_func("fused_rmsnorm_proj", "fused_rmsnorm_int4_gemm_f16")
-                .ok_or_else(|| {
-                    InferenceError::Kernel("Failed to get fused_rmsnorm_int4_gemm_f16".to_string())
-                })?,
+            module
+                .load_function("fused_rmsnorm_int4_gemm_f16")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to get fused_rmsnorm_int4_gemm_f16: {}", e)))?,
         );
 
         self.bt_func = Some(
-            self.device
-                .get_func("fused_rmsnorm_proj", "fused_rmsnorm_gemm_bt_f16")
-                .ok_or_else(|| {
-                    InferenceError::Kernel("Failed to get fused_rmsnorm_gemm_bt_f16".to_string())
-                })?,
+            module
+                .load_function("fused_rmsnorm_gemm_bt_f16")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to get fused_rmsnorm_gemm_bt_f16: {}", e)))?,
         );
 
+        self.module = Some(module);
         Ok(())
     }
 
@@ -487,22 +479,19 @@ impl FusedRMSNormProjKernel {
         };
 
         unsafe {
-            func.clone()
-                .launch(
-                    cfg,
-                    (
-                        input.device_ptr(),
-                        norm_weight.device_ptr(),
-                        proj_weight.device_ptr(),
-                        output.device_ptr(),
-                        m as i32,
-                        k as i32,
-                        n as i32,
-                        eps,
-                    ),
-                )
-                .map_err(|e| InferenceError::Kernel(format!("Kernel launch failed: {}", e)))?;
+            self.stream
+                .launch_builder(func)
+                .arg(&input.device_ptr())
+                .arg(&norm_weight.device_ptr())
+                .arg(&proj_weight.device_ptr())
+                .arg(&output.device_ptr())
+                .arg(&(m as i32))
+                .arg(&(k as i32))
+                .arg(&(n as i32))
+                .arg(&eps)
+                .launch(cfg)
         }
+        .map_err(|e| InferenceError::Kernel(format!("Kernel launch failed: {}", e)))?;
 
         Ok(())
     }
@@ -559,23 +548,20 @@ impl FusedRMSNormProjKernel {
         };
 
         unsafe {
-            func.clone()
-                .launch(
-                    cfg,
-                    (
-                        input.device_ptr(),
-                        norm_weight.device_ptr(),
-                        proj_weight.device_ptr(),
-                        scales.device_ptr(),
-                        output.device_ptr(),
-                        m as i32,
-                        k as i32,
-                        n as i32,
-                        eps,
-                    ),
-                )
-                .map_err(|e| InferenceError::Kernel(format!("Kernel launch failed: {}", e)))?;
+            self.stream
+                .launch_builder(func)
+                .arg(&input.device_ptr())
+                .arg(&norm_weight.device_ptr())
+                .arg(&proj_weight.device_ptr())
+                .arg(&scales.device_ptr())
+                .arg(&output.device_ptr())
+                .arg(&(m as i32))
+                .arg(&(k as i32))
+                .arg(&(n as i32))
+                .arg(&eps)
+                .launch(cfg)
         }
+        .map_err(|e| InferenceError::Kernel(format!("Kernel launch failed: {}", e)))?;
 
         Ok(())
     }
@@ -644,29 +630,31 @@ impl FusedRMSNormProjKernel {
         };
 
         unsafe {
-            func.clone()
-                .launch(
-                    cfg,
-                    (
-                        input.device_ptr(),
-                        norm_weight.device_ptr(),
-                        proj_weight.device_ptr(),
-                        output.device_ptr(),
-                        m as i32,
-                        k as i32,
-                        n as i32,
-                        eps,
-                    ),
-                )
-                .map_err(|e| InferenceError::Kernel(format!("Kernel launch failed: {}", e)))?;
+            self.stream
+                .launch_builder(func)
+                .arg(&input.device_ptr())
+                .arg(&norm_weight.device_ptr())
+                .arg(&proj_weight.device_ptr())
+                .arg(&output.device_ptr())
+                .arg(&(m as i32))
+                .arg(&(k as i32))
+                .arg(&(n as i32))
+                .arg(&eps)
+                .launch(cfg)
         }
+        .map_err(|e| InferenceError::Kernel(format!("Kernel launch failed: {}", e)))?;
 
         Ok(())
     }
 
-    /// Get device reference.
-    pub fn device(&self) -> &Arc<CudaDevice> {
-        &self.device
+    /// Get context reference.
+    pub fn ctx(&self) -> &Arc<CudaContext> {
+        &self.ctx
+    }
+
+    /// Get stream reference.
+    pub fn stream(&self) -> &Arc<CudaStream> {
+        &self.stream
     }
 }
 

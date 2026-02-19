@@ -4,23 +4,22 @@
 //! - EagerLoader: Load all weights upfront (for models that fit in VRAM+RAM)
 //! - ProgressiveLoader: Stream from NVMe with prefetching (for 405B+ models)
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use cudarc::driver::CudaDevice;
+use cudarc::driver::CudaContext;
 
 use super::config::{LoadingStrategy, TieredConfig};
 use super::error::TieredError;
-use super::ram_cache::{CpuLayerWeights, LayerLayout, TensorLayout};
+use super::ram_cache::CpuLayerWeights;
 use super::stats::TieredStats;
 use super::store::TieredWeightStore;
 use super::vram_cache::SharedWeights;
-use crate::adaptive_tiering::{AllocationPlan, MemoryTier, TensorAllocation};
+use crate::adaptive_tiering::{AllocationPlan, MemoryTier};
 use crate::cuda_inference::arch::ModelConfig;
-use crate::cuda_inference::tensor::{GpuDType, GpuTensor};
+use crate::cuda_inference::tensor::GpuTensor;
 use crate::cuda_inference::weight_store::{
-    LayerWeights, QuantFormat, QuantizedWeight, RMSNormWeights,
+    LayerWeights, QuantizedWeight, RMSNormWeights,
 };
 
 /// Trait for weight loading strategies.
@@ -47,7 +46,7 @@ pub struct EagerLoader {
     plan: AllocationPlan,
 
     /// CUDA device.
-    device: Arc<CudaDevice>,
+    device: Arc<CudaContext>,
 
     /// Statistics.
     stats: Arc<TieredStats>,
@@ -62,7 +61,7 @@ impl EagerLoader {
         model_dir: impl AsRef<Path>,
         config: ModelConfig,
         plan: AllocationPlan,
-        device: Arc<CudaDevice>,
+        device: Arc<CudaContext>,
         stats: Arc<TieredStats>,
     ) -> Self {
         Self {
@@ -282,7 +281,7 @@ pub struct ProgressiveLoader {
     plan: AllocationPlan,
 
     /// CUDA device.
-    device: Arc<CudaDevice>,
+    device: Arc<CudaContext>,
 
     /// Prefetch depth (layers to prefetch ahead).
     prefetch_depth: usize,
@@ -297,7 +296,7 @@ impl ProgressiveLoader {
         model_dir: impl AsRef<Path>,
         config: ModelConfig,
         plan: AllocationPlan,
-        device: Arc<CudaDevice>,
+        device: Arc<CudaContext>,
         prefetch_depth: usize,
         stats: Arc<TieredStats>,
     ) -> Self {
@@ -364,7 +363,7 @@ pub fn create_loader(
     config: ModelConfig,
     plan: AllocationPlan,
     tiered_config: &TieredConfig,
-    device: Arc<CudaDevice>,
+    device: Arc<CudaContext>,
     stats: Arc<TieredStats>,
 ) -> Box<dyn WeightLoader> {
     match strategy {

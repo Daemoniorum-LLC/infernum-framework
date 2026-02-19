@@ -18,6 +18,7 @@ use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, Semaphore};
 use tower_http::cors::CorsLayer;
+use tower_http::services::ServeDir;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
@@ -59,6 +60,12 @@ use crate::tool_use::{
     StreamingToolDetector,
 };
 use crate::validation::validate_chat_request;
+
+use crate::room_ws::{
+    browse_dir, create_room, get_disconnected_agents, get_messages, list_agent_types,
+    list_branches, list_personas, list_repos, list_rooms, restore_room, room_ws_handler,
+    send_message, spawn_agent, RoomState,
+};
 
 /// Default server address.
 const DEFAULT_ADDR: ([u8; 4], u16) = ([0, 0, 0, 0], 8080);
@@ -441,19 +448,51 @@ impl AppState {
 pub struct Server {
     config: ServerConfig,
     state: Arc<AppState>,
+    room_state: Arc<RoomState>,
+    claude_session_state: Arc<crate::claude_api::ClaudeSessionState>,
 }
 
 impl Server {
     /// Creates a new server with the given configuration.
-    pub fn new(config: ServerConfig) -> Self {
+    pub async fn new(config: ServerConfig) -> Self {
         let state = Arc::new(AppState::new(config.clone()));
-        Self { config, state }
+        let room_state = match RoomState::with_persistence().await {
+            Ok(rs) => {
+                tracing::info!("Room persistence enabled");
+                Arc::new(rs)
+            }
+            Err(e) => {
+                tracing::warn!("Failed to initialize room persistence: {}. Using in-memory only.", e);
+                Arc::new(RoomState::new())
+            }
+        };
+        let claude_session_state = Arc::new(crate::claude_api::ClaudeSessionState::new());
+        // Load persisted Claude sessions from disk
+        if let Err(e) = claude_session_state.load_from_disk().await {
+            tracing::warn!("Failed to load Claude sessions from disk: {}", e);
+        }
+        Self { config, state, room_state, claude_session_state }
     }
 
     /// Creates a new server with a pre-loaded engine.
-    pub fn with_engine(config: ServerConfig, engine: Engine) -> Self {
+    pub async fn with_engine(config: ServerConfig, engine: Engine) -> Self {
         let state = Arc::new(AppState::with_engine(config.clone(), engine));
-        Self { config, state }
+        let room_state = match RoomState::with_persistence().await {
+            Ok(rs) => {
+                tracing::info!("Room persistence enabled");
+                Arc::new(rs)
+            }
+            Err(e) => {
+                tracing::warn!("Failed to initialize room persistence: {}. Using in-memory only.", e);
+                Arc::new(RoomState::new())
+            }
+        };
+        let claude_session_state = Arc::new(crate::claude_api::ClaudeSessionState::new());
+        // Load persisted Claude sessions from disk
+        if let Err(e) = claude_session_state.load_from_disk().await {
+            tracing::warn!("Failed to load Claude sessions from disk: {}", e);
+        }
+        Self { config, state, room_state, claude_session_state }
     }
 
     /// Creates the router.
@@ -490,6 +529,58 @@ impl Server {
             .route("/models/download", post(download_model))
             .with_state(ModelCacheState::new());
 
+        // Room collaboration routes (Conclave integration)
+        let room_router = Router::new()
+            .route("/", get(list_rooms))
+            .route("/", post(create_room))
+            .route("/agent-types", get(list_agent_types))
+            .route("/personas", get(list_personas))
+            .route("/{room_id}/messages", get(get_messages))
+            .route("/{room_id}/message", post(send_message))
+            .route("/{room_id}/spawn", post(spawn_agent))
+            .route("/{room_id}/disconnected", get(get_disconnected_agents))
+            .route("/{room_id}/restore", post(restore_room))
+            .with_state(self.room_state.clone());
+
+        let room_ws_router = Router::new()
+            .route("/{room_id}", get(room_ws_handler))
+            .with_state(self.room_state.clone());
+
+        // Repository discovery routes (for room working directory selection)
+        let repo_router = Router::new()
+            .route("/", get(list_repos))
+            .route("/branches", get(list_branches));
+
+        // Filesystem browsing routes
+        let fs_router = Router::new()
+            .route("/browse", get(browse_dir));
+
+        // Claude Code session and plan discovery routes
+        let claude_router = crate::claude_api::router();
+
+        // Claude Code direct session routes (with state)
+        let claude_session_router = Router::new()
+            .route("/api/claude/start", post(crate::claude_api::start_session))
+            .route("/api/claude/sessions/active", get(crate::claude_api::list_active_sessions))
+            .with_state(self.claude_session_state.clone());
+
+        // Claude Code direct session WebSocket routes
+        let claude_ws_router = Router::new()
+            .route("/ws/claude/{session_id}", get(crate::claude_api::claude_ws_handler))
+            .with_state(self.claude_session_state.clone());
+
+        // Claude Code usage metrics routes
+        let claude_metrics_router = crate::claude_metrics::router();
+
+        // Claude Code todo aggregation routes
+        let claude_todos_router = crate::claude_todos::router();
+
+        // Claude Code command history routes
+        let claude_history_router = crate::claude_history::router();
+
+        // Claude.ai web export import routes
+        let claude_web_import_router = crate::claude_web_import::router();
+
         let mut router = Router::new()
             // Health endpoints (no timeout - must always respond quickly)
             .route("/health", get(health))
@@ -521,17 +612,40 @@ impl Server {
             .route("/api/agent/supervise", post(run_supervisor))
             // Subtask override endpoint (Phase 4)
             .route(
-                "/api/agent/:session_id/subtasks/:subtask_id",
+                "/api/agent/{session_id}/subtasks/{subtask_id}",
                 post(override_subtask),
             )
             // Agent inspection endpoint (Phase 4)
             .route(
-                "/api/agent/:session_id/agents/:agent_id",
+                "/api/agent/{session_id}/agents/{agent_id}",
                 get(inspect_agent),
             )
             // Model cache management endpoints
             .nest("/api/cache", cache_router)
-            .with_state(self.state.clone());
+            // Room collaboration endpoints (Conclave)
+            .nest("/api/rooms", room_router)
+            // Repository discovery endpoints (for room working directory selection)
+            .nest("/api/repos", repo_router)
+            // Filesystem browsing endpoints
+            .nest("/api/fs", fs_router)
+            // Claude Code session and plan discovery endpoints
+            .nest("/api/claude", claude_router)
+            // Claude Code usage metrics endpoints
+            .nest("/api/claude/metrics", claude_metrics_router)
+            // Claude Code todo aggregation endpoints
+            .nest("/api/claude/todos", claude_todos_router)
+            // Claude Code command history endpoints
+            .nest("/api/claude/history", claude_history_router)
+            // Claude.ai web export import endpoints
+            .nest("/api/claude/web", claude_web_import_router)
+            // Room WebSocket endpoint
+            .nest("/ws/room", room_ws_router)
+            // Static files (web UI)
+            .nest_service("/static", ServeDir::new("crates/infernum-server/static"))
+            .with_state(self.state.clone())
+            // Claude Code direct session endpoints (merged AFTER with_state to preserve their own state)
+            .merge(claude_session_router)
+            .merge(claude_ws_router);
 
         // Add middleware (order matters - last added is first executed)
         router = router
@@ -3162,7 +3276,7 @@ mod tests {
         /// Creates a test server without an engine (for health checks, etc.)
         async fn create_test_server() -> TestServer {
             let config = ServerConfig::default();
-            let server = Server::new(config);
+            let server = Server::new(config).await;
             let router = server.router();
             TestServer::new(router).expect("Failed to create test server")
         }

@@ -117,6 +117,9 @@ pub struct RoomSnapshot {
     /// Room metadata.
     pub id: RoomId,
     pub name: String,
+    /// Labels for filtering/organization.
+    #[serde(default)]
+    pub labels: Vec<String>,
     pub working_dir: PathBuf,
     pub project: Option<ProjectRef>,
 
@@ -149,6 +152,7 @@ impl RoomSnapshot {
         Self {
             id: room.id,
             name: room.name.clone(),
+            labels: room.labels.clone(),
             working_dir: room.working_dir.clone(),
             project: room.project.clone(),
             invite_policy: room.invite_policy,
@@ -170,6 +174,7 @@ impl RoomSnapshot {
         Room {
             id: self.id,
             name: self.name,
+            labels: self.labels,
             working_dir: self.working_dir,
             project: self.project,
             invite_policy: self.invite_policy,

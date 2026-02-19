@@ -28,7 +28,7 @@
 
 use std::sync::Arc;
 
-use cudarc::driver::{CudaDevice, CudaFunction, LaunchAsync, LaunchConfig};
+use cudarc::driver::{CudaContext, CudaFunction, CudaModule, CudaStream, LaunchConfig, PushKernelArg};
 
 use super::compile_cuda_kernel;
 use crate::cuda_inference::tensor::GpuTensor;
@@ -849,7 +849,10 @@ const WMMA_BLOCK_N: usize = 64;
 /// - GEMV kernels for M=1 (decode) - optimized for single-token latency
 /// - GPTQ/AWQ kernels for asymmetric quantization with zero points
 pub struct FusedGemmKernel {
-    device: Arc<CudaDevice>,
+    ctx: Arc<CudaContext>,
+    stream: Arc<CudaStream>,
+    #[allow(dead_code)]
+    module: Option<Arc<CudaModule>>,
     // GEMM kernels (M > 1, scalar fallback)
     int4_func: Option<CudaFunction>,
     f16_func: Option<CudaFunction>,
@@ -880,9 +883,11 @@ impl std::fmt::Debug for FusedGemmKernel {
 
 impl FusedGemmKernel {
     /// Create a new fused GEMM kernel instance.
-    pub fn new(device: Arc<CudaDevice>) -> Result<Self, InferenceError> {
+    pub fn new(ctx: Arc<CudaContext>, stream: Arc<CudaStream>) -> Result<Self, InferenceError> {
         let mut kernel = Self {
-            device,
+            ctx,
+            stream,
+            module: None,
             int4_func: None,
             f16_func: None,
             f16_bt_func: None,
@@ -912,85 +917,53 @@ impl FusedGemmKernel {
         let ptx = compile_cuda_kernel(FUSED_GEMM_CUDA)
             .map_err(|e| InferenceError::Kernel(format!("NVRTC compilation failed: {}", e)))?;
 
-        // Load PTX into device - include all kernel names
-        self.device
-            .load_ptx(
-                ptx,
-                "fused_gemm",
-                &[
-                    // GEMM kernels (scalar fallback)
-                    "fused_int4_gemm_f16",
-                    "gemm_f16",
-                    "gemm_f16_bt",
-                    // GEMV kernels (M=1 optimized)
-                    "fused_int4_gemv_f16",
-                    "fused_int4_gemv_f16_v2",
-                    "gemv_f16",
-                    "gemv_f16_bt",
-                    // GPTQ/AWQ kernels (asymmetric INT4)
-                    "fused_gptq_gemv_f16",
-                    "fused_awq_gemv_f16",
-                    "fused_gptq_gemm_f16",
-                ],
-            )
-            .map_err(|e| {
-                InferenceError::Kernel(format!("Failed to load fused GEMM kernel: {}", e))
-            })?;
+        // Load PTX module into device
+        let module = self.ctx
+            .load_module(ptx)
+            .map_err(|e| InferenceError::Kernel(format!("Failed to load PTX: {}", e)))?;
 
         // Load GEMM functions
         self.int4_func = Some(
-            self.device
-                .get_func("fused_gemm", "fused_int4_gemm_f16")
-                .ok_or_else(|| {
-                    InferenceError::Kernel("Failed to get fused_int4_gemm_f16 function".to_string())
-                })?,
+            module
+                .load_function("fused_int4_gemm_f16")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to get fused_int4_gemm_f16 function: {}", e)))?,
         );
 
         self.f16_func = Some(
-            self.device
-                .get_func("fused_gemm", "gemm_f16")
-                .ok_or_else(|| {
-                    InferenceError::Kernel("Failed to get gemm_f16 function".to_string())
-                })?,
+            module
+                .load_function("gemm_f16")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to get gemm_f16 function: {}", e)))?,
         );
 
         self.f16_bt_func = Some(
-            self.device
-                .get_func("fused_gemm", "gemm_f16_bt")
-                .ok_or_else(|| {
-                    InferenceError::Kernel("Failed to get gemm_f16_bt function".to_string())
-                })?,
+            module
+                .load_function("gemm_f16_bt")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to get gemm_f16_bt function: {}", e)))?,
         );
 
         // Load GEMV functions (M=1 optimized)
         self.int4_gemv_func = Some(
-            self.device
-                .get_func("fused_gemm", "fused_int4_gemv_f16")
-                .ok_or_else(|| {
-                    InferenceError::Kernel("Failed to get fused_int4_gemv_f16 function".to_string())
-                })?,
+            module
+                .load_function("fused_int4_gemv_f16")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to get fused_int4_gemv_f16 function: {}", e)))?,
         );
 
         self.int4_gemv_v2_func = Some(
-            self.device
-                .get_func("fused_gemm", "fused_int4_gemv_f16_v2")
-                .ok_or_else(|| {
-                    InferenceError::Kernel(
-                        "Failed to get fused_int4_gemv_f16_v2 function".to_string(),
-                    )
-                })?,
+            module
+                .load_function("fused_int4_gemv_f16_v2")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to get fused_int4_gemv_f16_v2 function: {}", e)))?,
         );
 
-        self.f16_gemv_func = Some(self.device.get_func("fused_gemm", "gemv_f16").ok_or_else(
-            || InferenceError::Kernel("Failed to get gemv_f16 function".to_string()),
-        )?);
+        self.f16_gemv_func = Some(
+            module
+                .load_function("gemv_f16")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to get gemv_f16 function: {}", e)))?,
+        );
 
         self.f16_gemv_bt_func = Some(
-            self.device
-                .get_func("fused_gemm", "gemv_f16_bt")
-                .ok_or_else(|| {
-                    InferenceError::Kernel("Failed to get gemv_f16_bt function".to_string())
-                })?,
+            module
+                .load_function("gemv_f16_bt")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to get gemv_f16_bt function: {}", e)))?,
         );
 
         // WMMA tensor core kernels disabled for now (require sm_70+ and CUDA toolkit)
@@ -1001,28 +974,24 @@ impl FusedGemmKernel {
 
         // Load GPTQ/AWQ kernels (asymmetric INT4 with zero points)
         self.gptq_gemv_func = Some(
-            self.device
-                .get_func("fused_gemm", "fused_gptq_gemv_f16")
-                .ok_or_else(|| {
-                    InferenceError::Kernel("Failed to get fused_gptq_gemv_f16 function".to_string())
-                })?,
+            module
+                .load_function("fused_gptq_gemv_f16")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to get fused_gptq_gemv_f16 function: {}", e)))?,
         );
 
         self.awq_gemv_func = Some(
-            self.device
-                .get_func("fused_gemm", "fused_awq_gemv_f16")
-                .ok_or_else(|| {
-                    InferenceError::Kernel("Failed to get fused_awq_gemv_f16 function".to_string())
-                })?,
+            module
+                .load_function("fused_awq_gemv_f16")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to get fused_awq_gemv_f16 function: {}", e)))?,
         );
 
         self.gptq_gemm_func = Some(
-            self.device
-                .get_func("fused_gemm", "fused_gptq_gemm_f16")
-                .ok_or_else(|| {
-                    InferenceError::Kernel("Failed to get fused_gptq_gemm_f16 function".to_string())
-                })?,
+            module
+                .load_function("fused_gptq_gemm_f16")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to get fused_gptq_gemm_f16 function: {}", e)))?,
         );
+
+        self.module = Some(module);
 
         tracing::info!("Loaded GEMM kernels: GEMV (M=1), scalar GEMM (M>1), GPTQ/AWQ");
 
@@ -1095,19 +1064,18 @@ impl FusedGemmKernel {
                 };
 
                 return unsafe {
-                    wmma_func.clone().launch(
-                        cfg,
-                        (
-                            input.device_ptr(),
-                            weights.device_ptr(),
-                            scales.device_ptr(),
-                            output.device_ptr(),
-                            m as i32,
-                            n as i32,
-                            k as i32,
-                        ),
-                    )
+                    self.stream
+                        .launch_builder(wmma_func)
+                        .arg(&input.device_ptr())
+                        .arg(&weights.device_ptr())
+                        .arg(&scales.device_ptr())
+                        .arg(&output.device_ptr())
+                        .arg(&(m as i32))
+                        .arg(&(n as i32))
+                        .arg(&(k as i32))
+                        .launch(cfg)
                 }
+                .map(|_| ())
                 .map_err(|e| {
                     InferenceError::Kernel(format!("INT4 WMMA GEMM launch failed: {}", e))
                 });
@@ -1131,18 +1099,16 @@ impl FusedGemmKernel {
         };
 
         unsafe {
-            func.clone().launch(
-                cfg,
-                (
-                    input.device_ptr(),
-                    weights.device_ptr(),
-                    scales.device_ptr(),
-                    output.device_ptr(),
-                    m as i32,
-                    n as i32,
-                    k as i32,
-                ),
-            )
+            self.stream
+                .launch_builder(func)
+                .arg(&input.device_ptr())
+                .arg(&weights.device_ptr())
+                .arg(&scales.device_ptr())
+                .arg(&output.device_ptr())
+                .arg(&(m as i32))
+                .arg(&(n as i32))
+                .arg(&(k as i32))
+                .launch(cfg)
         }
         .map_err(|e| InferenceError::Kernel(format!("Fused INT4 GEMM launch failed: {}", e)))?;
 
@@ -1182,17 +1148,15 @@ impl FusedGemmKernel {
         };
 
         unsafe {
-            func.clone().launch(
-                cfg,
-                (
-                    input.device_ptr(),
-                    weights.device_ptr(),
-                    scales.device_ptr(),
-                    output.device_ptr(),
-                    n as i32,
-                    k as i32,
-                ),
-            )
+            self.stream
+                .launch_builder(func)
+                .arg(&input.device_ptr())
+                .arg(&weights.device_ptr())
+                .arg(&scales.device_ptr())
+                .arg(&output.device_ptr())
+                .arg(&(n as i32))
+                .arg(&(k as i32))
+                .launch(cfg)
         }
         .map_err(|e| InferenceError::Kernel(format!("INT4 GEMV launch failed: {}", e)))?;
 
@@ -1258,18 +1222,17 @@ impl FusedGemmKernel {
                 };
 
                 return unsafe {
-                    wmma_func.clone().launch(
-                        cfg,
-                        (
-                            a.device_ptr(),
-                            b.device_ptr(),
-                            c.device_ptr(),
-                            m as i32,
-                            n as i32,
-                            k as i32,
-                        ),
-                    )
+                    self.stream
+                        .launch_builder(wmma_func)
+                        .arg(&a.device_ptr())
+                        .arg(&b.device_ptr())
+                        .arg(&c.device_ptr())
+                        .arg(&(m as i32))
+                        .arg(&(n as i32))
+                        .arg(&(k as i32))
+                        .launch(cfg)
                 }
+                .map(|_| ())
                 .map_err(|e| {
                     InferenceError::Kernel(format!("F16 WMMA GEMM launch failed: {}", e))
                 });
@@ -1295,17 +1258,15 @@ impl FusedGemmKernel {
         };
 
         unsafe {
-            func.clone().launch(
-                cfg,
-                (
-                    a.device_ptr(),
-                    b.device_ptr(),
-                    c.device_ptr(),
-                    m as i32,
-                    n as i32,
-                    k as i32,
-                ),
-            )
+            self.stream
+                .launch_builder(func)
+                .arg(&a.device_ptr())
+                .arg(&b.device_ptr())
+                .arg(&c.device_ptr())
+                .arg(&(m as i32))
+                .arg(&(n as i32))
+                .arg(&(k as i32))
+                .launch(cfg)
         }
         .map_err(|e| InferenceError::Kernel(format!("F16 GEMM launch failed: {}", e)))?;
 
@@ -1337,16 +1298,14 @@ impl FusedGemmKernel {
         };
 
         unsafe {
-            func.clone().launch(
-                cfg,
-                (
-                    a.device_ptr(),
-                    b.device_ptr(),
-                    c.device_ptr(),
-                    n as i32,
-                    k as i32,
-                ),
-            )
+            self.stream
+                .launch_builder(func)
+                .arg(&a.device_ptr())
+                .arg(&b.device_ptr())
+                .arg(&c.device_ptr())
+                .arg(&(n as i32))
+                .arg(&(k as i32))
+                .launch(cfg)
         }
         .map_err(|e| InferenceError::Kernel(format!("F16 GEMV launch failed: {}", e)))?;
 
@@ -1419,17 +1378,15 @@ impl FusedGemmKernel {
         };
 
         unsafe {
-            func.clone().launch(
-                cfg,
-                (
-                    a.device_ptr(),
-                    b.device_ptr(),
-                    c.device_ptr(),
-                    m as i32,
-                    n as i32,
-                    k as i32,
-                ),
-            )
+            self.stream
+                .launch_builder(func)
+                .arg(&a.device_ptr())
+                .arg(&b.device_ptr())
+                .arg(&c.device_ptr())
+                .arg(&(m as i32))
+                .arg(&(n as i32))
+                .arg(&(k as i32))
+                .launch(cfg)
         }
         .map_err(|e| InferenceError::Kernel(format!("F16 GEMM BT launch failed: {}", e)))?;
 
@@ -1461,16 +1418,14 @@ impl FusedGemmKernel {
         };
 
         unsafe {
-            func.clone().launch(
-                cfg,
-                (
-                    a.device_ptr(),
-                    b.device_ptr(),
-                    c.device_ptr(),
-                    n as i32,
-                    k as i32,
-                ),
-            )
+            self.stream
+                .launch_builder(func)
+                .arg(&a.device_ptr())
+                .arg(&b.device_ptr())
+                .arg(&c.device_ptr())
+                .arg(&(n as i32))
+                .arg(&(k as i32))
+                .launch(cfg)
         }
         .map_err(|e| InferenceError::Kernel(format!("F16 GEMV BT launch failed: {}", e)))?;
 
@@ -1540,21 +1495,19 @@ impl FusedGemmKernel {
         let g_idx_ptr = g_idx.map_or(0u64, |t| t.device_ptr());
 
         unsafe {
-            func.clone().launch(
-                cfg,
-                (
-                    input.device_ptr(),
-                    weights.device_ptr(),
-                    scales.device_ptr(),
-                    zeros.device_ptr(),
-                    g_idx_ptr,
-                    output.device_ptr(),
-                    m as i32,
-                    n as i32,
-                    k as i32,
-                    group_size as i32,
-                ),
-            )
+            self.stream
+                .launch_builder(func)
+                .arg(&input.device_ptr())
+                .arg(&weights.device_ptr())
+                .arg(&scales.device_ptr())
+                .arg(&zeros.device_ptr())
+                .arg(&g_idx_ptr)
+                .arg(&output.device_ptr())
+                .arg(&(m as i32))
+                .arg(&(n as i32))
+                .arg(&(k as i32))
+                .arg(&(group_size as i32))
+                .launch(cfg)
         }
         .map_err(|e| InferenceError::Kernel(format!("GPTQ GEMM launch failed: {}", e)))?;
 
@@ -1596,20 +1549,18 @@ impl FusedGemmKernel {
         let g_idx_ptr = g_idx.map_or(0u64, |t| t.device_ptr());
 
         unsafe {
-            func.clone().launch(
-                cfg,
-                (
-                    input.device_ptr(),
-                    weights.device_ptr(),
-                    scales.device_ptr(),
-                    zeros.device_ptr(),
-                    g_idx_ptr,
-                    output.device_ptr(),
-                    n as i32,
-                    k as i32,
-                    group_size as i32,
-                ),
-            )
+            self.stream
+                .launch_builder(func)
+                .arg(&input.device_ptr())
+                .arg(&weights.device_ptr())
+                .arg(&scales.device_ptr())
+                .arg(&zeros.device_ptr())
+                .arg(&g_idx_ptr)
+                .arg(&output.device_ptr())
+                .arg(&(n as i32))
+                .arg(&(k as i32))
+                .arg(&(group_size as i32))
+                .launch(cfg)
         }
         .map_err(|e| InferenceError::Kernel(format!("GPTQ GEMV launch failed: {}", e)))?;
 
@@ -1677,21 +1628,19 @@ impl FusedGemmKernel {
         let g_idx_ptr = 0u64;
 
         unsafe {
-            func.clone().launch(
-                cfg,
-                (
-                    input.device_ptr(),
-                    weights.device_ptr(),
-                    scales.device_ptr(),
-                    zeros.device_ptr(),
-                    g_idx_ptr,
-                    output.device_ptr(),
-                    m as i32,
-                    n as i32,
-                    k as i32,
-                    group_size as i32,
-                ),
-            )
+            self.stream
+                .launch_builder(func)
+                .arg(&input.device_ptr())
+                .arg(&weights.device_ptr())
+                .arg(&scales.device_ptr())
+                .arg(&zeros.device_ptr())
+                .arg(&g_idx_ptr)
+                .arg(&output.device_ptr())
+                .arg(&(m as i32))
+                .arg(&(n as i32))
+                .arg(&(k as i32))
+                .arg(&(group_size as i32))
+                .launch(cfg)
         }
         .map_err(|e| InferenceError::Kernel(format!("AWQ GEMM launch failed: {}", e)))?;
 
@@ -1729,28 +1678,31 @@ impl FusedGemmKernel {
         };
 
         unsafe {
-            func.clone().launch(
-                cfg,
-                (
-                    input.device_ptr(),
-                    weights.device_ptr(),
-                    scales.device_ptr(),
-                    zeros.device_ptr(),
-                    output.device_ptr(),
-                    n as i32,
-                    k as i32,
-                    group_size as i32,
-                ),
-            )
+            self.stream
+                .launch_builder(func)
+                .arg(&input.device_ptr())
+                .arg(&weights.device_ptr())
+                .arg(&scales.device_ptr())
+                .arg(&zeros.device_ptr())
+                .arg(&output.device_ptr())
+                .arg(&(n as i32))
+                .arg(&(k as i32))
+                .arg(&(group_size as i32))
+                .launch(cfg)
         }
         .map_err(|e| InferenceError::Kernel(format!("AWQ GEMV launch failed: {}", e)))?;
 
         Ok(())
     }
 
-    /// Get device reference.
-    pub fn device(&self) -> &Arc<CudaDevice> {
-        &self.device
+    /// Get context reference.
+    pub fn ctx(&self) -> &Arc<CudaContext> {
+        &self.ctx
+    }
+
+    /// Get stream reference.
+    pub fn stream(&self) -> &Arc<CudaStream> {
+        &self.stream
     }
 }
 

@@ -18,7 +18,7 @@
 use std::ffi::c_void;
 use std::sync::Arc;
 
-use cudarc::driver::CudaDevice;
+use cudarc::driver::CudaContext;
 
 use super::InferenceError;
 
@@ -240,12 +240,12 @@ pub struct StreamManager {
     memory_done: CudaEvent,
 
     /// CUDA device reference.
-    device: Arc<CudaDevice>,
+    device: Arc<CudaContext>,
 }
 
 impl StreamManager {
     /// Create a new stream manager.
-    pub fn new(device: Arc<CudaDevice>) -> Result<Self, InferenceError> {
+    pub fn new(device: Arc<CudaContext>) -> Result<Self, InferenceError> {
         // Create streams with priorities
         // Priority 0 = highest, larger numbers = lower priority
         let compute_stream = CudaStream::with_priority(0)?; // Highest priority
@@ -325,7 +325,7 @@ impl StreamManager {
     }
 
     /// Get device reference.
-    pub fn device(&self) -> &Arc<CudaDevice> {
+    pub fn device(&self) -> &Arc<CudaContext> {
         &self.device
     }
 }

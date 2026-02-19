@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use cudarc::driver::{CudaDevice, CudaFunction, LaunchAsync, LaunchConfig};
+use cudarc::driver::{CudaContext, CudaFunction, CudaModule, CudaStream, LaunchConfig, PushKernelArg};
 
 use super::compile_cuda_kernel;
 use crate::cuda_inference::tensor::GpuTensor;
@@ -86,7 +86,10 @@ extern "C" __global__ void rmsnorm_f16(
 
 /// RMSNorm kernel for GPU execution.
 pub struct RMSNormKernel {
-    device: Arc<CudaDevice>,
+    ctx: Arc<CudaContext>,
+    stream: Arc<CudaStream>,
+    #[allow(dead_code)]
+    module: Option<Arc<CudaModule>>,
     func: Option<CudaFunction>,
 }
 
@@ -100,8 +103,8 @@ impl std::fmt::Debug for RMSNormKernel {
 
 impl RMSNormKernel {
     /// Create a new RMSNorm kernel.
-    pub fn new(device: Arc<CudaDevice>) -> Result<Self, InferenceError> {
-        let mut kernel = Self { device, func: None };
+    pub fn new(ctx: Arc<CudaContext>, stream: Arc<CudaStream>) -> Result<Self, InferenceError> {
+        let mut kernel = Self { ctx, stream, module: None, func: None };
         kernel.load_kernel()?;
         Ok(kernel)
     }
@@ -112,19 +115,18 @@ impl RMSNormKernel {
         let ptx = compile_cuda_kernel(RMSNORM_CUDA)
             .map_err(|e| InferenceError::Kernel(format!("NVRTC compilation failed: {}", e)))?;
 
-        // Load PTX into device
-        self.device
-            .load_ptx(ptx, "rmsnorm", &["rmsnorm_f16"])
+        // Load PTX module into device
+        let module = self.ctx
+            .load_module(ptx)
             .map_err(|e| InferenceError::Kernel(format!("Failed to load PTX: {}", e)))?;
 
         self.func = Some(
-            self.device
-                .get_func("rmsnorm", "rmsnorm_f16")
-                .ok_or_else(|| {
-                    InferenceError::Kernel("Failed to get rmsnorm_f16 function".to_string())
-                })?,
+            module
+                .load_function("rmsnorm_f16")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to get rmsnorm_f16 function: {}", e)))?,
         );
 
+        self.module = Some(module);
         Ok(())
     }
 
@@ -171,26 +173,28 @@ impl RMSNormKernel {
         };
 
         unsafe {
-            func.clone()
-                .launch(
-                    cfg,
-                    (
-                        input.device_ptr(),
-                        weight.device_ptr(),
-                        output.device_ptr(),
-                        hidden_size as i32,
-                        eps,
-                    ),
-                )
-                .map_err(|e| InferenceError::Kernel(e.to_string()))?;
+            self.stream
+                .launch_builder(func)
+                .arg(&input.device_ptr())
+                .arg(&weight.device_ptr())
+                .arg(&output.device_ptr())
+                .arg(&(hidden_size as i32))
+                .arg(&eps)
+                .launch(cfg)
         }
+        .map_err(|e| InferenceError::Kernel(e.to_string()))?;
 
         Ok(())
     }
 
-    /// Get device reference.
-    pub fn device(&self) -> &Arc<CudaDevice> {
-        &self.device
+    /// Get context reference.
+    pub fn ctx(&self) -> &Arc<CudaContext> {
+        &self.ctx
+    }
+
+    /// Get stream reference.
+    pub fn stream(&self) -> &Arc<CudaStream> {
+        &self.stream
     }
 }
 

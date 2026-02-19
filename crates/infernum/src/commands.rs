@@ -139,7 +139,7 @@ pub async fn serve(
         queue: Default::default(),
     };
 
-    let server = Server::new(config);
+    let server = Server::new(config).await;
     server.run().await?;
 
     Ok(())
@@ -924,7 +924,7 @@ pub async fn model_convert(
     max_rank: u32,
     min_quality: f32,
     verify: bool,
-    _cpu_only: bool,
+    cpu_only: bool,
     encoding: String,
 ) -> Result<()> {
     use abaddon::holotensor::HolographicEncoding;
@@ -2188,7 +2188,7 @@ pub async fn setup(
 
 /// Detect hardware and return (backend name, VRAM in GB).
 fn detect_hardware() -> (String, f64) {
-    let backend = "CPU".to_string();
+    let mut backend = "CPU".to_string();
     let mut vram_gb = 0.0;
 
     #[cfg(feature = "cuda")]
@@ -3706,6 +3706,144 @@ pub async fn registry_roadmap(name: String) -> Result<()> {
     println!("\x1b[1mExpected Outcome:\x1b[0m {}", plan.expected_outcome);
     println!("\x1b[1mEstimated Effort:\x1b[0m {}", plan.estimated_effort);
 
+    Ok(())
+}
+
+// ============================================================================
+// Room Commands (Conclave)
+// ============================================================================
+
+use crate::room_client::{format_room_details, format_room_summary, DaemonClient};
+use crate::room_daemon;
+
+/// Start the room daemon (foreground).
+pub async fn room_daemon() -> Result<()> {
+    room_daemon::run_daemon().await
+}
+
+/// Start the room daemon in background.
+pub async fn room_daemon_start() -> Result<()> {
+    use std::process::{Command, Stdio};
+
+    // Check if already running
+    if room_daemon::is_daemon_running().await {
+        println!("Room daemon is already running");
+        return Ok(());
+    }
+
+    // Get the path to the current executable
+    let exe = std::env::current_exe()?;
+
+    // Spawn daemon in background
+    let child = Command::new(&exe)
+        .args(["room", "daemon"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| eyre!("Failed to start daemon: {}", e))?;
+
+    println!("Room daemon starting (PID: {})", child.id());
+
+    // Wait briefly for it to start
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+    if room_daemon::is_daemon_running().await {
+        println!("Room daemon started successfully");
+    } else {
+        println!("Warning: daemon may not have started. Check logs.");
+    }
+
+    Ok(())
+}
+
+/// Stop the room daemon.
+pub async fn room_daemon_stop() -> Result<()> {
+    if !room_daemon::is_daemon_running().await {
+        println!("Room daemon is not running");
+        return Ok(());
+    }
+
+    let mut client = DaemonClient::connect().await?;
+    client.shutdown().await?;
+
+    println!("Room daemon stopped");
+    Ok(())
+}
+
+/// Create a new collaboration room.
+pub async fn room_create(name: String, working_dir: String) -> Result<()> {
+    let working_dir = std::path::PathBuf::from(&working_dir).canonicalize()
+        .map_err(|_| eyre!("Working directory does not exist: {}", working_dir))?;
+
+    let mut client = DaemonClient::connect().await?;
+    let room_id = client.create_room(name.clone(), working_dir).await?;
+
+    println!("Room created: {} [{}]", name, &room_id[..8.min(room_id.len())]);
+    Ok(())
+}
+
+/// List active rooms.
+pub async fn room_list() -> Result<()> {
+    let mut client = DaemonClient::connect().await?;
+    let rooms = client.list_rooms().await?;
+
+    if rooms.is_empty() {
+        println!("No active rooms");
+        return Ok(());
+    }
+
+    println!("Active rooms:");
+    for room in &rooms {
+        println!("  {}", format_room_summary(room));
+    }
+
+    Ok(())
+}
+
+/// Show room details.
+pub async fn room_info(room_id: String) -> Result<()> {
+    let mut client = DaemonClient::connect().await?;
+    let room = client.get_room(room_id).await?;
+
+    println!("{}", format_room_details(&room));
+    Ok(())
+}
+
+/// Spawn an agent in a room.
+pub async fn room_spawn(room_id: String, agent: String, name: Option<String>) -> Result<()> {
+    let mut client = DaemonClient::connect().await?;
+    let participant_id = client.spawn_agent(room_id, agent.clone(), name.clone()).await?;
+
+    let display_name = name.unwrap_or(agent);
+    println!("Agent spawned: {} [{}]", display_name, &participant_id[..8.min(participant_id.len())]);
+    Ok(())
+}
+
+/// Send a message to a room.
+pub async fn room_send(room_id: String, message: String) -> Result<()> {
+    let mut client = DaemonClient::connect().await?;
+    let _message_id = client.send_message(room_id, message).await?;
+
+    println!("Message sent");
+    Ok(())
+}
+
+/// Watch room activity in TUI.
+pub async fn room_observe(room_id: String) -> Result<()> {
+    let mut client = DaemonClient::connect().await?;
+    let room = client.subscribe(room_id.clone()).await?;
+
+    // Run the TUI
+    crate::tui::run_tui(client, room).await
+}
+
+/// Archive a room.
+pub async fn room_archive(room_id: String) -> Result<()> {
+    let mut client = DaemonClient::connect().await?;
+    client.archive_room(room_id.clone()).await?;
+
+    println!("Room archived: {}", room_id);
     Ok(())
 }
 

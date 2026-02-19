@@ -25,7 +25,7 @@
 use std::ffi::c_void;
 use std::sync::Arc;
 
-use cudarc::driver::{CudaDevice, CudaSlice, DevicePtr, DeviceSlice};
+use cudarc::driver::{CudaContext, CudaSlice, DevicePtr};
 
 use super::InferenceError;
 
@@ -133,7 +133,7 @@ pub struct GpuTensor {
     dtype: GpuDType,
 
     /// CUDA device reference.
-    device: Arc<CudaDevice>,
+    device: Arc<CudaContext>,
 
     /// Stride for each dimension (in elements, not bytes).
     strides: Vec<usize>,
@@ -153,7 +153,7 @@ impl GpuTensor {
     pub fn from_cuda_slice_f16(
         data: CudaSlice<half::f16>,
         shape: Vec<usize>,
-        device: Arc<CudaDevice>,
+        device: Arc<CudaContext>,
     ) -> Result<Self, InferenceError> {
         let num_elements: usize = shape.iter().product();
 
@@ -166,9 +166,10 @@ impl GpuTensor {
 
         // Copy f16 data to host, reinterpret as bytes, then upload
         // This is safe but involves a round-trip through host memory
-        let mut host_f16 = vec![half::f16::ZERO; num_elements];
-        device
-            .dtoh_sync_copy_into(&data, &mut host_f16)
+        let stream = device.default_stream();
+
+        let host_f16: Vec<half::f16> = stream
+            .clone_dtoh(&data)
             .map_err(|e| InferenceError::Memory(format!("Failed to copy f16 from GPU: {}", e)))?;
 
         // Reinterpret as bytes
@@ -177,8 +178,8 @@ impl GpuTensor {
             unsafe { std::slice::from_raw_parts(host_f16.as_ptr() as *const u8, num_elements * 2) };
 
         // Upload as u8
-        let data_u8: CudaSlice<u8> = device
-            .htod_sync_copy(host_bytes)
+        let data_u8: CudaSlice<u8> = stream
+            .clone_htod(host_bytes)
             .map_err(|e| InferenceError::Memory(format!("Failed to upload bytes to GPU: {}", e)))?;
 
         // Compute strides (row-major order)
@@ -205,7 +206,7 @@ impl GpuTensor {
         data: CudaSlice<u8>,
         shape: Vec<usize>,
         dtype: GpuDType,
-        device: Arc<CudaDevice>,
+        device: Arc<CudaContext>,
     ) -> Result<Self, InferenceError> {
         let num_elements: usize = shape.iter().product();
         let expected_bytes = if dtype.is_packed() {
@@ -240,7 +241,7 @@ impl GpuTensor {
     pub fn zeros(
         shape: Vec<usize>,
         dtype: GpuDType,
-        device: Arc<CudaDevice>,
+        device: Arc<CudaContext>,
     ) -> Result<Self, InferenceError> {
         let num_elements: usize = shape.iter().product();
         let num_bytes = if dtype.is_packed() {
@@ -249,7 +250,9 @@ impl GpuTensor {
             num_elements * dtype.size_bytes()
         };
 
-        let data: CudaSlice<u8> = device
+        let stream = device.default_stream();
+
+        let data: CudaSlice<u8> = stream
             .alloc_zeros(num_bytes)
             .map_err(|e| InferenceError::Memory(e.to_string()))?;
 
@@ -274,7 +277,7 @@ impl GpuTensor {
     pub unsafe fn uninit(
         shape: Vec<usize>,
         dtype: GpuDType,
-        device: Arc<CudaDevice>,
+        device: Arc<CudaContext>,
     ) -> Result<Self, InferenceError> {
         let num_elements: usize = shape.iter().product();
         let num_bytes = if dtype.is_packed() {
@@ -283,7 +286,9 @@ impl GpuTensor {
             num_elements * dtype.size_bytes()
         };
 
-        let data: CudaSlice<u8> = device
+        let stream = device.default_stream();
+
+        let data: CudaSlice<u8> = stream
             .alloc(num_bytes)
             .map_err(|e| InferenceError::Memory(e.to_string()))?;
 
@@ -339,13 +344,17 @@ impl GpuTensor {
     /// Get raw device pointer (includes offset for views).
     #[inline]
     pub fn device_ptr(&self) -> u64 {
-        *self.buffer.data.device_ptr() + self.offset as u64
+        let stream = self.device.default_stream();
+        let (ptr, _guard) = self.buffer.data.device_ptr(&stream);
+        ptr + self.offset as u64
     }
 
     /// Get base device pointer (without offset).
     #[inline]
     pub fn base_device_ptr(&self) -> u64 {
-        *self.buffer.data.device_ptr()
+        let stream = self.device.default_stream();
+        let (ptr, _guard) = self.buffer.data.device_ptr(&stream);
+        ptr
     }
 
     /// Get byte offset from base pointer.
@@ -368,7 +377,7 @@ impl GpuTensor {
 
     /// Get CUDA device.
     #[inline]
-    pub fn device(&self) -> &Arc<CudaDevice> {
+    pub fn device(&self) -> &Arc<CudaContext> {
         &self.device
     }
 
@@ -423,14 +432,16 @@ impl GpuTensor {
         }
 
         // Deep copy for when independence is needed
-        let new_data: CudaSlice<u8> = self
-            .device
+        let stream = self.device.default_stream();
+
+        let new_data: CudaSlice<u8> = stream
             .alloc_zeros(self.logical_size)
             .map_err(|e| InferenceError::Memory(e.to_string()))?;
 
         unsafe {
+            let (new_ptr, _guard) = new_data.device_ptr(&stream);
             cudarc::driver::result::memcpy_dtod_sync(
-                *new_data.device_ptr(),
+                new_ptr,
                 self.device_ptr(), // Uses offset-adjusted pointer
                 self.logical_size,
             )
@@ -505,15 +516,17 @@ impl GpuTensor {
         let slice_length = (end - start) * bytes_per_row;
 
         // Allocate new buffer and copy data
-        let new_data: CudaSlice<u8> = self
-            .device
+        let stream = self.device.default_stream();
+
+        let new_data: CudaSlice<u8> = stream
             .alloc_zeros(slice_length)
             .map_err(|e| InferenceError::Memory(e.to_string()))?;
 
         // Copy from source offset to new buffer
         unsafe {
+            let (new_ptr, _guard) = new_data.device_ptr(&stream);
             cudarc::driver::result::memcpy_dtod_sync(
-                *new_data.device_ptr(),
+                new_ptr,
                 self.device_ptr() + slice_offset as u64,
                 slice_length,
             )
@@ -592,15 +605,17 @@ impl GpuTensor {
     /// Copy to a new tensor (deep copy).
     pub fn clone_tensor(&self) -> Result<GpuTensor, InferenceError> {
         // Allocate new buffer for the logical size (not full buffer if we're a view)
-        let new_data: CudaSlice<u8> = self
-            .device
+        let stream = self.device.default_stream();
+
+        let new_data: CudaSlice<u8> = stream
             .alloc_zeros(self.logical_size)
             .map_err(|e| InferenceError::Memory(e.to_string()))?;
 
         // Copy from our offset-adjusted pointer
         unsafe {
+            let (new_ptr, _guard) = new_data.device_ptr(&stream);
             cudarc::driver::result::memcpy_dtod_sync(
-                *new_data.device_ptr(),
+                new_ptr,
                 self.device_ptr(), // Uses offset
                 self.logical_size,
             )
@@ -1133,8 +1148,9 @@ impl GpuTensor {
         let output_bytes = kv_heads * effective_seq * head_dim_bytes;
 
         // Allocate contiguous output buffer
-        let output_data: CudaSlice<u8> = self
-            .device
+        let stream = self.device.default_stream();
+
+        let output_data: CudaSlice<u8> = stream
             .alloc_zeros(output_bytes)
             .map_err(|e| InferenceError::Memory(e.to_string()))?;
 
@@ -1155,8 +1171,9 @@ impl GpuTensor {
 
             // Copy effective_seq * head_dim elements for this head (contiguous in source)
             unsafe {
+                let (out_ptr, _guard) = output_data.device_ptr(&stream);
                 cudarc::driver::result::memcpy_dtod_sync(
-                    *output_data.device_ptr() + dst_offset as u64,
+                    out_ptr + dst_offset as u64,
                     self.device_ptr() + src_offset as u64,
                     effective_seq * head_dim_bytes,
                 )

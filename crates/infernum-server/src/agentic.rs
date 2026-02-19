@@ -836,6 +836,7 @@ fn supervisor_event_type(event: &SupervisorEvent) -> &'static str {
         SupervisorEvent::Rerouted { .. } => "rerouted",
         SupervisorEvent::SupervisorError { .. } => "supervisor_error",
         SupervisorEvent::SupervisorCompleted { .. } => "supervisor_completed",
+        SupervisorEvent::WellbeingUpdate { .. } => "wellbeing_update",
     }
 }
 
@@ -890,6 +891,20 @@ async fn bridge_supervisor_event_to_session(
         },
         // SupervisorCompleted doesn't need bridging (session ends separately)
         SupervisorEvent::SupervisorCompleted { .. } => {},
+        // WellbeingUpdate - emit aggregate wellbeing state
+        SupervisorEvent::WellbeingUpdate { aggregate, action, .. } => {
+            sessions
+                .emit_event(
+                    &session_id,
+                    AgentEventData::Thought {
+                        content: format!(
+                            "Wellbeing update: {} agent(s), action: {:?}",
+                            aggregate.agents_total, action
+                        ),
+                    },
+                )
+                .await;
+        },
     }
 }
 

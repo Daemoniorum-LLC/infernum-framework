@@ -19,6 +19,12 @@ stolas = { path = "../stolas", version = "0.2.0-rc.2", default-features = false 
 beleth = { path = "../beleth", version = "0.2.0-rc.2" }
 dantalion = { path = "../dantalion", version = "0.2.0-rc.2" }
 
+# Room collaboration
+conclave = { path = "../conclave", version = "0.2.0-rc.2" }
+
+# Grimoire personas
+grimoire-loader = { path = "../grimoire-loader", version = "0.2.0-rc.2" }
+
 # Async
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
@@ -52,6 +58,8 @@ chrono = { workspace = true }
 regex = { workspace = true }
 parking_lot = { workspace = true }
 url = "2"
+dirs = "6"
+zip = "2"
 
 # OpenAPI documentation
 utoipa = { version = "5", features = ["axum_extras", "chrono"] }

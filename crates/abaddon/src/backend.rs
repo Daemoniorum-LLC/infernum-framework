@@ -620,28 +620,46 @@ pub mod cuda {
 
         /// Query GPU capabilities from CUDA runtime
         fn query_capabilities(device_id: usize) -> Result<GpuCapabilities> {
-            use cudarc::driver::CudaDevice as CudarcDevice;
+            // Initialize CUDA driver
+            cudarc::driver::result::init().map_err(|e| infernum_core::Error::Backend {
+                backend: "cuda".to_string(),
+                message: format!("Failed to initialize CUDA: {:?}", e),
+            })?;
 
-            let cuda_dev =
-                CudarcDevice::new(device_id).map_err(|e| infernum_core::Error::Backend {
+            // Get device handle
+            let cu_device = cudarc::driver::result::device::get(device_id as i32).map_err(
+                |e| infernum_core::Error::Backend {
                     backend: "cuda".to_string(),
-                    message: format!("Failed to query CUDA device: {}", e),
-                })?;
+                    message: format!("Failed to query CUDA device: {:?}", e),
+                },
+            )?;
 
-            // Get device attributes
-            let compute_major = cuda_dev
-                .attribute(cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR)
-                .unwrap_or(7) as u32;
+            // Get device attributes (unsafe CUDA driver calls)
+            let compute_major = unsafe {
+                cudarc::driver::result::device::get_attribute(
+                    cu_device,
+                    cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR,
+                )
+                .unwrap_or(7) as u32
+            };
 
-            let compute_minor = cuda_dev
-                .attribute(cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR)
-                .unwrap_or(0) as u32;
+            let compute_minor = unsafe {
+                cudarc::driver::result::device::get_attribute(
+                    cu_device,
+                    cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
+                )
+                .unwrap_or(0) as u32
+            };
 
-            let total_memory = cuda_dev
-                .attribute(cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_TOTAL_CONSTANT_MEMORY)
+            let total_memory = unsafe {
+                cudarc::driver::result::device::get_attribute(
+                    cu_device,
+                    cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_TOTAL_CONSTANT_MEMORY,
+                )
                 .map(|v| v as usize)
                 // Fallback: use memory info from device
-                .unwrap_or(16 * 1024 * 1024 * 1024);
+                .unwrap_or(16 * 1024 * 1024 * 1024)
+            };
 
             // Actually get total memory using a better method if available
             // For now, detect based on compute capability common configurations

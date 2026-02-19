@@ -176,6 +176,7 @@ impl RoomRegistry {
         let room = Room {
             id: room_id,
             name: request.name.clone(),
+            labels: request.labels,
             working_dir: request.working_dir,
             project: request.project,
             participants: vec![creator.clone()],
@@ -311,6 +312,7 @@ impl RoomRegistry {
         // Copy relevant data from source
         let working_dir = source.working_dir.clone();
         let project = source.project.clone();
+        let labels = source.labels.clone();
         let invite_policy = source.invite_policy;
         let coordinator_config = source.coordinator_config.clone();
         drop(rooms);
@@ -336,6 +338,7 @@ impl RoomRegistry {
         let new_room = Room {
             id: new_room_id,
             name: new_name,
+            labels,
             working_dir,
             project,
             participants: vec![forker],

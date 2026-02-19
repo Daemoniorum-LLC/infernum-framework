@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use cudarc::driver::CudaDevice;
+use cudarc::driver::CudaContext;
 
 use super::error::TieredError;
 use super::lru::LruTracker;
@@ -65,7 +65,7 @@ impl SharedWeights {
 /// - Tracks memory usage against budget
 pub struct VramCache {
     /// CUDA device for memory operations.
-    device: Arc<CudaDevice>,
+    device: Arc<CudaContext>,
 
     /// Cached layer weights (layer_idx -> weights).
     layers: HashMap<usize, LayerWeights>,
@@ -96,7 +96,7 @@ impl VramCache {
     /// * `device` - CUDA device for memory operations
     /// * `budget` - Total VRAM budget in bytes (including shared weights)
     /// * `stats` - Statistics tracker
-    pub fn new(device: Arc<CudaDevice>, budget: u64, stats: Arc<TieredStats>) -> Self {
+    pub fn new(device: Arc<CudaContext>, budget: u64, stats: Arc<TieredStats>) -> Self {
         Self {
             device,
             layers: HashMap::new(),
@@ -341,7 +341,7 @@ impl VramCache {
     }
 
     /// Get CUDA device reference.
-    pub fn device(&self) -> &Arc<CudaDevice> {
+    pub fn device(&self) -> &Arc<CudaContext> {
         &self.device
     }
 

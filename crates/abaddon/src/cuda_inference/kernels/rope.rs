@@ -20,7 +20,7 @@
 //! Uses NVRTC to compile CUDA C code at runtime for better compatibility
 //! across GPU architectures.
 
-use cudarc::driver::{CudaDevice, CudaFunction, LaunchAsync, LaunchConfig};
+use cudarc::driver::{CudaContext, CudaFunction, CudaModule, CudaStream, LaunchConfig, PushKernelArg};
 use std::sync::Arc;
 
 use super::compile_cuda_kernel;
@@ -121,7 +121,10 @@ extern "C" __global__ void rope_precompute_freqs(
 
 /// RoPE (Rotary Position Embeddings) kernel.
 pub struct RoPEKernel {
-    device: Arc<CudaDevice>,
+    ctx: Arc<CudaContext>,
+    stream: Arc<CudaStream>,
+    #[allow(dead_code)]
+    module: Option<Arc<CudaModule>>,
     func: Option<CudaFunction>,
     precompute_func: Option<CudaFunction>,
 }
@@ -136,9 +139,11 @@ impl std::fmt::Debug for RoPEKernel {
 
 impl RoPEKernel {
     /// Create a new RoPE kernel.
-    pub fn new(device: Arc<CudaDevice>) -> Result<Self, InferenceError> {
+    pub fn new(ctx: Arc<CudaContext>, stream: Arc<CudaStream>) -> Result<Self, InferenceError> {
         let mut kernel = Self {
-            device,
+            ctx,
+            stream,
+            module: None,
             func: None,
             precompute_func: None,
         };
@@ -152,29 +157,24 @@ impl RoPEKernel {
         let ptx = compile_cuda_kernel(ROPE_CUDA)
             .map_err(|e| InferenceError::Kernel(format!("NVRTC compilation failed: {}", e)))?;
 
-        // Load PTX into device
-        self.device
-            .load_ptx(ptx, "rope_kernels", &["rope_f16", "rope_precompute_freqs"])
+        // Load PTX module into device
+        let module = self.ctx
+            .load_module(ptx)
             .map_err(|e| InferenceError::Kernel(format!("Failed to load PTX: {}", e)))?;
 
         self.func = Some(
-            self.device
-                .get_func("rope_kernels", "rope_f16")
-                .ok_or_else(|| {
-                    InferenceError::Kernel("Failed to get rope_f16 function".to_string())
-                })?,
+            module
+                .load_function("rope_f16")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to get rope_f16 function: {}", e)))?,
         );
 
         self.precompute_func = Some(
-            self.device
-                .get_func("rope_kernels", "rope_precompute_freqs")
-                .ok_or_else(|| {
-                    InferenceError::Kernel(
-                        "Failed to get rope_precompute_freqs function".to_string(),
-                    )
-                })?,
+            module
+                .load_function("rope_precompute_freqs")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to get rope_precompute_freqs function: {}", e)))?,
         );
 
+        self.module = Some(module);
         Ok(())
     }
 
@@ -235,17 +235,15 @@ impl RoPEKernel {
 
         // Launch kernel
         unsafe {
-            func.clone().launch(
-                cfg,
-                (
-                    x.device_ptr(),
-                    positions.device_ptr(),
-                    theta,
-                    head_dim as i32,
-                    scaling_factor,
-                    num_heads as i32,
-                ),
-            )
+            self.stream
+                .launch_builder(func)
+                .arg(&x.device_ptr())
+                .arg(&positions.device_ptr())
+                .arg(&theta)
+                .arg(&(head_dim as i32))
+                .arg(&scaling_factor)
+                .arg(&(num_heads as i32))
+                .launch(cfg)
         }
         .map_err(|e| InferenceError::Kernel(format!("RoPE kernel launch failed: {}", e)))?;
 
@@ -285,15 +283,13 @@ impl RoPEKernel {
         };
 
         unsafe {
-            func.clone().launch(
-                cfg,
-                (
-                    freqs.device_ptr(),
-                    theta,
-                    head_dim as i32,
-                    max_seq_len as i32,
-                ),
-            )
+            self.stream
+                .launch_builder(func)
+                .arg(&freqs.device_ptr())
+                .arg(&theta)
+                .arg(&(head_dim as i32))
+                .arg(&(max_seq_len as i32))
+                .launch(cfg)
         }
         .map_err(|e| InferenceError::Kernel(format!("RoPE precompute launch failed: {}", e)))?;
 
@@ -321,9 +317,14 @@ impl RoPEKernel {
         ))
     }
 
-    /// Get device reference.
-    pub fn device(&self) -> &Arc<CudaDevice> {
-        &self.device
+    /// Get context reference.
+    pub fn ctx(&self) -> &Arc<CudaContext> {
+        &self.ctx
+    }
+
+    /// Get stream reference.
+    pub fn stream(&self) -> &Arc<CudaStream> {
+        &self.stream
     }
 }
 

@@ -124,6 +124,27 @@ pub mod vision;
 pub mod websocket;
 pub mod wellbeing_intervention;
 
+// Room collaboration WebSocket (Conclave)
+pub mod room_ws;
+
+// Claude Code session and plan discovery
+pub mod claude_api;
+
+// Claude Code usage metrics
+pub mod claude_metrics;
+
+// Claude Code todo aggregation
+pub mod claude_todos;
+
+// Claude Code command history
+pub mod claude_history;
+
+// Claude Code data directory discovery
+pub mod claude_discovery;
+
+// Claude.ai web export import
+pub mod claude_web_import;
+
 pub use admin::{
     AdminError, AdminModelInfo, LoadModelRequest, LoadModelResponse, ModelLoadOptions,
     ModelRegistry, ModelStatus, ModelsStatusResponse, UnloadModelRequest, UnloadModelResponse,

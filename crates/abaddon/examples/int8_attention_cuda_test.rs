@@ -72,8 +72,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let scales: Vec<u16> = vec![scale_bf16; 1];
 
         // Transfer to GPU
-        let d_quant = device.htod_sync_copy(&quant_data)?;
-        let d_scales = device.htod_sync_copy(&scales)?;
+        let d_quant = stream.clone_htod(&quant_data)?;
+        let d_scales = stream.clone_htod(&scales)?;
 
         // Run dequantization
         let start = Instant::now();
@@ -83,7 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Copy back and verify
         let mut h_output = vec![0u16; num_elements];
-        device.dtoh_sync_copy_into(&d_output, &mut h_output)?;
+        stream.clone_dtoh(&d_output, &mut h_output)?;
 
         // Convert BF16 to F32 and check
         let mut max_error = 0.0f32;
@@ -146,9 +146,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let k_scales: Vec<u16> = vec![0x3F00u16; k_scale_size]; // 0.5 in BF16
 
         // Transfer to GPU
-        let d_q = device.htod_sync_copy(&q_data)?;
-        let d_k_quant = device.htod_sync_copy(&k_quant)?;
-        let d_k_scales = device.htod_sync_copy(&k_scales)?;
+        let d_q = stream.clone_htod(&q_data)?;
+        let d_k_quant = stream.clone_htod(&k_quant)?;
+        let d_k_scales = stream.clone_htod(&k_scales)?;
 
         // Run fused attention
         let start = Instant::now();
@@ -181,7 +181,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Copy back a sample
         let mut h_attn_scores = vec![0.0f32; expected_size];
-        device.dtoh_sync_copy_into(&d_attn_scores, &mut h_attn_scores)?;
+        stream.clone_dtoh(&d_attn_scores, &mut h_attn_scores)?;
         println!(
             "  Sample scores: [{:.4}, {:.4}, {:.4}, ...]",
             h_attn_scores[0], h_attn_scores[1], h_attn_scores[2]
@@ -208,9 +208,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let v_scales: Vec<u16> = vec![0x3F80u16; k_scale_size]; // 1.0 in BF16
 
         // Transfer to GPU
-        let d_attn_uniform = device.htod_sync_copy(&attn_uniform)?;
-        let d_v_quant = device.htod_sync_copy(&v_quant)?;
-        let d_v_scales = device.htod_sync_copy(&v_scales)?;
+        let d_attn_uniform = stream.clone_htod(&attn_uniform)?;
+        let d_v_quant = stream.clone_htod(&v_quant)?;
+        let d_v_scales = stream.clone_htod(&v_scales)?;
 
         // Run fused attn @ V
         let start = Instant::now();
@@ -242,7 +242,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Copy back and check first few values
         let mut h_output = vec![0u16; expected_out_size];
-        device.dtoh_sync_copy_into(&d_output, &mut h_output)?;
+        stream.clone_dtoh(&d_output, &mut h_output)?;
 
         // Convert first few BF16 values to F32
         let sample_f32: Vec<f32> = h_output[0..3]

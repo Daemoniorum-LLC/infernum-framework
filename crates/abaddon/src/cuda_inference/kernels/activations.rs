@@ -18,7 +18,7 @@
 //! Uses NVRTC to compile CUDA C code at runtime for better compatibility
 //! across GPU architectures.
 
-use cudarc::driver::{CudaDevice, CudaFunction, LaunchAsync, LaunchConfig};
+use cudarc::driver::{CudaContext, CudaFunction, CudaModule, CudaStream, LaunchConfig, PushKernelArg};
 use std::sync::Arc;
 
 use super::compile_cuda_kernel;
@@ -202,7 +202,10 @@ pub enum ActivationType {
 
 /// Activation function CUDA kernel.
 pub struct ActivationKernel {
-    device: Arc<CudaDevice>,
+    ctx: Arc<CudaContext>,
+    stream: Arc<CudaStream>,
+    #[allow(dead_code)]
+    module: Option<Arc<CudaModule>>,
     silu_func: Option<CudaFunction>,
     silu_mul_func: Option<CudaFunction>,
     gelu_fast_func: Option<CudaFunction>,
@@ -222,9 +225,11 @@ impl std::fmt::Debug for ActivationKernel {
 
 impl ActivationKernel {
     /// Create a new activation kernel.
-    pub fn new(device: Arc<CudaDevice>) -> Result<Self, InferenceError> {
+    pub fn new(ctx: Arc<CudaContext>, stream: Arc<CudaStream>) -> Result<Self, InferenceError> {
         let mut kernel = Self {
-            device,
+            ctx,
+            stream,
+            module: None,
             silu_func: None,
             silu_mul_func: None,
             gelu_fast_func: None,
@@ -243,81 +248,54 @@ impl ActivationKernel {
         let ptx = compile_cuda_kernel(ACTIVATIONS_CUDA)
             .map_err(|e| InferenceError::Kernel(format!("NVRTC compilation failed: {}", e)))?;
 
-        // Load PTX into device
-        self.device
-            .load_ptx(
-                ptx,
-                "activation_kernels",
-                &[
-                    "silu_f16",
-                    "silu_mul_f16",
-                    "gelu_fast_f16",
-                    "gelu_tanh_f16",
-                    "relu_f16",
-                    "hadamard_f16",
-                    "hadamard_inplace_f16",
-                ],
-            )
+        // Load PTX module into device
+        let module = self.ctx
+            .load_module(ptx)
             .map_err(|e| InferenceError::Kernel(format!("Failed to load PTX: {}", e)))?;
 
         self.silu_func = Some(
-            self.device
-                .get_func("activation_kernels", "silu_f16")
-                .ok_or_else(|| {
-                    InferenceError::Kernel("Failed to get silu_f16 function".to_string())
-                })?,
+            module
+                .load_function("silu_f16")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to get silu_f16 function: {}", e)))?,
         );
 
         self.silu_mul_func = Some(
-            self.device
-                .get_func("activation_kernels", "silu_mul_f16")
-                .ok_or_else(|| {
-                    InferenceError::Kernel("Failed to get silu_mul_f16 function".to_string())
-                })?,
+            module
+                .load_function("silu_mul_f16")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to get silu_mul_f16 function: {}", e)))?,
         );
 
         self.gelu_fast_func = Some(
-            self.device
-                .get_func("activation_kernels", "gelu_fast_f16")
-                .ok_or_else(|| {
-                    InferenceError::Kernel("Failed to get gelu_fast_f16 function".to_string())
-                })?,
+            module
+                .load_function("gelu_fast_f16")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to get gelu_fast_f16 function: {}", e)))?,
         );
 
         self.gelu_tanh_func = Some(
-            self.device
-                .get_func("activation_kernels", "gelu_tanh_f16")
-                .ok_or_else(|| {
-                    InferenceError::Kernel("Failed to get gelu_tanh_f16 function".to_string())
-                })?,
+            module
+                .load_function("gelu_tanh_f16")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to get gelu_tanh_f16 function: {}", e)))?,
         );
 
         self.relu_func = Some(
-            self.device
-                .get_func("activation_kernels", "relu_f16")
-                .ok_or_else(|| {
-                    InferenceError::Kernel("Failed to get relu_f16 function".to_string())
-                })?,
+            module
+                .load_function("relu_f16")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to get relu_f16 function: {}", e)))?,
         );
 
         self.hadamard_func = Some(
-            self.device
-                .get_func("activation_kernels", "hadamard_f16")
-                .ok_or_else(|| {
-                    InferenceError::Kernel("Failed to get hadamard_f16 function".to_string())
-                })?,
+            module
+                .load_function("hadamard_f16")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to get hadamard_f16 function: {}", e)))?,
         );
 
         self.hadamard_inplace_func = Some(
-            self.device
-                .get_func("activation_kernels", "hadamard_inplace_f16")
-                .ok_or_else(|| {
-                    InferenceError::Kernel(
-                        "Failed to get hadamard_inplace_f16 function".to_string(),
-                    )
-                })?,
+            module
+                .load_function("hadamard_inplace_f16")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to get hadamard_inplace_f16 function: {}", e)))?,
         );
 
+        self.module = Some(module);
         Ok(())
     }
 
@@ -366,8 +344,12 @@ impl ActivationKernel {
         };
 
         unsafe {
-            func.clone()
-                .launch(cfg, (x.device_ptr(), out.device_ptr(), n as i32))
+            self.stream
+                .launch_builder(func)
+                .arg(&x.device_ptr())
+                .arg(&out.device_ptr())
+                .arg(&(n as i32))
+                .launch(cfg)
         }
         .map_err(|e| InferenceError::Kernel(format!("Activation kernel launch failed: {}", e)))?;
 
@@ -424,15 +406,13 @@ impl ActivationKernel {
         };
 
         unsafe {
-            func.clone().launch(
-                cfg,
-                (
-                    gate.device_ptr(),
-                    up.device_ptr(),
-                    out.device_ptr(),
-                    n as i32,
-                ),
-            )
+            self.stream
+                .launch_builder(func)
+                .arg(&gate.device_ptr())
+                .arg(&up.device_ptr())
+                .arg(&out.device_ptr())
+                .arg(&(n as i32))
+                .launch(cfg)
         }
         .map_err(|e| InferenceError::Kernel(format!("SiLU mul kernel launch failed: {}", e)))?;
 
@@ -475,10 +455,13 @@ impl ActivationKernel {
         };
 
         unsafe {
-            func.clone().launch(
-                cfg,
-                (a.device_ptr(), b.device_ptr(), out.device_ptr(), n as i32),
-            )
+            self.stream
+                .launch_builder(func)
+                .arg(&a.device_ptr())
+                .arg(&b.device_ptr())
+                .arg(&out.device_ptr())
+                .arg(&(n as i32))
+                .launch(cfg)
         }
         .map_err(|e| InferenceError::Kernel(format!("Hadamard kernel launch failed: {}", e)))?;
 
@@ -514,8 +497,12 @@ impl ActivationKernel {
         };
 
         unsafe {
-            func.clone()
-                .launch(cfg, (a.device_ptr(), b.device_ptr(), n as i32))
+            self.stream
+                .launch_builder(func)
+                .arg(&a.device_ptr())
+                .arg(&b.device_ptr())
+                .arg(&(n as i32))
+                .launch(cfg)
         }
         .map_err(|e| {
             InferenceError::Kernel(format!("Hadamard inplace kernel launch failed: {}", e))
@@ -550,17 +537,26 @@ impl ActivationKernel {
 
         // Use same pointer for input and output (in-place)
         unsafe {
-            func.clone()
-                .launch(cfg, (x.device_ptr(), x.device_ptr(), n as i32))
+            self.stream
+                .launch_builder(func)
+                .arg(&x.device_ptr())
+                .arg(&x.device_ptr())
+                .arg(&(n as i32))
+                .launch(cfg)
         }
         .map_err(|e| InferenceError::Kernel(format!("Activation kernel launch failed: {}", e)))?;
 
         Ok(())
     }
 
-    /// Get device reference.
-    pub fn device(&self) -> &Arc<CudaDevice> {
-        &self.device
+    /// Get context reference.
+    pub fn ctx(&self) -> &Arc<CudaContext> {
+        &self.ctx
+    }
+
+    /// Get stream reference.
+    pub fn stream(&self) -> &Arc<CudaStream> {
+        &self.stream
     }
 }
 

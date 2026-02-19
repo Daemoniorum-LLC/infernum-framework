@@ -12,8 +12,8 @@ use std::io::{BufReader, Read};
 use std::path::Path;
 use std::sync::Arc;
 
-use cudarc::driver::{CudaDevice, CudaSlice};
-use haagenti::holotensor::{HoloTensorDecoder, HoloTensorReader, HOLO_MAGIC};
+use cudarc::driver::{CudaContext, CudaSlice};
+use haagenti::holotensor::{HoloTensorReader, HOLO_MAGIC};
 use haagenti::tensor::HctReader;
 use haagenti::Lz4Decompressor;
 
@@ -206,7 +206,7 @@ pub struct WeightStore {
     pub config: ModelConfig,
 
     /// CUDA device.
-    device: Arc<CudaDevice>,
+    device: Arc<CudaContext>,
 
     /// Token embeddings [vocab_size, hidden_size].
     pub embed_tokens: GpuTensor,
@@ -242,7 +242,7 @@ impl WeightStore {
 
         // Initialize CUDA
         let device =
-            CudaDevice::new(device_id).map_err(|e| InferenceError::Device(e.to_string()))?;
+            CudaContext::new(device_id).map_err(|e| InferenceError::Device(e.to_string()))?;
 
         // Detect architecture
         let arch = match arch {
@@ -346,7 +346,7 @@ impl WeightStore {
     /// Load raw weights from HCT files (auto-detects format).
     fn load_raw_weights(
         hct_files: &[std::path::PathBuf],
-        device: &Arc<CudaDevice>,
+        device: &Arc<CudaContext>,
     ) -> Result<HashMap<String, LoadedWeight>, InferenceError> {
         let mut weights = HashMap::new();
         let mut total_bytes = 0usize;
@@ -381,7 +381,7 @@ impl WeightStore {
     /// Load weights from standard HCT files (LZ4 compressed).
     fn load_standard_hct_weights(
         hct_files: &[std::path::PathBuf],
-        device: &Arc<CudaDevice>,
+        device: &Arc<CudaContext>,
         weights: &mut HashMap<String, LoadedWeight>,
         total_bytes: &mut usize,
     ) -> Result<(), InferenceError> {
@@ -443,7 +443,7 @@ impl WeightStore {
     /// Load weights from HoloTensor files using GPU holographic reconstruction.
     fn load_holotensor_weights(
         hct_files: &[std::path::PathBuf],
-        device: &Arc<CudaDevice>,
+        device: &Arc<CudaContext>,
         weights: &mut HashMap<String, LoadedWeight>,
         total_bytes: &mut usize,
     ) -> Result<(), InferenceError> {
@@ -523,7 +523,8 @@ impl WeightStore {
                     std::slice::from_raw_parts(f16_data.as_ptr() as *const u8, f16_data.len() * 2)
                 };
 
-                let gpu_data: CudaSlice<u8> = device.htod_sync_copy(bytes).map_err(|e| {
+                let stream = device.default_stream();
+                let gpu_data: CudaSlice<u8> = stream.clone_htod(bytes).map_err(|e| {
                     InferenceError::Memory(format!("Failed to upload 1D tensor: {}", e))
                 })?;
 
@@ -574,7 +575,7 @@ impl WeightStore {
         data: &[u8],
         shape: &[usize],
         dtype: haagenti::tensor::DType,
-        device: &Arc<CudaDevice>,
+        device: &Arc<CudaContext>,
     ) -> Result<(GpuTensor, QuantFormat, Option<GpuTensor>, Option<GpuTensor>), InferenceError>
     {
         use haagenti::tensor::DType;
@@ -655,10 +656,11 @@ impl WeightStore {
         data: &[u8],
         shape: Vec<usize>,
         dtype: GpuDType,
-        device: &Arc<CudaDevice>,
+        device: &Arc<CudaContext>,
     ) -> Result<GpuTensor, InferenceError> {
-        let gpu_data: CudaSlice<u8> = device
-            .htod_sync_copy(data)
+        let stream = device.default_stream();
+        let gpu_data: CudaSlice<u8> = stream
+            .clone_htod(data)
             .map_err(|e| InferenceError::Memory(e.to_string()))?;
 
         GpuTensor::from_cuda_slice(gpu_data, shape, dtype, Arc::clone(device))
@@ -688,7 +690,7 @@ impl WeightStore {
     fn build_weight_store(
         config: ModelConfig,
         mut weights: HashMap<String, LoadedWeight>,
-        device: Arc<CudaDevice>,
+        device: Arc<CudaContext>,
     ) -> Result<Self, InferenceError> {
         // Extract embeddings
         let embed_tokens = weights
@@ -806,7 +808,7 @@ impl WeightStore {
     }
 
     /// Get CUDA device reference.
-    pub fn device(&self) -> &Arc<CudaDevice> {
+    pub fn device(&self) -> &Arc<CudaContext> {
         &self.device
     }
 }

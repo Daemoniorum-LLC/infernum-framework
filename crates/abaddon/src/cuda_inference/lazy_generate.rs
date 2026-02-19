@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use cudarc::driver::CudaDevice;
+use cudarc::driver::CudaContext;
 
 use super::compute::ComputeEngine;
 use super::generate::{GenerationStats, SamplingParams, TokenCallback};
@@ -30,7 +30,7 @@ pub struct LazyGenerator {
 
     /// CUDA device.
     #[allow(dead_code)]
-    device: Arc<CudaDevice>,
+    device: Arc<CudaContext>,
 
     /// Vocabulary size.
     vocab_size: usize,
@@ -54,8 +54,9 @@ impl LazyGenerator {
         let config = weights.config.clone();
         let vocab_size = config.vocab_size;
 
+        let default_stream = device.default_stream();
         let engine = ComputeEngine::new(config, max_seq_len, device.clone())?;
-        let sampler = SamplingKernel::new(device.clone())?;
+        let sampler = SamplingKernel::new(device.clone(), default_stream)?;
 
         Ok(Self {
             weights,

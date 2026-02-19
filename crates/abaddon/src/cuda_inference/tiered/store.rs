@@ -9,7 +9,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use cudarc::driver::CudaDevice;
+use cudarc::driver::CudaContext;
 
 use super::config::{LoadingStrategy, TieredConfig};
 use super::error::TieredError;
@@ -42,7 +42,7 @@ pub enum LayerState {
 /// - Eviction when memory pressure increases
 pub struct TieredWeightStore {
     /// CUDA device for GPU operations.
-    device: Arc<CudaDevice>,
+    device: Arc<CudaContext>,
 
     /// VRAM cache for hot layers.
     vram: VramCache,
@@ -84,7 +84,7 @@ impl TieredWeightStore {
     /// * `config` - Tiered storage configuration
     /// * `num_layers` - Total number of transformer layers
     pub fn new(
-        device: Arc<CudaDevice>,
+        device: Arc<CudaContext>,
         plan: AllocationPlan,
         config: TieredConfig,
         num_layers: usize,
@@ -453,7 +453,7 @@ impl TieredWeightStore {
     }
 
     /// Get CUDA device.
-    pub fn device(&self) -> &Arc<CudaDevice> {
+    pub fn device(&self) -> &Arc<CudaContext> {
         &self.device
     }
 

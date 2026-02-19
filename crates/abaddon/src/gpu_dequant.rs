@@ -40,7 +40,7 @@ pub mod cuda {
     use std::sync::Arc;
 
     use candle_core::{Device, Tensor};
-    use cudarc::driver::{CudaDevice, CudaSlice, LaunchAsync, LaunchConfig};
+    use cudarc::driver::{CudaContext, CudaFunction, CudaModule, CudaSlice, CudaStream, LaunchConfig, PushKernelArg};
     use cudarc::nvrtc::Ptx;
 
     /// Block size for INT4 dequantization (HCT-native).
@@ -51,25 +51,36 @@ pub mod cuda {
     ///
     /// Holds compiled CUDA kernels for INT4/INT8 dequantization.
     pub struct GpuDequantContext {
-        device: Arc<CudaDevice>,
+        ctx: Arc<CudaContext>,
+        stream: Arc<CudaStream>,
         device_id: usize,
-        int4_kernel_loaded: bool,
-        int8_kernel_loaded: bool,
+        // INT4 kernels
+        int4_module: Option<Arc<CudaModule>>,
+        int4_dequant_block_fn: Option<CudaFunction>,
+        int4_dequant_tensor_fn: Option<CudaFunction>,
+        // INT8 kernels
+        int8_module: Option<Arc<CudaModule>>,
+        int8_dequant_tensor_fn: Option<CudaFunction>,
     }
 
     impl GpuDequantContext {
         /// Creates a new GPU dequantization context for the specified device.
         pub fn new(device_id: usize) -> Result<Self, GpuDequantError> {
-            let device = CudaDevice::new(device_id).map_err(|e| GpuDequantError::DeviceInit {
+            let ctx = CudaContext::new(device_id).map_err(|e| GpuDequantError::DeviceInit {
                 device_id,
                 message: e.to_string(),
             })?;
+            let stream = ctx.default_stream();
 
             Ok(Self {
-                device,
+                ctx,
+                stream,
                 device_id,
-                int4_kernel_loaded: false,
-                int8_kernel_loaded: false,
+                int4_module: None,
+                int4_dequant_block_fn: None,
+                int4_dequant_tensor_fn: None,
+                int8_module: None,
+                int8_dequant_tensor_fn: None,
             })
         }
 
@@ -78,41 +89,55 @@ pub mod cuda {
             self.device_id
         }
 
+        /// Returns a reference to the CUDA stream.
+        pub fn stream(&self) -> &Arc<CudaStream> {
+            &self.stream
+        }
+
         /// Loads the INT4 dequantization kernel.
         pub fn load_int4_kernel(&mut self) -> Result<(), GpuDequantError> {
-            if self.int4_kernel_loaded {
+            if self.int4_module.is_some() {
                 return Ok(());
             }
 
             let ptx = Ptx::from_src(INT4_DEQUANT_KERNEL_PTX);
-            self.device
-                .load_ptx(
-                    ptx,
-                    "int4_dequant",
-                    &["int4_dequant_block", "int4_dequant_tensor"],
-                )
-                .map_err(|e| GpuDequantError::KernelLoad {
-                    message: e.to_string(),
-                })?;
+            let module = self.ctx.load_module(ptx).map_err(|e| GpuDequantError::KernelLoad {
+                message: e.to_string(),
+            })?;
 
-            self.int4_kernel_loaded = true;
+            self.int4_dequant_block_fn = Some(
+                module.load_function("int4_dequant_block").map_err(|e| GpuDequantError::KernelLoad {
+                    message: e.to_string(),
+                })?,
+            );
+            self.int4_dequant_tensor_fn = Some(
+                module.load_function("int4_dequant_tensor").map_err(|e| GpuDequantError::KernelLoad {
+                    message: e.to_string(),
+                })?,
+            );
+
+            self.int4_module = Some(module);
             Ok(())
         }
 
         /// Loads the INT8 dequantization kernel.
         pub fn load_int8_kernel(&mut self) -> Result<(), GpuDequantError> {
-            if self.int8_kernel_loaded {
+            if self.int8_module.is_some() {
                 return Ok(());
             }
 
             let ptx = Ptx::from_src(INT8_DEQUANT_KERNEL_PTX);
-            self.device
-                .load_ptx(ptx, "int8_dequant", &["int8_dequant_tensor"])
-                .map_err(|e| GpuDequantError::KernelLoad {
-                    message: e.to_string(),
-                })?;
+            let module = self.ctx.load_module(ptx).map_err(|e| GpuDequantError::KernelLoad {
+                message: e.to_string(),
+            })?;
 
-            self.int8_kernel_loaded = true;
+            self.int8_dequant_tensor_fn = Some(
+                module.load_function("int8_dequant_tensor").map_err(|e| GpuDequantError::KernelLoad {
+                    message: e.to_string(),
+                })?,
+            );
+
+            self.int8_module = Some(module);
             Ok(())
         }
 
@@ -135,11 +160,11 @@ pub mod cuda {
             zero_points: Option<&[i8]>,
             num_values: usize,
         ) -> Result<CudaSlice<half::f16>, GpuDequantError> {
-            if !self.int4_kernel_loaded {
-                return Err(GpuDequantError::KernelNotLoaded {
+            let func = self.int4_dequant_tensor_fn.as_ref().ok_or_else(|| {
+                GpuDequantError::KernelNotLoaded {
                     kernel: "int4_dequant".to_string(),
-                });
-            }
+                }
+            })?;
 
             // Validate input sizes
             let expected_packed = (num_values + 1) / 2; // 2 values per byte
@@ -167,7 +192,7 @@ pub mod cuda {
             }
 
             // Copy inputs to GPU
-            let d_packed = self.device.htod_copy(packed.to_vec()).map_err(|e| {
+            let d_packed = self.stream.clone_htod(packed).map_err(|e| {
                 GpuDequantError::MemoryAlloc {
                     message: e.to_string(),
                 }
@@ -175,38 +200,28 @@ pub mod cuda {
 
             // Convert scales to raw bytes for transfer
             let scales_bytes: Vec<u8> = scales.iter().flat_map(|s| s.to_le_bytes()).collect();
-            let d_scales =
-                self.device
-                    .htod_copy(scales_bytes)
-                    .map_err(|e| GpuDequantError::MemoryAlloc {
-                        message: e.to_string(),
-                    })?;
+            let d_scales = self.stream.clone_htod(&scales_bytes).map_err(|e| {
+                GpuDequantError::MemoryAlloc {
+                    message: e.to_string(),
+                }
+            })?;
 
             // Handle zero points (use zeros if not provided)
             let zp_vec: Vec<i8> = zero_points
                 .map(|zp| zp.to_vec())
                 .unwrap_or_else(|| vec![0i8; num_blocks]);
-            let d_zero_points =
-                self.device
-                    .htod_copy(zp_vec)
-                    .map_err(|e| GpuDequantError::MemoryAlloc {
-                        message: e.to_string(),
-                    })?;
+            let d_zero_points = self.stream.clone_htod(&zp_vec).map_err(|e| {
+                GpuDequantError::MemoryAlloc {
+                    message: e.to_string(),
+                }
+            })?;
 
             // Allocate output buffer
             let d_output: CudaSlice<half::f16> =
-                self.device
-                    .alloc_zeros(num_values)
-                    .map_err(|e| GpuDequantError::MemoryAlloc {
+                self.stream.alloc_zeros(num_values).map_err(|e| {
+                    GpuDequantError::MemoryAlloc {
                         message: e.to_string(),
-                    })?;
-
-            // Launch kernel
-            let func = self
-                .device
-                .get_func("int4_dequant", "int4_dequant_tensor")
-                .ok_or_else(|| GpuDequantError::KernelLoad {
-                    message: "int4_dequant_tensor not found".to_string(),
+                    }
                 })?;
 
             // One thread per output value, organized in blocks of 256
@@ -220,28 +235,25 @@ pub mod cuda {
                 shared_mem_bytes: 0,
             };
 
+            // Launch kernel using builder pattern
             unsafe {
-                func.launch(
-                    cfg,
-                    (
-                        &d_packed,
-                        &d_scales,
-                        &d_zero_points,
-                        &d_output,
-                        num_values as u32,
-                        INT4_BLOCK_SIZE as u32,
-                    ),
-                )
+                self.stream
+                    .launch_builder(func)
+                    .arg(&d_packed)
+                    .arg(&d_scales)
+                    .arg(&d_zero_points)
+                    .arg(&d_output)
+                    .arg(&(num_values as u32))
+                    .arg(&(INT4_BLOCK_SIZE as u32))
+                    .launch(cfg)
             }
             .map_err(|e| GpuDequantError::KernelExec {
                 message: e.to_string(),
             })?;
 
-            self.device
-                .synchronize()
-                .map_err(|e| GpuDequantError::Synchronize {
-                    message: e.to_string(),
-                })?;
+            self.stream.synchronize().map_err(|e| GpuDequantError::Synchronize {
+                message: e.to_string(),
+            })?;
 
             Ok(d_output)
         }
@@ -258,12 +270,11 @@ pub mod cuda {
             let d_output = self.dequant_int4(packed, scales, zero_points, num_values)?;
 
             // Copy back to host and create tensor
-            let mut host_data = vec![half::f16::ZERO; num_values];
-            self.device
-                .dtoh_sync_copy_into(&d_output, &mut host_data)
-                .map_err(|e| GpuDequantError::MemoryCopy {
+            let host_data = self.stream.clone_dtoh(&d_output).map_err(|e| {
+                GpuDequantError::MemoryCopy {
                     message: e.to_string(),
-                })?;
+                }
+            })?;
 
             Tensor::from_vec(host_data, shape, &Device::Cpu).map_err(|e| {
                 GpuDequantError::TensorCreate {
@@ -287,36 +298,27 @@ pub mod cuda {
             data: &[i8],
             scale: half::f16,
         ) -> Result<CudaSlice<half::f16>, GpuDequantError> {
-            if !self.int8_kernel_loaded {
-                return Err(GpuDequantError::KernelNotLoaded {
+            let func = self.int8_dequant_tensor_fn.as_ref().ok_or_else(|| {
+                GpuDequantError::KernelNotLoaded {
                     kernel: "int8_dequant".to_string(),
-                });
-            }
+                }
+            })?;
 
             let num_values = data.len();
 
             // Copy input to GPU
-            let d_input =
-                self.device
-                    .htod_copy(data.to_vec())
-                    .map_err(|e| GpuDequantError::MemoryAlloc {
-                        message: e.to_string(),
-                    })?;
+            let d_input = self.stream.clone_htod(data).map_err(|e| {
+                GpuDequantError::MemoryAlloc {
+                    message: e.to_string(),
+                }
+            })?;
 
             // Allocate output
             let d_output: CudaSlice<half::f16> =
-                self.device
-                    .alloc_zeros(num_values)
-                    .map_err(|e| GpuDequantError::MemoryAlloc {
+                self.stream.alloc_zeros(num_values).map_err(|e| {
+                    GpuDequantError::MemoryAlloc {
                         message: e.to_string(),
-                    })?;
-
-            // Launch kernel
-            let func = self
-                .device
-                .get_func("int8_dequant", "int8_dequant_tensor")
-                .ok_or_else(|| GpuDequantError::KernelLoad {
-                    message: "int8_dequant_tensor not found".to_string(),
+                    }
                 })?;
 
             let threads_per_block = 256u32;
@@ -331,16 +333,22 @@ pub mod cuda {
             // Pass scale as raw bits
             let scale_bits = scale.to_bits();
 
-            unsafe { func.launch(cfg, (&d_input, &d_output, scale_bits, num_values as u32)) }
-                .map_err(|e| GpuDequantError::KernelExec {
-                    message: e.to_string(),
-                })?;
+            unsafe {
+                self.stream
+                    .launch_builder(func)
+                    .arg(&d_input)
+                    .arg(&d_output)
+                    .arg(&scale_bits)
+                    .arg(&(num_values as u32))
+                    .launch(cfg)
+            }
+            .map_err(|e| GpuDequantError::KernelExec {
+                message: e.to_string(),
+            })?;
 
-            self.device
-                .synchronize()
-                .map_err(|e| GpuDequantError::Synchronize {
-                    message: e.to_string(),
-                })?;
+            self.stream.synchronize().map_err(|e| GpuDequantError::Synchronize {
+                message: e.to_string(),
+            })?;
 
             Ok(d_output)
         }
@@ -354,13 +362,11 @@ pub mod cuda {
         ) -> Result<Tensor, GpuDequantError> {
             let d_output = self.dequant_int8(data, scale)?;
 
-            let num_values = data.len();
-            let mut host_data = vec![half::f16::ZERO; num_values];
-            self.device
-                .dtoh_sync_copy_into(&d_output, &mut host_data)
-                .map_err(|e| GpuDequantError::MemoryCopy {
+            let host_data = self.stream.clone_dtoh(&d_output).map_err(|e| {
+                GpuDequantError::MemoryCopy {
                     message: e.to_string(),
-                })?;
+                }
+            })?;
 
             Tensor::from_vec(host_data, shape, &Device::Cpu).map_err(|e| {
                 GpuDequantError::TensorCreate {
@@ -741,7 +747,7 @@ INT8_DONE:
 
             let mut host_result = vec![half::f16::ZERO; 8];
             ctx.device
-                .dtoh_sync_copy_into(&result, &mut host_result)
+                .clone_dtoh(&result, &mut host_result)
                 .unwrap();
 
             let expected: Vec<f32> = vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5];
@@ -782,7 +788,7 @@ INT8_DONE:
 
             let mut host_result = vec![half::f16::ZERO; 8];
             ctx.device
-                .dtoh_sync_copy_into(&result, &mut host_result)
+                .clone_dtoh(&result, &mut host_result)
                 .unwrap();
 
             let expected: Vec<f32> = vec![-4.0, -3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0];
@@ -821,7 +827,7 @@ INT8_DONE:
 
             let mut host_result = vec![half::f16::ZERO; 256];
             ctx.device
-                .dtoh_sync_copy_into(&result, &mut host_result)
+                .clone_dtoh(&result, &mut host_result)
                 .unwrap();
 
             // Verify first value of each block
@@ -959,7 +965,7 @@ INT8_DONE:
 
             let mut host_result = vec![half::f16::ZERO; 8];
             ctx.device
-                .dtoh_sync_copy_into(&result, &mut host_result)
+                .clone_dtoh(&result, &mut host_result)
                 .unwrap();
 
             // Expected: values * 0.01
@@ -1022,7 +1028,7 @@ INT8_DONE:
 
             let mut host_result = vec![half::f16::ZERO; size];
             ctx.device
-                .dtoh_sync_copy_into(&result, &mut host_result)
+                .clone_dtoh(&result, &mut host_result)
                 .unwrap();
 
             // Spot check a few values
@@ -1070,7 +1076,7 @@ INT8_DONE:
 
             let mut host_result = vec![half::f16::ONE; 128];
             ctx.device
-                .dtoh_sync_copy_into(&result, &mut host_result)
+                .clone_dtoh(&result, &mut host_result)
                 .unwrap();
 
             for val in host_result {
@@ -1096,7 +1102,7 @@ INT8_DONE:
 
             let mut host_result = vec![half::f16::ZERO; 8];
             ctx.device
-                .dtoh_sync_copy_into(&result, &mut host_result)
+                .clone_dtoh(&result, &mut host_result)
                 .unwrap();
 
             // All should be 15 * 0.1 = 1.5
@@ -1163,7 +1169,7 @@ INT8_DONE:
 
             let mut gpu_f16 = vec![half::f16::ZERO; quantized.num_values];
             ctx.device
-                .dtoh_sync_copy_into(&gpu_result, &mut gpu_f16)
+                .clone_dtoh(&gpu_result, &mut gpu_f16)
                 .unwrap();
             let gpu_values: Vec<f32> = gpu_f16.iter().map(|h| h.to_f32()).collect();
 
@@ -1230,7 +1236,7 @@ INT8_DONE:
                 .unwrap();
             let mut gpu_f16 = vec![half::f16::ZERO; n];
             ctx.device
-                .dtoh_sync_copy_into(&gpu_result, &mut gpu_f16)
+                .clone_dtoh(&gpu_result, &mut gpu_f16)
                 .unwrap();
             let gpu_values: Vec<f32> = gpu_f16.iter().map(|h| h.to_f32()).collect();
 
@@ -1268,7 +1274,7 @@ INT8_DONE:
             let gpu_result = ctx.dequant_int8(&data, scale).unwrap();
             let mut gpu_f16 = vec![half::f16::ZERO; data.len()];
             ctx.device
-                .dtoh_sync_copy_into(&gpu_result, &mut gpu_f16)
+                .clone_dtoh(&gpu_result, &mut gpu_f16)
                 .unwrap();
             let gpu_values: Vec<f32> = gpu_f16.iter().map(|h| h.to_f32()).collect();
 
@@ -1319,7 +1325,7 @@ INT8_DONE:
                         .unwrap();
                     let mut gpu_f16 = vec![half::f16::ZERO; num_values];
                     ctx.device
-                        .dtoh_sync_copy_into(&gpu_result, &mut gpu_f16)
+                        .clone_dtoh(&gpu_result, &mut gpu_f16)
                         .unwrap();
 
                     // CPU reference: (nibble - zero_point) * scale → round to F16

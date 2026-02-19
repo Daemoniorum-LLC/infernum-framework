@@ -18,6 +18,7 @@
 
 pub mod agent;
 pub mod agentic_loop;
+pub mod claude_code_engine;
 pub mod dynamic_context;
 pub mod http_engine;
 pub mod long_term_memory;
@@ -165,6 +166,7 @@ pub use dynamic_context::{
     score_message_relevance, semantic_chunk, ChunkType, ContextComplexity, ContextConfig,
     DynamicContextManager, RelevanceFactors, SemanticChunk,
 };
+pub use claude_code_engine::{ClaudeCodeEngine, ClaudeTier};
 pub use http_engine::{HttpEngine, HttpEngineError, SimpleMessage};
 pub use long_term_memory::{ImportanceLevel, LongTermMemory, MemoryEntry, MemoryStats, MemoryType};
 pub use memory::{

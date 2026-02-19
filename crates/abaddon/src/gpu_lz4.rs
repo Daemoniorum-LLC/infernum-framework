@@ -46,7 +46,7 @@ pub mod cuda {
     use std::sync::Arc;
 
     use candle_core::{DType, Device, Tensor};
-    use cudarc::driver::{CudaDevice, CudaSlice, CudaStream, DevicePtr, LaunchAsync, LaunchConfig};
+    use cudarc::driver::{CudaContext, CudaFunction, CudaModule, CudaSlice, CudaStream, DevicePtr, LaunchConfig, PushKernelArg};
     use cudarc::nvrtc::Ptx;
 
     /// GPU LZ4 decompression context.
@@ -54,24 +54,35 @@ pub mod cuda {
     /// Holds compiled CUDA kernels and device state for efficient
     /// repeated decompression operations.
     pub struct GpuLz4Context {
-        device: Arc<CudaDevice>,
+        ctx: Arc<CudaContext>,
+        stream: Arc<CudaStream>,
         device_id: usize,
-        /// Compiled LZ4 decompression kernel
-        kernel_loaded: bool,
+        // LZ4 kernel module and functions
+        lz4_module: Option<Arc<CudaModule>>,
+        lz4_decompress_block_fn: Option<CudaFunction>,
+        lz4_decompress_blocks_parallel_fn: Option<CudaFunction>,
+        #[cfg(feature = "cuda-experimental")]
+        lz4_decompress_blocks_warp_fn: Option<CudaFunction>,
     }
 
     impl GpuLz4Context {
         /// Creates a new GPU LZ4 context for the specified device.
         pub fn new(device_id: usize) -> Result<Self, GpuLz4Error> {
-            let device = CudaDevice::new(device_id).map_err(|e| GpuLz4Error::DeviceInit {
+            let ctx = CudaContext::new(device_id).map_err(|e| GpuLz4Error::DeviceInit {
                 device_id,
                 message: e.to_string(),
             })?;
+            let stream = ctx.default_stream();
 
             Ok(Self {
-                device,
+                ctx,
+                stream,
                 device_id,
-                kernel_loaded: false,
+                lz4_module: None,
+                lz4_decompress_block_fn: None,
+                lz4_decompress_blocks_parallel_fn: None,
+                #[cfg(feature = "cuda-experimental")]
+                lz4_decompress_blocks_warp_fn: None,
             })
         }
 
@@ -80,25 +91,35 @@ pub mod cuda {
             self.device_id
         }
 
+        /// Returns a reference to the CUDA stream.
+        pub fn stream(&self) -> &Arc<CudaStream> {
+            &self.stream
+        }
+
         /// Loads the LZ4 decompression kernel.
         ///
         /// This compiles and caches the PTX kernel for later use.
         pub fn load_kernel(&mut self) -> Result<(), GpuLz4Error> {
-            if self.kernel_loaded {
+            if self.lz4_module.is_some() {
                 return Ok(());
             }
 
             // Load main PTX module (K1 + K2, sm_50) — always available.
             let ptx = Self::get_lz4_ptx();
-            self.device
-                .load_ptx(
-                    ptx,
-                    "lz4_decompress",
-                    &["lz4_decompress_block", "lz4_decompress_blocks_parallel"],
-                )
-                .map_err(|e| GpuLz4Error::KernelLoad {
+            let module = self.ctx.load_module(ptx).map_err(|e| GpuLz4Error::KernelLoad {
+                message: e.to_string(),
+            })?;
+
+            self.lz4_decompress_block_fn = Some(
+                module.load_function("lz4_decompress_block").map_err(|e| GpuLz4Error::KernelLoad {
                     message: e.to_string(),
-                })?;
+                })?,
+            );
+            self.lz4_decompress_blocks_parallel_fn = Some(
+                module.load_function("lz4_decompress_blocks_parallel").map_err(|e| GpuLz4Error::KernelLoad {
+                    message: e.to_string(),
+                })?,
+            );
 
             // Load warp PTX module (K3, sm_70) — requires cuda-experimental.
             // K3 uses shfl.sync and bar.warp.sync which need sm_70+ (Volta).
@@ -106,14 +127,17 @@ pub mod cuda {
             #[cfg(feature = "cuda-experimental")]
             {
                 let warp_ptx = Self::get_lz4_warp_ptx();
-                self.device
-                    .load_ptx(warp_ptx, "lz4_warp", &["lz4_decompress_blocks_warp"])
-                    .map_err(|e| GpuLz4Error::KernelLoad {
+                let warp_module = self.ctx.load_module(warp_ptx).map_err(|e| GpuLz4Error::KernelLoad {
+                    message: e.to_string(),
+                })?;
+                self.lz4_decompress_blocks_warp_fn = Some(
+                    warp_module.load_function("lz4_decompress_blocks_warp").map_err(|e| GpuLz4Error::KernelLoad {
                         message: e.to_string(),
-                    })?;
+                    })?,
+                );
             }
 
-            self.kernel_loaded = true;
+            self.lz4_module = Some(module);
             Ok(())
         }
 
@@ -144,14 +168,14 @@ pub mod cuda {
             uncompressed_size: usize,
         ) -> Result<CudaSlice<u8>, GpuLz4Error> {
             // Allocate GPU memory for input and output
-            let d_input = self.device.htod_copy(compressed.to_vec()).map_err(|e| {
+            let d_input = self.stream.clone_htod(compressed).map_err(|e| {
                 GpuLz4Error::MemoryAlloc {
                     message: e.to_string(),
                 }
             })?;
 
             let d_output: CudaSlice<u8> =
-                self.device.alloc_zeros(uncompressed_size).map_err(|e| {
+                self.stream.alloc_zeros(uncompressed_size).map_err(|e| {
                     GpuLz4Error::MemoryAlloc {
                         message: e.to_string(),
                     }
@@ -159,28 +183,32 @@ pub mod cuda {
 
             // Launch decompression kernel
             let func = self
-                .device
-                .get_func("lz4_decompress", "lz4_decompress_block")
+                .lz4_decompress_block_fn
+                .as_ref()
                 .ok_or_else(|| GpuLz4Error::KernelLoad {
-                    message: "Kernel not found".to_string(),
+                    message: "Kernel not loaded - call load_kernel() first".to_string(),
                 })?;
 
             let cfg = LaunchConfig::for_num_elems(1);
 
-            unsafe {
-                func.launch(
-                    cfg,
-                    (
-                        &d_input,
-                        compressed.len() as u32,
-                        &d_output,
-                        uncompressed_size as u32,
-                    ),
-                )
+            // Scope the guards so they drop before we return d_output
+            {
+                let (d_input_ptr, _guard1) = d_input.device_ptr(&self.stream);
+                let (d_output_ptr, _guard2) = d_output.device_ptr(&self.stream);
+
+                unsafe {
+                    self.stream
+                        .launch_builder(func)
+                        .arg(&d_input_ptr)
+                        .arg(&(compressed.len() as u32))
+                        .arg(&d_output_ptr)
+                        .arg(&(uncompressed_size as u32))
+                        .launch(cfg)
+                        .map_err(|e| GpuLz4Error::KernelExec {
+                            message: e.to_string(),
+                        })?;
+                }
             }
-            .map_err(|e| GpuLz4Error::KernelExec {
-                message: e.to_string(),
-            })?;
 
             Ok(d_output)
         }
@@ -238,41 +266,41 @@ pub mod cuda {
 
             // Copy to GPU
             let d_compressed =
-                self.device
-                    .htod_copy(all_compressed)
+                self.stream
+                    .clone_htod(&all_compressed)
                     .map_err(|e| GpuLz4Error::MemoryAlloc {
                         message: e.to_string(),
                     })?;
 
             let d_output: CudaSlice<u8> =
-                self.device.alloc_zeros(total_uncompressed).map_err(|e| {
+                self.stream.alloc_zeros(total_uncompressed).map_err(|e| {
                     GpuLz4Error::MemoryAlloc {
                         message: e.to_string(),
                     }
                 })?;
 
             let d_offsets_in =
-                self.device
-                    .htod_copy(block_offsets_in)
+                self.stream
+                    .clone_htod(&block_offsets_in)
                     .map_err(|e| GpuLz4Error::MemoryAlloc {
                         message: e.to_string(),
                     })?;
 
             let d_offsets_out =
-                self.device
-                    .htod_copy(block_offsets_out)
+                self.stream
+                    .clone_htod(&block_offsets_out)
                     .map_err(|e| GpuLz4Error::MemoryAlloc {
                         message: e.to_string(),
                     })?;
 
             let d_compressed_sizes =
-                self.device
-                    .htod_copy(compressed_sizes)
+                self.stream
+                    .clone_htod(&compressed_sizes)
                     .map_err(|e| GpuLz4Error::MemoryAlloc {
                         message: e.to_string(),
                     })?;
 
-            let d_uncompressed_sizes = self.device.htod_copy(uncompressed_sizes).map_err(|e| {
+            let d_uncompressed_sizes = self.stream.clone_htod(&uncompressed_sizes).map_err(|e| {
                 GpuLz4Error::MemoryAlloc {
                     message: e.to_string(),
                 }
@@ -280,10 +308,10 @@ pub mod cuda {
 
             // Launch parallel decompression kernel
             let func = self
-                .device
-                .get_func("lz4_decompress", "lz4_decompress_blocks_parallel")
+                .lz4_decompress_blocks_parallel_fn
+                .as_ref()
                 .ok_or_else(|| GpuLz4Error::KernelLoad {
-                    message: "Parallel kernel not found".to_string(),
+                    message: "Parallel kernel not loaded - call load_kernel() first".to_string(),
                 })?;
 
             // One block per GPU thread block for now
@@ -295,26 +323,34 @@ pub mod cuda {
                 shared_mem_bytes: 0,
             };
 
-            unsafe {
-                func.launch(
-                    cfg,
-                    (
-                        &d_compressed,
-                        &d_output,
-                        &d_offsets_in,
-                        &d_offsets_out,
-                        &d_compressed_sizes,
-                        &d_uncompressed_sizes,
-                        num_blocks,
-                    ),
-                )
+            // Scope the guards so they drop before we return d_output
+            {
+                let (d_compressed_ptr, _g1) = d_compressed.device_ptr(&self.stream);
+                let (d_output_ptr, _g2) = d_output.device_ptr(&self.stream);
+                let (d_offsets_in_ptr, _g3) = d_offsets_in.device_ptr(&self.stream);
+                let (d_offsets_out_ptr, _g4) = d_offsets_out.device_ptr(&self.stream);
+                let (d_compressed_sizes_ptr, _g5) = d_compressed_sizes.device_ptr(&self.stream);
+                let (d_uncompressed_sizes_ptr, _g6) = d_uncompressed_sizes.device_ptr(&self.stream);
+
+                unsafe {
+                    self.stream
+                        .launch_builder(func)
+                        .arg(&d_compressed_ptr)
+                        .arg(&d_output_ptr)
+                        .arg(&d_offsets_in_ptr)
+                        .arg(&d_offsets_out_ptr)
+                        .arg(&d_compressed_sizes_ptr)
+                        .arg(&d_uncompressed_sizes_ptr)
+                        .arg(&num_blocks)
+                        .launch(cfg)
+                        .map_err(|e| GpuLz4Error::KernelExec {
+                            message: e.to_string(),
+                        })?;
+                }
             }
-            .map_err(|e| GpuLz4Error::KernelExec {
-                message: e.to_string(),
-            })?;
 
             // Synchronize to ensure decompression is complete
-            self.device
+            self.stream
                 .synchronize()
                 .map_err(|e| GpuLz4Error::Synchronize {
                     message: e.to_string(),
@@ -389,41 +425,41 @@ pub mod cuda {
 
             // Copy to GPU
             let d_compressed =
-                self.device
-                    .htod_copy(all_compressed)
+                self.stream
+                    .clone_htod(&all_compressed)
                     .map_err(|e| GpuLz4Error::MemoryAlloc {
                         message: e.to_string(),
                     })?;
 
             let d_output: CudaSlice<u8> =
-                self.device.alloc_zeros(total_uncompressed).map_err(|e| {
+                self.stream.alloc_zeros(total_uncompressed).map_err(|e| {
                     GpuLz4Error::MemoryAlloc {
                         message: e.to_string(),
                     }
                 })?;
 
             let d_offsets_in =
-                self.device
-                    .htod_copy(block_offsets_in)
+                self.stream
+                    .clone_htod(&block_offsets_in)
                     .map_err(|e| GpuLz4Error::MemoryAlloc {
                         message: e.to_string(),
                     })?;
 
             let d_offsets_out =
-                self.device
-                    .htod_copy(block_offsets_out)
+                self.stream
+                    .clone_htod(&block_offsets_out)
                     .map_err(|e| GpuLz4Error::MemoryAlloc {
                         message: e.to_string(),
                     })?;
 
             let d_compressed_sizes =
-                self.device
-                    .htod_copy(compressed_sizes)
+                self.stream
+                    .clone_htod(&compressed_sizes)
                     .map_err(|e| GpuLz4Error::MemoryAlloc {
                         message: e.to_string(),
                     })?;
 
-            let d_uncompressed_sizes = self.device.htod_copy(uncompressed_sizes).map_err(|e| {
+            let d_uncompressed_sizes = self.stream.clone_htod(&uncompressed_sizes).map_err(|e| {
                 GpuLz4Error::MemoryAlloc {
                     message: e.to_string(),
                 }
@@ -431,10 +467,10 @@ pub mod cuda {
 
             // Launch warp-parallel decompression kernel (from lz4_warp module)
             let func = self
-                .device
-                .get_func("lz4_warp", "lz4_decompress_blocks_warp")
+                .lz4_decompress_blocks_warp_fn
+                .as_ref()
                 .ok_or_else(|| GpuLz4Error::KernelLoad {
-                    message: "Warp kernel not found (lz4_warp module)".to_string(),
+                    message: "Warp kernel not loaded - call load_kernel() first".to_string(),
                 })?;
 
             // One warp (32 threads) per LZ4 block
@@ -445,26 +481,34 @@ pub mod cuda {
                 shared_mem_bytes: 0,
             };
 
-            unsafe {
-                func.launch(
-                    cfg,
-                    (
-                        &d_compressed,
-                        &d_output,
-                        &d_offsets_in,
-                        &d_offsets_out,
-                        &d_compressed_sizes,
-                        &d_uncompressed_sizes,
-                        num_blocks,
-                    ),
-                )
+            // Scope the guards so they drop before we return d_output
+            {
+                let (d_compressed_ptr, _g1) = d_compressed.device_ptr(&self.stream);
+                let (d_output_ptr, _g2) = d_output.device_ptr(&self.stream);
+                let (d_offsets_in_ptr, _g3) = d_offsets_in.device_ptr(&self.stream);
+                let (d_offsets_out_ptr, _g4) = d_offsets_out.device_ptr(&self.stream);
+                let (d_compressed_sizes_ptr, _g5) = d_compressed_sizes.device_ptr(&self.stream);
+                let (d_uncompressed_sizes_ptr, _g6) = d_uncompressed_sizes.device_ptr(&self.stream);
+
+                unsafe {
+                    self.stream
+                        .launch_builder(func)
+                        .arg(&d_compressed_ptr)
+                        .arg(&d_output_ptr)
+                        .arg(&d_offsets_in_ptr)
+                        .arg(&d_offsets_out_ptr)
+                        .arg(&d_compressed_sizes_ptr)
+                        .arg(&d_uncompressed_sizes_ptr)
+                        .arg(&num_blocks)
+                        .launch(cfg)
+                        .map_err(|e| GpuLz4Error::KernelExec {
+                            message: e.to_string(),
+                        })?;
+                }
             }
-            .map_err(|e| GpuLz4Error::KernelExec {
-                message: e.to_string(),
-            })?;
 
             // Synchronize
-            self.device
+            self.stream
                 .synchronize()
                 .map_err(|e| GpuLz4Error::Synchronize {
                     message: e.to_string(),
@@ -473,11 +517,11 @@ pub mod cuda {
             Ok(d_output)
         }
 
-        /// Returns the underlying cudarc CUDA device.
+        /// Returns the underlying cudarc CUDA context.
         ///
         /// This can be used for advanced GPU operations that bypass Candle.
-        pub fn cuda_device(&self) -> Arc<CudaDevice> {
-            Arc::clone(&self.device)
+        pub fn cuda_device(&self) -> Arc<CudaContext> {
+            Arc::clone(&self.ctx)
         }
 
         /// Decompresses to a typed `CudaSlice<f16>` for direct GPU use.
@@ -508,8 +552,8 @@ pub mod cuda {
             // Reinterpret the u8 slice as f16 using unsafe cast
             // SAFETY: The decompressed data should be valid f16 bytes
             let d_f16: CudaSlice<half::f16> = unsafe {
-                let ptr = *d_output.device_ptr();
-                self.device.upgrade_device_ptr(ptr, num_f16)
+                let (ptr, _guard) = d_output.device_ptr(&self.stream);
+                self.stream.upgrade_device_ptr(ptr, num_f16)
             };
 
             // Keep the original allocation alive by leaking it
@@ -539,8 +583,8 @@ pub mod cuda {
 
             // Reinterpret the u8 slice as f32
             let d_f32: CudaSlice<f32> = unsafe {
-                let ptr = *d_output.device_ptr();
-                self.device.upgrade_device_ptr(ptr, num_f32)
+                let (ptr, _guard) = d_output.device_ptr(&self.stream);
+                self.stream.upgrade_device_ptr(ptr, num_f32)
             };
 
             std::mem::forget(d_output);
@@ -573,12 +617,9 @@ pub mod cuda {
 
             // Convert GPU buffer to Candle tensor
             // This requires copying the data through Candle's API
-            let total_size: usize = blocks.iter().map(|(_, s)| *s).sum();
-
             // Copy decompressed data back to host (temporary - ideally we'd keep on GPU)
-            let mut host_data = vec![0u8; total_size];
-            self.device
-                .dtoh_sync_copy_into(&d_output, &mut host_data)
+            let host_data: Vec<u8> = self.stream
+                .clone_dtoh(&d_output)
                 .map_err(|e| GpuLz4Error::MemoryCopy {
                     message: e.to_string(),
                 })?;
@@ -632,8 +673,8 @@ pub mod cuda {
     /// This enables pipelining: while one block is being transferred,
     /// another is being decompressed, maximizing GPU utilization.
     pub struct CudaStreamPool {
-        device: Arc<CudaDevice>,
-        streams: Vec<CudaStream>,
+        ctx: Arc<CudaContext>,
+        streams: Vec<Arc<CudaStream>>,
         num_streams: usize,
     }
 
@@ -642,13 +683,13 @@ pub mod cuda {
         ///
         /// More streams allow more concurrent operations but use more resources.
         /// Typically 2-4 streams provide good overlap.
-        pub fn new(device: Arc<CudaDevice>, num_streams: usize) -> Result<Self, GpuLz4Error> {
+        pub fn new(ctx: Arc<CudaContext>, num_streams: usize) -> Result<Self, GpuLz4Error> {
             let mut streams = Vec::with_capacity(num_streams);
 
             for i in 0..num_streams {
                 let stream =
-                    device
-                        .fork_default_stream()
+                    ctx
+                        .new_stream()
                         .map_err(|e| GpuLz4Error::StreamCreate {
                             stream_id: i,
                             message: e.to_string(),
@@ -657,14 +698,14 @@ pub mod cuda {
             }
 
             Ok(Self {
-                device,
+                ctx,
                 streams,
                 num_streams,
             })
         }
 
         /// Returns a reference to stream at the given index (wraps around).
-        pub fn get_stream(&self, index: usize) -> &CudaStream {
+        pub fn get_stream(&self, index: usize) -> &Arc<CudaStream> {
             &self.streams[index % self.num_streams]
         }
 
@@ -675,8 +716,8 @@ pub mod cuda {
 
         /// Synchronizes all streams in the pool.
         pub fn synchronize_all(&self) -> Result<(), GpuLz4Error> {
-            for (i, _stream) in self.streams.iter().enumerate() {
-                self.device
+            for (i, stream) in self.streams.iter().enumerate() {
+                stream
                     .synchronize()
                     .map_err(|e| GpuLz4Error::Synchronize {
                         message: format!("Stream {}: {}", i, e),
@@ -712,7 +753,7 @@ pub mod cuda {
             let mut ctx = GpuLz4Context::new(device_id)?;
             ctx.load_kernel()?;
 
-            let stream_pool = CudaStreamPool::new(Arc::clone(&ctx.device), pipeline_depth)?;
+            let stream_pool = CudaStreamPool::new(Arc::clone(&ctx.ctx), pipeline_depth)?;
 
             Ok(Self {
                 ctx,
@@ -759,7 +800,7 @@ pub mod cuda {
             // Allocate output buffer
             let d_output: CudaSlice<u8> =
                 self.ctx
-                    .device
+                    .stream
                     .alloc_zeros(total_uncompressed)
                     .map_err(|e| GpuLz4Error::MemoryAlloc {
                         message: e.to_string(),
@@ -805,7 +846,7 @@ pub mod cuda {
                 let _stream = self.stream_pool.get_stream(i);
 
                 // Allocate input buffer
-                let d_input = self.ctx.device.htod_copy(compressed.clone()).map_err(|e| {
+                let d_input = self.ctx.stream.clone_htod(compressed).map_err(|e| {
                     GpuLz4Error::MemoryAlloc {
                         message: e.to_string(),
                     }
@@ -815,7 +856,7 @@ pub mod cuda {
                 // Allocate output buffer for this block
                 let d_block_output: CudaSlice<u8> = self
                     .ctx
-                    .device
+                    .stream
                     .alloc_zeros(*uncompressed_size)
                     .map_err(|e| GpuLz4Error::MemoryAlloc {
                         message: e.to_string(),
@@ -826,10 +867,10 @@ pub mod cuda {
             // Phase 2: Launch decompression kernels on each stream
             let func = self
                 .ctx
-                .device
-                .get_func("lz4_decompress", "lz4_decompress_block")
+                .lz4_decompress_block_fn
+                .as_ref()
                 .ok_or_else(|| GpuLz4Error::KernelLoad {
-                    message: "Kernel not found".to_string(),
+                    message: "Kernel not loaded".to_string(),
                 })?;
 
             for (i, ((compressed, uncompressed_size), (d_input, d_block_output))) in blocks
@@ -837,33 +878,36 @@ pub mod cuda {
                 .zip(d_inputs.iter().zip(d_outputs.iter()))
                 .enumerate()
             {
-                let _stream = self.stream_pool.get_stream(i);
+                let stream = self.stream_pool.get_stream(i);
                 let cfg = LaunchConfig::for_num_elems(1);
 
+                let (d_input_ptr, _g1) = d_input.device_ptr(stream);
+                let (d_block_output_ptr, _g2) = d_block_output.device_ptr(stream);
+
                 unsafe {
-                    func.clone().launch(
-                        cfg,
-                        (
-                            d_input,
-                            compressed.len() as u32,
-                            d_block_output,
-                            *uncompressed_size as u32,
-                        ),
-                    )
+                    stream
+                        .launch_builder(func)
+                        .arg(&d_input_ptr)
+                        .arg(&(compressed.len() as u32))
+                        .arg(&d_block_output_ptr)
+                        .arg(&(*uncompressed_size as u32))
+                        .launch(cfg)
+                        .map_err(|e| GpuLz4Error::KernelExec {
+                            message: e.to_string(),
+                        })?;
                 }
-                .map_err(|e| GpuLz4Error::KernelExec {
-                    message: e.to_string(),
-                })?;
             }
 
             // Phase 3: Copy decompressed blocks into the main output buffer
             let mut block_offset = output_offset;
             for ((_, uncompressed_size), d_block_output) in blocks.iter().zip(d_outputs.iter()) {
                 if *uncompressed_size > 0 {
+                    let (d_output_ptr, _g1) = d_output.device_ptr(&self.ctx.stream);
+                    let (d_block_output_ptr, _g2) = d_block_output.device_ptr(&self.ctx.stream);
                     unsafe {
                         cudarc::driver::result::memcpy_dtod_sync(
-                            *d_output.device_ptr() + block_offset as u64,
-                            *d_block_output.device_ptr(),
+                            d_output_ptr + block_offset as u64,
+                            d_block_output_ptr,
                             *uncompressed_size,
                         )
                     }
@@ -902,10 +946,9 @@ pub mod cuda {
                 let d_output = self.ctx.decompress_block(compressed, *uncompressed_size)?;
 
                 // Copy back to host
-                let mut host_data = vec![0u8; *uncompressed_size];
-                self.ctx
-                    .device
-                    .dtoh_sync_copy_into(&d_output, &mut host_data)
+                let host_data: Vec<u8> = self.ctx
+                    .stream
+                    .clone_dtoh(&d_output)
                     .map_err(|e| GpuLz4Error::MemoryCopy {
                         message: e.to_string(),
                     })?;
@@ -1774,11 +1817,11 @@ WARP_DONE:
 
             // First load should succeed
             ctx.load_kernel().expect("first kernel load");
-            assert!(ctx.kernel_loaded);
+            assert!(ctx.lz4_module.is_some());
 
             // Second load should be a no-op (already loaded)
             ctx.load_kernel().expect("second kernel load");
-            assert!(ctx.kernel_loaded);
+            assert!(ctx.lz4_module.is_some());
         }
 
         #[test]
@@ -1821,9 +1864,8 @@ WARP_DONE:
                 .expect("decompression");
 
             // Copy back to host and verify
-            let mut host_data = vec![0u8; original.len()];
-            ctx.device
-                .dtoh_sync_copy_into(&result, &mut host_data)
+            let host_data: Vec<u8> = ctx.stream
+                .clone_dtoh(&result)
                 .expect("copy to host");
 
             assert_eq!(&host_data, original);
@@ -1845,9 +1887,8 @@ WARP_DONE:
                 .decompress_block(&compressed, expected.len())
                 .expect("decompression");
 
-            let mut host_data = vec![0u8; expected.len()];
-            ctx.device
-                .dtoh_sync_copy_into(&result, &mut host_data)
+            let host_data: Vec<u8> = ctx.stream
+                .clone_dtoh(&result)
                 .expect("copy to host");
 
             assert_eq!(host_data, expected);
@@ -1869,9 +1910,8 @@ WARP_DONE:
                 .decompress_block(&compressed, expected.len())
                 .expect("decompression");
 
-            let mut host_data = vec![0u8; expected.len()];
-            ctx.device
-                .dtoh_sync_copy_into(&result, &mut host_data)
+            let host_data: Vec<u8> = ctx.stream
+                .clone_dtoh(&result)
                 .expect("copy to host");
 
             assert_eq!(host_data, expected);
@@ -1908,10 +1948,8 @@ WARP_DONE:
                 .expect("parallel decompression");
 
             // Copy back and verify each block
-            let total_size: usize = originals.iter().map(|o| o.len()).sum();
-            let mut host_data = vec![0u8; total_size];
-            ctx.device
-                .dtoh_sync_copy_into(&result, &mut host_data)
+            let host_data: Vec<u8> = ctx.stream
+                .clone_dtoh(&result)
                 .expect("copy to host");
 
             let mut offset = 0;
@@ -2086,9 +2124,8 @@ WARP_DONE:
                 .decompress_block(&compressed, original.len())
                 .expect("decompression");
 
-            let mut host_data = vec![0u8; original.len()];
-            ctx.device
-                .dtoh_sync_copy_into(&result, &mut host_data)
+            let host_data: Vec<u8> = ctx.stream
+                .clone_dtoh(&result)
                 .expect("copy to host");
 
             assert_eq!(host_data, original);
@@ -2123,10 +2160,8 @@ WARP_DONE:
                 .expect("parallel decompression");
 
             // Verify total size
-            let total_size: usize = originals.iter().map(|o| o.len()).sum();
-            let mut host_data = vec![0u8; total_size];
-            ctx.device
-                .dtoh_sync_copy_into(&result, &mut host_data)
+            let host_data: Vec<u8> = ctx.stream
+                .clone_dtoh(&result)
                 .expect("copy to host");
 
             // Verify each block
@@ -2182,15 +2217,11 @@ WARP_DONE:
                 .expect("warp-parallel");
 
             // Copy both to host
-            let total_size: usize = originals.iter().map(|o| o.len()).sum();
-            let mut single_host = vec![0u8; total_size];
-            let mut warp_host = vec![0u8; total_size];
-
-            ctx.device
-                .dtoh_sync_copy_into(&single_result, &mut single_host)
+            let single_host: Vec<u8> = ctx.stream
+                .clone_dtoh(&single_result)
                 .expect("copy single");
-            ctx.device
-                .dtoh_sync_copy_into(&warp_result, &mut warp_host)
+            let warp_host: Vec<u8> = ctx.stream
+                .clone_dtoh(&warp_result)
                 .expect("copy warp");
 
             // Verify identical output
@@ -2220,9 +2251,8 @@ WARP_DONE:
                 .decompress_blocks_warp_parallel(&blocks)
                 .expect("warp decompress");
 
-            let mut host_data = vec![0u8; data.len()];
-            ctx.device
-                .dtoh_sync_copy_into(&result, &mut host_data)
+            let host_data: Vec<u8> = ctx.stream
+                .clone_dtoh(&result)
                 .expect("copy to host");
 
             assert_eq!(host_data, data);
@@ -2280,10 +2310,8 @@ WARP_DONE:
                 .decompress_blocks_warp_parallel(&blocks)
                 .expect("warp parallel");
 
-            let total_size: usize = originals.iter().map(|o| o.len()).sum();
-            let mut host_data = vec![0u8; total_size];
-            ctx.device
-                .dtoh_sync_copy_into(&result, &mut host_data)
+            let host_data: Vec<u8> = ctx.stream
+                .clone_dtoh(&result)
                 .expect("copy to host");
 
             // Verify each block
@@ -2333,10 +2361,8 @@ WARP_DONE:
                 .decompress_blocks_warp_parallel(&blocks)
                 .expect("warp parallel");
 
-            let total_size: usize = originals.iter().map(|o| o.len()).sum();
-            let mut host_data = vec![0u8; total_size];
-            ctx.device
-                .dtoh_sync_copy_into(&result, &mut host_data)
+            let host_data: Vec<u8> = ctx.stream
+                .clone_dtoh(&result)
                 .expect("copy to host");
 
             // Verify each block
@@ -2380,17 +2406,15 @@ WARP_DONE:
 
             // Parallel kernel (K2) — known good
             let parallel_result = ctx.decompress_blocks_parallel(&blocks).expect("parallel");
-            let mut parallel_host = vec![0u8; data.len()];
-            ctx.device
-                .dtoh_sync_copy_into(&parallel_result, &mut parallel_host)
+            let parallel_host: Vec<u8> = ctx.stream
+                .clone_dtoh(&parallel_result)
                 .expect("copy parallel");
             assert_eq!(parallel_host, data, "Parallel kernel should match original");
 
             // Warp kernel (K3) — should also match
             let warp_result = ctx.decompress_blocks_warp_parallel(&blocks).expect("warp");
-            let mut warp_host = vec![0u8; data.len()];
-            ctx.device
-                .dtoh_sync_copy_into(&warp_result, &mut warp_host)
+            let warp_host: Vec<u8> = ctx.stream
+                .clone_dtoh(&warp_result)
                 .expect("copy warp");
 
             assert_eq!(
@@ -2431,11 +2455,8 @@ WARP_DONE:
                     let parallel_result = ctx.decompress_blocks_parallel(&blocks).expect("parallel");
                     let warp_result = ctx.decompress_blocks_warp_parallel(&blocks).expect("warp");
 
-                    let mut parallel_host = vec![0u8; data.len()];
-                    let mut warp_host = vec![0u8; data.len()];
-
-                    ctx.device.dtoh_sync_copy_into(&parallel_result, &mut parallel_host).expect("copy");
-                    ctx.device.dtoh_sync_copy_into(&warp_result, &mut warp_host).expect("copy");
+                    let parallel_host: Vec<u8> = ctx.stream.clone_dtoh(&parallel_result).expect("copy");
+                    let warp_host: Vec<u8> = ctx.stream.clone_dtoh(&warp_result).expect("copy");
 
                     prop_assert_eq!(
                         &warp_host, &parallel_host,
@@ -2474,14 +2495,11 @@ WARP_DONE:
             let parallel_result = ctx.decompress_blocks_parallel(&blocks).expect("parallel");
             let warp_result = ctx.decompress_blocks_warp_parallel(&blocks).expect("warp");
 
-            let mut parallel_host = vec![0u8; original.len()];
-            let mut warp_host = vec![0u8; original.len()];
-
-            ctx.device
-                .dtoh_sync_copy_into(&parallel_result, &mut parallel_host)
+            let parallel_host: Vec<u8> = ctx.stream
+                .clone_dtoh(&parallel_result)
                 .expect("copy parallel");
-            ctx.device
-                .dtoh_sync_copy_into(&warp_result, &mut warp_host)
+            let warp_host: Vec<u8> = ctx.stream
+                .clone_dtoh(&warp_result)
                 .expect("copy warp");
 
             assert_eq!(
@@ -2517,14 +2535,11 @@ WARP_DONE:
             let parallel_result = ctx.decompress_blocks_parallel(&blocks).expect("parallel");
             let warp_result = ctx.decompress_blocks_warp_parallel(&blocks).expect("warp");
 
-            let mut parallel_host = vec![0u8; original.len()];
-            let mut warp_host = vec![0u8; original.len()];
-
-            ctx.device
-                .dtoh_sync_copy_into(&parallel_result, &mut parallel_host)
+            let parallel_host: Vec<u8> = ctx.stream
+                .clone_dtoh(&parallel_result)
                 .expect("copy parallel");
-            ctx.device
-                .dtoh_sync_copy_into(&warp_result, &mut warp_host)
+            let warp_host: Vec<u8> = ctx.stream
+                .clone_dtoh(&warp_result)
                 .expect("copy warp");
 
             assert_eq!(parallel_host, original, "Parallel kernel correctness");
@@ -2573,14 +2588,11 @@ WARP_DONE:
             let warp_result = ctx.decompress_blocks_warp_parallel(&blocks).expect("warp");
 
             let total_size: usize = originals.iter().map(|o| o.len()).sum();
-            let mut parallel_host = vec![0u8; total_size];
-            let mut warp_host = vec![0u8; total_size];
-
-            ctx.device
-                .dtoh_sync_copy_into(&parallel_result, &mut parallel_host)
+            let parallel_host: Vec<u8> = ctx.stream
+                .clone_dtoh(&parallel_result)
                 .expect("copy parallel");
-            ctx.device
-                .dtoh_sync_copy_into(&warp_result, &mut warp_host)
+            let warp_host: Vec<u8> = ctx.stream
+                .clone_dtoh(&warp_result)
                 .expect("copy warp");
 
             // Verify each block
@@ -2630,14 +2642,11 @@ WARP_DONE:
             let parallel_result = ctx.decompress_blocks_parallel(&blocks).expect("parallel");
             let warp_result = ctx.decompress_blocks_warp_parallel(&blocks).expect("warp");
 
-            let mut parallel_host = vec![0u8; original.len()];
-            let mut warp_host = vec![0u8; original.len()];
-
-            ctx.device
-                .dtoh_sync_copy_into(&parallel_result, &mut parallel_host)
+            let parallel_host: Vec<u8> = ctx.stream
+                .clone_dtoh(&parallel_result)
                 .expect("copy parallel");
-            ctx.device
-                .dtoh_sync_copy_into(&warp_result, &mut warp_host)
+            let warp_host: Vec<u8> = ctx.stream
+                .clone_dtoh(&warp_result)
                 .expect("copy warp");
 
             assert_eq!(parallel_host, original, "Parallel correctness");
@@ -2767,7 +2776,7 @@ WARP_DONE:
                 for _ in 0..bench_iters {
                     let result = ctx.decompress_blocks_parallel(&blocks).expect("K2");
                     // Force sync to measure actual kernel time
-                    let _ = ctx.device.dtoh_sync_copy(&result);
+                    let _ = ctx.stream.clone_dtoh(&result);
                 }
                 let k2_elapsed = start.elapsed();
 
@@ -2775,7 +2784,7 @@ WARP_DONE:
                 let start = std::time::Instant::now();
                 for _ in 0..bench_iters {
                     let result = ctx.decompress_blocks_warp_parallel(&blocks).expect("K3");
-                    let _ = ctx.device.dtoh_sync_copy(&result);
+                    let _ = ctx.stream.clone_dtoh(&result);
                 }
                 let k3_elapsed = start.elapsed();
 
@@ -2802,10 +2811,10 @@ WARP_DONE:
             }
 
             let ctx = GpuLz4Context::new(0).expect("context creation");
-            let device = ctx.cuda_device();
+            let _device = ctx.cuda_device();
 
-            // Verify we can use the device for allocations
-            let _slice: CudaSlice<u8> = device.alloc_zeros(1024).expect("alloc");
+            // Verify we can use the stream for allocations
+            let _slice: CudaSlice<u8> = ctx.stream.alloc_zeros(1024).expect("alloc");
         }
 
         #[test]
@@ -2843,9 +2852,8 @@ WARP_DONE:
             assert_eq!(d_f16.len(), 8);
 
             // Copy back and verify values
-            let mut result = vec![half::f16::ZERO; 8];
-            ctx.device
-                .dtoh_sync_copy_into(&d_f16, &mut result)
+            let result: Vec<half::f16> = ctx.stream
+                .clone_dtoh(&d_f16)
                 .expect("copy to host");
 
             assert_eq!(result, f16_data);
@@ -2877,9 +2885,8 @@ WARP_DONE:
             assert_eq!(d_f32.len(), 4);
 
             // Copy back and verify values
-            let mut result = vec![0.0f32; 4];
-            ctx.device
-                .dtoh_sync_copy_into(&d_f32, &mut result)
+            let result: Vec<f32> = ctx.stream
+                .clone_dtoh(&d_f32)
                 .expect("copy to host");
 
             assert_eq!(result, f32_data);
@@ -2910,9 +2917,8 @@ WARP_DONE:
             assert_eq!(d_f16.len(), num_values);
 
             // Verify first and last values
-            let mut result = vec![half::f16::ZERO; num_values];
-            ctx.device
-                .dtoh_sync_copy_into(&d_f16, &mut result)
+            let result: Vec<half::f16> = ctx.stream
+                .clone_dtoh(&d_f16)
                 .expect("copy");
 
             assert_eq!(result[0], half::f16::from_f32(0.0));
@@ -2929,7 +2935,7 @@ WARP_DONE:
             }
 
             let ctx = GpuLz4Context::new(0).expect("context");
-            let pool = CudaStreamPool::new(Arc::clone(&ctx.device), 4).expect("pool creation");
+            let pool = CudaStreamPool::new(Arc::clone(&ctx.ctx), 4).expect("pool creation");
 
             assert_eq!(pool.num_streams(), 4);
         }
@@ -2942,7 +2948,7 @@ WARP_DONE:
             }
 
             let ctx = GpuLz4Context::new(0).expect("context");
-            let pool = CudaStreamPool::new(Arc::clone(&ctx.device), 3).expect("pool creation");
+            let pool = CudaStreamPool::new(Arc::clone(&ctx.ctx), 3).expect("pool creation");
 
             // Index 0, 1, 2 should work
             let _s0 = pool.get_stream(0);
@@ -3004,17 +3010,13 @@ WARP_DONE:
                 .expect("sequential decompress");
 
             // Compare results
-            let total_size: usize = originals.iter().map(|o| o.len()).sum();
-            let mut streaming_host = vec![0u8; total_size];
-            let mut sequential_host = vec![0u8; total_size];
-
-            streaming_ctx
+            let streaming_host: Vec<u8> = streaming_ctx
                 .context()
-                .device
-                .dtoh_sync_copy_into(&result, &mut streaming_host)
+                .stream
+                .clone_dtoh(&result)
                 .expect("copy streaming");
-            ctx.device
-                .dtoh_sync_copy_into(&sequential_result, &mut sequential_host)
+            let sequential_host: Vec<u8> = ctx.stream
+                .clone_dtoh(&sequential_result)
                 .expect("copy sequential");
 
             assert_eq!(
@@ -3111,12 +3113,10 @@ WARP_DONE:
                 .expect("streaming decompress");
 
             // Verify
-            let total_size: usize = originals.iter().map(|o| o.len()).sum();
-            let mut host_data = vec![0u8; total_size];
-            streaming_ctx
+            let host_data: Vec<u8> = streaming_ctx
                 .context()
-                .device
-                .dtoh_sync_copy_into(&result, &mut host_data)
+                .stream
+                .clone_dtoh(&result)
                 .expect("copy");
 
             let mut offset = 0;
@@ -3178,9 +3178,8 @@ WARP_DONE:
             let gpu_result = ctx
                 .decompress_block(raw_compressed, original.len())
                 .expect("GPU LZ4 decompress");
-            let mut gpu_host = vec![0u8; original.len()];
-            ctx.device
-                .dtoh_sync_copy_into(&gpu_result, &mut gpu_host)
+            let gpu_host: Vec<u8> = ctx.stream
+                .clone_dtoh(&gpu_result)
                 .expect("copy to host");
 
             assert_eq!(
@@ -3214,9 +3213,8 @@ WARP_DONE:
             let gpu_result = ctx
                 .decompress_block(raw_compressed, original.len())
                 .expect("GPU LZ4 decompress");
-            let mut gpu_host = vec![0u8; original.len()];
-            ctx.device
-                .dtoh_sync_copy_into(&gpu_result, &mut gpu_host)
+            let gpu_host: Vec<u8> = ctx.stream
+                .clone_dtoh(&gpu_result)
                 .expect("copy to host");
 
             assert_eq!(
@@ -3251,9 +3249,8 @@ WARP_DONE:
                     let result = ctx
                         .decompress_block(raw, block.len())
                         .expect("K1 decompress");
-                    let mut host = vec![0u8; block.len()];
-                    ctx.device
-                        .dtoh_sync_copy_into(&result, &mut host)
+                    let host: Vec<u8> = ctx.stream
+                        .clone_dtoh(&result)
                         .expect("copy");
                     host
                 })
@@ -3275,8 +3272,8 @@ WARP_DONE:
             // Copy parallel result (concatenated) to host
             let total_size: usize = blocks.iter().map(|b| b.len()).sum();
             let mut parallel_host = vec![0u8; total_size];
-            ctx.device
-                .dtoh_sync_copy_into(&parallel_result, &mut parallel_host)
+            ctx.stream
+                .clone_dtoh(&parallel_result)
                 .expect("copy");
 
             // Compare block by block

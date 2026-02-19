@@ -303,7 +303,7 @@ fn coalesced_memory_benchmark(c: &mut Criterion) {
         let data: Vec<f32> = (0..size).map(|i| (i as f32 * 0.001).sin()).collect();
 
         // Copy to GPU
-        let d_input = ctx.device().htod_copy(data.clone()).unwrap();
+        let d_input = ctx.stream().clone_htod(data.clone()).unwrap();
 
         group.throughput(Throughput::Bytes((size * 4) as u64));
 

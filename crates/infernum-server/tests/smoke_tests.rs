@@ -54,7 +54,7 @@ async fn smoke_server_health_without_model() {
     }
 
     let config = smoke_server_config();
-    let server = Server::new(config);
+    let server = Server::new(config).await;
     let test = TestServer::start(server.router()).await;
 
     // /health returns 200 even without a model loaded.
@@ -151,7 +151,7 @@ async fn smoke_http_chat_completion() {
         .expect("Engine creation failed");
 
     let config = smoke_server_config();
-    let server = Server::with_engine(config, engine);
+    let server = Server::with_engine(config, engine).await;
     let test = TestServer::start(server.router()).await;
 
     // /ready should now return 200 with a model loaded.
@@ -212,7 +212,7 @@ async fn smoke_streaming_sse() {
         .expect("Engine creation failed");
 
     let config = smoke_server_config();
-    let server = Server::with_engine(config, engine);
+    let server = Server::with_engine(config, engine).await;
     let test = TestServer::start(server.router()).await;
 
     // POST with stream: true
@@ -281,7 +281,7 @@ async fn smoke_tool_schema_in_request() {
         .expect("Engine creation failed");
 
     let config = smoke_server_config();
-    let server = Server::with_engine(config, engine);
+    let server = Server::with_engine(config, engine).await;
     let test = TestServer::start(server.router()).await;
 
     // POST with tools array - exercises tool formatting + model output + detection pipeline.

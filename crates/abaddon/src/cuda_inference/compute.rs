@@ -22,7 +22,7 @@
 
 use std::sync::Arc;
 
-use cudarc::driver::CudaDevice;
+use cudarc::driver::CudaContext;
 
 use super::arch::{Activation, ModelConfig};
 use super::cublas::CublasHandle;
@@ -40,7 +40,7 @@ use super::InferenceError;
 pub struct ComputeEngine {
     /// CUDA device.
     #[allow(dead_code)]
-    device: Arc<CudaDevice>,
+    device: Arc<CudaContext>,
 
     /// Model configuration.
     config: ModelConfig,
@@ -126,7 +126,7 @@ impl ComputeEngine {
     pub fn new(
         config: ModelConfig,
         max_seq_len: usize,
-        device: Arc<CudaDevice>,
+        device: Arc<CudaContext>,
     ) -> Result<Self, InferenceError> {
         // Create stream manager for async operations
         let streams = StreamManager::new(Arc::clone(&device))?;
@@ -138,13 +138,16 @@ impl ComputeEngine {
             cublas.set_stream(streams.compute_raw())?;
         }
 
-        let rmsnorm = RMSNormKernel::new(Arc::clone(&device))?;
-        let rope = RoPEKernel::new(Arc::clone(&device))?;
-        let activation = ActivationKernel::new(Arc::clone(&device))?;
-        let fused_gemm = FusedGemmKernel::new(Arc::clone(&device))?;
-        let attention = FlashAttentionKernel::new(Arc::clone(&device))?;
-        let embedding = EmbeddingKernel::new(Arc::clone(&device))?;
-        let fused_rmsnorm_proj = FusedRMSNormProjKernel::new(Arc::clone(&device))?;
+        // Get default stream for kernel initialization
+        let default_stream = device.default_stream();
+
+        let rmsnorm = RMSNormKernel::new(Arc::clone(&device), Arc::clone(&default_stream))?;
+        let rope = RoPEKernel::new(Arc::clone(&device), Arc::clone(&default_stream))?;
+        let activation = ActivationKernel::new(Arc::clone(&device), Arc::clone(&default_stream))?;
+        let fused_gemm = FusedGemmKernel::new(Arc::clone(&device), Arc::clone(&default_stream))?;
+        let attention = FlashAttentionKernel::new(Arc::clone(&device), Arc::clone(&default_stream))?;
+        let embedding = EmbeddingKernel::new(Arc::clone(&device), Arc::clone(&default_stream))?;
+        let fused_rmsnorm_proj = FusedRMSNormProjKernel::new(Arc::clone(&device), Arc::clone(&default_stream))?;
 
         let kv_cache = KvCache::new(&config, max_seq_len, Arc::clone(&device))?;
 

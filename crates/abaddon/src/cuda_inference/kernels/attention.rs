@@ -29,7 +29,7 @@
 
 use std::sync::Arc;
 
-use cudarc::driver::{CudaDevice, CudaFunction, LaunchAsync, LaunchConfig};
+use cudarc::driver::{CudaContext, CudaFunction, CudaModule, CudaStream, LaunchConfig, PushKernelArg};
 
 use super::compile_cuda_kernel;
 use crate::cuda_inference::tensor::GpuTensor;
@@ -407,7 +407,10 @@ extern "C" __global__ void flash_attention_cached_f16(
 /// - Loop unrolling for better ILP
 /// - Separate cached kernel for decode phase
 pub struct FlashAttentionKernel {
-    device: Arc<CudaDevice>,
+    ctx: Arc<CudaContext>,
+    stream: Arc<CudaStream>,
+    #[allow(dead_code)]
+    module: Option<Arc<CudaModule>>,
     func: Option<CudaFunction>,
     cached_func: Option<CudaFunction>,
 }
@@ -423,9 +426,11 @@ impl std::fmt::Debug for FlashAttentionKernel {
 
 impl FlashAttentionKernel {
     /// Create a new Flash Attention v2 kernel.
-    pub fn new(device: Arc<CudaDevice>) -> Result<Self, InferenceError> {
+    pub fn new(ctx: Arc<CudaContext>, stream: Arc<CudaStream>) -> Result<Self, InferenceError> {
         let mut kernel = Self {
-            device,
+            ctx,
+            stream,
+            module: None,
             func: None,
             cached_func: None,
         };
@@ -443,35 +448,24 @@ impl FlashAttentionKernel {
         let ptx = compile_cuda_kernel(FLASH_ATTENTION_CUDA)
             .map_err(|e| InferenceError::Kernel(format!("NVRTC compilation failed: {}", e)))?;
 
-        // Load PTX into device with both kernels
-        self.device
-            .load_ptx(
-                ptx,
-                "flash_attention",
-                &["flash_attention_f16", "flash_attention_cached_f16"],
-            )
-            .map_err(|e| {
-                InferenceError::Kernel(format!("Failed to load Flash Attention: {}", e))
-            })?;
+        // Load PTX module into device
+        let module = self.ctx
+            .load_module(ptx)
+            .map_err(|e| InferenceError::Kernel(format!("Failed to load Flash Attention: {}", e)))?;
 
         self.func = Some(
-            self.device
-                .get_func("flash_attention", "flash_attention_f16")
-                .ok_or_else(|| {
-                    InferenceError::Kernel("Failed to get flash_attention_f16 function".to_string())
-                })?,
+            module
+                .load_function("flash_attention_f16")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to get flash_attention_f16 function: {}", e)))?,
         );
 
         self.cached_func = Some(
-            self.device
-                .get_func("flash_attention", "flash_attention_cached_f16")
-                .ok_or_else(|| {
-                    InferenceError::Kernel(
-                        "Failed to get flash_attention_cached_f16 function".to_string(),
-                    )
-                })?,
+            module
+                .load_function("flash_attention_cached_f16")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to get flash_attention_cached_f16 function: {}", e)))?,
         );
 
+        self.module = Some(module);
         Ok(())
     }
 
@@ -562,23 +556,23 @@ impl FlashAttentionKernel {
             scale
         );
 
+        let causal_flag: i32 = if causal { 1 } else { 0 };
+
         unsafe {
-            func.clone().launch(
-                cfg,
-                (
-                    q.device_ptr(),
-                    k.device_ptr(),
-                    v.device_ptr(),
-                    output.device_ptr(),
-                    batch as i32,
-                    heads as i32,
-                    kv_heads as i32,
-                    seq_len as i32,
-                    head_dim as i32,
-                    scale,
-                    if causal { 1i32 } else { 0i32 },
-                ),
-            )
+            self.stream
+                .launch_builder(func)
+                .arg(&q.device_ptr())
+                .arg(&k.device_ptr())
+                .arg(&v.device_ptr())
+                .arg(&output.device_ptr())
+                .arg(&(batch as i32))
+                .arg(&(heads as i32))
+                .arg(&(kv_heads as i32))
+                .arg(&(seq_len as i32))
+                .arg(&(head_dim as i32))
+                .arg(&scale)
+                .arg(&causal_flag)
+                .launch(cfg)
         }
         .map_err(|e| InferenceError::Kernel(format!("Flash Attention launch failed: {}", e)))?;
 
@@ -642,21 +636,19 @@ impl FlashAttentionKernel {
         };
 
         unsafe {
-            func.clone().launch(
-                cfg,
-                (
-                    q.device_ptr(),
-                    k_cache.device_ptr(),
-                    v_cache.device_ptr(),
-                    output.device_ptr(),
-                    batch as i32,
-                    heads as i32,
-                    kv_heads as i32,
-                    cache_len as i32,
-                    head_dim as i32,
-                    scale,
-                ),
-            )
+            self.stream
+                .launch_builder(func)
+                .arg(&q.device_ptr())
+                .arg(&k_cache.device_ptr())
+                .arg(&v_cache.device_ptr())
+                .arg(&output.device_ptr())
+                .arg(&(batch as i32))
+                .arg(&(heads as i32))
+                .arg(&(kv_heads as i32))
+                .arg(&(cache_len as i32))
+                .arg(&(head_dim as i32))
+                .arg(&scale)
+                .launch(cfg)
         }
         .map_err(|e| {
             InferenceError::Kernel(format!("Flash Attention cached launch failed: {}", e))
@@ -670,9 +662,14 @@ impl FlashAttentionKernel {
         64 // Optimal for current implementation
     }
 
-    /// Get device reference.
-    pub fn device(&self) -> &Arc<CudaDevice> {
-        &self.device
+    /// Get context reference.
+    pub fn ctx(&self) -> &Arc<CudaContext> {
+        &self.ctx
+    }
+
+    /// Get stream reference.
+    pub fn stream(&self) -> &Arc<CudaStream> {
+        &self.stream
     }
 }
 

@@ -8,9 +8,8 @@
 /// CUDA-accelerated SVD using cuBLAS power iteration.
 #[cfg(feature = "cuda")]
 pub mod cuda {
-    use cudarc::cublas::sys::lib as cublas_lib;
-    use cudarc::cublas::{CudaBlas, Gemv, GemvConfig};
-    use cudarc::driver::{CudaDevice, CudaSlice, DevicePtr, DevicePtrMut};
+    use cudarc::cublas::{sys as cublas_sys, CudaBlas, Gemv, GemvConfig};
+    use cudarc::driver::{CudaContext, CudaSlice, CudaStream, DevicePtr, DevicePtrMut};
     use std::sync::Arc;
 
     /// GPU-accelerated SVD using power iteration with cuBLAS.
@@ -20,14 +19,16 @@ pub mod cuda {
     /// - Vector normalization on GPU
     /// - TF32 enabled for Ada/Ampere GPUs
     pub struct GpuSvd {
-        device: Arc<CudaDevice>,
+        ctx: Arc<CudaContext>,
+        stream: Arc<CudaStream>,
         blas: CudaBlas,
     }
 
     impl GpuSvd {
         /// Create new GPU SVD context.
-        pub fn new(device: Arc<CudaDevice>) -> Result<Self, cudarc::cublas::result::CublasError> {
-            let blas = CudaBlas::new(device.clone())?;
+        pub fn new(ctx: Arc<CudaContext>) -> Result<Self, cudarc::cublas::result::CublasError> {
+            let stream = ctx.default_stream();
+            let blas = CudaBlas::new(stream.clone())?;
 
             // Enable TF32 for Ampere+ GPUs (compute 8.0+)
             // TF32 uses 19-bit mantissa, 8x faster than FP32, ~0.1% accuracy loss
@@ -35,18 +36,23 @@ pub mod cuda {
             unsafe {
                 let handle = *blas.handle();
                 // Try to set TF32 mode - ignore errors on older GPUs
-                let _ = cublas_lib().cublasSetMathMode(
+                let _ = cublas_sys::cublasSetMathMode(
                     handle,
-                    cudarc::cublas::sys::cublasMath_t::CUBLAS_TF32_TENSOR_OP_MATH,
+                    cublas_sys::cublasMath_t::CUBLAS_TF32_TENSOR_OP_MATH,
                 );
             }
 
-            Ok(Self { device, blas })
+            Ok(Self { ctx, stream, blas })
         }
 
-        /// Get device reference.
-        pub fn device(&self) -> &Arc<CudaDevice> {
-            &self.device
+        /// Get stream reference.
+        pub fn stream(&self) -> &Arc<CudaStream> {
+            &self.stream
+        }
+
+        /// Get context reference.
+        pub fn context(&self) -> &Arc<CudaContext> {
+            &self.ctx
         }
 
         /// Compute truncated SVD using GPU-accelerated power iteration.
@@ -65,7 +71,7 @@ pub mod cuda {
             rank: usize,
             iterations: usize,
         ) -> Result<(Vec<f32>, Vec<f32>, Vec<f32>), Box<dyn std::error::Error>> {
-            let d_matrix: CudaSlice<f32> = self.device.htod_sync_copy(matrix)?;
+            let d_matrix: CudaSlice<f32> = self.stream.clone_htod(matrix)?;
             self.svd_power_iteration_gpu(d_matrix, rows, cols, rank, iterations)
         }
 
@@ -80,8 +86,8 @@ pub mod cuda {
             rank: usize,
             iterations: usize,
         ) -> Result<(Vec<f32>, Vec<f32>, Vec<f32>), Box<dyn std::error::Error>> {
-            let mut d_u: CudaSlice<f32> = self.device.alloc_zeros(rows)?;
-            let mut d_v: CudaSlice<f32> = self.device.alloc_zeros(cols)?;
+            let mut d_u: CudaSlice<f32> = self.stream.alloc_zeros(rows)?;
+            let mut d_v: CudaSlice<f32> = self.stream.alloc_zeros(cols)?;
 
             let mut u_out = vec![0.0f32; rows * rank];
             let mut s_out = vec![0.0f32; rank];
@@ -95,7 +101,11 @@ pub mod cuda {
                         (x / 0x80000000u32 as f32) - 0.5
                     })
                     .collect();
-                self.device.htod_sync_copy_into(&h_v, &mut d_v)?;
+                // Copy h_v into d_v using low-level memcpy
+                unsafe {
+                    let (ptr, _guard) = d_v.device_ptr(&self.stream);
+                    cudarc::driver::result::memcpy_htod_sync(ptr, &h_v)?;
+                }
                 self.gpu_normalize(&mut d_v, cols)?;
 
                 // Power iteration
@@ -116,10 +126,8 @@ pub mod cuda {
                 }
 
                 // Store u and v
-                let mut h_u = vec![0.0f32; rows];
-                let mut h_v = vec![0.0f32; cols];
-                self.device.dtoh_sync_copy_into(&d_u, &mut h_u)?;
-                self.device.dtoh_sync_copy_into(&d_v, &mut h_v)?;
+                let h_u: Vec<f32> = self.stream.clone_dtoh(&d_u)?;
+                let h_v: Vec<f32> = self.stream.clone_dtoh(&d_v)?;
 
                 for i in 0..rows {
                     u_out[i * rank + r] = h_u[i];
@@ -197,19 +205,22 @@ pub mod cuda {
                 // To do A[i,j] += alpha * u[i] * v[j] in row-major
                 // = A^T[j,i] += alpha * u[i] * v[j] in col-major view
                 // Use ger(m=cols, n=rows, x=v, y=u) on the col-major view
-                let status = cublas_lib().cublasSger_v2(
+                let (v_ptr, _v_guard) = d_v.device_ptr(&self.stream);
+                let (u_ptr, _u_guard) = d_u.device_ptr(&self.stream);
+                let (a_ptr, _a_guard) = d_a.device_ptr_mut(&self.stream);
+                let status = cublas_sys::cublasSger_v2(
                     handle,
                     cols as i32, // m
                     rows as i32, // n
                     &alpha as *const f32,
-                    *d_v.device_ptr() as *const f32, // x = v
+                    v_ptr as *const f32, // x = v
                     1,
-                    *d_u.device_ptr() as *const f32, // y = u
+                    u_ptr as *const f32, // y = u
                     1,
-                    *d_a.device_ptr_mut() as *mut f32,
+                    a_ptr as *mut f32,
                     cols as i32, // lda
                 );
-                if status != cudarc::cublas::sys::cublasStatus_t::CUBLAS_STATUS_SUCCESS {
+                if status != cublas_sys::cublasStatus_t::CUBLAS_STATUS_SUCCESS {
                     return Err(format!("cublasSger failed: {:?}", status).into());
                 }
             }
@@ -237,15 +248,16 @@ pub mod cuda {
         ) -> Result<f32, Box<dyn std::error::Error>> {
             unsafe {
                 let handle = *self.blas.handle();
+                let (x_ptr, _x_guard) = d_x.device_ptr(&self.stream);
                 let mut result: f32 = 0.0;
-                let status = cublas_lib().cublasSnrm2_v2(
+                let status = cublas_sys::cublasSnrm2_v2(
                     handle,
                     n as i32,
-                    *d_x.device_ptr() as *const f32,
+                    x_ptr as *const f32,
                     1,
                     &mut result as *mut f32,
                 );
-                if status != cudarc::cublas::sys::cublasStatus_t::CUBLAS_STATUS_SUCCESS {
+                if status != cublas_sys::cublasStatus_t::CUBLAS_STATUS_SUCCESS {
                     return Err(format!("cublasSnrm2 failed: {:?}", status).into());
                 }
                 Ok(result)
@@ -261,14 +273,15 @@ pub mod cuda {
         ) -> Result<(), Box<dyn std::error::Error>> {
             unsafe {
                 let handle = *self.blas.handle();
-                let status = cublas_lib().cublasSscal_v2(
+                let (x_ptr, _x_guard) = d_x.device_ptr_mut(&self.stream);
+                let status = cublas_sys::cublasSscal_v2(
                     handle,
                     n as i32,
                     &alpha as *const f32,
-                    *d_x.device_ptr_mut() as *mut f32,
+                    x_ptr as *mut f32,
                     1,
                 );
-                if status != cudarc::cublas::sys::cublasStatus_t::CUBLAS_STATUS_SUCCESS {
+                if status != cublas_sys::cublasStatus_t::CUBLAS_STATUS_SUCCESS {
                     return Err(format!("cublasSscal failed: {:?}", status).into());
                 }
             }

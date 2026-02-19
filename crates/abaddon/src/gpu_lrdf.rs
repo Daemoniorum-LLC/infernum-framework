@@ -6,7 +6,7 @@
 /// CUDA-accelerated LRDF encoding using GPU SVD.
 #[cfg(feature = "cuda")]
 pub mod cuda {
-    use cudarc::driver::CudaDevice;
+    use cudarc::driver::CudaContext;
     use std::sync::Arc;
 
     use crate::cuda_svd::cuda::GpuSvd;
@@ -26,7 +26,7 @@ pub mod cuda {
     impl GpuLrdfEncoder {
         /// Create new GPU LRDF encoder.
         pub fn new(
-            device: Arc<CudaDevice>,
+            device: Arc<CudaContext>,
             num_fragments: u16,
             seed: u64,
         ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn test_gpu_lrdf_encoder() {
         // This test requires CUDA hardware
-        let device = match cudarc::driver::CudaDevice::new(0) {
+        let device = match cudarc::driver::CudaContext::new(0) {
             Ok(d) => d,
             Err(_) => {
                 eprintln!("Skipping GPU test: no CUDA device available");
@@ -290,7 +290,7 @@ mod tests {
     #[test]
     fn test_fragment_compatibility() {
         // Test that our fragments can be decoded by haagenti's decoder
-        let device = match cudarc::driver::CudaDevice::new(0) {
+        let device = match cudarc::driver::CudaContext::new(0) {
             Ok(d) => d,
             Err(_) => {
                 eprintln!("Skipping GPU test: no CUDA device available");

@@ -80,11 +80,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let attn_weights: Vec<f32> = vec![1.0 / kv_len as f32; attn_size];
 
             // Transfer to GPU
-            let d_q = device.htod_sync_copy(&q_data)?;
-            let d_k_quant = device.htod_sync_copy(&k_quant)?;
-            let d_v_quant = device.htod_sync_copy(&v_quant)?;
-            let d_scales = device.htod_sync_copy(&scales)?;
-            let d_attn_weights = device.htod_sync_copy(&attn_weights)?;
+            let d_q = stream.clone_htod(&q_data)?;
+            let d_k_quant = stream.clone_htod(&k_quant)?;
+            let d_v_quant = stream.clone_htod(&v_quant)?;
+            let d_scales = stream.clone_htod(&scales)?;
+            let d_attn_weights = stream.clone_htod(&attn_weights)?;
 
             // Warmup
             let _ = ctx.fused_qk_attention(

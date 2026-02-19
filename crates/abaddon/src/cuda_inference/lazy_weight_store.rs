@@ -9,7 +9,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use cudarc::driver::CudaDevice;
+use cudarc::driver::CudaContext;
 use tracing::info;
 
 use super::arch::{ModelArch, ModelConfig};
@@ -79,7 +79,7 @@ pub struct LazyWeightStore {
     pub config: ModelConfig,
 
     /// CUDA device.
-    device: Arc<CudaDevice>,
+    device: Arc<CudaContext>,
 
     /// Token embeddings [vocab_size, hidden_size].
     pub embed_tokens: GpuTensor,
@@ -112,8 +112,8 @@ impl LazyWeightStore {
         let model_dir = model_dir.as_ref();
 
         // Initialize CUDA
-        // Note: CudaDevice::new() already returns Arc<CudaDevice>
-        let device = CudaDevice::new(lazy_config.device_id)
+        // Note: CudaContext::new() already returns Arc<CudaContext>
+        let device = CudaContext::new(lazy_config.device_id)
             .map_err(|e| InferenceError::Device(e.to_string()))?;
 
         // Detect architecture and load config
@@ -208,7 +208,7 @@ impl LazyWeightStore {
     }
 
     /// Get CUDA device reference.
-    pub fn device(&self) -> &Arc<CudaDevice> {
+    pub fn device(&self) -> &Arc<CudaContext> {
         &self.device
     }
 
@@ -257,7 +257,7 @@ impl LazyWeightStore {
     // Internal: Load shared weights (embed_tokens, final_norm, lm_head)
     fn load_shared_weights(
         shared_files: &std::collections::HashMap<String, std::path::PathBuf>,
-        device: &Arc<CudaDevice>,
+        device: &Arc<CudaContext>,
         loader: &HoloLayerLoader,
     ) -> Result<(GpuTensor, RMSNormWeights, Option<GpuTensor>, usize), InferenceError> {
         use std::fs::File;
@@ -312,8 +312,9 @@ impl LazyWeightStore {
                 std::slice::from_raw_parts(f16_data.as_ptr() as *const u8, f16_data.len() * 2)
             };
 
-            let gpu_data: CudaSlice<u8> = device
-                .htod_sync_copy(bytes)
+            let stream = device.default_stream();
+            let gpu_data: CudaSlice<u8> = stream
+                .clone_htod(bytes)
                 .map_err(|e| InferenceError::Memory(format!("Failed to upload tensor: {}", e)))?;
 
             GpuTensor::from_cuda_slice(gpu_data, shape, GpuDType::F16, Arc::clone(device))

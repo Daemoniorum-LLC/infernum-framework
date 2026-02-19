@@ -27,12 +27,14 @@
 //! GPU reconstruction is 10-50x faster than CPU for large weight matrices.
 
 use std::collections::{HashMap, VecDeque};
+use std::fs::File;
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
 use candle_core::{DType, Device, Tensor};
-use haagenti::holotensor::QualityCurve;
+use haagenti::holotensor::{HoloTensorReader, QualityCurve};
 
 use super::memory::{HoloMemoryManager, MemoryConfig, MemoryTier};
 use super::streaming::StreamManager;
@@ -1211,7 +1213,7 @@ impl TieredHoloLoader {
         let loader = HctLoader::from_file(path)
             .map_err(|e| HoloInferenceError::FragmentLoad(format!("Failed to load HCT: {}", e)))?;
 
-        let _is_holographic = loader.metadata().is_holographic();
+        let is_holographic = loader.metadata().is_holographic();
 
         // Try GPU reconstruction for HoloTensor files if enabled
         #[cfg(feature = "cuda")]

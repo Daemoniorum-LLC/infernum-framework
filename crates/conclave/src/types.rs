@@ -517,6 +517,10 @@ pub struct Room {
     /// Room name/title.
     pub name: String,
 
+    /// Labels for filtering/organization (e.g., "development", "research", "urgent").
+    #[serde(default)]
+    pub labels: Vec<String>,
+
     /// Working directory for file operations.
     pub working_dir: PathBuf,
 
@@ -585,6 +589,10 @@ pub struct CreateRoomRequest {
     /// Room name/title.
     pub name: String,
 
+    /// Labels for filtering/organization (e.g., "development", "research", "urgent").
+    #[serde(default)]
+    pub labels: Vec<String>,
+
     /// Working directory for file operations.
     pub working_dir: PathBuf,
 
@@ -609,6 +617,7 @@ impl CreateRoomRequest {
     pub fn new(name: impl Into<String>, working_dir: PathBuf, creator: UserId) -> Self {
         Self {
             name: name.into(),
+            labels: Vec::new(),
             working_dir,
             project: None,
             initial_agents: Vec::new(),
@@ -633,6 +642,18 @@ impl CreateRoomRequest {
     /// Sets the invite policy.
     pub fn with_invite_policy(mut self, policy: InvitePolicy) -> Self {
         self.invite_policy = Some(policy);
+        self
+    }
+
+    /// Sets the labels for filtering/organization.
+    pub fn with_labels(mut self, labels: Vec<String>) -> Self {
+        self.labels = labels;
+        self
+    }
+
+    /// Adds a single label.
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.labels.push(label.into());
         self
     }
 }

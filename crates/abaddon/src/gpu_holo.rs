@@ -59,7 +59,10 @@
 pub mod cuda {
     use std::sync::Arc;
 
-    use cudarc::driver::{CudaDevice, CudaSlice, DeviceSlice, LaunchAsync, LaunchConfig};
+    use cudarc::driver::{
+        CudaContext, CudaFunction, CudaModule, CudaSlice, CudaStream, DeviceSlice, LaunchConfig,
+        PushKernelArg,
+    };
     use cudarc::nvrtc::Ptx;
     use haagenti::holotensor::{HoloFragment, HoloTensorHeader, HolographicEncoding, QualityCurve};
 
@@ -283,7 +286,8 @@ pub mod cuda {
         data: CudaSlice<f32>,
         rows: usize,
         cols: usize,
-        device: Arc<CudaDevice>,
+        ctx: Arc<CudaContext>,
+        stream: Arc<CudaStream>,
     }
 
     impl GpuTensor {
@@ -292,13 +296,15 @@ pub mod cuda {
             data: CudaSlice<f32>,
             rows: usize,
             cols: usize,
-            device: Arc<CudaDevice>,
+            ctx: Arc<CudaContext>,
+            stream: Arc<CudaStream>,
         ) -> Self {
             Self {
                 data,
                 rows,
                 cols,
-                device,
+                ctx,
+                stream,
             }
         }
 
@@ -324,13 +330,11 @@ pub mod cuda {
 
         /// Copies the tensor data to host memory.
         pub fn to_host(&self) -> Result<Vec<f32>, GpuHoloError> {
-            let mut host = vec![0.0f32; self.len()];
-            self.device
-                .dtoh_sync_copy_into(&self.data, &mut host)
+            self.stream
+                .clone_dtoh(&self.data)
                 .map_err(|e| GpuHoloError::MemoryCopy {
                     message: e.to_string(),
-                })?;
-            Ok(host)
+                })
         }
 
         /// Returns a reference to the raw GPU data.
@@ -350,11 +354,33 @@ pub mod cuda {
     ///
     /// Manages CUDA kernels and state for holographic tensor reconstruction.
     pub struct GpuHoloContext {
-        device: Arc<CudaDevice>,
+        ctx: Arc<CudaContext>,
+        stream: Arc<CudaStream>,
         device_id: usize,
-        spectral_kernel_loaded: bool,
-        rph_kernel_loaded: bool,
-        lrdf_kernel_loaded: bool,
+        /// Spectral kernel module and functions
+        spectral_module: Option<Arc<CudaModule>>,
+        spectral_accumulate_fn: Option<CudaFunction>,
+        spectral_idct_1d_rows_fn: Option<CudaFunction>,
+        spectral_idct_1d_cols_fn: Option<CudaFunction>,
+        spectral_idct_2d_fn: Option<CudaFunction>,
+        /// RPH kernel module and functions
+        rph_module: Option<Arc<CudaModule>>,
+        rph_accumulate_fn: Option<CudaFunction>,
+        rph_finalize_fn: Option<CudaFunction>,
+        rph_generate_projection_fn: Option<CudaFunction>,
+        /// LRDF kernel module and functions
+        lrdf_module: Option<Arc<CudaModule>>,
+        lrdf_outer_product_add_fn: Option<CudaFunction>,
+        lrdf_batched_outer_product_fn: Option<CudaFunction>,
+        /// Fused kernel module and functions
+        fused_module: Option<Arc<CudaModule>>,
+        fused_f32_to_f16_fn: Option<CudaFunction>,
+        fused_dequant_f32_fn: Option<CudaFunction>,
+        fused_scale_values_fn: Option<CudaFunction>,
+        /// Coalesced kernel module and functions
+        coalesced_module: Option<Arc<CudaModule>>,
+        coalesced_accumulate_v4_fn: Option<CudaFunction>,
+        coalesced_f32_to_f16_v4_fn: Option<CudaFunction>,
         /// Kernel configuration based on device properties.
         kernel_config: KernelConfig,
         /// Haagenti's FFT-capable DCT context for large tensor reconstruction.
@@ -372,38 +398,80 @@ pub mod cuda {
 
         /// Creates a new GPU holographic context for the specified device.
         pub fn new(device_id: usize) -> Result<Self, GpuHoloError> {
-            let device = CudaDevice::new(device_id).map_err(|e| GpuHoloError::DeviceInit {
+            let ctx = CudaContext::new(device_id).map_err(|e| GpuHoloError::DeviceInit {
                 device_id,
                 message: e.to_string(),
             })?;
+            let stream = ctx.default_stream();
 
             // Query device properties for optimal kernel configuration
             let kernel_config = KernelConfig::default();
 
             Ok(Self {
-                device,
+                ctx,
+                stream,
                 device_id,
-                spectral_kernel_loaded: false,
-                rph_kernel_loaded: false,
-                lrdf_kernel_loaded: false,
+                spectral_module: None,
+                spectral_accumulate_fn: None,
+                spectral_idct_1d_rows_fn: None,
+                spectral_idct_1d_cols_fn: None,
+                spectral_idct_2d_fn: None,
+                rph_module: None,
+                rph_accumulate_fn: None,
+                rph_finalize_fn: None,
+                rph_generate_projection_fn: None,
+                lrdf_module: None,
+                lrdf_outer_product_add_fn: None,
+                lrdf_batched_outer_product_fn: None,
+                fused_module: None,
+                fused_f32_to_f16_fn: None,
+                fused_dequant_f32_fn: None,
+                fused_scale_values_fn: None,
+                coalesced_module: None,
+                coalesced_accumulate_v4_fn: None,
+                coalesced_f32_to_f16_v4_fn: None,
                 kernel_config,
                 #[cfg(feature = "haagenti-gpu")]
                 fft_dct_ctx: Mutex::new(None), // Lazily initialized on first use
             })
         }
 
-        /// Creates a new context using an existing CUDA device.
-        pub fn with_device(device: Arc<CudaDevice>, device_id: usize) -> Self {
+        /// Creates a new context using an existing CUDA context.
+        pub fn with_context(ctx: Arc<CudaContext>, device_id: usize) -> Self {
+            let stream = ctx.default_stream();
             Self {
-                device,
+                ctx,
+                stream,
                 device_id,
-                spectral_kernel_loaded: false,
-                rph_kernel_loaded: false,
-                lrdf_kernel_loaded: false,
+                spectral_module: None,
+                spectral_accumulate_fn: None,
+                spectral_idct_1d_rows_fn: None,
+                spectral_idct_1d_cols_fn: None,
+                spectral_idct_2d_fn: None,
+                rph_module: None,
+                rph_accumulate_fn: None,
+                rph_finalize_fn: None,
+                rph_generate_projection_fn: None,
+                lrdf_module: None,
+                lrdf_outer_product_add_fn: None,
+                lrdf_batched_outer_product_fn: None,
+                fused_module: None,
+                fused_f32_to_f16_fn: None,
+                fused_dequant_f32_fn: None,
+                fused_scale_values_fn: None,
+                coalesced_module: None,
+                coalesced_accumulate_v4_fn: None,
+                coalesced_f32_to_f16_v4_fn: None,
                 kernel_config: KernelConfig::default(),
                 #[cfg(feature = "haagenti-gpu")]
                 fft_dct_ctx: Mutex::new(None),
             }
+        }
+
+        /// Creates a new context using an existing CUDA device (legacy API, wraps with_context).
+        #[deprecated(note = "Use with_context instead")]
+        pub fn with_device(device: Arc<CudaContext>, device_id: usize) -> Self {
+            Self::with_context(device, device_id)
         }
 
         /// Returns the kernel configuration.
@@ -422,82 +490,138 @@ pub mod cuda {
             self.device_id
         }
 
-        /// Returns a reference to the CUDA device.
-        pub fn device(&self) -> &Arc<CudaDevice> {
-            &self.device
+        /// Returns a reference to the CUDA context.
+        pub fn context(&self) -> &Arc<CudaContext> {
+            &self.ctx
+        }
+
+        /// Returns a reference to the CUDA stream.
+        pub fn stream(&self) -> &Arc<CudaStream> {
+            &self.stream
+        }
+
+        /// Returns a reference to the CUDA context (legacy API name).
+        #[deprecated(note = "Use context() instead")]
+        pub fn device(&self) -> &Arc<CudaContext> {
+            &self.ctx
         }
 
         // ==================== Kernel Loading ====================
 
         /// Loads the spectral (IDCT) reconstruction kernels.
         pub fn load_spectral_kernel(&mut self) -> Result<(), GpuHoloError> {
-            if self.spectral_kernel_loaded {
+            if self.spectral_module.is_some() {
                 return Ok(());
             }
 
             let ptx = Ptx::from_src(SPECTRAL_KERNEL_PTX);
-            self.device
-                .load_ptx(
-                    ptx,
-                    "holo_spectral",
-                    &[
-                        "holo_spectral_accumulate",
-                        "holo_spectral_idct_1d_rows",
-                        "holo_spectral_idct_1d_cols",
-                        "holo_spectral_idct_2d", // DD-8 stub: retained for future Nihil optimization
-                    ],
-                )
+            let module = self
+                .ctx
+                .load_module(ptx)
                 .map_err(|e| GpuHoloError::KernelLoad {
                     message: e.to_string(),
                 })?;
 
-            self.spectral_kernel_loaded = true;
+            self.spectral_accumulate_fn = Some(
+                module
+                    .load_function("holo_spectral_accumulate")
+                    .map_err(|e| GpuHoloError::KernelLoad {
+                        message: e.to_string(),
+                    })?,
+            );
+            self.spectral_idct_1d_rows_fn = Some(
+                module
+                    .load_function("holo_spectral_idct_1d_rows")
+                    .map_err(|e| GpuHoloError::KernelLoad {
+                        message: e.to_string(),
+                    })?,
+            );
+            self.spectral_idct_1d_cols_fn = Some(
+                module
+                    .load_function("holo_spectral_idct_1d_cols")
+                    .map_err(|e| GpuHoloError::KernelLoad {
+                        message: e.to_string(),
+                    })?,
+            );
+            self.spectral_idct_2d_fn = Some(
+                module
+                    .load_function("holo_spectral_idct_2d")
+                    .map_err(|e| GpuHoloError::KernelLoad {
+                        message: e.to_string(),
+                    })?,
+            );
+            self.spectral_module = Some(module);
             Ok(())
         }
 
         /// Loads the RPH (random projection) reconstruction kernels.
         pub fn load_rph_kernel(&mut self) -> Result<(), GpuHoloError> {
-            if self.rph_kernel_loaded {
+            if self.rph_module.is_some() {
                 return Ok(());
             }
 
             let ptx = Ptx::from_src(RPH_KERNEL_PTX);
-            self.device
-                .load_ptx(
-                    ptx,
-                    "holo_rph",
-                    &[
-                        "holo_rph_accumulate",
-                        "holo_rph_finalize",
-                        "holo_rph_generate_projection", // DD-8 stub: retained for future RPH batching
-                    ],
-                )
+            let module = self
+                .ctx
+                .load_module(ptx)
                 .map_err(|e| GpuHoloError::KernelLoad {
                     message: e.to_string(),
                 })?;
 
-            self.rph_kernel_loaded = true;
+            self.rph_accumulate_fn = Some(
+                module
+                    .load_function("holo_rph_accumulate")
+                    .map_err(|e| GpuHoloError::KernelLoad {
+                        message: e.to_string(),
+                    })?,
+            );
+            self.rph_finalize_fn = Some(
+                module
+                    .load_function("holo_rph_finalize")
+                    .map_err(|e| GpuHoloError::KernelLoad {
+                        message: e.to_string(),
+                    })?,
+            );
+            self.rph_generate_projection_fn = Some(
+                module
+                    .load_function("holo_rph_generate_projection")
+                    .map_err(|e| GpuHoloError::KernelLoad {
+                        message: e.to_string(),
+                    })?,
+            );
+            self.rph_module = Some(module);
             Ok(())
         }
 
         /// Loads the LRDF (low-rank) reconstruction kernels.
         pub fn load_lrdf_kernel(&mut self) -> Result<(), GpuHoloError> {
-            if self.lrdf_kernel_loaded {
+            if self.lrdf_module.is_some() {
                 return Ok(());
             }
 
             let ptx = Ptx::from_src(LRDF_KERNEL_PTX);
-            self.device
-                .load_ptx(
-                    ptx,
-                    "holo_lrdf",
-                    &["holo_lrdf_outer_product", "holo_lrdf_outer_product_batched"],
-                )
+            let module = self
+                .ctx
+                .load_module(ptx)
                 .map_err(|e| GpuHoloError::KernelLoad {
                     message: e.to_string(),
                 })?;
 
-            self.lrdf_kernel_loaded = true;
+            self.lrdf_outer_product_add_fn = Some(
+                module
+                    .load_function("holo_lrdf_outer_product")
+                    .map_err(|e| GpuHoloError::KernelLoad {
+                        message: e.to_string(),
+                    })?,
+            );
+            self.lrdf_batched_outer_product_fn = Some(
+                module
+                    .load_function("holo_lrdf_outer_product_batched")
+                    .map_err(|e| GpuHoloError::KernelLoad {
+                        message: e.to_string(),
+                    })?,
+            );
+            self.lrdf_module = Some(module);
             Ok(())
         }
 
@@ -523,14 +647,14 @@ pub mod cuda {
                 HolographicEncoding::Spectral => {
                     // Allocate coefficient buffer and presence mask
                     let coefficients: CudaSlice<f32> = self
-                        .device
+                        .stream
                         .alloc_zeros(total_size)
                         .map_err(|e| GpuHoloError::MemoryAlloc {
                             message: e.to_string(),
                         })?;
 
                     let present_mask: CudaSlice<u8> =
-                        self.device.alloc_zeros(total_size).map_err(|e| {
+                        self.stream.alloc_zeros(total_size).map_err(|e| {
                             GpuHoloError::MemoryAlloc {
                                 message: e.to_string(),
                             }
@@ -548,7 +672,7 @@ pub mod cuda {
                     // For RPH, we accumulate projected values
                     let proj_dim = Self::compute_projection_dim(total_size);
                     let projection_sum: CudaSlice<f32> = self
-                        .device
+                        .stream
                         .alloc_zeros(total_size)
                         .map_err(|e| GpuHoloError::MemoryAlloc {
                             message: e.to_string(),
@@ -566,7 +690,7 @@ pub mod cuda {
                 HolographicEncoding::LowRankDistributed => {
                     // For LRDF, we accumulate the output matrix directly
                     let output: CudaSlice<f32> =
-                        self.device.alloc_zeros(total_size).map_err(|e| {
+                        self.stream.alloc_zeros(total_size).map_err(|e| {
                             GpuHoloError::MemoryAlloc {
                                 message: e.to_string(),
                             }
@@ -594,9 +718,9 @@ pub mod cuda {
             fragment: &HoloFragment,
             accumulator: &mut AccumulatorState,
         ) -> Result<(), GpuHoloError> {
-            if !self.spectral_kernel_loaded {
+            if self.spectral_accumulate_fn.is_none() {
                 return Err(GpuHoloError::KernelNotLoaded {
-                    kernel: "holo_spectral".to_string(),
+                    kernel: "holo_spectral_accumulate".to_string(),
                 });
             }
 
@@ -828,23 +952,23 @@ pub mod cuda {
 
             // Copy to GPU
             let d_indices =
-                self.device
-                    .htod_copy(indices.to_vec())
+                self.stream
+                    .clone_htod(indices)
                     .map_err(|e| GpuHoloError::MemoryAlloc {
                         message: e.to_string(),
                     })?;
 
             let d_values =
-                self.device
-                    .htod_copy(values.to_vec())
+                self.stream
+                    .clone_htod(values)
                     .map_err(|e| GpuHoloError::MemoryAlloc {
                         message: e.to_string(),
                     })?;
 
             // Launch accumulation kernel
             let func = self
-                .device
-                .get_func("holo_spectral", "holo_spectral_accumulate")
+                .spectral_accumulate_fn
+                .as_ref()
                 .ok_or_else(|| GpuHoloError::KernelNotLoaded {
                     kernel: "holo_spectral_accumulate".to_string(),
                 })?;
@@ -858,18 +982,18 @@ pub mod cuda {
                 shared_mem_bytes: 0,
             };
 
+            let num_coeffs_u32 = num_coeffs as u32;
+            let total_size_u32 = total_size as u32;
             unsafe {
-                func.launch(
-                    cfg,
-                    (
-                        &d_indices,
-                        &d_values,
-                        coefficients,
-                        present_mask,
-                        num_coeffs as u32,
-                        total_size as u32,
-                    ),
-                )
+                self.stream
+                    .launch_builder(func)
+                    .arg(&d_indices)
+                    .arg(&d_values)
+                    .arg(coefficients)
+                    .arg(present_mask)
+                    .arg(&num_coeffs_u32)
+                    .arg(&total_size_u32)
+                    .launch(cfg)
             }
             .map_err(|e| GpuHoloError::KernelExec {
                 message: e.to_string(),
@@ -924,9 +1048,9 @@ pub mod cuda {
             let total_size = width * height;
 
             // Copy coefficients from GPU to host
-            let mut host_coeffs = vec![0.0f32; total_size];
-            self.device
-                .dtoh_sync_copy_into(coefficients, &mut host_coeffs)
+            let host_coeffs = self
+                .stream
+                .clone_dtoh(coefficients)
                 .map_err(|e| GpuHoloError::MemoryCopy {
                     message: format!("FFT IDCT: failed to copy coefficients to host: {}", e),
                 })?;
@@ -937,7 +1061,7 @@ pub mod cuda {
                 tracing::info!(
                     "Initializing haagenti FFT-IDCT context for large tensor reconstruction"
                 );
-                GpuDctContext::with_device(self.device.clone())
+                GpuDctContext::with_device(self.ctx.clone())
                     .expect("Failed to create GpuDctContext")
             });
 
@@ -949,7 +1073,7 @@ pub mod cuda {
             })?;
 
             // Copy result back to GPU
-            let output = self.device.htod_sync_copy(&reconstructed).map_err(|e| {
+            let output = self.stream.clone_htod(&reconstructed).map_err(|e| {
                 GpuHoloError::MemoryCopy {
                     message: format!("FFT IDCT: failed to copy result to GPU: {}", e),
                 }
@@ -967,9 +1091,9 @@ pub mod cuda {
             width: usize,
             height: usize,
         ) -> Result<CudaSlice<f32>, GpuHoloError> {
-            if !self.spectral_kernel_loaded {
+            if self.spectral_idct_1d_rows_fn.is_none() || self.spectral_idct_1d_cols_fn.is_none() {
                 return Err(GpuHoloError::KernelNotLoaded {
-                    kernel: "holo_spectral".to_string(),
+                    kernel: "holo_spectral_idct".to_string(),
                 });
             }
 
@@ -977,14 +1101,14 @@ pub mod cuda {
 
             // Allocate intermediate and output buffers
             let temp: CudaSlice<f32> =
-                self.device
+                self.stream
                     .alloc_zeros(total_size)
                     .map_err(|e| GpuHoloError::MemoryAlloc {
                         message: e.to_string(),
                     })?;
 
-            let output: CudaSlice<f32> =
-                self.device
+            let mut output: CudaSlice<f32> =
+                self.stream
                     .alloc_zeros(total_size)
                     .map_err(|e| GpuHoloError::MemoryAlloc {
                         message: e.to_string(),
@@ -992,8 +1116,8 @@ pub mod cuda {
 
             // IDCT rows
             let func_rows = self
-                .device
-                .get_func("holo_spectral", "holo_spectral_idct_1d_rows")
+                .spectral_idct_1d_rows_fn
+                .as_ref()
                 .ok_or_else(|| GpuHoloError::KernelNotLoaded {
                     kernel: "holo_spectral_idct_1d_rows".to_string(),
                 })?;
@@ -1007,15 +1131,25 @@ pub mod cuda {
                 shared_mem_bytes: (width * 4) as u32, // Shared memory for one row
             };
 
-            unsafe { func_rows.launch(cfg, (coefficients, &temp, width as u32, height as u32)) }
-                .map_err(|e| GpuHoloError::KernelExec {
-                    message: e.to_string(),
-                })?;
+            let width_u32 = width as u32;
+            let height_u32 = height as u32;
+            unsafe {
+                self.stream
+                    .launch_builder(func_rows)
+                    .arg(coefficients)
+                    .arg(&temp)
+                    .arg(&width_u32)
+                    .arg(&height_u32)
+                    .launch(cfg)
+            }
+            .map_err(|e| GpuHoloError::KernelExec {
+                message: e.to_string(),
+            })?;
 
             // IDCT columns
             let func_cols = self
-                .device
-                .get_func("holo_spectral", "holo_spectral_idct_1d_cols")
+                .spectral_idct_1d_cols_fn
+                .as_ref()
                 .ok_or_else(|| GpuHoloError::KernelNotLoaded {
                     kernel: "holo_spectral_idct_1d_cols".to_string(),
                 })?;
@@ -1028,12 +1162,20 @@ pub mod cuda {
                 shared_mem_bytes: (height * 4) as u32,
             };
 
-            unsafe { func_cols.launch(cfg_cols, (&temp, &output, width as u32, height as u32)) }
-                .map_err(|e| GpuHoloError::KernelExec {
-                    message: e.to_string(),
-                })?;
+            unsafe {
+                self.stream
+                    .launch_builder(func_cols)
+                    .arg(&temp)
+                    .arg(&mut output)
+                    .arg(&width_u32)
+                    .arg(&height_u32)
+                    .launch(cfg_cols)
+            }
+            .map_err(|e| GpuHoloError::KernelExec {
+                message: e.to_string(),
+            })?;
 
-            self.device
+            self.stream
                 .synchronize()
                 .map_err(|e| GpuHoloError::Synchronize {
                     message: e.to_string(),
@@ -1050,9 +1192,9 @@ pub mod cuda {
             fragment: &HoloFragment,
             accumulator: &mut AccumulatorState,
         ) -> Result<(), GpuHoloError> {
-            if !self.rph_kernel_loaded {
+            if self.rph_accumulate_fn.is_none() {
                 return Err(GpuHoloError::KernelNotLoaded {
-                    kernel: "holo_rph".to_string(),
+                    kernel: "holo_rph_accumulate".to_string(),
                 });
             }
 
@@ -1131,8 +1273,8 @@ pub mod cuda {
 
             // Copy projection to GPU
             let d_projection =
-                self.device
-                    .htod_copy(projection)
+                self.stream
+                    .clone_htod(&projection)
                     .map_err(|e| GpuHoloError::MemoryAlloc {
                         message: e.to_string(),
                     })?;
@@ -1140,8 +1282,8 @@ pub mod cuda {
             // Launch RPH accumulation kernel
             // This generates the projection matrix on-the-fly and accumulates
             let func = self
-                .device
-                .get_func("holo_rph", "holo_rph_accumulate")
+                .rph_accumulate_fn
+                .as_ref()
                 .ok_or_else(|| GpuHoloError::KernelNotLoaded {
                     kernel: "holo_rph_accumulate".to_string(),
                 })?;
@@ -1156,18 +1298,18 @@ pub mod cuda {
             };
 
             let fragment_seed = seed.wrapping_add(frag_seed_offset);
+            let frag_proj_dim_u32 = frag_proj_dim as u32;
+            let output_dim_u32 = output_dim as u32;
 
             unsafe {
-                func.launch(
-                    cfg,
-                    (
-                        &d_projection,
-                        projection_sum,
-                        frag_proj_dim as u32,
-                        output_dim as u32,
-                        fragment_seed,
-                    ),
-                )
+                self.stream
+                    .launch_builder(func)
+                    .arg(&d_projection)
+                    .arg(projection_sum)
+                    .arg(&frag_proj_dim_u32)
+                    .arg(&output_dim_u32)
+                    .arg(&fragment_seed)
+                    .launch(cfg)
             }
             .map_err(|e| GpuHoloError::KernelExec {
                 message: e.to_string(),
@@ -1189,9 +1331,9 @@ pub mod cuda {
             &self,
             accumulator: &AccumulatorState,
         ) -> Result<CudaSlice<f32>, GpuHoloError> {
-            if !self.rph_kernel_loaded {
+            if self.rph_finalize_fn.is_none() {
                 return Err(GpuHoloError::KernelNotLoaded {
-                    kernel: "holo_rph".to_string(),
+                    kernel: "holo_rph_finalize".to_string(),
                 });
             }
 
@@ -1218,7 +1360,7 @@ pub mod cuda {
 
             // Allocate output buffer
             let output: CudaSlice<f32> =
-                self.device
+                self.stream
                     .alloc_zeros(output_dim)
                     .map_err(|e| GpuHoloError::MemoryAlloc {
                         message: e.to_string(),
@@ -1226,8 +1368,8 @@ pub mod cuda {
 
             // Launch finalization kernel (normalize by projection count)
             let func = self
-                .device
-                .get_func("holo_rph", "holo_rph_finalize")
+                .rph_finalize_fn
+                .as_ref()
                 .ok_or_else(|| GpuHoloError::KernelNotLoaded {
                     kernel: "holo_rph_finalize".to_string(),
                 })?;
@@ -1241,17 +1383,21 @@ pub mod cuda {
                 shared_mem_bytes: 0,
             };
 
+            let output_dim_u32 = output_dim as u32;
             unsafe {
-                func.launch(
-                    cfg,
-                    (projection_sum, &output, output_dim as u32, num_projections),
-                )
+                self.stream
+                    .launch_builder(func)
+                    .arg(projection_sum)
+                    .arg(&output)
+                    .arg(&output_dim_u32)
+                    .arg(&num_projections)
+                    .launch(cfg)
             }
             .map_err(|e| GpuHoloError::KernelExec {
                 message: e.to_string(),
             })?;
 
-            self.device
+            self.stream
                 .synchronize()
                 .map_err(|e| GpuHoloError::Synchronize {
                     message: e.to_string(),
@@ -1268,9 +1414,9 @@ pub mod cuda {
             fragment: &HoloFragment,
             accumulator: &mut AccumulatorState,
         ) -> Result<(), GpuHoloError> {
-            if !self.lrdf_kernel_loaded {
+            if self.lrdf_outer_product_add_fn.is_none() {
                 return Err(GpuHoloError::KernelNotLoaded {
-                    kernel: "holo_lrdf".to_string(),
+                    kernel: "holo_lrdf_outer_product".to_string(),
                 });
             }
 
@@ -1362,8 +1508,8 @@ pub mod cuda {
                 }
 
                 // Copy directly to GPU output buffer
-                self.device
-                    .htod_sync_copy_into(&host_data, output)
+                self.stream
+                    .memcpy_htod(&host_data, output)
                     .map_err(|e| GpuHoloError::MemoryCopy {
                         message: format!("Failed to copy RAW data to GPU: {}", e),
                     })?;
@@ -1429,23 +1575,23 @@ pub mod cuda {
 
                 // Copy to GPU
                 let d_u = self
-                    .device
-                    .htod_copy(u)
+                    .stream
+                    .clone_htod(&u)
                     .map_err(|e| GpuHoloError::MemoryAlloc {
                         message: e.to_string(),
                     })?;
 
                 let d_v = self
-                    .device
-                    .htod_copy(v)
+                    .stream
+                    .clone_htod(&v)
                     .map_err(|e| GpuHoloError::MemoryAlloc {
                         message: e.to_string(),
                     })?;
 
                 // Launch outer product kernel
                 let func = self
-                    .device
-                    .get_func("holo_lrdf", "holo_lrdf_outer_product")
+                    .lrdf_outer_product_add_fn
+                    .as_ref()
                     .ok_or_else(|| GpuHoloError::KernelNotLoaded {
                         kernel: "holo_lrdf_outer_product".to_string(),
                     })?;
@@ -1461,11 +1607,18 @@ pub mod cuda {
                     shared_mem_bytes: 0,
                 };
 
+                let rows_u32 = rows as u32;
+                let cols_u32 = cols as u32;
                 unsafe {
-                    func.clone().launch(
-                        cfg,
-                        (&d_u, &d_v, &mut *output, sigma, rows as u32, cols as u32),
-                    )
+                    self.stream
+                        .launch_builder(func)
+                        .arg(&d_u)
+                        .arg(&d_v)
+                        .arg(&mut *output)
+                        .arg(&sigma)
+                        .arg(&rows_u32)
+                        .arg(&cols_u32)
+                        .launch(cfg)
                 }
                 .map_err(|e| GpuHoloError::KernelExec {
                     message: e.to_string(),
@@ -1490,9 +1643,9 @@ pub mod cuda {
             fragment: &HoloFragment,
             accumulator: &mut AccumulatorState,
         ) -> Result<(), GpuHoloError> {
-            if !self.lrdf_kernel_loaded {
+            if self.lrdf_batched_outer_product_fn.is_none() {
                 return Err(GpuHoloError::KernelNotLoaded {
-                    kernel: "holo_lrdf".to_string(),
+                    kernel: "holo_lrdf_outer_product_batched".to_string(),
                 });
             }
 
@@ -1602,28 +1755,28 @@ pub mod cuda {
 
             // Upload packed arrays to GPU
             let d_sigma =
-                self.device
-                    .htod_copy(all_sigma)
+                self.stream
+                    .clone_htod(&all_sigma)
                     .map_err(|e| GpuHoloError::MemoryAlloc {
                         message: e.to_string(),
                     })?;
             let d_u = self
-                .device
-                .htod_copy(all_u)
+                .stream
+                .clone_htod(&all_u)
                 .map_err(|e| GpuHoloError::MemoryAlloc {
                     message: e.to_string(),
                 })?;
             let d_v = self
-                .device
-                .htod_copy(all_v)
+                .stream
+                .clone_htod(&all_v)
                 .map_err(|e| GpuHoloError::MemoryAlloc {
                     message: e.to_string(),
                 })?;
 
             // Single kernel launch for all components
             let func = self
-                .device
-                .get_func("holo_lrdf", "holo_lrdf_outer_product_batched")
+                .lrdf_batched_outer_product_fn
+                .as_ref()
                 .ok_or_else(|| GpuHoloError::KernelNotLoaded {
                     kernel: "holo_lrdf_outer_product_batched".to_string(),
                 })?;
@@ -1638,19 +1791,20 @@ pub mod cuda {
                 shared_mem_bytes: 0,
             };
 
+            let num_comps_u32 = num_comps as u32;
+            let rows_u32 = rows as u32;
+            let cols_u32 = cols as u32;
             unsafe {
-                func.launch(
-                    cfg,
-                    (
-                        &d_u,
-                        &d_v,
-                        &d_sigma,
-                        &mut *output,
-                        num_comps as u32,
-                        rows as u32,
-                        cols as u32,
-                    ),
-                )
+                self.stream
+                    .launch_builder(func)
+                    .arg(&d_u)
+                    .arg(&d_v)
+                    .arg(&d_sigma)
+                    .arg(&mut *output)
+                    .arg(&num_comps_u32)
+                    .arg(&rows_u32)
+                    .arg(&cols_u32)
+                    .launch(cfg)
             }
             .map_err(|e| GpuHoloError::KernelExec {
                 message: e.to_string(),
@@ -1689,7 +1843,7 @@ pub mod cuda {
                 });
             }
 
-            self.device
+            self.stream
                 .synchronize()
                 .map_err(|e| GpuHoloError::Synchronize {
                     message: e.to_string(),
@@ -1697,15 +1851,15 @@ pub mod cuda {
 
             // Clone the output (LRDF accumulates directly into output)
             let mut result: CudaSlice<f32> =
-                self.device
+                self.stream
                     .alloc_zeros(rows * cols)
                     .map_err(|e| GpuHoloError::MemoryAlloc {
                         message: e.to_string(),
                     })?;
 
             // Copy from accumulator to result
-            self.device
-                .dtod_copy(output, &mut result)
+            self.stream
+                .memcpy_dtod(output, &mut result)
                 .map_err(|e| GpuHoloError::MemoryCopy {
                     message: e.to_string(),
                 })?;
@@ -1780,14 +1934,11 @@ pub mod cuda {
 
         /// Copies reconstructed data to host memory.
         pub fn copy_to_host(&self, gpu_data: &CudaSlice<f32>) -> Result<Vec<f32>, GpuHoloError> {
-            let len = gpu_data.len();
-            let mut host_data = vec![0.0f32; len];
-            self.device
-                .dtoh_sync_copy_into(gpu_data, &mut host_data)
+            self.stream
+                .clone_dtoh(gpu_data)
                 .map_err(|e| GpuHoloError::MemoryCopy {
                     message: e.to_string(),
-                })?;
-            Ok(host_data)
+                })
         }
 
         // ==================== Convenience Methods ====================
@@ -1823,7 +1974,8 @@ pub mod cuda {
                 data: gpu_data,
                 rows,
                 cols,
-                device: self.device.clone(),
+                ctx: self.ctx.clone(),
+                stream: self.stream.clone(),
             })
         }
 
@@ -2668,22 +2820,40 @@ EXIT4:
 
         /// Loads the fused reconstruction + dequantization kernels.
         pub fn load_fused_kernel(&mut self) -> Result<(), GpuHoloError> {
+            if self.fused_module.is_some() {
+                return Ok(());
+            }
+
             let ptx = Ptx::from_src(FUSED_KERNEL_PTX);
-            self.device
-                .load_ptx(
-                    ptx,
-                    "holo_fused",
-                    &[
-                        "holo_fused_f32_to_f16",
-                        "holo_fused_dequant_f32",
-                        "holo_spectral_idct_f16",
-                        "holo_scale_values",
-                    ],
-                )
+            let module = self
+                .ctx
+                .load_module(ptx)
                 .map_err(|e| GpuHoloError::KernelLoad {
                     message: e.to_string(),
                 })?;
 
+            self.fused_f32_to_f16_fn = Some(
+                module
+                    .load_function("holo_fused_f32_to_f16")
+                    .map_err(|e| GpuHoloError::KernelLoad {
+                        message: e.to_string(),
+                    })?,
+            );
+            self.fused_dequant_f32_fn = Some(
+                module
+                    .load_function("holo_fused_dequant_f32")
+                    .map_err(|e| GpuHoloError::KernelLoad {
+                        message: e.to_string(),
+                    })?,
+            );
+            self.fused_scale_values_fn = Some(
+                module
+                    .load_function("holo_scale_values")
+                    .map_err(|e| GpuHoloError::KernelLoad {
+                        message: e.to_string(),
+                    })?,
+            );
+            self.fused_module = Some(module);
             Ok(())
         }
 
@@ -2697,15 +2867,15 @@ EXIT4:
             let size = input.len();
 
             let output: CudaSlice<half::f16> =
-                self.device
+                self.stream
                     .alloc_zeros(size)
                     .map_err(|e| GpuHoloError::MemoryAlloc {
                         message: e.to_string(),
                     })?;
 
             let func = self
-                .device
-                .get_func("holo_fused", "holo_fused_f32_to_f16")
+                .fused_f32_to_f16_fn
+                .as_ref()
                 .ok_or_else(|| GpuHoloError::KernelNotLoaded {
                     kernel: "holo_fused_f32_to_f16".to_string(),
                 })?;
@@ -2719,13 +2889,20 @@ EXIT4:
                 shared_mem_bytes: 0,
             };
 
-            unsafe { func.launch(cfg, (input, &output, size as u32)) }.map_err(|e| {
-                GpuHoloError::KernelExec {
-                    message: e.to_string(),
-                }
+            let size_u32 = size as u32;
+            unsafe {
+                self.stream
+                    .launch_builder(func)
+                    .arg(input)
+                    .arg(&output)
+                    .arg(&size_u32)
+                    .launch(cfg)
+            }
+            .map_err(|e| GpuHoloError::KernelExec {
+                message: e.to_string(),
             })?;
 
-            self.device
+            self.stream
                 .synchronize()
                 .map_err(|e| GpuHoloError::Synchronize {
                     message: e.to_string(),
@@ -2755,29 +2932,29 @@ EXIT4:
 
             // Copy scales and zeros to GPU
             let d_scales =
-                self.device
-                    .htod_copy(scales.to_vec())
+                self.stream
+                    .clone_htod(scales)
                     .map_err(|e| GpuHoloError::MemoryAlloc {
                         message: e.to_string(),
                     })?;
 
             let d_zeros =
-                self.device
-                    .htod_copy(zeros.to_vec())
+                self.stream
+                    .clone_htod(zeros)
                     .map_err(|e| GpuHoloError::MemoryAlloc {
                         message: e.to_string(),
                     })?;
 
             let output: CudaSlice<f32> =
-                self.device
+                self.stream
                     .alloc_zeros(size)
                     .map_err(|e| GpuHoloError::MemoryAlloc {
                         message: e.to_string(),
                     })?;
 
             let func = self
-                .device
-                .get_func("holo_fused", "holo_fused_dequant_f32")
+                .fused_dequant_f32_fn
+                .as_ref()
                 .ok_or_else(|| GpuHoloError::KernelNotLoaded {
                     kernel: "holo_fused_dequant_f32".to_string(),
                 })?;
@@ -2791,24 +2968,24 @@ EXIT4:
                 shared_mem_bytes: 0,
             };
 
+            let size_u32 = size as u32;
+            let block_size_u32 = block_size as u32;
             unsafe {
-                func.launch(
-                    cfg,
-                    (
-                        input,
-                        &d_scales,
-                        &d_zeros,
-                        &output,
-                        size as u32,
-                        block_size as u32,
-                    ),
-                )
+                self.stream
+                    .launch_builder(func)
+                    .arg(input)
+                    .arg(&d_scales)
+                    .arg(&d_zeros)
+                    .arg(&output)
+                    .arg(&size_u32)
+                    .arg(&block_size_u32)
+                    .launch(cfg)
             }
             .map_err(|e| GpuHoloError::KernelExec {
                 message: e.to_string(),
             })?;
 
-            self.device
+            self.stream
                 .synchronize()
                 .map_err(|e| GpuHoloError::Synchronize {
                     message: e.to_string(),
@@ -2826,8 +3003,8 @@ EXIT4:
             let size = data.len();
 
             let func = self
-                .device
-                .get_func("holo_fused", "holo_scale_values")
+                .fused_scale_values_fn
+                .as_ref()
                 .ok_or_else(|| GpuHoloError::KernelNotLoaded {
                     kernel: "holo_scale_values".to_string(),
                 })?;
@@ -2841,11 +3018,18 @@ EXIT4:
                 shared_mem_bytes: 0,
             };
 
-            unsafe { func.launch(cfg, (data as &CudaSlice<f32>, scale, size as u32)) }.map_err(
-                |e| GpuHoloError::KernelExec {
-                    message: e.to_string(),
-                },
-            )?;
+            let size_u32 = size as u32;
+            unsafe {
+                self.stream
+                    .launch_builder(func)
+                    .arg(data as &CudaSlice<f32>)
+                    .arg(&scale)
+                    .arg(&size_u32)
+                    .launch(cfg)
+            }
+            .map_err(|e| GpuHoloError::KernelExec {
+                message: e.to_string(),
+            })?;
 
             Ok(())
         }
@@ -2900,9 +3084,9 @@ EXIT4:
             original: &[f32],
         ) -> Result<f32, GpuHoloError> {
             // Copy reconstructed data to host
-            let mut reconstructed_host = vec![0.0f32; original.len()];
-            self.device
-                .dtoh_sync_copy_into(reconstructed, &mut reconstructed_host)
+            let reconstructed_host = self
+                .stream
+                .clone_dtoh(reconstructed)
                 .map_err(|e| GpuHoloError::MemoryCopy {
                     message: e.to_string(),
                 })?;
@@ -3115,15 +3299,13 @@ EXIT4:
 
     // ==================== Streaming Context ====================
 
-    use cudarc::driver::CudaStream;
-
     /// Stream pool for async holographic operations.
     ///
     /// Enables pipelining: while one fragment is being transferred,
     /// another is being accumulated on the GPU.
     pub struct HoloStreamPool {
-        device: Arc<CudaDevice>,
-        streams: Vec<CudaStream>,
+        ctx: Arc<CudaContext>,
+        streams: Vec<Arc<CudaStream>>,
         num_streams: usize,
     }
 
@@ -3132,15 +3314,14 @@ EXIT4:
         ///
         /// # Arguments
         ///
-        /// * `device` - CUDA device reference
+        /// * `ctx` - CUDA context reference
         /// * `num_streams` - Number of concurrent streams (2-4 recommended)
-        pub fn new(device: Arc<CudaDevice>, num_streams: usize) -> Result<Self, GpuHoloError> {
+        pub fn new(ctx: Arc<CudaContext>, num_streams: usize) -> Result<Self, GpuHoloError> {
             let mut streams = Vec::with_capacity(num_streams);
 
             for i in 0..num_streams {
                 let stream =
-                    device
-                        .fork_default_stream()
+                    ctx.new_stream()
                         .map_err(|e| GpuHoloError::StreamCreate {
                             stream_id: i,
                             message: e.to_string(),
@@ -3149,14 +3330,14 @@ EXIT4:
             }
 
             Ok(Self {
-                device,
+                ctx,
                 streams,
                 num_streams,
             })
         }
 
         /// Returns a reference to stream at the given index (wraps around).
-        pub fn get_stream(&self, index: usize) -> &CudaStream {
+        pub fn get_stream(&self, index: usize) -> &Arc<CudaStream> {
             &self.streams[index % self.num_streams]
         }
 
@@ -3167,12 +3348,19 @@ EXIT4:
 
         /// Synchronizes all streams in the pool.
         pub fn synchronize_all(&self) -> Result<(), GpuHoloError> {
-            self.device
-                .synchronize()
-                .map_err(|e| GpuHoloError::Synchronize {
-                    message: e.to_string(),
-                })?;
+            for stream in &self.streams {
+                stream
+                    .synchronize()
+                    .map_err(|e| GpuHoloError::Synchronize {
+                        message: e.to_string(),
+                    })?;
+            }
             Ok(())
+        }
+
+        /// Returns a reference to the CUDA context.
+        pub fn context(&self) -> &Arc<CudaContext> {
+            &self.ctx
         }
     }
 
@@ -3229,7 +3417,7 @@ EXIT4:
                 e
             })?;
 
-            let stream_pool = HoloStreamPool::new(Arc::clone(&ctx.device), pipeline_depth)?;
+            let stream_pool = HoloStreamPool::new(Arc::clone(&ctx.ctx), pipeline_depth)?;
 
             Ok(Self {
                 ctx,
@@ -3625,19 +3813,18 @@ EXIT:
                 });
             }
 
-            // Use cudarc's driver sys module to call cuMemAllocHost_v2
+            // Use cudarc's driver result module for pinned memory allocation
             use std::ffi::c_void;
 
-            let mut host_ptr: *mut c_void = std::ptr::null_mut();
-            // Safety: lib() returns the loaded CUDA driver library
-            let result =
-                unsafe { cudarc::driver::sys::lib().cuMemAllocHost_v2(&mut host_ptr, size) };
-
-            if result != cudarc::driver::sys::CUresult::CUDA_SUCCESS {
-                // Fallback: try regular allocation if CUDA pinned fails
-                // This can happen if CUDA context isn't active
-                return None;
-            }
+            // Safety: malloc_host allocates page-locked memory
+            let host_ptr = match unsafe { cudarc::driver::result::malloc_host(size, 0) } {
+                Ok(ptr) => ptr,
+                Err(_) => {
+                    // Fallback: try regular allocation if CUDA pinned fails
+                    // This can happen if CUDA context isn't active
+                    return None;
+                }
+            };
 
             Some(Self {
                 ptr: host_ptr as *mut u8,
@@ -3721,9 +3908,9 @@ EXIT:
             if self.capacity > 0 && !self.ptr.is_null() {
                 use std::ffi::c_void;
 
-                // Safety: lib() returns the loaded CUDA driver library
+                // Safety: free_host releases page-locked memory
                 unsafe {
-                    let _ = cudarc::driver::sys::lib().cuMemFreeHost(self.ptr as *mut c_void);
+                    let _ = cudarc::driver::result::free_host(self.ptr as *mut c_void);
                 }
             }
         }
@@ -3737,7 +3924,7 @@ EXIT:
     /// Falls back to regular Vec allocation if CUDA pinned allocation fails.
     pub struct PinnedMemoryPool {
         #[allow(dead_code)]
-        device: Arc<CudaDevice>,
+        device: Arc<CudaContext>,
         /// Pre-allocated pinned buffers by size class
         pinned_pools: std::collections::HashMap<usize, Vec<PinnedBuffer>>,
         /// Fallback regular buffers (when pinned allocation fails)
@@ -3803,7 +3990,7 @@ EXIT:
 
     impl PinnedMemoryPool {
         /// Creates a new pinned memory pool.
-        pub fn new(device: Arc<CudaDevice>) -> Self {
+        pub fn new(device: Arc<CudaContext>) -> Self {
             // Size classes: 4KB, 16KB, 64KB, 256KB, 1MB, 4MB, 16MB, 64MB
             let size_classes: Vec<usize> = (12..=26).step_by(2).map(|exp| 1usize << exp).collect();
 
@@ -4059,7 +4246,7 @@ EXIT:
                 ctx.load_all_kernels()?;
                 ctx.load_fused_kernel()?;
 
-                let pool = HoloStreamPool::new(Arc::clone(ctx.device()), streams_per_device)?;
+                let pool = HoloStreamPool::new(Arc::clone(ctx.context()), streams_per_device)?;
 
                 contexts.push(ctx);
                 stream_pools.push(pool);
@@ -4076,10 +4263,10 @@ EXIT:
         /// Creates a context using all available CUDA devices.
         pub fn new_all_devices(streams_per_device: usize) -> Result<Self, GpuHoloError> {
             // Query available devices
-            let num_devices = CudaDevice::count().map_err(|e| GpuHoloError::DeviceInit {
+            let num_devices = cudarc::driver::result::device::get_count().map_err(|e| GpuHoloError::DeviceInit {
                 device_id: 0,
                 message: format!("Failed to count devices: {}", e),
-            })?;
+            })? as usize;
 
             if num_devices == 0 {
                 return Err(GpuHoloError::DeviceInit {
@@ -4174,31 +4361,29 @@ EXIT:
             let size = device_results[0].len();
 
             // Allocate output on primary device
-            let output: CudaSlice<f32> =
+            let mut output: CudaSlice<f32> =
                 primary_ctx
-                    .device
+                    .stream
                     .alloc_zeros(size)
                     .map_err(|e| GpuHoloError::MemoryAlloc {
                         message: e.to_string(),
                     })?;
 
             // Copy first result to output
-            let mut host_buf = vec![0.0f32; size];
-            primary_ctx
-                .device
-                .dtoh_sync_copy_into(&device_results[0], &mut host_buf)
+            let mut host_buf: Vec<f32> = primary_ctx
+                .stream
+                .clone_dtoh(&device_results[0])
                 .map_err(|e| GpuHoloError::MemoryCopy {
                     message: e.to_string(),
                 })?;
 
             // Accumulate other results
             for result in device_results.iter().skip(1) {
-                let mut other_buf = vec![0.0f32; size];
                 // Note: In production, we'd use P2P transfers between devices
                 // For now, go through host memory
-                primary_ctx
-                    .device
-                    .dtoh_sync_copy_into(result, &mut other_buf)
+                let other_buf: Vec<f32> = primary_ctx
+                    .stream
+                    .clone_dtoh(result)
                     .map_err(|e| GpuHoloError::MemoryCopy {
                         message: e.to_string(),
                     })?;
@@ -4218,8 +4403,8 @@ EXIT:
 
             // Copy back to device
             primary_ctx
-                .device
-                .htod_sync_copy_into(&host_buf, &mut output.clone())
+                .stream
+                .memcpy_htod(&host_buf, &mut output)
                 .map_err(|e| GpuHoloError::MemoryCopy {
                     message: e.to_string(),
                 })?;
@@ -4257,21 +4442,33 @@ EXIT:
     impl GpuHoloContext {
         /// Loads coalesced (vectorized) kernels for optimized memory access.
         pub fn load_coalesced_kernels(&mut self) -> Result<(), GpuHoloError> {
+            if self.coalesced_module.is_some() {
+                return Ok(());
+            }
+
             let ptx = Ptx::from_src(COALESCED_KERNEL_PTX);
-            self.device
-                .load_ptx(
-                    ptx,
-                    "holo_coalesced",
-                    &[
-                        "holo_coalesced_accumulate_v4",
-                        "holo_coalesced_idct_tile",
-                        "holo_coalesced_f32_to_f16_v4",
-                    ],
-                )
+            let module = self
+                .ctx
+                .load_module(ptx)
                 .map_err(|e| GpuHoloError::KernelLoad {
                     message: e.to_string(),
                 })?;
 
+            self.coalesced_accumulate_v4_fn = Some(
+                module
+                    .load_function("holo_coalesced_accumulate_v4")
+                    .map_err(|e| GpuHoloError::KernelLoad {
+                        message: e.to_string(),
+                    })?,
+            );
+            self.coalesced_f32_to_f16_v4_fn = Some(
+                module
+                    .load_function("holo_coalesced_f32_to_f16_v4")
+                    .map_err(|e| GpuHoloError::KernelLoad {
+                        message: e.to_string(),
+                    })?,
+            );
+            self.coalesced_module = Some(module);
             Ok(())
         }
 
@@ -4290,8 +4487,8 @@ EXIT:
             }
 
             let func = self
-                .device
-                .get_func("holo_coalesced", "holo_coalesced_accumulate_v4")
+                .coalesced_accumulate_v4_fn
+                .as_ref()
                 .ok_or_else(|| GpuHoloError::KernelNotLoaded {
                     kernel: "holo_coalesced_accumulate_v4".to_string(),
                 })?;
@@ -4308,11 +4505,18 @@ EXIT:
                 shared_mem_bytes: 0,
             };
 
-            unsafe { func.launch(cfg, (src, dst as &CudaSlice<f32>, size as u32)) }.map_err(
-                |e| GpuHoloError::KernelExec {
-                    message: e.to_string(),
-                },
-            )?;
+            let size_u32 = size as u32;
+            unsafe {
+                self.stream
+                    .launch_builder(func)
+                    .arg(src)
+                    .arg(dst as &CudaSlice<f32>)
+                    .arg(&size_u32)
+                    .launch(cfg)
+            }
+            .map_err(|e| GpuHoloError::KernelExec {
+                message: e.to_string(),
+            })?;
 
             Ok(())
         }
@@ -4330,15 +4534,15 @@ EXIT:
             }
 
             let output: CudaSlice<half::f16> =
-                self.device
+                self.stream
                     .alloc_zeros(size)
                     .map_err(|e| GpuHoloError::MemoryAlloc {
                         message: e.to_string(),
                     })?;
 
             let func = self
-                .device
-                .get_func("holo_coalesced", "holo_coalesced_f32_to_f16_v4")
+                .coalesced_f32_to_f16_v4_fn
+                .as_ref()
                 .ok_or_else(|| GpuHoloError::KernelNotLoaded {
                     kernel: "holo_coalesced_f32_to_f16_v4".to_string(),
                 })?;
@@ -4354,13 +4558,20 @@ EXIT:
                 shared_mem_bytes: 0,
             };
 
-            unsafe { func.launch(cfg, (input, &output, size as u32)) }.map_err(|e| {
-                GpuHoloError::KernelExec {
-                    message: e.to_string(),
-                }
+            let size_u32 = size as u32;
+            unsafe {
+                self.stream
+                    .launch_builder(func)
+                    .arg(input)
+                    .arg(&output)
+                    .arg(&size_u32)
+                    .launch(cfg)
+            }
+            .map_err(|e| GpuHoloError::KernelExec {
+                message: e.to_string(),
             })?;
 
-            self.device
+            self.stream
                 .synchronize()
                 .map_err(|e| GpuHoloError::Synchronize {
                     message: e.to_string(),
@@ -5293,7 +5504,7 @@ pub mod cuda {
 mod tests {
     use super::cuda::*;
     #[cfg(feature = "cuda")]
-    use cudarc::driver::LaunchAsync;
+    use cudarc::driver::PushKernelArg;
 
     /// Stub test: non-CUDA build returns CudaNotEnabled.
     #[test]
@@ -5564,14 +5775,11 @@ mod tests {
         ctx.load_fused_kernel().expect("fused kernel should load");
 
         let input = vec![1.0f32, 0.5, -1.0, 0.0, 100.0, -0.001];
-        let d_input = ctx.device().htod_copy(input.clone()).unwrap();
+        let d_input = ctx.stream().clone_htod(&input).unwrap();
 
         let d_output = ctx.convert_f32_to_f16(&d_input).unwrap();
 
-        let mut host_f16 = vec![half::f16::ZERO; input.len()];
-        ctx.device()
-            .dtoh_sync_copy_into(&d_output, &mut host_f16)
-            .unwrap();
+        let host_f16: Vec<half::f16> = ctx.stream().clone_dtoh(&d_output).unwrap();
 
         for (i, (&f32_val, &f16_val)) in input.iter().zip(host_f16.iter()).enumerate() {
             let expected = half::f16::from_f32(f32_val);
@@ -5601,14 +5809,11 @@ mod tests {
         ctx.load_fused_kernel().expect("fused kernel should load");
 
         let data = vec![1.0f32, 2.0, 3.0, 4.0];
-        let mut d_data = ctx.device().htod_copy(data.clone()).unwrap();
+        let mut d_data = ctx.stream().clone_htod(&data).unwrap();
 
         ctx.scale_values(&mut d_data, 0.5).unwrap();
 
-        let mut host = vec![0.0f32; data.len()];
-        ctx.device()
-            .dtoh_sync_copy_into(&d_data, &mut host)
-            .unwrap();
+        let host: Vec<f32> = ctx.stream().clone_dtoh(&d_data).unwrap();
 
         let expected = vec![0.5, 1.0, 1.5, 2.0];
         for (i, (e, g)) in expected.iter().zip(host.iter()).enumerate() {
@@ -6030,21 +6235,32 @@ mod tests {
         coeffs[k] = amplitude;
 
         // Upload and run row IDCT directly
-        let d_input = ctx.device().htod_copy(coeffs).unwrap();
+        let d_input = ctx.stream().clone_htod(&coeffs).unwrap();
         let d_output: cudarc::driver::CudaSlice<f32> =
-            ctx.device().alloc_zeros(width * height).unwrap();
+            ctx.stream().alloc_zeros(width * height).unwrap();
 
         let func = ctx
-            .device()
-            .get_func("holo_spectral", "holo_spectral_idct_1d_rows")
-            .unwrap();
+            .spectral_idct_1d_rows_fn
+            .as_ref()
+            .expect("spectral_idct_1d_rows_fn should be loaded");
         let cfg = cudarc::driver::LaunchConfig {
             grid_dim: (1, 1, 1),
             block_dim: (256, 1, 1),
             shared_mem_bytes: (width * 4) as u32,
         };
-        unsafe { func.launch(cfg, (&d_input, &d_output, width as u32, height as u32)) }.unwrap();
-        ctx.device().synchronize().unwrap();
+        let width_u32 = width as u32;
+        let height_u32 = height as u32;
+        unsafe {
+            ctx.stream()
+                .launch_builder(func)
+                .arg(&d_input)
+                .arg(&d_output)
+                .arg(&width_u32)
+                .arg(&height_u32)
+                .launch(cfg)
+        }
+        .unwrap();
+        ctx.stream().synchronize().unwrap();
 
         let host = ctx.copy_to_host(&d_output).unwrap();
         let scale = (2.0 / width as f32).sqrt();
@@ -6162,12 +6378,12 @@ mod tests {
                 haagenti_core::dct::idct_2d(&coeffs, &mut cpu_output, width, height);
 
                 // GPU: upload coefficients directly, run finalize_spectral_direct
-                let d_coeffs = ctx.device().htod_copy(coeffs).unwrap();
+                let d_coeffs = ctx.stream().clone_htod(&coeffs).unwrap();
 
                 // Create spectral accumulator and inject coefficients directly
                 let acc = AccumulatorState::Spectral {
                     coefficients: d_coeffs,
-                    present_mask: ctx.device().alloc_zeros(total).unwrap(),
+                    present_mask: ctx.stream().alloc_zeros(total).unwrap(),
                     width,
                     height,
                 };

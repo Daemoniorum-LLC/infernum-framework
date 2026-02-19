@@ -34,7 +34,7 @@
 
 use std::sync::Arc;
 
-use cudarc::driver::CudaDevice;
+use cudarc::driver::CudaContext;
 
 use super::compute::ComputeEngine;
 use super::generate::SamplingParams;
@@ -118,7 +118,7 @@ pub struct SpeculativeDecoder {
 
     /// CUDA device.
     #[allow(dead_code)]
-    device: Arc<CudaDevice>,
+    device: Arc<CudaContext>,
 
     /// Consecutive rejection counter.
     rejection_count: usize,
@@ -136,7 +136,7 @@ impl SpeculativeDecoder {
         draft_weights: Arc<WeightStore>,
         target_weights: Arc<WeightStore>,
         max_seq_len: usize,
-        device: Arc<CudaDevice>,
+        device: Arc<CudaContext>,
         config: SpeculativeConfig,
     ) -> Result<Self, InferenceError> {
         let draft_config = draft_weights.config.clone();

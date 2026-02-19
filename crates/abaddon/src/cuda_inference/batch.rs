@@ -25,7 +25,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use cudarc::driver::CudaDevice;
+use cudarc::driver::CudaContext;
 
 use super::arch::ModelConfig;
 use super::tensor::{GpuDType, GpuTensor};
@@ -157,7 +157,7 @@ pub struct SlottedKvCache {
 
     /// CUDA device.
     #[allow(dead_code)]
-    device: Arc<CudaDevice>,
+    device: Arc<CudaContext>,
 
     /// Key cache [num_slots, num_layers, max_seq_len, kv_heads, head_dim].
     #[allow(dead_code)]
@@ -184,7 +184,7 @@ impl SlottedKvCache {
         config: &ModelConfig,
         num_slots: usize,
         max_seq_len: usize,
-        device: Arc<CudaDevice>,
+        device: Arc<CudaContext>,
     ) -> Result<Self, InferenceError> {
         let num_layers = config.num_layers;
         let num_kv_heads = config.num_kv_heads;
@@ -318,7 +318,7 @@ impl BatchScheduler {
         config: &ModelConfig,
         max_batch_size: usize,
         max_seq_len: usize,
-        device: Arc<CudaDevice>,
+        device: Arc<CudaContext>,
     ) -> Result<Self, InferenceError> {
         let kv_cache = SlottedKvCache::new(config, max_batch_size, max_seq_len, device)?;
 

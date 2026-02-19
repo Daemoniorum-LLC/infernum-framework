@@ -14,6 +14,9 @@ use std::io;
 
 mod commands;
 mod config;
+mod room_client;
+mod room_daemon;
+mod tui;
 
 #[derive(Parser)]
 #[command(name = "infernum")]
@@ -261,6 +264,12 @@ enum Commands {
     Studio {
         #[command(subcommand)]
         action: StudioAction,
+    },
+
+    /// Multi-agent collaboration rooms (Conclave)
+    Room {
+        #[command(subcommand)]
+        action: RoomAction,
     },
 }
 
@@ -555,6 +564,72 @@ enum RegistryAction {
     },
 }
 
+#[derive(Subcommand)]
+enum RoomAction {
+    /// Start the room daemon (runs in foreground)
+    Daemon,
+
+    /// Start the daemon in background
+    DaemonStart,
+
+    /// Stop the background daemon
+    DaemonStop,
+
+    /// Create a new collaboration room
+    Create {
+        /// Room name/description
+        name: String,
+
+        /// Working directory for agents
+        #[arg(short, long, default_value = ".")]
+        working_dir: String,
+    },
+
+    /// List active rooms
+    List,
+
+    /// Show room details
+    Info {
+        /// Room ID (prefix match)
+        room_id: String,
+    },
+
+    /// Spawn an agent in the room
+    Spawn {
+        /// Room ID (prefix match)
+        room_id: String,
+
+        /// Agent type: claude-opus, claude-sonnet, claude-haiku, infernum:<model>
+        #[arg(short, long, default_value = "claude-haiku")]
+        agent: String,
+
+        /// Agent display name
+        #[arg(short, long)]
+        name: Option<String>,
+    },
+
+    /// Send a message to the room (as human participant)
+    Send {
+        /// Room ID (prefix match)
+        room_id: String,
+
+        /// Message content
+        message: String,
+    },
+
+    /// Watch room activity in TUI
+    Observe {
+        /// Room ID (prefix match)
+        room_id: String,
+    },
+
+    /// Archive a room (stop agents, preserve history)
+    Archive {
+        /// Room ID (prefix match)
+        room_id: String,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     color_eyre::install()?;
@@ -838,6 +913,29 @@ async fn main() -> Result<()> {
                 },
                 RegistryAction::Roadmap { name } => commands::registry_roadmap(name).await?,
             },
+        },
+
+        Some(Commands::Room { action }) => match action {
+            RoomAction::Daemon => commands::room_daemon().await?,
+            RoomAction::DaemonStart => commands::room_daemon_start().await?,
+            RoomAction::DaemonStop => commands::room_daemon_stop().await?,
+            RoomAction::Create { name, working_dir } => {
+                commands::room_create(name, working_dir).await?;
+            },
+            RoomAction::List => commands::room_list().await?,
+            RoomAction::Info { room_id } => commands::room_info(room_id).await?,
+            RoomAction::Spawn {
+                room_id,
+                agent,
+                name,
+            } => {
+                commands::room_spawn(room_id, agent, name).await?;
+            },
+            RoomAction::Send { room_id, message } => {
+                commands::room_send(room_id, message).await?;
+            },
+            RoomAction::Observe { room_id } => commands::room_observe(room_id).await?,
+            RoomAction::Archive { room_id } => commands::room_archive(room_id).await?,
         },
     }
 

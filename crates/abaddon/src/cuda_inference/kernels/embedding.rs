@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use cudarc::driver::{CudaDevice, CudaFunction, LaunchAsync, LaunchConfig};
+use cudarc::driver::{CudaContext, CudaFunction, CudaModule, CudaStream, LaunchConfig, PushKernelArg};
 
 use super::compile_cuda_kernel;
 use crate::cuda_inference::tensor::GpuTensor;
@@ -67,7 +67,9 @@ extern "C" __global__ void embedding_gather_f16_vec2(
 
 /// Embedding lookup kernel for GPU execution.
 pub struct EmbeddingKernel {
-    device: Arc<CudaDevice>,
+    ctx: Arc<CudaContext>,
+    stream: Arc<CudaStream>,
+    module: Option<Arc<CudaModule>>,
     gather_func: Option<CudaFunction>,
     gather_vec2_func: Option<CudaFunction>,
 }
@@ -82,9 +84,11 @@ impl std::fmt::Debug for EmbeddingKernel {
 
 impl EmbeddingKernel {
     /// Create a new embedding kernel.
-    pub fn new(device: Arc<CudaDevice>) -> Result<Self, InferenceError> {
+    pub fn new(ctx: Arc<CudaContext>, stream: Arc<CudaStream>) -> Result<Self, InferenceError> {
         let mut kernel = Self {
-            device,
+            ctx,
+            stream,
+            module: None,
             gather_func: None,
             gather_vec2_func: None,
         };
@@ -97,29 +101,24 @@ impl EmbeddingKernel {
         let ptx = compile_cuda_kernel(EMBEDDING_CUDA)
             .map_err(|e| InferenceError::Kernel(format!("NVRTC compilation failed: {}", e)))?;
 
-        self.device
-            .load_ptx(
-                ptx,
-                "embedding",
-                &["embedding_gather_f16", "embedding_gather_f16_vec2"],
-            )
-            .map_err(|e| InferenceError::Kernel(format!("Failed to load PTX: {}", e)))?;
+        let module = self
+            .ctx
+            .load_module(ptx)
+            .map_err(|e| InferenceError::Kernel(format!("Failed to load module: {}", e)))?;
 
         self.gather_func = Some(
-            self.device
-                .get_func("embedding", "embedding_gather_f16")
-                .ok_or_else(|| {
-                    InferenceError::Kernel("Failed to get embedding_gather_f16".to_string())
-                })?,
+            module
+                .load_function("embedding_gather_f16")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to load embedding_gather_f16: {}", e)))?,
         );
 
         self.gather_vec2_func = Some(
-            self.device
-                .get_func("embedding", "embedding_gather_f16_vec2")
-                .ok_or_else(|| {
-                    InferenceError::Kernel("Failed to get embedding_gather_f16_vec2".to_string())
-                })?,
+            module
+                .load_function("embedding_gather_f16_vec2")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to load embedding_gather_f16_vec2: {}", e)))?,
         );
+
+        self.module = Some(module);
 
         Ok(())
     }
@@ -189,17 +188,21 @@ impl EmbeddingKernel {
             shared_mem_bytes: 0,
         };
 
+        let embed_ptr = embed_table.device_ptr();
+        let token_ptr = token_ids.device_ptr();
+        let output_ptr = output.device_ptr();
+        let seq_len_i32 = seq_len as i32;
+        let hidden_size_i32 = hidden_size as i32;
+
         unsafe {
-            func.clone().launch(
-                cfg,
-                (
-                    embed_table.device_ptr(),
-                    token_ids.device_ptr(),
-                    output.device_ptr(),
-                    seq_len as i32,
-                    hidden_size as i32,
-                ),
-            )
+            self.stream
+                .launch_builder(func)
+                .arg(&embed_ptr)
+                .arg(&token_ptr)
+                .arg(&output_ptr)
+                .arg(&seq_len_i32)
+                .arg(&hidden_size_i32)
+                .launch(cfg)
         }
         .map_err(|e| InferenceError::Kernel(format!("Embedding gather failed: {}", e)))?;
 
@@ -228,26 +231,35 @@ impl EmbeddingKernel {
             shared_mem_bytes: 0,
         };
 
+        let embed_ptr = embed_table.device_ptr();
+        let token_ptr = token_ids.device_ptr();
+        let output_ptr = output.device_ptr();
+        let seq_len_i32 = seq_len as i32;
+        let hidden_size_i32 = hidden_size as i32;
+
         unsafe {
-            func.clone().launch(
-                cfg,
-                (
-                    embed_table.device_ptr(),
-                    token_ids.device_ptr(),
-                    output.device_ptr(),
-                    seq_len as i32,
-                    hidden_size as i32,
-                ),
-            )
+            self.stream
+                .launch_builder(func)
+                .arg(&embed_ptr)
+                .arg(&token_ptr)
+                .arg(&output_ptr)
+                .arg(&seq_len_i32)
+                .arg(&hidden_size_i32)
+                .launch(cfg)
         }
         .map_err(|e| InferenceError::Kernel(format!("Embedding gather vec2 failed: {}", e)))?;
 
         Ok(())
     }
 
-    /// Get device reference.
-    pub fn device(&self) -> &Arc<CudaDevice> {
-        &self.device
+    /// Get context reference.
+    pub fn ctx(&self) -> &Arc<CudaContext> {
+        &self.ctx
+    }
+
+    /// Get stream reference.
+    pub fn stream(&self) -> &Arc<CudaStream> {
+        &self.stream
     }
 }
 

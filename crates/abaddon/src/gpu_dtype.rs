@@ -7,12 +7,17 @@
 /// CUDA-accelerated FP8 to F32 dtype conversion.
 #[cfg(feature = "cuda")]
 pub mod cuda {
-    use cudarc::driver::{CudaDevice, CudaSlice, LaunchAsync, LaunchConfig};
+    use cudarc::driver::{CudaContext, CudaFunction, CudaModule, CudaSlice, CudaStream, LaunchConfig, PushKernelArg};
     use std::sync::Arc;
 
     /// GPU dtype converter for FP8 → F32 conversion.
     pub struct GpuDtypeConverter {
-        device: Arc<CudaDevice>,
+        ctx: Arc<CudaContext>,
+        stream: Arc<CudaStream>,
+        e4m3_module: Arc<CudaModule>,
+        e5m2_module: Arc<CudaModule>,
+        e4m3_func: CudaFunction,
+        e5m2_func: CudaFunction,
     }
 
     // CUDA kernel for FP8 E4M3 → F32 conversion
@@ -94,20 +99,40 @@ extern "C" __global__ void fp8_e5m2_to_f32(
 
     impl GpuDtypeConverter {
         /// Create new GPU dtype converter.
-        pub fn new(device: Arc<CudaDevice>) -> Result<Self, Box<dyn std::error::Error>> {
+        pub fn new(ctx: Arc<CudaContext>) -> Result<Self, Box<dyn std::error::Error>> {
+            // Create stream
+            let stream = ctx.default_stream();
+
             // Compile both kernels
             let ptx_e4m3 = cudarc::nvrtc::compile_ptx(FP8_E4M3_KERNEL)?;
             let ptx_e5m2 = cudarc::nvrtc::compile_ptx(FP8_E5M2_KERNEL)?;
 
-            device.load_ptx(ptx_e4m3, "fp8_e4m3", &["fp8_e4m3_to_f32"])?;
-            device.load_ptx(ptx_e5m2, "fp8_e5m2", &["fp8_e5m2_to_f32"])?;
+            // Load modules
+            let e4m3_module = ctx.load_module(ptx_e4m3)?;
+            let e5m2_module = ctx.load_module(ptx_e5m2)?;
 
-            Ok(Self { device })
+            // Load functions
+            let e4m3_func = e4m3_module.load_function("fp8_e4m3_to_f32")?;
+            let e5m2_func = e5m2_module.load_function("fp8_e5m2_to_f32")?;
+
+            Ok(Self {
+                ctx,
+                stream,
+                e4m3_module,
+                e5m2_module,
+                e4m3_func,
+                e5m2_func,
+            })
         }
 
-        /// Get device reference.
-        pub fn device(&self) -> &Arc<CudaDevice> {
-            &self.device
+        /// Get context reference.
+        pub fn context(&self) -> &Arc<CudaContext> {
+            &self.ctx
+        }
+
+        /// Get stream reference.
+        pub fn stream(&self) -> &Arc<CudaStream> {
+            &self.stream
         }
 
         /// Convert FP8 E4M3 data to F32 on GPU.
@@ -120,17 +145,12 @@ extern "C" __global__ void fp8_e5m2_to_f32(
             let n = fp8_data.len();
 
             // Transfer FP8 bytes to GPU (1 byte per element)
-            let d_fp8: CudaSlice<u8> = self.device.htod_sync_copy(fp8_data)?;
+            let d_fp8: CudaSlice<u8> = self.stream.clone_htod(fp8_data)?;
 
             // Allocate output F32 buffer on GPU
-            let mut d_f32: CudaSlice<f32> = self.device.alloc_zeros(n)?;
+            let mut d_f32: CudaSlice<f32> = self.stream.alloc_zeros(n)?;
 
             // Launch kernel
-            let kernel = self
-                .device
-                .get_func("fp8_e4m3", "fp8_e4m3_to_f32")
-                .ok_or("FP8 E4M3 kernel not loaded")?;
-
             let threads_per_block = 256;
             let blocks = (n + threads_per_block - 1) / threads_per_block;
 
@@ -141,7 +161,12 @@ extern "C" __global__ void fp8_e5m2_to_f32(
             };
 
             unsafe {
-                kernel.launch(config, (&d_fp8, &mut d_f32, n as i32))?;
+                self.stream
+                    .launch_builder(&self.e4m3_func)
+                    .arg(&d_fp8)
+                    .arg(&mut d_f32)
+                    .arg(&(n as i32))
+                    .launch(config)?;
             }
 
             Ok(d_f32)
@@ -154,13 +179,8 @@ extern "C" __global__ void fp8_e5m2_to_f32(
         ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
             let n = fp8_data.len();
 
-            let d_fp8: CudaSlice<u8> = self.device.htod_sync_copy(fp8_data)?;
-            let mut d_f32: CudaSlice<f32> = self.device.alloc_zeros(n)?;
-
-            let kernel = self
-                .device
-                .get_func("fp8_e5m2", "fp8_e5m2_to_f32")
-                .ok_or("FP8 E5M2 kernel not loaded")?;
+            let d_fp8: CudaSlice<u8> = self.stream.clone_htod(fp8_data)?;
+            let mut d_f32: CudaSlice<f32> = self.stream.alloc_zeros(n)?;
 
             let threads_per_block = 256;
             let blocks = (n + threads_per_block - 1) / threads_per_block;
@@ -172,7 +192,12 @@ extern "C" __global__ void fp8_e5m2_to_f32(
             };
 
             unsafe {
-                kernel.launch(config, (&d_fp8, &mut d_f32, n as i32))?;
+                self.stream
+                    .launch_builder(&self.e5m2_func)
+                    .arg(&d_fp8)
+                    .arg(&mut d_f32)
+                    .arg(&(n as i32))
+                    .launch(config)?;
             }
 
             Ok(d_f32)
@@ -184,8 +209,7 @@ extern "C" __global__ void fp8_e5m2_to_f32(
             fp8_data: &[u8],
         ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
             let d_f32 = self.fp8_e4m3_to_f32(fp8_data)?;
-            let mut h_f32 = vec![0.0f32; fp8_data.len()];
-            self.device.dtoh_sync_copy_into(&d_f32, &mut h_f32)?;
+            let h_f32 = self.stream.clone_dtoh(&d_f32)?;
             Ok(h_f32)
         }
 
@@ -195,8 +219,7 @@ extern "C" __global__ void fp8_e5m2_to_f32(
             fp8_data: &[u8],
         ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
             let d_f32 = self.fp8_e5m2_to_f32(fp8_data)?;
-            let mut h_f32 = vec![0.0f32; fp8_data.len()];
-            self.device.dtoh_sync_copy_into(&d_f32, &mut h_f32)?;
+            let h_f32 = self.stream.clone_dtoh(&d_f32)?;
             Ok(h_f32)
         }
     }
@@ -451,18 +474,18 @@ mod tests {
     #[test]
     #[cfg(feature = "cuda")]
     fn test_fp8_e4m3_gpu_matches_cpu() {
-        use cudarc::driver::CudaDevice;
+        use cudarc::driver::CudaContext;
         use std::sync::Arc;
 
-        let device = match CudaDevice::new(0) {
-            Ok(d) => Arc::new(d),
+        let ctx = match CudaContext::new(0) {
+            Ok(d) => d,
             Err(_) => {
                 eprintln!("Skipping: no CUDA device available");
                 return;
             },
         };
 
-        let converter = GpuDtypeConverter::new(Arc::clone(&device)).expect("converter creation");
+        let converter = GpuDtypeConverter::new(ctx).expect("converter creation");
 
         // Test all 256 byte values
         let input: Vec<u8> = (0..=255).collect();
@@ -493,18 +516,18 @@ mod tests {
     #[test]
     #[cfg(feature = "cuda")]
     fn test_fp8_e5m2_gpu_matches_cpu() {
-        use cudarc::driver::CudaDevice;
+        use cudarc::driver::CudaContext;
         use std::sync::Arc;
 
-        let device = match CudaDevice::new(0) {
-            Ok(d) => Arc::new(d),
+        let ctx = match CudaContext::new(0) {
+            Ok(d) => d,
             Err(_) => {
                 eprintln!("Skipping: no CUDA device available");
                 return;
             },
         };
 
-        let converter = GpuDtypeConverter::new(Arc::clone(&device)).expect("converter creation");
+        let converter = GpuDtypeConverter::new(ctx).expect("converter creation");
 
         let input: Vec<u8> = (0..=255).collect();
         let gpu_result = converter

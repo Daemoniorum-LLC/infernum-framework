@@ -22,7 +22,7 @@
 use std::ffi::c_void;
 use std::sync::Arc;
 
-use cudarc::driver::CudaDevice;
+use cudarc::driver::CudaContext;
 
 use super::arch::ModelConfig;
 use super::tensor::{GpuDType, GpuTensor};
@@ -37,7 +37,7 @@ pub struct KvCache {
     config: ModelConfig,
 
     /// CUDA device.
-    device: Arc<CudaDevice>,
+    device: Arc<CudaContext>,
 
     /// Key cache [num_layers, num_kv_heads, max_seq_len, head_dim].
     keys: GpuTensor,
@@ -63,7 +63,7 @@ impl KvCache {
     pub fn new(
         config: &ModelConfig,
         max_seq_len: usize,
-        device: Arc<CudaDevice>,
+        device: Arc<CudaContext>,
     ) -> Result<Self, InferenceError> {
         let num_layers = config.num_layers;
         let num_kv_heads = config.num_kv_heads;
@@ -298,7 +298,7 @@ impl KvCache {
     }
 
     /// Get device reference.
-    pub fn device(&self) -> &Arc<CudaDevice> {
+    pub fn device(&self) -> &Arc<CudaContext> {
         &self.device
     }
 }

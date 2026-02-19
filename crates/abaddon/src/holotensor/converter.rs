@@ -320,7 +320,7 @@ impl HoloModelConverter {
     pub fn new(config: ConversionConfig) -> Self {
         #[cfg(feature = "cuda")]
         let (gpu_encoder, gpu_dtype_converter) = if config.use_gpu {
-            match cudarc::driver::CudaDevice::new(0) {
+            match cudarc::driver::CudaContext::new(0) {
                 Ok(device) => {
                     // Initialize GPU LRDF encoder
                     let encoder = match crate::gpu_lrdf::cuda::GpuLrdfEncoder::new(

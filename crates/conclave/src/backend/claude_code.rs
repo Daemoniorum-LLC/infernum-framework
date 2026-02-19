@@ -66,7 +66,65 @@ pub struct AssistantMessage {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AssistantContent {
+    /// Content can be a string or array of content blocks.
+    #[serde(deserialize_with = "deserialize_content")]
     pub content: String,
+}
+
+/// Deserialize content which can be either a string or array of content blocks.
+fn deserialize_content<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+
+    struct ContentVisitor;
+
+    impl<'de> Visitor<'de> for ContentVisitor {
+        type Value = String;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a string or array of content blocks")
+        }
+
+        fn visit_str<E>(self, value: &str) -> std::result::Result<String, E>
+        where
+            E: de::Error,
+        {
+            Ok(value.to_string())
+        }
+
+        fn visit_string<E>(self, value: String) -> std::result::Result<String, E>
+        where
+            E: de::Error,
+        {
+            Ok(value)
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> std::result::Result<String, A::Error>
+        where
+            A: de::SeqAccess<'de>,
+        {
+            let mut texts = Vec::new();
+            while let Some(block) = seq.next_element::<ContentBlock>()? {
+                if let Some(text) = block.text {
+                    texts.push(text);
+                }
+            }
+            Ok(texts.join(""))
+        }
+    }
+
+    deserializer.deserialize_any(ContentVisitor)
+}
+
+/// A content block in an array of content.
+#[derive(Debug, Clone, Deserialize)]
+struct ContentBlock {
+    #[serde(rename = "type")]
+    _type: String,
+    #[serde(default)]
+    text: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -191,19 +249,33 @@ impl OutputParser for ClaudeCodeParser {
     }
 
     fn format_message(&self, message: &Message) -> Result<String> {
-        // Claude Code reads from stdin as plain text prompts
-        match &message.content {
-            MessageContent::Text { content } => Ok(format!("{}\n", content)),
+        // Format as stream-json input for Claude Code CLI
+        // Format: {"type":"user","message":{"role":"user","content":"..."},"session_id":"default","parent_tool_use_id":null}
+        let content = match &message.content {
+            MessageContent::Text { content } => content.clone(),
             MessageContent::ToolCall { tool, input, .. } => {
                 // Shouldn't send tool calls to Claude Code, but format anyway
-                Ok(format!("[Tool request: {}] {}\n", tool, input))
+                format!("[Tool request: {}] {}", tool, input)
             }
             MessageContent::ToolResult { output, .. } => {
                 // Tool results might be sent as context
-                Ok(format!("{}\n", output))
+                output.to_string()
             }
-            MessageContent::System { event } => Ok(format!("[System] {:?}\n", event)),
-        }
+            MessageContent::System { event } => format!("[System] {:?}", event),
+        };
+
+        // Build the stream-json input message
+        let input_msg = serde_json::json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": content
+            },
+            "session_id": "default",
+            "parent_tool_use_id": null
+        });
+
+        Ok(format!("{}\n", input_msg))
     }
 }
 
@@ -247,8 +319,11 @@ impl ClaudeCodeConfig {
     /// Builds CLI arguments.
     pub fn build_args(&self) -> Vec<String> {
         // --verbose is required when using stream-json output format
+        // --input-format stream-json allows reading JSON messages from stdin
         let mut args = vec![
             "--output-format".to_string(),
+            "stream-json".to_string(),
+            "--input-format".to_string(),
             "stream-json".to_string(),
             "--verbose".to_string(),
         ];
@@ -256,8 +331,8 @@ impl ClaudeCodeConfig {
         // Model selection based on tier
         let model = match self.tier {
             ClaudeTier::Opus => "claude-opus-4-5-20251101",
-            ClaudeTier::Sonnet => "claude-sonnet-4-20250514",
-            ClaudeTier::Haiku => "claude-haiku-3-5-20250630",
+            ClaudeTier::Sonnet => "claude-sonnet-4-5-20250929",
+            ClaudeTier::Haiku => "claude-haiku-4-5-20251001",
         };
         args.extend(["--model".to_string(), model.to_string()]);
 
@@ -289,8 +364,9 @@ impl ClaudeCodeConfig {
             args.extend(["--resume".to_string(), session.clone()]);
         }
 
-        // Print mode for non-interactive
-        args.push("--print".to_string());
+        // Note: We intentionally do NOT use --print mode here.
+        // --print makes Claude Code run once and exit.
+        // With --input-format stream-json, it stays interactive and reads from stdin.
 
         args
     }
@@ -460,7 +536,8 @@ mod tests {
         assert!(args.contains(&"--verbose".to_string())); // Required for stream-json
         assert!(args.contains(&"--model".to_string()));
         assert!(args.contains(&"claude-opus-4-5-20251101".to_string()));
-        assert!(args.contains(&"--print".to_string()));
+        // Note: --print is NOT included; we use stream-json input for interactive mode
+        assert!(!args.contains(&"--print".to_string()));
     }
 
     #[test]
@@ -484,7 +561,7 @@ mod tests {
         let haiku = ClaudeCodeConfig::new(ClaudeTier::Haiku, "/tmp");
 
         assert!(opus.build_args().contains(&"claude-opus-4-5-20251101".to_string()));
-        assert!(sonnet.build_args().contains(&"claude-sonnet-4-20250514".to_string()));
-        assert!(haiku.build_args().contains(&"claude-haiku-3-5-20250630".to_string()));
+        assert!(sonnet.build_args().contains(&"claude-sonnet-4-5-20250929".to_string()));
+        assert!(haiku.build_args().contains(&"claude-haiku-4-5-20251001".to_string()));
     }
 }

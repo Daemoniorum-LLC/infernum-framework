@@ -13,7 +13,7 @@
 use std::ffi::c_void;
 use std::sync::Arc;
 
-use cudarc::driver::CudaDevice;
+use cudarc::driver::CudaContext;
 
 use super::tensor::GpuTensor;
 use super::InferenceError;
@@ -172,7 +172,7 @@ pub struct CublasHandle {
     handle: *mut c_void,
 
     /// CUDA device reference.
-    device: Arc<CudaDevice>,
+    device: Arc<CudaContext>,
 
     /// Whether using F32 accumulator (higher precision).
     use_f32_accumulator: bool,
@@ -184,7 +184,7 @@ unsafe impl Sync for CublasHandle {}
 
 impl CublasHandle {
     /// Create a new cuBLAS handle for the given device.
-    pub fn new(device: Arc<CudaDevice>) -> Result<Self, InferenceError> {
+    pub fn new(device: Arc<CudaContext>) -> Result<Self, InferenceError> {
         let mut handle: *mut c_void = std::ptr::null_mut();
 
         let status = unsafe { cublasCreate_v2(&mut handle) };
@@ -567,7 +567,7 @@ impl CublasHandle {
     }
 
     /// Get the CUDA device.
-    pub fn device(&self) -> &Arc<CudaDevice> {
+    pub fn device(&self) -> &Arc<CudaContext> {
         &self.device
     }
 

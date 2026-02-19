@@ -284,7 +284,7 @@ fn enumerate_cuda_devices() -> Vec<DeviceInfo> {
 
 #[cfg(feature = "cuda")]
 fn enumerate_cuda_devices_inner() -> Vec<DeviceInfo> {
-    use cudarc::driver::CudaDevice as CudarcDevice;
+    use cudarc::driver::CudaContext;
 
     let mut devices = Vec::new();
 
@@ -307,37 +307,54 @@ fn enumerate_cuda_devices_inner() -> Vec<DeviceInfo> {
     };
 
     for device_id in 0..device_count {
-        if let Ok(cuda_dev) = CudarcDevice::new(device_id) {
-            let compute_major = cuda_dev
-                .attribute(cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR)
-                .unwrap_or(0) as u32;
+        // Get device handle for attribute queries
+        let cu_device = match cudarc::driver::result::device::get(device_id as i32) {
+            Ok(dev) => dev,
+            Err(_) => continue,
+        };
 
-            let compute_minor = cuda_dev
-                .attribute(cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR)
-                .unwrap_or(0) as u32;
-
-            // Get device name
-            let name =
-                cuda_device_name(device_id).unwrap_or_else(|| format!("CUDA Device {}", device_id));
-
-            // Estimate memory based on compute capability
-            let total_memory = estimate_cuda_memory(compute_major, compute_minor);
-            let available_memory = (total_memory as f64 * 0.8) as usize;
-
-            let has_tensor_cores = compute_major >= 7;
-            let supports_bf16 = compute_major >= 8;
-
-            devices.push(DeviceInfo {
-                device_type: DeviceType::Cuda { device_id },
-                name,
-                total_memory,
-                available_memory,
-                compute_capability: Some((compute_major, compute_minor)),
-                has_tensor_cores,
-                supports_bf16,
-                recommended: false,
-            });
+        // Try to create a context to verify device is usable
+        if CudaContext::new(device_id).is_err() {
+            continue;
         }
+
+        let compute_major = unsafe {
+            cudarc::driver::result::device::get_attribute(
+                cu_device,
+                cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR,
+            )
+            .unwrap_or(0) as u32
+        };
+
+        let compute_minor = unsafe {
+            cudarc::driver::result::device::get_attribute(
+                cu_device,
+                cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
+            )
+            .unwrap_or(0) as u32
+        };
+
+        // Get device name
+        let name =
+            cuda_device_name(device_id).unwrap_or_else(|| format!("CUDA Device {}", device_id));
+
+        // Estimate memory based on compute capability
+        let total_memory = estimate_cuda_memory(compute_major, compute_minor);
+        let available_memory = (total_memory as f64 * 0.8) as usize;
+
+        let has_tensor_cores = compute_major >= 7;
+        let supports_bf16 = compute_major >= 8;
+
+        devices.push(DeviceInfo {
+            device_type: DeviceType::Cuda { device_id },
+            name,
+            total_memory,
+            available_memory,
+            compute_capability: Some((compute_major, compute_minor)),
+            has_tensor_cores,
+            supports_bf16,
+            recommended: false,
+        });
     }
 
     devices
@@ -345,16 +362,9 @@ fn enumerate_cuda_devices_inner() -> Vec<DeviceInfo> {
 
 #[cfg(feature = "cuda")]
 fn cuda_device_name(device_id: usize) -> Option<String> {
-    // Use high-level cudarc API instead of raw sys calls
-    // The CudaDevice::new() call handles device selection and provides name access
-    match cudarc::driver::CudaDevice::new(device_id) {
-        Ok(_device) => {
-            // CudaDevice doesn't expose name directly, but we can infer from ordinal
-            // For now, return a generic name - the actual GPU info is in DeviceInfo
-            Some(format!("CUDA Device {}", device_id))
-        },
-        Err(_) => None,
-    }
+    // Use low-level cudarc API to get device name
+    let cu_device = cudarc::driver::result::device::get(device_id as i32).ok()?;
+    cudarc::driver::result::device::get_name(cu_device).ok()
 }
 
 #[cfg(feature = "cuda")]

@@ -14,6 +14,7 @@ members = [
     "crates/paimon",             # LLM Studio
     "crates/legion",             # Holographic agent swarm
     "crates/arbiter",            # Unified GPU coordination
+    "crates/conclave",           # Room-based agent collaboration
     "crates/test-utils",         # Testing utilities
 ]
 
@@ -45,10 +46,10 @@ bincode = "1.3"
 toml = "0.9"
 
 # HTTP/API
-axum = { version = "0.8", features = ["macros", "ws"] }
+axum = { version = "0.8", features = ["macros", "ws", "multipart"] }
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 tower = { version = "0.5", features = ["full"] }
-tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip", "timeout"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip", "timeout", "fs"] }
 reqwest = { version = "0.13", features = ["json", "stream"] }
 hyper = { version = "1.6", features = ["full"] }
 rustls-pemfile = "2.2"
@@ -65,7 +66,7 @@ tokenizers = "0.22"
 hf-hub = "0.4"
 half = "2.4"
 
-# CUDA runtime (for GPU queries) - using 0.12 for API stability
+# CUDA runtime (for GPU queries)
 # cuda-version-from-build-system auto-detects CUDA version at build time
 # cublas for GPU-accelerated matrix operations (used in HoloTensor SVD)
 cudarc = { version = "0.19", features = ["cuda-version-from-build-system", "f16", "cublas"] }

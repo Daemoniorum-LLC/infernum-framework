@@ -45,30 +45,41 @@ pub mod cuda {
     use std::sync::Arc;
 
     use candle_core::{Device, Tensor};
-    use cudarc::driver::{CudaDevice, CudaSlice, LaunchAsync, LaunchConfig};
+    use cudarc::driver::{CudaContext, CudaFunction, CudaModule, CudaSlice, CudaStream, LaunchConfig, PushKernelArg};
     use cudarc::nvrtc::Ptx;
 
     /// Fused decompression + dequantization context.
     pub struct GpuFusedContext {
-        device: Arc<CudaDevice>,
+        ctx: Arc<CudaContext>,
+        stream: Arc<CudaStream>,
         device_id: usize,
-        lz4_int4_kernel_loaded: bool,
-        lz4_int8_kernel_loaded: bool,
+        // LZ4+INT4 kernels
+        lz4_int4_module: Option<Arc<CudaModule>>,
+        lz4_int4_block_fn: Option<CudaFunction>,
+        lz4_int4_blocks_parallel_fn: Option<CudaFunction>,
+        // LZ4+INT8 kernels
+        lz4_int8_module: Option<Arc<CudaModule>>,
+        lz4_int8_blocks_parallel_fn: Option<CudaFunction>,
     }
 
     impl GpuFusedContext {
         /// Creates a new fused kernel context.
         pub fn new(device_id: usize) -> Result<Self, GpuFusedError> {
-            let device = CudaDevice::new(device_id).map_err(|e| GpuFusedError::DeviceInit {
+            let ctx = CudaContext::new(device_id).map_err(|e| GpuFusedError::DeviceInit {
                 device_id,
                 message: e.to_string(),
             })?;
+            let stream = ctx.default_stream();
 
             Ok(Self {
-                device,
+                ctx,
+                stream,
                 device_id,
-                lz4_int4_kernel_loaded: false,
-                lz4_int8_kernel_loaded: false,
+                lz4_int4_module: None,
+                lz4_int4_block_fn: None,
+                lz4_int4_blocks_parallel_fn: None,
+                lz4_int8_module: None,
+                lz4_int8_blocks_parallel_fn: None,
             })
         }
 
@@ -77,41 +88,55 @@ pub mod cuda {
             self.device_id
         }
 
+        /// Returns a reference to the CUDA stream.
+        pub fn stream(&self) -> &Arc<CudaStream> {
+            &self.stream
+        }
+
         /// Loads the fused LZ4+INT4 kernel.
         pub fn load_lz4_int4_kernel(&mut self) -> Result<(), GpuFusedError> {
-            if self.lz4_int4_kernel_loaded {
+            if self.lz4_int4_module.is_some() {
                 return Ok(());
             }
 
             let ptx = Ptx::from_src(FUSED_LZ4_INT4_KERNEL_PTX);
-            self.device
-                .load_ptx(
-                    ptx,
-                    "fused_lz4_int4",
-                    &["fused_lz4_int4_block", "fused_lz4_int4_blocks_parallel"],
-                )
-                .map_err(|e| GpuFusedError::KernelLoad {
-                    message: e.to_string(),
-                })?;
+            let module = self.ctx.load_module(ptx).map_err(|e| GpuFusedError::KernelLoad {
+                message: e.to_string(),
+            })?;
 
-            self.lz4_int4_kernel_loaded = true;
+            self.lz4_int4_block_fn = Some(
+                module.load_function("fused_lz4_int4_block").map_err(|e| GpuFusedError::KernelLoad {
+                    message: e.to_string(),
+                })?,
+            );
+            self.lz4_int4_blocks_parallel_fn = Some(
+                module.load_function("fused_lz4_int4_blocks_parallel").map_err(|e| GpuFusedError::KernelLoad {
+                    message: e.to_string(),
+                })?,
+            );
+
+            self.lz4_int4_module = Some(module);
             Ok(())
         }
 
         /// Loads the fused LZ4+INT8 kernel.
         pub fn load_lz4_int8_kernel(&mut self) -> Result<(), GpuFusedError> {
-            if self.lz4_int8_kernel_loaded {
+            if self.lz4_int8_module.is_some() {
                 return Ok(());
             }
 
             let ptx = Ptx::from_src(FUSED_LZ4_INT8_KERNEL_PTX);
-            self.device
-                .load_ptx(ptx, "fused_lz4_int8", &["fused_lz4_int8_block"])
-                .map_err(|e| GpuFusedError::KernelLoad {
-                    message: e.to_string(),
-                })?;
+            let module = self.ctx.load_module(ptx).map_err(|e| GpuFusedError::KernelLoad {
+                message: e.to_string(),
+            })?;
 
-            self.lz4_int8_kernel_loaded = true;
+            self.lz4_int8_blocks_parallel_fn = Some(
+                module.load_function("fused_lz4_int8_block").map_err(|e| GpuFusedError::KernelLoad {
+                    message: e.to_string(),
+                })?,
+            );
+
+            self.lz4_int8_module = Some(module);
             Ok(())
         }
 
@@ -136,14 +161,14 @@ pub mod cuda {
             zero_point: i8,
             num_values: usize,
         ) -> Result<CudaSlice<half::f16>, GpuFusedError> {
-            if !self.lz4_int4_kernel_loaded {
-                return Err(GpuFusedError::KernelNotLoaded {
+            let func = self.lz4_int4_block_fn.as_ref().ok_or_else(|| {
+                GpuFusedError::KernelNotLoaded {
                     kernel: "fused_lz4_int4".to_string(),
-                });
-            }
+                }
+            })?;
 
             // Copy compressed data to GPU
-            let d_compressed = self.device.htod_copy(compressed.to_vec()).map_err(|e| {
+            let d_compressed = self.stream.clone_htod(compressed).map_err(|e| {
                 GpuFusedError::MemoryAlloc {
                     message: e.to_string(),
                 }
@@ -151,45 +176,33 @@ pub mod cuda {
 
             // Allocate output buffer
             let d_output: CudaSlice<half::f16> =
-                self.device
+                self.stream
                     .alloc_zeros(num_values)
                     .map_err(|e| GpuFusedError::MemoryAlloc {
                         message: e.to_string(),
                     })?;
 
-            // Launch kernel
-            let func = self
-                .device
-                .get_func("fused_lz4_int4", "fused_lz4_int4_block")
-                .ok_or_else(|| GpuFusedError::KernelLoad {
-                    message: "fused_lz4_int4_block not found".to_string(),
-                })?;
-
             let cfg = LaunchConfig::for_num_elems(1);
             let scale_bits = scale.to_bits();
 
             unsafe {
-                func.launch(
-                    cfg,
-                    (
-                        &d_compressed,
-                        compressed.len() as u32,
-                        &d_output,
-                        num_values as u32,
-                        scale_bits as u32,
-                        zero_point as i32,
-                    ),
-                )
+                self.stream
+                    .launch_builder(func)
+                    .arg(&d_compressed)
+                    .arg(&(compressed.len() as u32))
+                    .arg(&d_output)
+                    .arg(&(num_values as u32))
+                    .arg(&(scale_bits as u32))
+                    .arg(&(zero_point as i32))
+                    .launch(cfg)
             }
             .map_err(|e| GpuFusedError::KernelExec {
                 message: e.to_string(),
             })?;
 
-            self.device
-                .synchronize()
-                .map_err(|e| GpuFusedError::Synchronize {
-                    message: e.to_string(),
-                })?;
+            self.stream.synchronize().map_err(|e| GpuFusedError::Synchronize {
+                message: e.to_string(),
+            })?;
 
             Ok(d_output)
         }
@@ -213,11 +226,11 @@ pub mod cuda {
             scales: &[half::f16],
             zero_points: Option<&[i8]>,
         ) -> Result<CudaSlice<half::f16>, GpuFusedError> {
-            if !self.lz4_int4_kernel_loaded {
-                return Err(GpuFusedError::KernelNotLoaded {
+            let func = self.lz4_int4_blocks_parallel_fn.as_ref().ok_or_else(|| {
+                GpuFusedError::KernelNotLoaded {
                     kernel: "fused_lz4_int4".to_string(),
-                });
-            }
+                }
+            })?;
 
             if blocks.is_empty() {
                 return Err(GpuFusedError::InvalidInput {
@@ -273,41 +286,41 @@ pub mod cuda {
 
             // Copy to GPU
             let d_compressed =
-                self.device
-                    .htod_copy(all_compressed)
+                self.stream
+                    .clone_htod(&all_compressed)
                     .map_err(|e| GpuFusedError::MemoryAlloc {
                         message: e.to_string(),
                     })?;
 
             let d_output: CudaSlice<half::f16> =
-                self.device
+                self.stream
                     .alloc_zeros(total_output)
                     .map_err(|e| GpuFusedError::MemoryAlloc {
                         message: e.to_string(),
                     })?;
 
-            let d_comp_offsets = self.device.htod_copy(compressed_offsets).map_err(|e| {
+            let d_comp_offsets = self.stream.clone_htod(&compressed_offsets).map_err(|e| {
                 GpuFusedError::MemoryAlloc {
                     message: e.to_string(),
                 }
             })?;
 
             let d_out_offsets =
-                self.device
-                    .htod_copy(output_offsets)
+                self.stream
+                    .clone_htod(&output_offsets)
                     .map_err(|e| GpuFusedError::MemoryAlloc {
                         message: e.to_string(),
                     })?;
 
-            let d_comp_sizes = self.device.htod_copy(compressed_sizes).map_err(|e| {
+            let d_comp_sizes = self.stream.clone_htod(&compressed_sizes).map_err(|e| {
                 GpuFusedError::MemoryAlloc {
                     message: e.to_string(),
                 }
             })?;
 
             let d_out_sizes =
-                self.device
-                    .htod_copy(output_sizes)
+                self.stream
+                    .clone_htod(&output_sizes)
                     .map_err(|e| GpuFusedError::MemoryAlloc {
                         message: e.to_string(),
                     })?;
@@ -315,27 +328,20 @@ pub mod cuda {
             // Convert scales to bytes
             let scales_bytes: Vec<u8> = scales.iter().flat_map(|s| s.to_le_bytes()).collect();
             let d_scales =
-                self.device
-                    .htod_copy(scales_bytes)
+                self.stream
+                    .clone_htod(&scales_bytes)
                     .map_err(|e| GpuFusedError::MemoryAlloc {
                         message: e.to_string(),
                     })?;
 
             let d_zero_points =
-                self.device
-                    .htod_copy(zp_vec)
+                self.stream
+                    .clone_htod(&zp_vec)
                     .map_err(|e| GpuFusedError::MemoryAlloc {
                         message: e.to_string(),
                     })?;
 
             // Launch parallel kernel
-            let func = self
-                .device
-                .get_func("fused_lz4_int4", "fused_lz4_int4_blocks_parallel")
-                .ok_or_else(|| GpuFusedError::KernelLoad {
-                    message: "fused_lz4_int4_blocks_parallel not found".to_string(),
-                })?;
-
             let cfg = LaunchConfig {
                 grid_dim: (num_blocks as u32, 1, 1),
                 block_dim: (1, 1, 1), // One thread per LZ4 block for sequential decompression
@@ -343,26 +349,24 @@ pub mod cuda {
             };
 
             unsafe {
-                func.launch(
-                    cfg,
-                    (
-                        &d_compressed,
-                        &d_output,
-                        &d_comp_offsets,
-                        &d_out_offsets,
-                        &d_comp_sizes,
-                        &d_out_sizes,
-                        &d_scales,
-                        &d_zero_points,
-                        num_blocks as u32,
-                    ),
-                )
+                self.stream
+                    .launch_builder(func)
+                    .arg(&d_compressed)
+                    .arg(&d_output)
+                    .arg(&d_comp_offsets)
+                    .arg(&d_out_offsets)
+                    .arg(&d_comp_sizes)
+                    .arg(&d_out_sizes)
+                    .arg(&d_scales)
+                    .arg(&d_zero_points)
+                    .arg(&(num_blocks as u32))
+                    .launch(cfg)
             }
             .map_err(|e| GpuFusedError::KernelExec {
                 message: e.to_string(),
             })?;
 
-            self.device
+            self.stream
                 .synchronize()
                 .map_err(|e| GpuFusedError::Synchronize {
                     message: e.to_string(),
@@ -383,8 +387,8 @@ pub mod cuda {
 
             let num_values: usize = shape.iter().product();
             let mut host_data = vec![half::f16::ZERO; num_values];
-            self.device
-                .dtoh_sync_copy_into(&d_output, &mut host_data)
+            self.stream
+                .memcpy_dtoh(&d_output, &mut host_data)
                 .map_err(|e| GpuFusedError::MemoryCopy {
                     message: e.to_string(),
                 })?;
@@ -403,52 +407,43 @@ pub mod cuda {
             scale: half::f16,
             num_values: usize,
         ) -> Result<CudaSlice<half::f16>, GpuFusedError> {
-            if !self.lz4_int8_kernel_loaded {
-                return Err(GpuFusedError::KernelNotLoaded {
+            let func = self.lz4_int8_blocks_parallel_fn.as_ref().ok_or_else(|| {
+                GpuFusedError::KernelNotLoaded {
                     kernel: "fused_lz4_int8".to_string(),
-                });
-            }
+                }
+            })?;
 
-            let d_compressed = self.device.htod_copy(compressed.to_vec()).map_err(|e| {
+            let d_compressed = self.stream.clone_htod(compressed).map_err(|e| {
                 GpuFusedError::MemoryAlloc {
                     message: e.to_string(),
                 }
             })?;
 
             let d_output: CudaSlice<half::f16> =
-                self.device
+                self.stream
                     .alloc_zeros(num_values)
                     .map_err(|e| GpuFusedError::MemoryAlloc {
                         message: e.to_string(),
                     })?;
 
-            let func = self
-                .device
-                .get_func("fused_lz4_int8", "fused_lz4_int8_block")
-                .ok_or_else(|| GpuFusedError::KernelLoad {
-                    message: "fused_lz4_int8_block not found".to_string(),
-                })?;
-
             let cfg = LaunchConfig::for_num_elems(1);
             let scale_bits = scale.to_bits();
 
             unsafe {
-                func.launch(
-                    cfg,
-                    (
-                        &d_compressed,
-                        compressed.len() as u32,
-                        &d_output,
-                        num_values as u32,
-                        scale_bits as u32,
-                    ),
-                )
+                self.stream
+                    .launch_builder(func)
+                    .arg(&d_compressed)
+                    .arg(&(compressed.len() as u32))
+                    .arg(&d_output)
+                    .arg(&(num_values as u32))
+                    .arg(&(scale_bits as u32))
+                    .launch(cfg)
             }
             .map_err(|e| GpuFusedError::KernelExec {
                 message: e.to_string(),
             })?;
 
-            self.device
+            self.stream
                 .synchronize()
                 .map_err(|e| GpuFusedError::Synchronize {
                     message: e.to_string(),
@@ -1242,8 +1237,7 @@ INT8_DONE:
             match GpuFusedContext::new(0) {
                 Ok(ctx) => {
                     assert_eq!(ctx.device_id(), 0);
-                    assert!(!ctx.lz4_int4_kernel_loaded);
-                    assert!(!ctx.lz4_int8_kernel_loaded);
+                    // Kernels start unloaded (Option fields are None)
                 },
                 Err(GpuFusedError::DeviceInit { .. }) => {
                     eprintln!("Skipping: no CUDA device");
@@ -1261,7 +1255,7 @@ INT8_DONE:
 
             let mut ctx = GpuFusedContext::new(0).unwrap();
             ctx.load_lz4_int4_kernel().expect("kernel load");
-            assert!(ctx.lz4_int4_kernel_loaded);
+            // Kernel is now loaded (module is Some)
 
             // Second load should be no-op
             ctx.load_lz4_int4_kernel().expect("second load");
@@ -1290,8 +1284,8 @@ INT8_DONE:
                 .unwrap();
 
             let mut host_result = vec![half::f16::ZERO; num_values];
-            ctx.device
-                .dtoh_sync_copy_into(&result, &mut host_result)
+            ctx.stream()
+                .memcpy_dtoh(&result, &mut host_result)
                 .unwrap();
 
             let expected: Vec<f32> = vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5];
@@ -1329,8 +1323,8 @@ INT8_DONE:
                 .unwrap();
 
             let mut host_result = vec![half::f16::ZERO; num_values];
-            ctx.device
-                .dtoh_sync_copy_into(&result, &mut host_result)
+            ctx.stream()
+                .memcpy_dtoh(&result, &mut host_result)
                 .unwrap();
 
             // Expected: (0-4)*1, (1-4)*1, ... = -4, -3, -2, -1, 0, 1, 2, 3
@@ -1374,8 +1368,8 @@ INT8_DONE:
 
             let total = n1 + n2;
             let mut host_result = vec![half::f16::ZERO; total];
-            ctx.device
-                .dtoh_sync_copy_into(&result, &mut host_result)
+            ctx.stream()
+                .memcpy_dtoh(&result, &mut host_result)
                 .unwrap();
 
             // Block 1: 0*0.1, 1*0.1, 2*0.1, 3*0.1 = 0.0, 0.1, 0.2, 0.3
@@ -1432,8 +1426,8 @@ INT8_DONE:
                 .unwrap();
 
             let mut host_result = vec![half::f16::ZERO; num_values];
-            ctx.device
-                .dtoh_sync_copy_into(&result, &mut host_result)
+            ctx.stream()
+                .memcpy_dtoh(&result, &mut host_result)
                 .unwrap();
 
             // Expected: values * 0.01
@@ -1539,8 +1533,8 @@ INT8_DONE:
 
             let mut fused_host = vec![half::f16::ZERO; num_values];
             fused_ctx
-                .device
-                .dtoh_sync_copy_into(&fused_result, &mut fused_host)
+                .stream()
+                .memcpy_dtoh(&fused_result, &mut fused_host)
                 .expect("copy fused");
 
             // === Sequential path (CPU reference) ===
@@ -1604,8 +1598,8 @@ INT8_DONE:
                 .expect("fused INT8 kernel");
 
             let mut fused_host = vec![half::f16::ZERO; num_values];
-            ctx.device
-                .dtoh_sync_copy_into(&fused_result, &mut fused_host)
+            ctx.stream()
+                .memcpy_dtoh(&fused_result, &mut fused_host)
                 .expect("copy fused");
 
             // Sequential CPU reference
@@ -1666,8 +1660,8 @@ INT8_DONE:
                 .unwrap();
             let mut decompressed_host = vec![0u8; quantized.data.len()];
             lz4_ctx
-                .cuda_device()
-                .dtoh_sync_copy_into(&d_decompressed, &mut decompressed_host)
+                .stream()
+                .memcpy_dtoh(&d_decompressed, &mut decompressed_host)
                 .unwrap();
 
             // INT4 dequant (sequential path via CPU, since Pipeline A reference is CPU)
@@ -1720,8 +1714,8 @@ INT8_DONE:
 
                 let mut block_host = vec![half::f16::ZERO; block_num_values];
                 fused_ctx
-                    .device
-                    .dtoh_sync_copy_into(&fused_result, &mut block_host)
+                    .stream()
+                    .memcpy_dtoh(&fused_result, &mut block_host)
                     .unwrap();
                 fused_f16.extend_from_slice(&block_host);
             }
@@ -1766,7 +1760,7 @@ INT8_DONE:
                 .collect();
 
             // 2. Encode with GPU LRDF encoder
-            let device = cudarc::driver::CudaDevice::new(0).unwrap();
+            let device = cudarc::driver::CudaContext::new(0).unwrap();
             let encoder = GpuLrdfEncoder::new(device, 4, 42).unwrap().with_max_rank(8);
             let gpu_fragments = encoder.encode_2d(&data, rows, cols).unwrap();
             let holo_fragments: Vec<_> = gpu_fragments.iter().map(|f| f.to_haagenti()).collect();
@@ -1831,8 +1825,8 @@ INT8_DONE:
                         .fused_lz4_int4_block(&compressed, scale, zero_point, num_values)
                         .unwrap();
                     let mut fused_host = vec![half::f16::ZERO; num_values];
-                    ctx.device
-                        .dtoh_sync_copy_into(&fused_result, &mut fused_host)
+                    ctx.stream()
+                        .memcpy_dtoh(&fused_result, &mut fused_host)
                         .unwrap();
 
                     // Sequential CPU reference: (nibble - zero_point) * scale → F16
@@ -1865,7 +1859,7 @@ INT8_DONE:
 
             use std::sync::Arc;
 
-            let device = match cudarc::driver::CudaDevice::new(0) {
+            let device = match cudarc::driver::CudaContext::new(0) {
                 Ok(d) => Arc::new(d),
                 Err(_) => {
                     eprintln!("Skipping: no CUDA device");

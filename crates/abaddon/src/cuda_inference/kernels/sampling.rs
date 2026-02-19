@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use cudarc::driver::{CudaDevice, CudaFunction, CudaSlice, DevicePtr, LaunchAsync, LaunchConfig};
+use cudarc::driver::{CudaContext, CudaFunction, CudaModule, CudaSlice, CudaStream, DevicePtr, LaunchConfig, PushKernelArg};
 
 use super::compile_cuda_kernel;
 use crate::cuda_inference::tensor::{GpuDType, GpuTensor};
@@ -91,8 +91,15 @@ extern "C" __global__ void argmax_f16(
 
 /// GPU-accelerated sampling kernel.
 pub struct SamplingKernel {
-    /// CUDA device.
-    device: Arc<CudaDevice>,
+    /// CUDA context.
+    ctx: Arc<CudaContext>,
+
+    /// CUDA stream for kernel launches.
+    stream: Arc<CudaStream>,
+
+    /// Loaded CUDA module.
+    #[allow(dead_code)]
+    module: Option<Arc<CudaModule>>,
 
     /// Softmax kernel function.
     softmax_fn: Option<CudaFunction>,
@@ -114,9 +121,11 @@ impl std::fmt::Debug for SamplingKernel {
 
 impl SamplingKernel {
     /// Create a new sampling kernel.
-    pub fn new(device: Arc<CudaDevice>) -> Result<Self, InferenceError> {
+    pub fn new(ctx: Arc<CudaContext>, stream: Arc<CudaStream>) -> Result<Self, InferenceError> {
         let mut kernel = Self {
-            device,
+            ctx,
+            stream,
+            module: None,
             softmax_fn: None,
             temperature_fn: None,
             argmax_fn: None,
@@ -132,35 +141,30 @@ impl SamplingKernel {
         let ptx = compile_cuda_kernel(SAMPLING_CUDA)
             .map_err(|e| InferenceError::Kernel(format!("NVRTC compilation failed: {}", e)))?;
 
-        // Load PTX into device
-        self.device
-            .load_ptx(
-                ptx,
-                "sampling",
-                &["softmax_f16", "temperature_scale_f16", "argmax_f16"],
-            )
+        // Load PTX module into device
+        let module = self.ctx
+            .load_module(ptx)
             .map_err(|e| InferenceError::Kernel(format!("Failed to load sampling PTX: {}", e)))?;
 
         self.softmax_fn = Some(
-            self.device
-                .get_func("sampling", "softmax_f16")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get softmax_f16".to_string()))?,
+            module
+                .load_function("softmax_f16")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to get softmax_f16 function: {}", e)))?,
         );
 
         self.temperature_fn = Some(
-            self.device
-                .get_func("sampling", "temperature_scale_f16")
-                .ok_or_else(|| {
-                    InferenceError::Kernel("Failed to get temperature_scale_f16".to_string())
-                })?,
+            module
+                .load_function("temperature_scale_f16")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to get temperature_scale_f16 function: {}", e)))?,
         );
 
         self.argmax_fn = Some(
-            self.device
-                .get_func("sampling", "argmax_f16")
-                .ok_or_else(|| InferenceError::Kernel("Failed to get argmax_f16".to_string()))?,
+            module
+                .load_function("argmax_f16")
+                .map_err(|e| InferenceError::Kernel(format!("Failed to get argmax_f16 function: {}", e)))?,
         );
 
+        self.module = Some(module);
         Ok(())
     }
 
@@ -198,8 +202,12 @@ impl SamplingKernel {
         };
 
         unsafe {
-            func.clone()
-                .launch(cfg, (logits.device_ptr(), n as i32, inv_temp))
+            self.stream
+                .launch_builder(func)
+                .arg(&logits.device_ptr())
+                .arg(&(n as i32))
+                .arg(&inv_temp)
+                .launch(cfg)
                 .map_err(|e| InferenceError::Kernel(e.to_string()))?;
         }
 
@@ -239,11 +247,12 @@ impl SamplingKernel {
         };
 
         unsafe {
-            func.clone()
-                .launch(
-                    cfg,
-                    (logits.device_ptr(), output.device_ptr(), vocab_size as i32),
-                )
+            self.stream
+                .launch_builder(func)
+                .arg(&logits.device_ptr())
+                .arg(&output.device_ptr())
+                .arg(&(vocab_size as i32))
+                .launch(cfg)
                 .map_err(|e| InferenceError::Kernel(e.to_string()))?;
         }
 
@@ -263,7 +272,7 @@ impl SamplingKernel {
 
         // Allocate result on GPU
         let result: CudaSlice<u32> = self
-            .device
+            .stream
             .alloc_zeros(1)
             .map_err(|e| InferenceError::Memory(e.to_string()))?;
 
@@ -273,16 +282,23 @@ impl SamplingKernel {
             shared_mem_bytes: 0,
         };
 
+        let logits_ptr = logits.device_ptr();
+        let (result_ptr, _result_guard) = result.device_ptr(&self.stream);
+        let n_i32 = n as i32;
+
         unsafe {
-            func.clone()
-                .launch(cfg, (logits.device_ptr(), *result.device_ptr(), n as i32))
+            self.stream
+                .launch_builder(func)
+                .arg(&logits_ptr)
+                .arg(&result_ptr)
+                .arg(&n_i32)
+                .launch(cfg)
                 .map_err(|e| InferenceError::Kernel(e.to_string()))?;
         }
 
         // Copy result back
-        let mut host_result = [0u32];
-        self.device
-            .dtoh_sync_copy_into(&result, &mut host_result)
+        let host_result: Vec<u32> = self.stream
+            .clone_dtoh(&result)
             .map_err(|e| InferenceError::Memory(e.to_string()))?;
 
         Ok(host_result[0])
@@ -314,7 +330,7 @@ impl SamplingKernel {
         // A full GPU implementation would do top-k/top-p filtering on device
 
         // Compute softmax
-        let mut probs = GpuTensor::zeros(vec![vocab_size], GpuDType::F16, self.device.clone())?;
+        let mut probs = GpuTensor::zeros(vec![vocab_size], GpuDType::F16, self.ctx.clone())?;
         self.softmax(logits, &mut probs)?;
 
         // Copy to CPU for sampling
@@ -426,9 +442,14 @@ impl SamplingKernel {
         Ok((probs.len() - 1) as u32)
     }
 
-    /// Get device reference.
-    pub fn device(&self) -> &Arc<CudaDevice> {
-        &self.device
+    /// Get context reference.
+    pub fn ctx(&self) -> &Arc<CudaContext> {
+        &self.ctx
+    }
+
+    /// Get stream reference.
+    pub fn stream(&self) -> &Arc<CudaStream> {
+        &self.stream
     }
 }
 
@@ -502,15 +523,22 @@ mod tests {
 
     #[test]
     fn test_top_k_filtering() {
-        let device = match cudarc::driver::CudaDevice::new(0) {
+        let ctx = match cudarc::driver::CudaContext::new(0) {
             Ok(d) => d,
             Err(_) => {
                 return; // Skip test: no CUDA device available
-                return;
+            },
+        };
+        let stream = match ctx.default_stream() {
+            Ok(s) => s,
+            Err(_) => {
+                return; // Skip test: no stream available
             },
         };
         let kernel = SamplingKernel {
-            device,
+            ctx,
+            stream,
+            module: None,
             softmax_fn: None,
             temperature_fn: None,
             argmax_fn: None,
@@ -528,15 +556,22 @@ mod tests {
 
     #[test]
     fn test_top_p_filtering() {
-        let device = match cudarc::driver::CudaDevice::new(0) {
+        let ctx = match cudarc::driver::CudaContext::new(0) {
             Ok(d) => d,
             Err(_) => {
                 return; // Skip test: no CUDA device available
-                return;
+            },
+        };
+        let stream = match ctx.default_stream() {
+            Ok(s) => s,
+            Err(_) => {
+                return; // Skip test: no stream available
             },
         };
         let kernel = SamplingKernel {
-            device,
+            ctx,
+            stream,
+            module: None,
             softmax_fn: None,
             temperature_fn: None,
             argmax_fn: None,

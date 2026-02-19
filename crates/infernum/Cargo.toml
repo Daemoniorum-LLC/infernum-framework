@@ -39,6 +39,13 @@ grimoire-loader = { path = "../grimoire-loader", version = "0.2.0-rc.2" }
 infernum-paimon = { path = "../paimon", version = "0.2.0-rc.2" }
 infernum-server = { path = "../infernum-server", version = "0.2.0-rc.2", optional = true }
 
+# Room collaboration
+conclave = { path = "../conclave", version = "0.2.0-rc.2" }
+
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+
 # Async
 tokio = { workspace = true }
 async-trait = { workspace = true }

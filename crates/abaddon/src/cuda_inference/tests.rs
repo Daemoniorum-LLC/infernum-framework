@@ -7,15 +7,15 @@
 mod tests {
     use std::sync::Arc;
 
-    use cudarc::driver::CudaDevice;
+    use cudarc::driver::CudaContext;
 
     use crate::cuda_inference::arch::{Activation, ModelArch, ModelConfig};
     use crate::cuda_inference::cublas::CublasHandle;
     use crate::cuda_inference::tensor::{GpuDType, GpuTensor};
 
     /// Helper to get CUDA device if available.
-    fn get_cuda_device() -> Option<Arc<CudaDevice>> {
-        CudaDevice::new(0).ok()
+    fn get_cuda_device() -> Option<Arc<CudaContext>> {
+        CudaContext::new(0).ok()
     }
 
     // ==================== GpuTensor Tests ====================
@@ -831,7 +831,7 @@ mod tests {
                 let start = std::time::Instant::now();
                 let _ = engine.prefill(&tokens, &weights).expect("Prefill failed");
                 // Sync to ensure GPU work completes
-                weights.device().synchronize().ok();
+                weights.stream().synchronize().ok();
                 total_time += start.elapsed();
             }
 
@@ -863,7 +863,7 @@ mod tests {
 
             let start = std::time::Instant::now();
             let _ = engine.decode(token, &weights).expect("Decode failed");
-            weights.device().synchronize().ok();
+            weights.stream().synchronize().ok();
             decode_times.push(start.elapsed());
         }
 

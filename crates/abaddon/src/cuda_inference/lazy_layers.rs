@@ -19,8 +19,8 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use cudarc::driver::CudaDevice;
-use tracing::{debug, info, warn};
+use cudarc::driver::CudaContext;
+use tracing::{debug, info};
 
 use super::arch::{ModelConfig, WeightNameMap};
 use super::weight_store::LayerWeights;
@@ -32,7 +32,7 @@ pub trait LayerLoader: Send + Sync {
     fn load_layer(
         &self,
         idx: usize,
-        device: &Arc<CudaDevice>,
+        device: &Arc<CudaContext>,
     ) -> Result<LayerWeights, InferenceError>;
 
     /// Estimate VRAM size for a layer in bytes.
@@ -83,7 +83,7 @@ pub struct LazyLayerStore {
     current_vram: u64,
 
     /// CUDA device for loading.
-    device: Arc<CudaDevice>,
+    device: Arc<CudaContext>,
 
     /// Statistics.
     total_loads: u64,
@@ -100,7 +100,7 @@ impl LazyLayerStore {
     /// * `loader` - Layer loader for on-demand loading
     /// * `device` - CUDA device
     /// * `vram_budget` - Maximum VRAM for layer storage in bytes
-    pub fn new(loader: Arc<dyn LayerLoader>, device: Arc<CudaDevice>, vram_budget: u64) -> Self {
+    pub fn new(loader: Arc<dyn LayerLoader>, device: Arc<CudaContext>, vram_budget: u64) -> Self {
         info!(
             "LazyLayerStore created: {} layers, {:.2} GB budget",
             loader.num_layers(),
@@ -213,7 +213,7 @@ impl LazyLayerStore {
     }
 
     /// Get the CUDA device.
-    pub fn device(&self) -> &Arc<CudaDevice> {
+    pub fn device(&self) -> &Arc<CudaContext> {
         &self.device
     }
 
@@ -341,7 +341,7 @@ impl HoloLayerLoader {
     pub fn new(
         hct_dir: impl AsRef<Path>,
         config: ModelConfig,
-        device: Arc<CudaDevice>,
+        device: Arc<CudaContext>,
     ) -> Result<Self, InferenceError> {
         let hct_dir = hct_dir.as_ref();
 
@@ -429,7 +429,7 @@ impl HoloLayerLoader {
     fn load_holotensor_file(
         &self,
         path: &Path,
-        device: &Arc<CudaDevice>,
+        device: &Arc<CudaContext>,
     ) -> Result<(GpuTensor, Vec<usize>), InferenceError> {
         let file = File::open(path).map_err(|e| {
             InferenceError::ModelLoad(format!("Cannot open {}: {}", path.display(), e))
@@ -464,8 +464,9 @@ impl HoloLayerLoader {
                 std::slice::from_raw_parts(f16_data.as_ptr() as *const u8, f16_data.len() * 2)
             };
 
-            let gpu_data: CudaSlice<u8> = device
-                .htod_sync_copy(bytes)
+            let stream = device.default_stream();
+            let gpu_data: CudaSlice<u8> = stream
+                .clone_htod(bytes)
                 .map_err(|e| InferenceError::Memory(format!("Failed to upload tensor: {}", e)))?;
 
             GpuTensor::from_cuda_slice(gpu_data, shape.clone(), GpuDType::F16, Arc::clone(device))?
@@ -496,7 +497,7 @@ impl LayerLoader for HoloLayerLoader {
     fn load_layer(
         &self,
         idx: usize,
-        device: &Arc<CudaDevice>,
+        device: &Arc<CudaContext>,
     ) -> Result<LayerWeights, InferenceError> {
         let layer_map = self.layer_files.get(&idx).ok_or_else(|| {
             InferenceError::ModelLoad(format!("Layer {} not found in indexed files", idx))
@@ -757,7 +758,7 @@ mod tests {
         fn load_layer(
             &self,
             _idx: usize,
-            _device: &Arc<CudaDevice>,
+            _device: &Arc<CudaContext>,
         ) -> Result<LayerWeights, InferenceError> {
             // Mock - would need actual device to test
             Err(InferenceError::Device(
