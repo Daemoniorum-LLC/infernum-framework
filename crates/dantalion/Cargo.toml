@@ -45,7 +45,7 @@ parking_lot = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
-tempfile = "3.10"
+tempfile = "3.26"
 
 [lints]
 workspace = true

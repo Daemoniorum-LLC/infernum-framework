@@ -50,7 +50,7 @@ stolas = { path = "../stolas", version = "0.2.0-rc.2" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
-tempfile = "3.14"
+tempfile = "3.26"
 
 [lints]
 workspace = true
