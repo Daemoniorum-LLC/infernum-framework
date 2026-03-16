@@ -54,7 +54,7 @@ safetensors = { workspace = true }
 
 # CLI
 clap = { workspace = true }
-clap_complete = "4.5"
+clap_complete = "4.6"
 dialoguer = { workspace = true }
 indicatif = { workspace = true }
 console = { workspace = true }
@@ -81,9 +81,9 @@ tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
-assert_cmd = "2.0"
+assert_cmd = "2.2"
 predicates = "3.1"
-tempfile = "3.19"
+tempfile = "3.27"
 
 [lints]
 workspace = true
