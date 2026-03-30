@@ -58,7 +58,7 @@ utoipa = { version = "5", features = ["axum_extras", "chrono"] }
 utoipa-swagger-ui = { version = "9", features = ["axum"] }
 
 # Cryptography (Phase 3 security)
-sha2 = "0.10"
+sha2 = "0.11"
 hex = "0.4"
 subtle = "2.5"
 
@@ -102,8 +102,8 @@ tonic-build = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
 axum-test = "18.7"
 reqwest = { version = "0.13", features = ["json"] }
-tempfile = "3.19"
-criterion = { version = "0.6", features = ["async_tokio"] }
+tempfile = "3.27"
+criterion = { version = "0.8", features = ["async_tokio"] }
 
 [[bench]]
 name = "server_benchmarks"
