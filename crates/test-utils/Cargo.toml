@@ -11,12 +11,12 @@ publish = false
 infernum-core = { path = "../infernum-core" }
 
 # Async runtime
-tokio = { version = "1.48", features = ["full", "test-util"] }
+tokio = { version = "1.51", features = ["full", "test-util"] }
 
 # HTTP testing
 axum = "0.8"
 tower = "0.5"
-hyper = { version = "1.0", features = ["full"] }
+hyper = { version = "1.9", features = ["full"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -27,7 +27,7 @@ thiserror = "2.0"
 anyhow = "1.0"
 
 # Utilities
-uuid = { version = "1.20", features = ["v4"] }
+uuid = { version = "1.23", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]

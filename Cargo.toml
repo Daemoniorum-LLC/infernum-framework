@@ -32,7 +32,7 @@ categories = ["science", "api-bindings", "command-line-utilities"]
 
 [workspace.dependencies]
 # Async runtime
-tokio = { version = "1.48", features = ["full"] }
+tokio = { version = "1.51", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures = "0.3"
 async-trait = "0.1"
@@ -50,19 +50,19 @@ axum-server = { version = "0.8", features = ["tls-rustls"] }
 tower = { version = "0.5", features = ["full"] }
 tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip", "timeout"] }
 reqwest = { version = "0.13", features = ["json", "stream"] }
-hyper = { version = "1.6", features = ["full"] }
+hyper = { version = "1.9", features = ["full"] }
 rustls-pemfile = "2.2"
 
 # ML/Tensor operations
 # Note: default-features = false to avoid pulling in CUDA unconditionally
 # GPU features are enabled via crate feature flags (cuda, metal)
-candle-core = { version = "0.9", default-features = false }
-candle-nn = { version = "0.9", default-features = false }
-candle-transformers = { version = "0.9", default-features = false }
-candle-flash-attn = "0.9"
+candle-core = { version = "0.10", default-features = false }
+candle-nn = { version = "0.10", default-features = false }
+candle-transformers = { version = "0.10", default-features = false }
+candle-flash-attn = "0.10"
 safetensors = "0.7"
 tokenizers = "0.22"
-hf-hub = "0.4"
+hf-hub = "0.5"
 half = "2.4"
 
 # CUDA runtime (for GPU queries) - using 0.12 for API stability
@@ -71,8 +71,8 @@ half = "2.4"
 cudarc = { version = "0.19", features = ["cuda-version-from-build-system", "f16", "cublas"] }
 
 # Vector storage
-lance = "2.0"
-lancedb = "0.26"
+lance = "4.0"
+lancedb = "0.27"
 arrow-array = "54"
 arrow-schema = "54"
 
@@ -110,9 +110,9 @@ config = "0.14"
 notify = { version = "8.0", default-features = false, features = ["macos_fsevent"] }
 
 # Utilities
-uuid = { version = "1.20", features = ["v4", "serde"] }
+uuid = { version = "1.23", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
-rand = "0.9"
+rand = "0.10"
 hex = "0.4"
 dashmap = "6.1"
 parking_lot = "0.12"
@@ -141,8 +141,8 @@ tree-sitter-cpp = "0.23"
 tree-sitter-c-sharp = "0.23"
 
 # Testing
-criterion = "0.6"
-proptest = "1.10"
+criterion = "0.8"
+proptest = "1.11"
 test-log = "0.2"
 mockall = "0.14"
 wiremock = "0.6"
