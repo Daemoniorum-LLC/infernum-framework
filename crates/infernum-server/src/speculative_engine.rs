@@ -341,6 +341,11 @@ impl SpeculativeEngine {
                 })?;
                 DraftModelKind::Llama(model)
             },
+            ArchitectureType::Bert | ArchitectureType::NomicBert => {
+                return Err(SpeculativeEngineError::ModelLoad(
+                    "BERT models do not support speculative decoding".to_string(),
+                ));
+            },
         };
 
         Ok((
