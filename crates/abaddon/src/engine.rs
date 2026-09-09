@@ -436,6 +436,13 @@ impl Engine {
             );
         }
 
+        // BERT embedding models are small — always use F32 for numerical stability on CPU
+        let dtype = if matches!(arch_type, ArchitectureType::Bert | ArchitectureType::NomicBert) {
+            DType::F32
+        } else {
+            dtype
+        };
+
         // Standard loading path - load all weights into VarBuilder
         let vb = Self::load_weights(&files.weights, device, dtype)?;
 
@@ -444,6 +451,40 @@ impl Engine {
 
         // Load the appropriate model based on architecture
         let model = match arch_type {
+            ArchitectureType::Bert => {
+                let config_json = std::fs::read_to_string(&files.config)
+                    .map_err(|e| infernum_core::Error::ModelLoad {
+                        message: format!("Failed to read BERT config: {}", e),
+                    })?;
+
+                let bert_config: crate::models::BertConfig =
+                    serde_json::from_str(&config_json).map_err(|e| infernum_core::Error::ModelLoad {
+                        message: format!("Failed to parse BERT config: {}", e),
+                    })?;
+
+                let bert = crate::models::Bert::load(bert_config, vb)
+                    .map_err(|e| infernum_core::Error::ModelLoad {
+                        message: format!("Failed to load BERT model: {}", e),
+                    })?;
+                ModelKind::Bert(bert)
+            },
+            ArchitectureType::NomicBert => {
+                let config_json = std::fs::read_to_string(&files.config)
+                    .map_err(|e| infernum_core::Error::ModelLoad {
+                        message: format!("Failed to read NomicBERT config: {}", e),
+                    })?;
+
+                let nomic_config: crate::models::NomicBertConfig =
+                    serde_json::from_str(&config_json).map_err(|e| infernum_core::Error::ModelLoad {
+                        message: format!("Failed to parse NomicBERT config: {}", e),
+                    })?;
+
+                let nomic = crate::models::NomicBert::load(nomic_config, vb)
+                    .map_err(|e| infernum_core::Error::ModelLoad {
+                        message: format!("Failed to load NomicBERT model: {}", e),
+                    })?;
+                ModelKind::NomicBert(nomic)
+            },
             ArchitectureType::Qwen2 => {
                 let qwen2_config = Qwen2Config {
                     hidden_size: model_config.hidden_size.unwrap_or(3584),
@@ -762,6 +803,11 @@ impl Engine {
 
                 ModelKind::LazyLlama(lazy_llama)
             },
+            ArchitectureType::Bert | ArchitectureType::NomicBert => {
+                return Err(infernum_core::Error::ModelLoad {
+                    message: "BERT models are small and do not need lazy loading".to_string(),
+                });
+            },
         };
 
         // Load tokenizer
@@ -1030,6 +1076,11 @@ impl Engine {
 
                 ModelKind::LazyLlama(lazy_llama)
             },
+            ArchitectureType::Bert | ArchitectureType::NomicBert => {
+                return Err(infernum_core::Error::ModelLoad {
+                    message: "BERT models are small and do not need lazy loading".to_string(),
+                });
+            },
         };
 
         // Load tokenizer
@@ -1227,6 +1278,11 @@ impl Engine {
                     })?;
 
                 ModelKind::LazyLlama(lazy_llama)
+            },
+            ArchitectureType::Bert | ArchitectureType::NomicBert => {
+                return Err(infernum_core::Error::ModelLoad {
+                    message: "BERT models are small and do not need lazy loading".to_string(),
+                });
             },
         };
 
