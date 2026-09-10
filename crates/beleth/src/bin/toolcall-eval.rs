@@ -174,6 +174,15 @@ struct ProbeResult {
     right_tool: bool,
     /// A call named the expected tool and carried every required argument.
     schema_valid: bool,
+    /// Emitted well-formed tool-call JSON in the WRONG envelope.
+    ///
+    /// Observed on Qwen2.5-Coder-1.5B: correct `{"name":..,"arguments":..}`
+    /// wrapped in `<answer>` rather than `<tool_call>`. The executor's own
+    /// system prompt offers both tags, and a weak model conflates them.
+    /// Diagnostically distinct from both "emitted nothing" and "emitted
+    /// malformed JSON": the reasoning is right and only the envelope is
+    /// wrong, so it is a prompt/format problem rather than a capability one.
+    wrong_wrapper: bool,
     /// Generation wall time.
     latency_ms: u128,
     /// First 400 chars of raw output, kept only for failures.
@@ -196,6 +205,8 @@ struct PhaseA {
     right_tool: usize,
     /// Attempts naming the expected tool with all required args.
     schema_valid: usize,
+    /// Attempts emitting well-formed call JSON in the wrong envelope.
+    wrong_wrapper: usize,
     mean_latency_ms: f64,
     results: Vec<ProbeResult>,
 }
@@ -203,12 +214,17 @@ struct PhaseA {
 impl PhaseA {
     /// Malformed tool calls as a fraction of tool calls emitted.
     ///
-    /// This is the disqualifying metric.
-    fn malformed_rate(&self) -> f64 {
+    /// This is the disqualifying metric. Returns `None` when nothing was
+    /// emitted: with no denominator the rate is **undefined**, not zero.
+    ///
+    /// Printing `0.00%` there would report a perfect score for a model that
+    /// never emitted a single tool call — a number that reads as success
+    /// while answering a question nobody asked. See issue #58.
+    fn malformed_rate(&self) -> Option<f64> {
         if self.total_tags == 0 {
-            return 0.0;
+            return None;
         }
-        self.total_malformed as f64 / self.total_tags as f64
+        Some(self.total_malformed as f64 / self.total_tags as f64)
     }
 
     fn emission_rate(&self) -> f64 {
@@ -222,8 +238,11 @@ impl PhaseA {
     /// Probability of at least one malformed call over an `n`-call task,
     /// assuming independence. Independence is an approximation, but it makes
     /// the compounding cost of a small per-call rate legible.
-    fn failure_over_task(&self, n: u32) -> f64 {
-        1.0 - (1.0 - self.malformed_rate()).powi(n as i32)
+    ///
+    /// `None` when the malformed rate itself is undefined.
+    fn failure_over_task(&self, n: u32) -> Option<f64> {
+        self.malformed_rate()
+            .map(|r| 1.0 - (1.0 - r).powi(n as i32))
     }
 }
 
@@ -554,6 +573,11 @@ async fn run_phase_a(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseA {
             let parsed = detector.detect(&text);
             let malformed = tags.saturating_sub(parsed.len());
 
+            // Well-formed call JSON outside a <tool_call> envelope. Checked
+            // only when no tag was emitted, so it never double-counts a
+            // properly wrapped call.
+            let wrong_wrapper = tags == 0 && looks_like_tool_json(&text, probe.expect_tool);
+
             let right_tool = parsed.iter().any(|c| c.name == probe.expect_tool);
             let schema_valid = parsed.iter().any(|c| {
                 c.name == probe.expect_tool
@@ -576,6 +600,9 @@ async fn run_phase_a(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseA {
             if schema_valid {
                 agg.schema_valid += 1;
             }
+            if wrong_wrapper {
+                agg.wrong_wrapper += 1;
+            }
             latencies.push(latency);
 
             agg.results.push(ProbeResult {
@@ -585,6 +612,7 @@ async fn run_phase_a(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseA {
                 malformed,
                 right_tool,
                 schema_valid,
+                wrong_wrapper,
                 latency_ms: latency,
                 // Keep evidence only where something went wrong.
                 sample: (!schema_valid).then(|| text.chars().take(400).collect()),
@@ -780,6 +808,20 @@ async fn run_phase_b(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseB {
 // Reporting
 // ---------------------------------------------------------------------------
 
+/// True when `text` contains a JSON object naming `tool` with an `arguments`
+/// field, outside any `<tool_call>` envelope.
+///
+/// Deliberately loose — it is a diagnostic, not a parser. Its job is to
+/// distinguish "the model had the right idea and mis-tagged it" from "the
+/// model produced nothing usable", which the emission rate alone conflates.
+fn looks_like_tool_json(text: &str, tool: &str) -> bool {
+    let Some(start) = text.find('{') else {
+        return false;
+    };
+    let body = &text[start..];
+    body.contains("\"arguments\"") && body.contains(tool)
+}
+
 fn ratio(n: usize, d: usize) -> f64 {
     if d == 0 {
         0.0
@@ -797,12 +839,18 @@ fn print_phase_a(a: &PhaseA) {
         a.emitted,
         a.attempts
     );
-    println!(
-        "  MALFORMED RATE        {:.2}%   ({}/{} emitted calls failed to parse)",
-        a.malformed_rate() * 100.0,
-        a.total_malformed,
-        a.total_tags
-    );
+    match a.malformed_rate() {
+        Some(r) => println!(
+            "  MALFORMED RATE        {:.2}%   ({}/{} emitted calls failed to parse)",
+            r * 100.0,
+            a.total_malformed,
+            a.total_tags
+        ),
+        None => println!(
+            "  MALFORMED RATE        n/a     (no tool calls were emitted — \
+             the rate is undefined, NOT 0%)"
+        ),
+    }
     println!(
         "  right tool            {:.1}%   ({}/{})",
         ratio(a.right_tool, a.attempts) * 100.0,
@@ -815,14 +863,24 @@ fn print_phase_a(a: &PhaseA) {
         a.schema_valid,
         a.attempts
     );
+    println!(
+        "  wrong envelope        {:.1}%   ({}/{} emitted valid call JSON \
+         outside <tool_call>)",
+        ratio(a.wrong_wrapper, a.attempts) * 100.0,
+        a.wrong_wrapper,
+        a.attempts
+    );
     println!("  mean latency          {:.0} ms", a.mean_latency_ms);
 
-    println!("\n  compounding over a multi-call task (assumes independence):");
-    for n in [10u32, 20, 40] {
-        println!(
-            "    P(>=1 malformed in {n:>2} calls)   {:.1}%",
-            a.failure_over_task(n) * 100.0
-        );
+    if a.malformed_rate().is_some() {
+        println!("\n  compounding over a multi-call task (assumes independence):");
+        for n in [10u32, 20, 40] {
+            if let Some(p) = a.failure_over_task(n) {
+                println!("    P(>=1 malformed in {n:>2} calls)   {:.1}%", p * 100.0);
+            }
+        }
+    } else {
+        println!("\n  compounding: not computable — nothing was emitted to compound.");
     }
 
     let failures: Vec<&ProbeResult> = a.results.iter().filter(|r| !r.schema_valid).collect();
