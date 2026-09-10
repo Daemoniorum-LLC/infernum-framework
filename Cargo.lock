@@ -39,6 +39,7 @@ dependencies = [
  "parking_lot",
  "proptest",
  "rayon",
+ "reqwest 0.13.2",
  "safetensors 0.7.0",
  "serde",
  "serde_json",
@@ -52,6 +53,7 @@ dependencies = [
  "tracing-subscriber",
  "ureq 3.2.0",
  "uuid",
+ "wiremock",
  "xxhash-rust",
  "zstd",
 ]

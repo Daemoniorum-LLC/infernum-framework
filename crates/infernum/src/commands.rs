@@ -260,11 +260,13 @@ pub async fn generate(
     backend: String,
     n_gpu_layers: i32,
     context_size: usize,
+    api_base: Option<String>,
+    api_key: Option<String>,
 ) -> Result<()> {
     // Parse backend type
     let backend_type = abaddon::BackendType::from_str(&backend).ok_or_else(|| {
         eyre!(
-            "Invalid backend: {}. Use auto, llama-cpp, or candle",
+            "Invalid backend: {}. Use auto, llama-cpp, candle, or openai",
             backend
         )
     })?;
@@ -302,6 +304,9 @@ pub async fn generate(
     // Determine effective backend based on model path
     let model_path = std::path::Path::new(&model_id);
     let effective_backend = match backend_type {
+        // `model_id` names a remote model, not a local artifact, so path
+        // sniffing would misroute it.
+        abaddon::BackendType::OpenAi => abaddon::BackendType::OpenAi,
         abaddon::BackendType::Auto => abaddon::BackendType::detect_from_path(model_path),
         other => other,
     };
@@ -328,6 +333,31 @@ pub async fn generate(
             return Err(eyre!(
                 "llama-cpp backend not enabled. Rebuild with --features llama-cpp"
             ));
+        },
+        abaddon::BackendType::OpenAi => {
+            let base = api_base.ok_or_else(|| {
+                eyre!(
+                    "--backend openai requires an API base URL.\n\n\
+                     Options:\n  \
+                     1. Pass --api-base http://localhost:8080/v1\n  \
+                     2. Set INFERNUM_API_BASE=http://localhost:8080/v1\n  \
+                     3. Set api_base in ~/.config/infernum/config.toml\n\n\
+                     Start a server first, e.g.:\n  \
+                     llama-server -m model.gguf -c 32768 --port 8080"
+                )
+            })?;
+
+            tracing::info!(base = %base, "Using OpenAI-compatible HTTP backend");
+            let mut builder = abaddon::OpenAiConfig::builder(&base, &model_id)
+                .context_length(context_size as u32);
+            if let Some(key) = api_key {
+                builder = builder.api_key(key);
+            }
+
+            let engine = abaddon::OpenAiEngine::connect(builder.build())
+                .await
+                .map_err(|e| eyre!("Failed to reach inference server at {}: {}", base, e))?;
+            Arc::new(engine)
         },
         abaddon::BackendType::Candle | abaddon::BackendType::Auto => {
             tracing::info!("Using Candle backend for inference");

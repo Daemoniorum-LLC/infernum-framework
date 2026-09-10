@@ -74,6 +74,14 @@ pub enum BackendType {
     /// Candle native Rust backend (research, custom architectures).
     /// Best for HCT/HoloTensor models and experimental features.
     Candle,
+
+    /// OpenAI-compatible HTTP backend (`llama-server`, vLLM, SGLang, ...).
+    ///
+    /// Inference runs out of process, so model-architecture and tokenizer
+    /// support come from that server rather than the pinned `llama_cpp`
+    /// bindings. Requires an API base URL; never inferred from a model path.
+    /// See [`crate::openai_engine`] and issue #56.
+    OpenAi,
 }
 
 impl BackendType {
@@ -83,6 +91,7 @@ impl BackendType {
             "auto" => Some(BackendType::Auto),
             "llama-cpp" | "llamacpp" | "llama_cpp" | "gguf" => Some(BackendType::LlamaCpp),
             "candle" | "hct" | "holotensor" => Some(BackendType::Candle),
+            "openai" | "openai-http" | "http" | "server" => Some(BackendType::OpenAi),
             _ => None,
         }
     }
@@ -134,6 +143,7 @@ impl BackendType {
             BackendType::Auto => "auto",
             BackendType::LlamaCpp => "llama-cpp",
             BackendType::Candle => "candle",
+            BackendType::OpenAi => "openai",
         }
     }
 }

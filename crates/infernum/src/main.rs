@@ -121,10 +121,13 @@ enum Commands {
         temperature: f32,
 
         /// Stream output
-        #[arg(short, long)]
+        ///
+        /// No short form: `-s` is taken by the global `--system` flag, and
+        /// registering it twice makes clap panic on every `generate` call.
+        #[arg(long)]
         stream: bool,
 
-        /// Inference backend: auto, llama-cpp, or candle
+        /// Inference backend: auto, llama-cpp, candle, or openai
         #[arg(short, long, default_value = "auto")]
         backend: String,
 
@@ -135,6 +138,15 @@ enum Commands {
         /// Context size in tokens
         #[arg(long, default_value = "4096")]
         context_size: usize,
+
+        /// Base URL of an OpenAI-compatible server, e.g.
+        /// http://localhost:8080/v1 (required by --backend openai)
+        #[arg(long, env = "INFERNUM_API_BASE")]
+        api_base: Option<String>,
+
+        /// Bearer token for the OpenAI-compatible server
+        #[arg(long, env = "INFERNUM_API_KEY", hide_env_values = true)]
+        api_key: Option<String>,
     },
 
     /// Generate embeddings
@@ -625,6 +637,8 @@ async fn main() -> Result<()> {
             backend,
             n_gpu_layers,
             context_size,
+            api_base,
+            api_key,
         }) => {
             // Use config default model if not specified on command line
             let model = model.or(cli.model).or(cfg.default_model.clone());
@@ -637,6 +651,8 @@ async fn main() -> Result<()> {
                 backend,
                 n_gpu_layers,
                 context_size,
+                api_base.or_else(|| cfg.api_base.clone()),
+                api_key.or_else(|| cfg.api_key.clone()),
             )
             .await?;
         },
