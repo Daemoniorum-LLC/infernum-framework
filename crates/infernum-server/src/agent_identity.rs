@@ -592,8 +592,8 @@ impl EncryptedIdentityStore {
 impl std::fmt::Debug for EncryptedIdentity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EncryptedIdentity")
-            .field("salt", &format!("{}...", &hex::encode(&self.salt[..4])))
-            .field("nonce", &format!("{}...", &hex::encode(&self.nonce[..4])))
+            .field("salt", &format!("{}...", hex::encode(&self.salt[..4])))
+            .field("nonce", &format!("{}...", hex::encode(&self.nonce[..4])))
             .field("ciphertext_len", &self.ciphertext.len())
             .finish()
     }

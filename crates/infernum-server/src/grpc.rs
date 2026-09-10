@@ -698,11 +698,9 @@ impl GrpcMetrics {
     pub fn avg_response_time(&self) -> Duration {
         let success = self.requests_success();
         let total_ns = self.response_time_ns.load(Ordering::Relaxed);
-        if success > 0 {
-            Duration::from_nanos(total_ns / success)
-        } else {
-            Duration::ZERO
-        }
+        total_ns
+            .checked_div(success)
+            .map_or(Duration::ZERO, Duration::from_nanos)
     }
 
     /// Renders metrics in Prometheus format.

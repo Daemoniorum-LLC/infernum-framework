@@ -217,7 +217,7 @@ impl Tenant {
             name: name.into(),
             limits: QuotaLimits::default(),
             minute_usage: UsageWindow::new(Duration::from_secs(60)),
-            day_usage: UsageWindow::new(Duration::from_secs(86400)),
+            day_usage: UsageWindow::new(Duration::from_hours(24)),
             concurrent: AtomicU64::new(0),
             total_requests: AtomicU64::new(0),
             total_tokens: AtomicU64::new(0),

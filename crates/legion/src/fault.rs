@@ -578,7 +578,7 @@ impl RecoveryManager {
     /// Get pending respawns (sorted by priority).
     pub fn pending_respawns(&mut self) -> Vec<RespawnRequest> {
         self.pending_respawns
-            .sort_by(|a, b| b.priority.cmp(&a.priority));
+            .sort_by_key(|r| std::cmp::Reverse(r.priority));
         std::mem::take(&mut self.pending_respawns)
     }
 

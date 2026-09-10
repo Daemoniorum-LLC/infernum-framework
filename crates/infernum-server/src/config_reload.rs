@@ -332,10 +332,10 @@ impl ConfigWatcher {
         let watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
             if let Ok(event) = res {
                 match event.kind {
-                    EventKind::Modify(_) | EventKind::Create(_) => {
-                        if event.paths.iter().any(|p| p == &path_clone) {
-                            let _ = tx_clone.blocking_send(());
-                        }
+                    EventKind::Modify(_) | EventKind::Create(_)
+                        if event.paths.iter().any(|p| p == &path_clone) =>
+                    {
+                        let _ = tx_clone.blocking_send(());
                     },
                     _ => {},
                 }

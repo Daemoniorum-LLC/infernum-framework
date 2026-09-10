@@ -1408,7 +1408,7 @@ impl HierarchicalTask {
             steps.push(step);
         } else {
             // Add parent as a milestone step
-            let mut milestone = PlanStep::new(&self.id, format!("[Group] {}", &self.description));
+            let mut milestone = PlanStep::new(&self.id, format!("[Group] {}", self.description));
             milestone.complexity = Some(self.complexity);
             milestone.dependencies = parent_ids.clone();
             steps.push(milestone);
