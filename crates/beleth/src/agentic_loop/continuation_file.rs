@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use super::continuation::{ContinuationState, ContinuationStore, StoreError};
 
 /// Default lifetime of a stored continuation.
-const DEFAULT_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+const DEFAULT_TTL: Duration = Duration::from_hours(24);
 
 /// Stores continuations as JSON files under a directory.
 #[derive(Debug, Clone)]
