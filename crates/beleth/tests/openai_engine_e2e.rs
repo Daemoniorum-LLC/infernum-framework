@@ -642,3 +642,52 @@ async fn resume_continues_from_recorded_state() {
         "resumed run should have done work"
     );
 }
+
+/// A continuation token is single-use.
+///
+/// `resume` removes the token after loading it, so a second attempt fails
+/// rather than silently rewinding to a stale point. This was verified by hand
+/// through the CLI and asserted in a commit message before it was asserted by
+/// anything executable — which is the gap this test closes.
+///
+/// Note this is a *weaker* claim than
+/// [`resume_continues_from_recorded_state`]: single-use says the token is
+/// consumed, not that the restored run carried any state.
+#[tokio::test]
+async fn continuation_token_is_single_use() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("m.txt");
+    std::fs::write(&file, "x").expect("write fixture");
+    let call = format!(
+        "<tool_call>\n{{\"name\": \"read_file\", \"arguments\": {{\"path\": \"{}\"}}}}\n</tool_call>",
+        file.display()
+    );
+
+    let (_server, engine, _) = scripted_server(vec![&call, &call, &call, &call]).await;
+
+    let store = Arc::new(beleth::InMemoryContinuationStore::with_defaults());
+    let config = permissive_config("single-use", dir.path()).with_loop_config(LoopConfig {
+        max_iterations: 1,
+        detect_implicit_signals: false,
+        ..LoopConfig::default()
+    });
+    let executor = LoopExecutor::new(engine, Arc::new(ToolRegistry::with_code_tools()), config)
+        .with_continuation_store(Arc::clone(&store) as Arc<dyn beleth::ContinuationStore>);
+
+    let (tx, _rx) = mpsc::channel(64);
+    let first = executor.run("go", tx).await.expect("first run");
+    let token = first.continuation_token.clone().expect("token minted");
+
+    let (tx2, _rx2) = mpsc::channel(64);
+    executor
+        .resume(&token, None, tx2)
+        .await
+        .expect("first resume succeeds");
+
+    let (tx3, _rx3) = mpsc::channel(64);
+    let second = executor.resume(&token, None, tx3).await;
+    assert!(
+        second.is_err(),
+        "a consumed token must not resume a second time"
+    );
+}
