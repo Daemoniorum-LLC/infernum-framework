@@ -878,11 +878,9 @@ impl QueueMetrics {
     pub fn avg_wait_time(&self) -> Duration {
         let total_ns = self.total_wait_ns.load(Ordering::Relaxed);
         let count = self.total_processed.load(Ordering::Relaxed);
-        if count > 0 {
-            Duration::from_nanos(total_ns / count)
-        } else {
-            Duration::ZERO
-        }
+        total_ns
+            .checked_div(count)
+            .map_or(Duration::ZERO, Duration::from_nanos)
     }
 
     /// Renders metrics in Prometheus format.

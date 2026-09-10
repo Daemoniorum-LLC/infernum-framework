@@ -559,7 +559,7 @@ impl Default for CorsConfig {
                 "x-api-key".to_string(),
             ],
             allow_credentials: false,
-            max_age: Duration::from_secs(86400), // 24 hours
+            max_age: Duration::from_hours(24), // 24 hours
         }
     }
 }

@@ -213,6 +213,14 @@ single_match_else = "allow"
 unnested_or_patterns = "allow"
 if_not_else = "allow"
 option_if_let_else = "allow"
+
+# New in Rust 1.98. Fires on ~27 async fns across paimon, abaddon, asmodeus,
+# malphas and infernum-server whose bodies do not currently `.await`. Dropping
+# `async` from any of them changes the signature and every `.await` on it --
+# several are public API on released crates -- so this is an API decision to be
+# taken deliberately, not a lint cleanup to be swept into a CI fix. Allowed here
+# so it is one recorded decision rather than 27 scattered attributes. See #59.
+unused_async_trait_impl = "allow"
 manual_let_else = "allow"
 trivially_copy_pass_by_ref = "allow"
 needless_pass_by_value = "allow"

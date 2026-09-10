@@ -397,20 +397,16 @@ impl SpeculativeStats {
 
     /// Returns average draft generation time.
     pub fn avg_draft_time(&self) -> Duration {
-        if self.rounds == 0 {
-            Duration::ZERO
-        } else {
-            Duration::from_nanos(self.draft_time_ns / self.rounds)
-        }
+        self.draft_time_ns
+            .checked_div(self.rounds)
+            .map_or(Duration::ZERO, Duration::from_nanos)
     }
 
     /// Returns average verification time.
     pub fn avg_verify_time(&self) -> Duration {
-        if self.rounds == 0 {
-            Duration::ZERO
-        } else {
-            Duration::from_nanos(self.verify_time_ns / self.rounds)
-        }
+        self.verify_time_ns
+            .checked_div(self.rounds)
+            .map_or(Duration::ZERO, Duration::from_nanos)
     }
 
     /// Returns speedup factor estimate.
