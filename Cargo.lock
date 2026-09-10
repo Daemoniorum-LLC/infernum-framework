@@ -33,7 +33,7 @@ dependencies = [
  "infernum-arbiter",
  "infernum-core",
  "llama_cpp",
- "lz4_flex 0.12.1",
+ "lz4_flex 0.14.0",
  "memmap2",
  "num_cpus",
  "parking_lot",
@@ -673,7 +673,7 @@ dependencies = [
  "arrow-schema",
  "arrow-select",
  "flatbuffers",
- "lz4_flex 0.12.1",
+ "lz4_flex 0.12.2",
  "zstd",
 ]
 
@@ -7225,9 +7225,18 @@ dependencies = [
 
 [[package]]
 name = "lz4_flex"
-version = "0.12.1"
+version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98c23545df7ecf1b16c303910a69b079e8e251d60f7dd2cc9b4177f2afaf1746"
+checksum = "90071f8077f8e40adfc4b7fe9cd495ce316263f19e75c2211eeff3fdf475a3d9"
+dependencies = [
+ "twox-hash",
+]
+
+[[package]]
+name = "lz4_flex"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ecbdfe44b1bd960b68170b417450a628c43f7cf56bb3c5317e61cb230ee7f226"
 dependencies = [
  "twox-hash",
 ]
