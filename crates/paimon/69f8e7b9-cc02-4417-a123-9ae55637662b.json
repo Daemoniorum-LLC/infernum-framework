@@ -1,0 +1,26 @@
+{
+  "id": "69f8e7b9-cc02-4417-a123-9ae55637662b",
+  "name": "greeting",
+  "description": null,
+  "versions": [
+    {
+      "id": "4d0945c8-9728-4a8b-b012-c76ca37ebdd2",
+      "version_number": 1,
+      "content": "Hello {{name}}!",
+      "system_prompt": null,
+      "message": "Initial version",
+      "author": null,
+      "created_at": "2026-09-09T05:01:08.258365834Z",
+      "metrics": {
+        "total_uses": 0,
+        "successful_uses": 0,
+        "total_latency_ms": 0,
+        "quality_scores": []
+      }
+    }
+  ],
+  "active_version_id": "4d0945c8-9728-4a8b-b012-c76ca37ebdd2",
+  "tags": [],
+  "created_at": "2026-09-09T05:01:08.258228648Z",
+  "updated_at": "2026-09-09T05:01:08.258365994Z"
+}
