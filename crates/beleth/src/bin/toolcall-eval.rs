@@ -69,6 +69,7 @@
 //! ```
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -1000,7 +1001,10 @@ fn make_fixtures() -> (std::path::PathBuf, BTreeMap<String, String>) {
     // An unguessable line count, away from round numbers. Derived from the
     // nonce so it varies per run without another dependency.
     let n = 37 + (u32::from_str_radix(&nonce[..4], 16).unwrap_or(0) % 57) as usize;
-    let body: String = (1..=n).map(|i| format!("line {i}\n")).collect();
+    let body = (1..=n).fold(String::new(), |mut acc, i| {
+        let _ = writeln!(acc, "line {i}");
+        acc
+    });
     std::fs::write(dir.join("lines.txt"), body).expect("write lines.txt");
     out.insert("lines.txt".to_string(), n.to_string());
 

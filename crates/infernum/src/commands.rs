@@ -1936,10 +1936,8 @@ async fn run_one_turn(
                         println!("\x1b[31m  {tool} requires approval; no gate attached\x1b[0m");
                     },
                 },
-                LoopEvent::MetaSignalDetected { signal } => {
-                    if verbose {
-                        println!("\x1b[90m  signal: {signal:?}\x1b[0m");
-                    }
+                LoopEvent::MetaSignalDetected { signal } if verbose => {
+                    println!("\x1b[90m  signal: {signal:?}\x1b[0m");
                 },
                 _ => {},
             }
