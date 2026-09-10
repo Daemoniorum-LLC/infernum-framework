@@ -19,6 +19,28 @@
 //! arriving in 15 and the difference is felt directly in an interactive
 //! harness.
 //!
+//! # Phase B needs a PRISTINE checkout
+//!
+//! The task answers were established against commit `95097d5`, and several
+//! are invalidated by later work in this very branch:
+//!
+//! - the `-s`/`--stream` collision (`clap-collision`) was subsequently fixed,
+//!   and the fix's comment states the answer outright;
+//! - this file itself contains the strings `grammar` and `with_all_tools`, so
+//!   a model grepping `crates/beleth/src` for either finds *the task
+//!   description* rather than evidence about the question.
+//!
+//! So `--repo` must point at a checkout that does **not** contain this
+//! harness. Create one with:
+//!
+//! ```text
+//! git worktree add --detach ~/eval-fixture 95097d5
+//! ```
+//!
+//! [`assert_uncontaminated`] refuses to run Phase B otherwise. A harness that
+//! silently scored a contaminated tree would report the model's ability to
+//! read the answer key.
+//!
 //! # Why the malformed count is computed by subtraction
 //!
 //! [`QwenToolCallDetector`] — the production detector, used here rather than a
@@ -585,7 +607,30 @@ async fn run_phase_a(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseA {
 // Phase B execution
 // ---------------------------------------------------------------------------
 
+/// Refuses Phase B when `repo` contains this harness.
+///
+/// Presence of the eval binary means the tasks can find their own answers,
+/// which would measure reading comprehension of the answer key rather than
+/// investigation. See the module docs.
+fn assert_uncontaminated(repo: &std::path::Path) {
+    let self_path = repo.join("crates/beleth/src/bin/toolcall-eval.rs");
+    if self_path.exists() {
+        eprintln!(
+            "\nREFUSING to run Phase B: {} contains this eval harness.\n\n\
+             The task descriptions mention `grammar` and `with_all_tools`, so a model\n\
+             searching the tree would find the task text instead of evidence; and the\n\
+             clap-collision fix in this branch states that task's answer in a comment.\n\n\
+             Point --repo at a pristine checkout instead:\n\n    \
+             git worktree add --detach ~/eval-fixture 95097d5\n    \
+             toolcall-eval --repo ~/eval-fixture ...\n",
+            repo.display()
+        );
+        std::process::exit(2);
+    }
+}
+
 async fn run_phase_b(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseB {
+    assert_uncontaminated(&args.repo);
     let mut agg = PhaseB::default();
     let mut correct_turns = Vec::new();
 
