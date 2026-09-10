@@ -36,6 +36,21 @@ pub struct Config {
     /// Server port.
     #[serde(default = "default_port")]
     pub server_port: u16,
+
+    /// Base URL of an OpenAI-compatible inference server, including any
+    /// version prefix — e.g. `http://localhost:8080/v1`.
+    ///
+    /// Required by `--backend openai`. Set via `INFERNUM_API_BASE` or
+    /// `api_base` in config.toml.
+    #[serde(default)]
+    pub api_base: Option<String>,
+
+    /// Bearer token for the OpenAI-compatible server.
+    ///
+    /// Optional — local servers usually need none. Set via
+    /// `INFERNUM_API_KEY` or `api_key` in config.toml.
+    #[serde(default)]
+    pub api_key: Option<String>,
 }
 
 fn default_temperature() -> f32 {
@@ -62,6 +77,8 @@ impl Default for Config {
             max_tokens: default_max_tokens(),
             server_host: default_host(),
             server_port: default_port(),
+            api_base: None,
+            api_key: None,
         }
     }
 }
@@ -192,6 +209,8 @@ mod tests {
             max_tokens: 1024,
             server_host: "127.0.0.1".to_string(),
             server_port: 9090,
+            api_base: None,
+            api_key: None,
         };
 
         // Serialize to TOML
@@ -249,6 +268,8 @@ mod tests {
             max_tokens: 512,
             server_host: "localhost".to_string(),
             server_port: 3000,
+            api_base: None,
+            api_key: None,
         };
 
         // Manually save to temp path
@@ -274,6 +295,8 @@ mod tests {
             max_tokens: 100,
             server_host: "host".to_string(),
             server_port: 1234,
+            api_base: None,
+            api_key: None,
         };
 
         let cloned = config.clone();
@@ -335,6 +358,8 @@ mod tests {
             max_tokens: 2048,
             server_host: "api.example.com".to_string(),
             server_port: 443,
+            api_base: None,
+            api_key: None,
         };
 
         let json = serde_json::to_string(&config).expect("serialize json");

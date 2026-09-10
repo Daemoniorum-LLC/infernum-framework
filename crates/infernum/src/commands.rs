@@ -260,11 +260,13 @@ pub async fn generate(
     backend: String,
     n_gpu_layers: i32,
     context_size: usize,
+    api_base: Option<String>,
+    api_key: Option<String>,
 ) -> Result<()> {
     // Parse backend type
     let backend_type = abaddon::BackendType::from_str(&backend).ok_or_else(|| {
         eyre!(
-            "Invalid backend: {}. Use auto, llama-cpp, or candle",
+            "Invalid backend: {}. Use auto, llama-cpp, candle, or openai",
             backend
         )
     })?;
@@ -302,6 +304,9 @@ pub async fn generate(
     // Determine effective backend based on model path
     let model_path = std::path::Path::new(&model_id);
     let effective_backend = match backend_type {
+        // `model_id` names a remote model, not a local artifact, so path
+        // sniffing would misroute it.
+        abaddon::BackendType::OpenAi => abaddon::BackendType::OpenAi,
         abaddon::BackendType::Auto => abaddon::BackendType::detect_from_path(model_path),
         other => other,
     };
@@ -328,6 +333,31 @@ pub async fn generate(
             return Err(eyre!(
                 "llama-cpp backend not enabled. Rebuild with --features llama-cpp"
             ));
+        },
+        abaddon::BackendType::OpenAi => {
+            let base = api_base.ok_or_else(|| {
+                eyre!(
+                    "--backend openai requires an API base URL.\n\n\
+                     Options:\n  \
+                     1. Pass --api-base http://localhost:8080/v1\n  \
+                     2. Set INFERNUM_API_BASE=http://localhost:8080/v1\n  \
+                     3. Set api_base in ~/.config/infernum/config.toml\n\n\
+                     Start a server first, e.g.:\n  \
+                     llama-server -m model.gguf -c 32768 --port 8080"
+                )
+            })?;
+
+            tracing::info!(base = %base, "Using OpenAI-compatible HTTP backend");
+            let mut builder = abaddon::OpenAiConfig::builder(&base, &model_id)
+                .context_length(context_size as u32);
+            if let Some(key) = api_key {
+                builder = builder.api_key(key);
+            }
+
+            let engine = abaddon::OpenAiEngine::connect(builder.build())
+                .await
+                .map_err(|e| eyre!("Failed to reach inference server at {}: {}", base, e))?;
+            Arc::new(engine)
         },
         abaddon::BackendType::Candle | abaddon::BackendType::Auto => {
             tracing::info!("Using Candle backend for inference");
@@ -1607,143 +1637,428 @@ pub async fn chat(
     Ok(())
 }
 
-/// Run an autonomous agent with tools.
-#[allow(clippy::too_many_arguments)]
-pub async fn agent(
-    objective: String,
-    model: Option<String>,
-    system: Option<String>,
-    max_iterations: u32,
-    _verbose: bool,
-    working_dir: Option<std::path::PathBuf>,
-    code_tools: bool,
-    backend: String,
-    n_gpu_layers: i32,
-    context_size: usize,
-) -> Result<()> {
-    // Parse backend type
-    let _backend_type = abaddon::BackendType::from_str(&backend).ok_or_else(|| {
-        eyre!(
-            "Invalid backend: {}. Use auto, llama-cpp, or candle",
-            backend
-        )
-    })?;
+/// Options for [`agent`], grouped to keep the argument list manageable.
+pub struct AgentOptions {
+    /// Objective for a one-shot run. `None` requires `interactive`.
+    pub objective: Option<String>,
+    /// Model id, or remote model name for the `openai` backend.
+    pub model: Option<String>,
+    /// System prompt / persona.
+    pub system: Option<String>,
+    /// Stable session identifier. Generated when absent.
+    pub session_id: Option<String>,
+    /// Take follow-up turns on stdin instead of exiting after one objective.
+    pub interactive: bool,
+    /// Print tool arguments and results as they happen.
+    pub verbose: bool,
+    /// Working directory for file tools.
+    pub working_dir: Option<std::path::PathBuf>,
+    /// Register file/shell/search tools in addition to the builtins.
+    pub code_tools: bool,
+    /// Inference backend.
+    pub backend: String,
+    /// GPU layers to offload (-1 = all).
+    pub n_gpu_layers: i32,
+    /// Context window in tokens.
+    pub context_size: usize,
+    /// Maximum reasoning iterations per turn.
+    pub max_iterations: u32,
+    /// Maximum tool calls per turn.
+    pub max_tool_calls: u32,
+    /// Maximum tokens generated per turn.
+    pub max_tokens: u32,
+    /// Tool patterns to auto-approve.
+    pub auto_approve: Vec<String>,
+    /// Tool patterns to forbid outright. Never overridable at runtime.
+    pub forbid: Vec<String>,
+    /// How to handle tools that require approval.
+    pub approval: String,
+    /// Base URL for the `openai` backend.
+    pub api_base: Option<String>,
+    /// Bearer token for the `openai` backend.
+    pub api_key: Option<String>,
+    /// Continuation token to resume instead of starting a new objective.
+    pub resume: Option<String>,
+}
 
-    tracing::debug!(
-        backend = %backend,
-        n_gpu_layers = n_gpu_layers,
-        context_size = context_size,
-        "Backend configuration"
-    );
+/// Runs the agentic loop.
+///
+/// This drives `beleth`'s [`LoopExecutor`](beleth::LoopExecutor) — the same
+/// executor behind `POST /api/agent/run`. It previously drove `beleth::Agent`, the older ReAct
+/// path, which has no reference to `agentic_loop` at all: two disjoint agent
+/// stacks, of which the CLI used the one without approval gating, meta-signals,
+/// or resource accounting.
+pub async fn agent(opts: AgentOptions) -> Result<()> {
+    use std::sync::Arc;
 
-    // TODO(#TBD): Use backend config when creating engine
-    use beleth::{Agent, ToolRegistry};
+    use beleth::{
+        ApprovalGate, AutonomyGrant, ExecutorConfig, LoopConfig, LoopExecutor, ToolPattern,
+        ToolRegistry,
+    };
+    use infernum_core::{Message, SamplingParams};
 
-    // Get model
-    let model_id = match model {
-        Some(m) => m,
-        None => {
+    if opts.objective.is_none() && opts.resume.is_none() && !opts.interactive {
+        return Err(eyre!(
+            "An objective is required.\n\n\
+             Provide one:      infernum agent \"fix the failing test\"\n\
+             Or go interactive: infernum agent --interactive"
+        ));
+    }
+
+    let approval_mode = match opts.approval.as_str() {
+        "prompt" | "auto" | "deny" => opts.approval.clone(),
+        other => {
             return Err(eyre!(
-                "Model is required.\n\n\
-                 Options:\n  \
-                 1. Specify on command line: infernum agent \"task\" --model <model>\n  \
-                 2. Set default model: infernum config set-model <model>\n\n\
-                 Example:\n  \
-                 infernum agent \"Calculate 23 * 47\" --model TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-            ));
+                "Invalid --approval: {other}. Use prompt, auto, or deny."
+            ))
         },
     };
 
-    println!("\x1b[1m🤖 Infernum Agent\x1b[0m");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!();
-    // Resolve working directory (default to cwd) early so we can display it
-    let wd = working_dir.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+    let engine = build_agent_engine(&opts).await?;
 
-    println!("\x1b[1mObjective:\x1b[0m {}", objective);
-    println!("\x1b[1mModel:\x1b[0m {}", model_id);
-    println!("\x1b[1mMax iterations:\x1b[0m {}", max_iterations);
-    if code_tools {
-        println!("\x1b[1mWorking dir:\x1b[0m {}", wd.display());
-    }
-    println!();
-
-    // Load model
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.cyan} {msg}")
-            .context("invalid progress bar template")?,
-    );
-    spinner.set_message(format!("Loading model: {}", model_id));
-    spinner.enable_steady_tick(std::time::Duration::from_millis(100));
-
-    let config = EngineConfig::builder()
-        .model(&model_id)
-        .build()
-        .map_err(|e| eyre!("Failed to configure engine: {}", e))?;
-
-    let engine = Engine::new(config).await?;
-    let engine = Arc::new(engine);
-
-    spinner.finish_and_clear();
-
-    // Set up tools
-    let tools = if code_tools {
+    let tools = Arc::new(if opts.code_tools {
         ToolRegistry::with_code_tools()
     } else {
         ToolRegistry::with_builtins()
+    });
+
+    // Forbidden patterns are applied last so they cannot be widened by an
+    // overlapping auto-approve entry.
+    let mut grant = AutonomyGrant::builder();
+    for pattern in &opts.auto_approve {
+        grant = grant.allow(ToolPattern::Tool(pattern.clone()));
+    }
+    if approval_mode == "auto" && opts.auto_approve.is_empty() {
+        grant = grant.allow(ToolPattern::Tool("*".to_string()));
+    }
+    for pattern in &opts.forbid {
+        grant = grant.forbid(ToolPattern::Tool(pattern.clone()));
+    }
+    let autonomy = grant.build();
+
+    let session_id = opts.session_id.clone().unwrap_or_else(|| {
+        // Short and typeable: an orchestrator has to pass this around and
+        // a human has to read it off a tmux pane.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        format!(
+            "cli-{:x}",
+            (nanos as u64) ^ (u64::from(std::process::id()) << 32)
+        )
+    });
+
+    let working_dir = opts
+        .working_dir
+        .clone()
+        .unwrap_or(std::env::current_dir().context("resolving working directory")?);
+
+    let mut config = ExecutorConfig::new(&session_id)
+        .with_working_dir(&working_dir)
+        .with_autonomy(autonomy)
+        .with_loop_config(LoopConfig {
+            max_iterations: opts.max_iterations,
+            max_tool_calls: opts.max_tool_calls,
+            max_tokens: opts.max_tokens,
+            detect_implicit_signals: true,
+            ..LoopConfig::default()
+        })
+        .with_sampling(SamplingParams {
+            max_tokens: opts.max_tokens.min(4096),
+            ..SamplingParams::default()
+        });
+
+    if let Some(prompt) = &opts.system {
+        config = config.with_system_prompt(prompt);
+    }
+
+    // File-backed, not in-memory: an in-memory store dies with the process, so
+    // the token printed at the end of a run would name state that no longer
+    // exists by the time anyone typed it — a fresh instance of the defect the
+    // resume driver exists to fix.
+    let store: Arc<dyn beleth::ContinuationStore> = Arc::new(
+        beleth::FileContinuationStore::with_defaults()
+            .map_err(|e| eyre!("could not open continuation store: {e}"))?,
+    );
+    let mut executor = LoopExecutor::new(engine, Arc::clone(&tools), config)
+        .with_continuation_store(Arc::clone(&store));
+
+    // The gate is only attached in prompt mode. Without it the executor takes
+    // its "no approval gate" branch and fails any tool needing approval, which
+    // is the correct behaviour for a non-interactive run.
+    let gate = if approval_mode == "prompt" {
+        let g = Arc::new(ApprovalGate::new());
+        executor = executor.with_approval_gate(Arc::clone(&g));
+        Some(g)
+    } else {
+        None
     };
 
-    println!("\x1b[1mAvailable tools:\x1b[0m");
-    for tool in tools.tools() {
-        println!("  • {} - {}", tool.name(), tool.description());
-    }
-    println!();
+    println!("\x1b[36msession\x1b[0m {session_id}");
+    println!(
+        "\x1b[36mtools  \x1b[0m {}",
+        tools
+            .tools()
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    println!(
+        "\x1b[36mlimits \x1b[0m {} iterations, {} tool calls, {} ctx, approval={}\n",
+        opts.max_iterations, opts.max_tool_calls, opts.context_size, approval_mode
+    );
 
-    // Create agent
-    let mut agent = Agent::builder()
-        .id("cli-agent")
-        .max_iterations(max_iterations)
-        .tools(tools)
-        .engine(engine)
-        .working_dir(&wd);
+    let mut history: Vec<Message> = Vec::new();
 
-    // Set system prompt if provided
-    if let Some(sys) = system {
-        agent = agent.system_prompt(sys);
-    } else {
-        agent = agent.system_prompt(
-            "You are a helpful AI assistant with access to tools. \
-             Think step by step and use tools when needed to accomplish tasks. \
-             Always explain your reasoning.",
+    if let Some(token) = opts.resume.clone() {
+        println!("\x1b[36mresuming\x1b[0m {token}\n");
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<beleth::LoopEvent>(512);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let summary = executor
+            .resume(&token, opts.objective.as_deref(), tx)
+            .await
+            .map_err(|e| eyre!("resume failed: {e}"))?;
+        let _ = drain.await;
+        println!(
+            "\x1b[90m[{} iterations, {} tool calls, {:.1}s]\x1b[0m",
+            summary.iterations_completed,
+            summary.tool_calls_made,
+            summary.wall_time.as_secs_f64()
         );
+        if let Some(next) = &summary.continuation_token {
+            println!("\x1b[36mresume with\x1b[0m --resume {next}");
+        }
+        if !opts.interactive {
+            return Ok(());
+        }
+    } else if let Some(objective) = opts.objective.clone() {
+        history = run_one_turn(&executor, &objective, history, gate.as_ref(), opts.verbose).await?;
     }
 
-    let mut agent = agent.build();
+    if !opts.interactive {
+        return Ok(());
+    }
 
-    println!("\x1b[33m⚡ Starting agent execution...\x1b[0m\n");
+    println!("\n\x1b[90mInteractive session. 'exit' to quit, '/reset' to clear history.\x1b[0m");
+    loop {
+        print!("\n\x1b[32magent>\x1b[0m ");
+        io::stdout().flush()?;
 
-    // Run agent
-    let result = agent.run(&objective).await;
+        let mut input = String::new();
+        // EOF (0 bytes) means the pipe closed — exit rather than spin.
+        if io::stdin().read_line(&mut input)? == 0 {
+            println!();
+            break;
+        }
+        let input = input.trim();
 
-    println!();
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        if input.is_empty() {
+            continue;
+        }
+        if input.eq_ignore_ascii_case("exit") || input.eq_ignore_ascii_case("quit") {
+            break;
+        }
+        if input == "/reset" {
+            history.clear();
+            println!("\x1b[90mhistory cleared\x1b[0m");
+            continue;
+        }
+        if input == "/history" {
+            println!("\x1b[90m{} messages\x1b[0m", history.len());
+            continue;
+        }
 
-    match result {
-        Ok(answer) => {
-            println!("\x1b[32m✓ Agent completed\x1b[0m\n");
-            println!("\x1b[1mFinal Answer:\x1b[0m");
-            println!("{}", answer);
-        },
-        Err(e) => {
-            println!("\x1b[31m✗ Agent failed\x1b[0m\n");
-            println!("Error: {}", e);
-            return Err(eyre!("Agent execution failed: {}", e));
-        },
+        history = run_one_turn(&executor, input, history, gate.as_ref(), opts.verbose).await?;
     }
 
     Ok(())
+}
+
+/// Runs one turn and renders its event stream. Returns the updated history.
+async fn run_one_turn(
+    executor: &beleth::LoopExecutor,
+    objective: &str,
+    history: Vec<infernum_core::Message>,
+    gate: Option<&std::sync::Arc<beleth::ApprovalGate>>,
+    verbose: bool,
+) -> Result<Vec<infernum_core::Message>> {
+    use beleth::{ApprovalDecision, LoopEvent, NaturalTermination, TerminationReason};
+    use tokio::sync::mpsc;
+
+    let (tx, mut rx) = mpsc::channel::<LoopEvent>(512);
+    let gate = gate.cloned();
+
+    // Rendering runs concurrently with the loop so approval prompts appear
+    // while the executor is blocked waiting on the decision.
+    let renderer = tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            match event {
+                LoopEvent::ToolCallDetected { tool, .. } => {
+                    println!("\x1b[33m  → {tool}\x1b[0m");
+                },
+                LoopEvent::ToolExecutionCompleted { result, .. } => {
+                    if verbose {
+                        let text = format!("{:?}", result);
+                        println!("\x1b[90m    {}\x1b[0m", truncate_line(&text, 160));
+                    }
+                },
+                LoopEvent::ToolApprovalRequired {
+                    call_id,
+                    tool,
+                    arguments,
+                    ..
+                } => match &gate {
+                    Some(g) => {
+                        println!("\n\x1b[31m  approval required\x1b[0m {tool}");
+                        println!(
+                            "\x1b[90m  {}\x1b[0m",
+                            truncate_line(&arguments.to_string(), 300)
+                        );
+                        print!("  [y]es / [n]o / [a]lways this tool: ");
+                        let _ = io::stdout().flush();
+                        let mut answer = String::new();
+                        let decision = match io::stdin().read_line(&mut answer) {
+                            Ok(0) | Err(_) => ApprovalDecision::Deny,
+                            Ok(_) => match answer.trim().to_lowercase().as_str() {
+                                "y" | "yes" => ApprovalDecision::Approve,
+                                "a" | "always" => ApprovalDecision::ApproveAlways {
+                                    scope: beleth::ApprovalScope::ThisTool,
+                                },
+                                _ => ApprovalDecision::Deny,
+                            },
+                        };
+                        if let Err(e) = g.deliver(&call_id, decision) {
+                            eprintln!("\x1b[31m  could not deliver decision: {e}\x1b[0m");
+                        }
+                    },
+                    None => {
+                        println!("\x1b[31m  {tool} requires approval; no gate attached\x1b[0m");
+                    },
+                },
+                LoopEvent::MetaSignalDetected { signal } if verbose => {
+                    println!("\x1b[90m  signal: {signal:?}\x1b[0m");
+                },
+                _ => {},
+            }
+        }
+    });
+
+    let (summary, history) = executor
+        .run_turn(objective, history, tx)
+        .await
+        .map_err(|e| eyre!("agentic loop failed: {e}"))?;
+    let _ = renderer.await;
+
+    match &summary.termination {
+        TerminationReason::Natural(NaturalTermination::AnswerProvided { answer, .. }) => {
+            println!("\n{answer}");
+        },
+        other => {
+            if let Some(partial) = &summary.partial_answer {
+                println!("\n{partial}");
+            }
+            println!("\n\x1b[33mterminated: {other:?}\x1b[0m");
+        },
+    }
+
+    println!(
+        "\x1b[90m[{} iterations, {} tool calls, {} tokens, {:.1}s]\x1b[0m",
+        summary.iterations_completed,
+        summary.tool_calls_made,
+        summary.tokens_generated,
+        summary.wall_time.as_secs_f64()
+    );
+
+    if let Some(token) = &summary.continuation_token {
+        println!("\x1b[36mresume with\x1b[0m --resume {token}");
+    }
+
+    Ok(history)
+}
+
+/// Truncates a single line for terminal display.
+fn truncate_line(s: &str, max: usize) -> String {
+    let flat = s.replace('\n', " ");
+    if flat.chars().count() <= max {
+        return flat;
+    }
+    let cut: String = flat.chars().take(max).collect();
+    format!("{cut}…")
+}
+
+/// Builds the inference engine for an agent run.
+async fn build_agent_engine(opts: &AgentOptions) -> Result<std::sync::Arc<dyn InferenceEngine>> {
+    use std::sync::Arc;
+
+    let backend_type = abaddon::BackendType::from_str(&opts.backend).ok_or_else(|| {
+        eyre!(
+            "Invalid backend: {}. Use auto, llama-cpp, candle, or openai",
+            opts.backend
+        )
+    })?;
+
+    let model_id = opts.model.clone().ok_or_else(|| {
+        eyre!(
+            "Model is required.\n\n\
+             Options:\n  \
+             1. Specify on command line: infernum agent \"task\" --model <model>\n  \
+             2. Set a default: infernum config set-model <model>\n  \
+             3. Set environment variable: INFERNUM_DEFAULT_MODEL=<model>"
+        )
+    })?;
+
+    let effective = match backend_type {
+        abaddon::BackendType::OpenAi => abaddon::BackendType::OpenAi,
+        abaddon::BackendType::Auto => {
+            abaddon::BackendType::detect_from_path(std::path::Path::new(&model_id))
+        },
+        other => other,
+    };
+
+    match effective {
+        abaddon::BackendType::OpenAi => {
+            let base = opts.api_base.clone().ok_or_else(|| {
+                eyre!(
+                    "--backend openai requires an API base URL.\n\n  \
+                     infernum agent \"task\" --backend openai --api-base http://localhost:8080/v1"
+                )
+            })?;
+            let mut builder = abaddon::OpenAiConfig::builder(&base, &model_id)
+                .context_length(opts.context_size as u32);
+            if let Some(key) = &opts.api_key {
+                builder = builder.api_key(key.clone());
+            }
+            let engine = abaddon::OpenAiEngine::connect(builder.build())
+                .await
+                .map_err(|e| eyre!("Failed to reach inference server at {base}: {e}"))?;
+            Ok(Arc::new(engine))
+        },
+        #[cfg(feature = "llama-cpp")]
+        abaddon::BackendType::LlamaCpp => {
+            let config = abaddon::LlamaCppConfig::builder()
+                .model_path(&model_id)
+                .n_gpu_layers(opts.n_gpu_layers)
+                .context_size(opts.context_size)
+                .build()
+                .map_err(|e| eyre!("Failed to configure llama.cpp engine: {e}"))?;
+            let engine = abaddon::LlamaCppEngine::load(config)
+                .await
+                .map_err(|e| eyre!("Failed to load llama.cpp model: {e}"))?;
+            Ok(Arc::new(engine))
+        },
+        #[cfg(not(feature = "llama-cpp"))]
+        abaddon::BackendType::LlamaCpp => Err(eyre!(
+            "llama-cpp backend not enabled. Rebuild with --features llama-cpp"
+        )),
+        abaddon::BackendType::Candle | abaddon::BackendType::Auto => {
+            let config = EngineConfig::builder()
+                .model(&model_id)
+                .build()
+                .map_err(|e| eyre!("Failed to configure engine: {e}"))?;
+            Ok(Arc::new(Engine::new(config).await?))
+        },
+    }
 }
 
 /// Display version information.

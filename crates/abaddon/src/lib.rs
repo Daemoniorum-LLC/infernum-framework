@@ -85,6 +85,14 @@ pub mod gpu_lrdf;
 // Module is always available for BackendType; engine requires llama-cpp feature
 pub mod llama_cpp_engine;
 
+// OpenAI-compatible HTTP backend — drives an out-of-process llama-server,
+// vLLM, or similar. Independent of the pinned llama_cpp bindings (issue #56).
+pub mod openai_engine;
+
+// Load-time guard against silent BPE mis-tokenization on the pinned
+// llama_cpp 0.3.2 bindings (issue #56).
+pub mod gguf_pretokenizer;
+
 pub use arbiter_integration::{ArbiterCoordinator, ArbiterCoordinatorError, QualityLevel};
 pub use config::{
     EngineConfig, EngineConfigBuilder, HoloTensorConfig, MemoryConfig, SpeculativeConfig,
@@ -260,8 +268,10 @@ pub use infernum_core::{
 };
 
 // llama.cpp engine (production inference, 50-100x faster than Candle)
+pub use gguf_pretokenizer::{ensure_pre_tokenizer_supported, read_pre_tokenizer_key};
 #[cfg(feature = "llama-cpp")]
 pub use llama_cpp_engine::{ChatTemplate, LlamaCppConfig, LlamaCppConfigBuilder, LlamaCppEngine};
+pub use openai_engine::{OpenAiConfig, OpenAiConfigBuilder, OpenAiEngine};
 
 // Backend selection and GPU split mode (always available for CLI use)
 pub use llama_cpp_engine::{BackendType, GpuSplitMode};

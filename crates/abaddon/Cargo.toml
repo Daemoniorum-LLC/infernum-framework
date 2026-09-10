@@ -59,6 +59,9 @@ candle-flash-attn = { version = "0.9", optional = true }
 # Provides 50-100x speedup over Candle for GGUF models
 llama_cpp = { version = "0.3.2", optional = true, default-features = false, features = ["compat", "native"] }
 
+# OpenAI-compatible HTTP backend (see openai_engine.rs / issue #56)
+reqwest = { workspace = true }
+
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -111,6 +114,7 @@ tempfile = "3.10"
 bytemuck = "1.25"
 zstd = "0.13"
 lz4_flex = "0.12"
+wiremock = { workspace = true }
 
 [[bench]]
 name = "inference"

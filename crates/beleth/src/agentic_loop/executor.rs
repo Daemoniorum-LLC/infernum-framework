@@ -13,14 +13,16 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
-use infernum_core::{GenerateRequest, Message, SamplingParams};
+use infernum_core::{GenerateRequest, Message, Role, SamplingParams};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::tool::{ToolCall as BelethToolCall, ToolContext, ToolRegistry};
 
 use super::approval::{ApprovalDecision, ApprovalGate};
+use super::continuation::{build_resumed_messages, create_continuation_state, ContinuationStore};
 use super::meta_signal::detect_meta_signal;
+use super::types::ContextMessage;
 use super::types::*;
 use super::AgenticLoop;
 
@@ -148,6 +150,9 @@ pub enum LoopError {
     /// Tool execution error.
     #[error("tool error: {0}")]
     ToolError(String),
+    /// Continuation could not be stored, loaded, or resumed.
+    #[error("continuation error: {0}")]
+    Continuation(String),
 }
 
 /// The async loop executor.
@@ -166,6 +171,10 @@ pub struct LoopExecutor {
     detector: Arc<dyn ToolCallDetector>,
     config: ExecutorConfig,
     approval_gate: Option<Arc<ApprovalGate>>,
+    /// Store for continuation state. Without one, a resumable termination
+    /// still reports `can_resume` but yields no token — see
+    /// `with_continuation_store`.
+    continuation_store: Option<Arc<dyn ContinuationStore>>,
 }
 
 impl LoopExecutor {
@@ -181,6 +190,7 @@ impl LoopExecutor {
             detector: Arc::new(QwenToolCallDetector::new()),
             config,
             approval_gate: None,
+            continuation_store: None,
         }
     }
 
@@ -205,17 +215,172 @@ impl LoopExecutor {
         self.approval_gate.as_ref()
     }
 
-    /// Runs the agentic loop to completion.
+    /// Attaches a store so resumable terminations produce a usable token.
+    ///
+    /// Without one, [`LoopSummary::can_resume`] still reports whether the
+    /// termination reason is *theoretically* resumable while
+    /// `continuation_token` stays `None` — true but useless, and readers
+    /// reliably hear "you can resume this". With a store attached the pair is
+    /// coherent: a token is present exactly when resuming will work.
+    #[must_use]
+    pub fn with_continuation_store(mut self, store: Arc<dyn ContinuationStore>) -> Self {
+        self.continuation_store = Some(store);
+        self
+    }
+
+    /// Runs the agentic loop to completion as a fresh, single-turn session.
     ///
     /// Streams `LoopEvent`s through `event_tx` for real-time observability.
     /// Returns the final `LoopSummary` when the loop terminates.
+    ///
+    /// The conversation is discarded. For an interactive session that takes
+    /// follow-up turns, use [`run_turn`](Self::run_turn), which threads the
+    /// message history through.
     pub async fn run(
         &self,
         objective: &str,
         event_tx: mpsc::Sender<LoopEvent>,
     ) -> Result<LoopSummary, LoopError> {
+        self.run_turn(objective, Vec::new(), event_tx)
+            .await
+            .map(|(summary, _)| summary)
+    }
+
+    /// Runs one turn of a multi-turn agentic session.
+    ///
+    /// `history` is the conversation so far — pass the `Vec<Message>` returned
+    /// by the previous call, or an empty vector to start fresh. Returns the
+    /// summary along with the full history including this turn, so a caller
+    /// can feed it back for the next one.
+    ///
+    /// # Why this exists
+    ///
+    /// [`run`](Self::run) rebuilds the message list from scratch on every
+    /// call, so invoking it twice produces two independent sessions with no
+    /// memory of each other. That makes a persistent interactive agent
+    /// impossible to build on it: every turn would be an amnesiac one-shot.
+    ///
+    /// Note this is *not* the same as resuming a terminated loop from a
+    /// [`ContinuationState`](super::continuation::ContinuationState). This
+    /// threads a live conversation; continuation restores a stored one. The
+    /// continuation path still has no driver.
+    pub async fn run_turn(
+        &self,
+        objective: &str,
+        history: Vec<Message>,
+        event_tx: mpsc::Sender<LoopEvent>,
+    ) -> Result<(LoopSummary, Vec<Message>), LoopError> {
+        let messages = if history.is_empty() {
+            self.build_initial_messages(objective)
+        } else {
+            // Continuing: keep the established system prompt and prior turns,
+            // and append the new instruction as a user message.
+            let mut m = history;
+            m.push(Message::user(objective));
+            m
+        };
+        self.execute(messages, event_tx).await
+    }
+
+    /// Resumes a loop that terminated with a resumable reason.
+    ///
+    /// Loads the [`ContinuationState`](super::continuation::ContinuationState)
+    /// stored under `token`, rebuilds the conversation as it stood at
+    /// termination — including the tool results already collected — and
+    /// continues from there. `additional_context` is
+    /// appended as a user message, which is how a client answers a `Stuck`
+    /// signal or redirects a `Yielded` one.
+    ///
+    /// This is *restoring a stored conversation*, which is not the same as
+    /// [`run_turn`](Self::run_turn) threading a live one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LoopError::Continuation`] if no store is attached, or if the
+    /// token is unknown or expired.
+    pub async fn resume(
+        &self,
+        token: &str,
+        additional_context: Option<&str>,
+        event_tx: mpsc::Sender<LoopEvent>,
+    ) -> Result<LoopSummary, LoopError> {
+        let store = self.continuation_store.as_ref().ok_or_else(|| {
+            LoopError::Continuation(
+                "no continuation store attached; call with_continuation_store()".to_string(),
+            )
+        })?;
+
+        let state = store
+            .load(token)
+            .await
+            .map_err(|e| LoopError::Continuation(format!("loading {token}: {e}")))?
+            .ok_or_else(|| {
+                LoopError::Continuation(format!("continuation not found or expired: {token}"))
+            })?;
+
+        let messages: Vec<Message> = build_resumed_messages(&state, additional_context)
+            .iter()
+            .map(context_message_to_message)
+            .collect();
+
+        // The token is single-use: a resumed loop stores a fresh one if it
+        // also terminates resumably, so leaving the old one would let a client
+        // silently rewind to a stale point.
+        let _ = store.remove(token).await;
+
+        self.execute(messages, event_tx).await.map(|(s, _)| s)
+    }
+}
+
+/// Converts a live [`Message`] into the serializable [`ContextMessage`] form
+/// used by stored continuations.
+fn message_to_context_message(m: &Message) -> ContextMessage {
+    ContextMessage {
+        role: match m.role {
+            Role::System => "system",
+            Role::User => "user",
+            Role::Assistant => "assistant",
+            Role::Tool => "tool",
+        }
+        .to_string(),
+        content: m.content.clone(),
+        tool_call_id: m.tool_call_id.clone(),
+    }
+}
+
+/// Inverse of [`message_to_context_message`].
+///
+/// An unrecognised role becomes `User` rather than failing the resume: a
+/// stored conversation is not worth discarding over one odd role string, and
+/// `User` is the least surprising place for unattributed content to land.
+fn context_message_to_message(m: &ContextMessage) -> Message {
+    let role = match m.role.as_str() {
+        "system" => Role::System,
+        "assistant" => Role::Assistant,
+        "tool" => Role::Tool,
+        _ => Role::User,
+    };
+    Message {
+        role,
+        content: m.content.clone(),
+        name: None,
+        tool_calls: None,
+        tool_call_id: m.tool_call_id.clone(),
+    }
+}
+
+impl LoopExecutor {
+    /// Runs the loop over a fully-formed message list.
+    ///
+    /// Shared by [`run_turn`](Self::run_turn) and [`resume`](Self::resume):
+    /// they differ only in how the opening conversation is assembled.
+    async fn execute(
+        &self,
+        initial_messages: Vec<Message>,
+        event_tx: mpsc::Sender<LoopEvent>,
+    ) -> Result<(LoopSummary, Vec<Message>), LoopError> {
         let mut state_machine = AgenticLoop::new(self.config.loop_config.clone());
-        let mut messages = self.build_initial_messages(objective);
+        let mut messages = initial_messages;
         let detection_config = DetectionConfig {
             detect_implicit: self.config.loop_config.detect_implicit_signals,
             ..Default::default()
@@ -285,6 +450,15 @@ impl LoopExecutor {
                     tokens,
                 })
                 .await;
+
+            // Record the assistant turn before any branch can exit the loop.
+            //
+            // This used to live after tool-call detection, which meant a
+            // natural termination (answer/stuck/yield) broke out before the
+            // final output was ever added. Invisible while `run` discarded
+            // the history; visible the moment `run_turn` threads it, as the
+            // agent would forget its own answers between turns.
+            messages.push(Message::assistant(&output));
 
             // =================================================================
             // DETECT
@@ -388,9 +562,6 @@ impl LoopExecutor {
                 return Err(e.into());
             }
 
-            // Add assistant message to context
-            messages.push(Message::assistant(&output));
-
             let mut agentic_results = Vec::new();
 
             for call in &detected_calls {
@@ -452,12 +623,49 @@ impl LoopExecutor {
             }
         }
 
-        let summary = state_machine.summary();
+        let mut summary = state_machine.summary();
         info!(
             iterations = summary.iterations_completed,
             tool_calls = summary.tool_calls_made,
             "Agentic loop completed"
         );
+
+        // Store continuation state so `can_resume` and `continuation_token`
+        // agree. A store failure degrades to "not resumable" rather than
+        // failing the run: the work is done either way, and reporting a token
+        // that cannot be loaded would be the defect this exists to fix.
+        if summary.can_resume {
+            if let Some(store) = &self.continuation_store {
+                let state = create_continuation_state(
+                    &self.config.session_id,
+                    messages.iter().map(message_to_context_message).collect(),
+                    summary.tool_results_summary.clone(),
+                    summary.exploration_summary.clone(),
+                    summary.iterations_completed,
+                    summary.tool_calls_made,
+                    summary.tokens_generated,
+                    self.config.loop_config.clone(),
+                    self.config.autonomy.clone(),
+                    self.config.system_prompt.clone(),
+                    self.config
+                        .working_dir
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().to_string()),
+                    summary.termination.clone(),
+                );
+                match store.store(state).await {
+                    Ok(token) => summary.continuation_token = Some(token),
+                    Err(e) => {
+                        warn!(error = %e, "failed to store continuation; reporting not resumable");
+                        summary.can_resume = false;
+                    },
+                }
+            } else {
+                // No store: say so, rather than advertising a resume that
+                // cannot happen.
+                summary.can_resume = false;
+            }
+        }
 
         let _ = event_tx
             .send(LoopEvent::LoopCompleted {
@@ -465,7 +673,7 @@ impl LoopExecutor {
             })
             .await;
 
-        Ok(summary)
+        Ok((summary, messages))
     }
 
     /// Computes the effective permission for a tool call.
