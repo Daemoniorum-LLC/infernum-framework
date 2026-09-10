@@ -1683,8 +1683,8 @@ pub struct AgentOptions {
 
 /// Runs the agentic loop.
 ///
-/// This drives `beleth`'s [`LoopExecutor`] — the same executor behind
-/// `POST /api/agent/run`. It previously drove `beleth::Agent`, the older ReAct
+/// This drives `beleth`'s [`LoopExecutor`](beleth::LoopExecutor) — the same
+/// executor behind `POST /api/agent/run`. It previously drove `beleth::Agent`, the older ReAct
 /// path, which has no reference to `agentic_loop` at all: two disjoint agent
 /// stacks, of which the CLI used the one without approval gating, meta-signals,
 /// or resource accounting.
