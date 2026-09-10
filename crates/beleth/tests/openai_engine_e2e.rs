@@ -518,3 +518,127 @@ async fn run_stays_amnesiac_between_calls() {
         "run() must not carry prior turns: {second}"
     );
 }
+
+// =============================================================================
+// Resume round trip
+// =============================================================================
+
+/// A resumable termination must yield a usable continuation token.
+///
+/// `LoopSummary::can_resume` answers *"is this termination reason theoretically
+/// resumable?"* while every reader hears *"you can resume this"*. Before the
+/// driver existed, `continuation_token` was unconditionally `None`
+/// (`mod.rs:372`: "Set by the executor when stored" — nothing stored), so
+/// `can_resume` was true and resuming was impossible. This asserts the pair is
+/// coherent, which is the claim the field actually makes to a reader.
+#[tokio::test]
+async fn resumable_termination_yields_a_token() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("loop.txt");
+    std::fs::write(&file, "content").expect("write fixture");
+    let call = format!(
+        "<tool_call>\n{{\"name\": \"read_file\", \"arguments\": {{\"path\": \"{}\"}}}}\n</tool_call>",
+        file.display()
+    );
+
+    let (_server, engine, _) = scripted_server(vec![&call, &call, &call]).await;
+
+    let store = Arc::new(beleth::InMemoryContinuationStore::with_defaults());
+    let config = permissive_config("resume-token", dir.path()).with_loop_config(LoopConfig {
+        max_iterations: 2,
+        detect_implicit_signals: false,
+        ..LoopConfig::default()
+    });
+
+    let executor = LoopExecutor::new(engine, Arc::new(ToolRegistry::with_code_tools()), config)
+        .with_continuation_store(Arc::clone(&store) as Arc<dyn beleth::ContinuationStore>);
+
+    let (tx, _rx) = mpsc::channel(64);
+    let summary = executor.run("never finish", tx).await.expect("runs");
+
+    assert!(
+        summary.can_resume,
+        "budget exhaustion is a resumable reason"
+    );
+    assert!(
+        summary.continuation_token.is_some(),
+        "can_resume=true with continuation_token=None is the lie this test exists to catch"
+    );
+}
+
+/// The restored run continues from recorded state rather than starting fresh.
+///
+/// This is the assertion that must fail if the driver is absent: threading a
+/// live conversation is not the same as restoring a stored one. It asserts on
+/// the wire — the resumed run's first request must carry the pre-termination
+/// conversation, and the resumed summary's iteration count must continue from
+/// where the first run stopped rather than resetting to zero.
+#[tokio::test]
+async fn resume_continues_from_recorded_state() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("marker.txt");
+    std::fs::write(&file, "RESUME-MARKER-9f3a").expect("write fixture");
+    let call = format!(
+        "<tool_call>\n{{\"name\": \"read_file\", \"arguments\": {{\"path\": \"{}\"}}}}\n</tool_call>",
+        file.display()
+    );
+
+    let (_server, engine, seen) = scripted_server(vec![
+        &call,
+        &call,
+        r#"<answer confidence="0.9">Resumed and finished.</answer>"#,
+    ])
+    .await;
+
+    let store = Arc::new(beleth::InMemoryContinuationStore::with_defaults());
+    let config = permissive_config("resume-rt", dir.path()).with_loop_config(LoopConfig {
+        max_iterations: 2,
+        detect_implicit_signals: false,
+        ..LoopConfig::default()
+    });
+
+    let executor = LoopExecutor::new(engine, Arc::new(ToolRegistry::with_code_tools()), config)
+        .with_continuation_store(Arc::clone(&store) as Arc<dyn beleth::ContinuationStore>);
+
+    let (tx, _rx) = mpsc::channel(64);
+    let first = executor
+        .run("read the marker repeatedly", tx)
+        .await
+        .expect("first run");
+    let token = first
+        .continuation_token
+        .clone()
+        .expect("a resumable termination must produce a token");
+
+    let requests_before = seen.lock().len();
+
+    let (tx2, _rx2) = mpsc::channel(64);
+    let resumed = executor
+        .resume(&token, Some("Now give me your final answer."), tx2)
+        .await
+        .expect("resume should run");
+
+    let bodies = seen.lock();
+    assert!(
+        bodies.len() > requests_before,
+        "resume must actually call the model"
+    );
+    let resumed_request = bodies[requests_before]["messages"].to_string();
+
+    assert!(
+        resumed_request.contains("read the marker repeatedly"),
+        "resumed run must carry the original objective: {resumed_request}"
+    );
+    assert!(
+        resumed_request.contains("RESUME-MARKER-9f3a"),
+        "resumed run must carry the tool results recorded before termination: {resumed_request}"
+    );
+    assert!(
+        resumed_request.contains("Now give me your final answer."),
+        "resumed run must carry the additional context supplied at resume time"
+    );
+    assert!(
+        resumed.iterations_completed > 0,
+        "resumed run should have done work"
+    );
+}

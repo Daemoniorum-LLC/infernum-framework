@@ -289,6 +289,10 @@ enum Commands {
         /// Bearer token for the OpenAI-compatible server
         #[arg(long, env = "INFERNUM_API_KEY", hide_env_values = true)]
         api_key: Option<String>,
+
+        /// Resume a previous run from its continuation token
+        #[arg(long)]
+        resume: Option<String>,
     },
 
     /// Manage configuration
@@ -786,6 +790,7 @@ async fn main() -> Result<()> {
             context_size,
             api_base,
             api_key,
+            resume,
         }) => {
             let model = model.or(cli.model).or(cfg.default_model.clone());
             let system = system.or(cli.system);
@@ -809,6 +814,7 @@ async fn main() -> Result<()> {
                 approval,
                 api_base: api_base.or_else(|| cfg.api_base.clone()),
                 api_key: api_key.or_else(|| cfg.api_key.clone()),
+                resume,
             })
             .await?;
         },

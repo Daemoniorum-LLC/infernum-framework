@@ -523,8 +523,15 @@ async fn test_executor_stuck_signal() {
         summary.termination,
         TerminationReason::Natural(NaturalTermination::AgentStuck { .. })
     ));
-    // Stuck loops are resumable (can_resume = !is_terminal || Stuck | Yielded)
-    assert!(summary.can_resume, "Stuck loops should be resumable");
+    // `can_resume` now reports whether resuming will actually work, not merely
+    // whether the termination reason is theoretically resumable. With no
+    // continuation store attached it is false, because there is no token and
+    // nothing to resume from. A true-but-useless field read as a promise.
+    assert!(
+        !summary.can_resume,
+        "without a continuation store there is nothing to resume from"
+    );
+    assert!(summary.continuation_token.is_none());
 
     let events = collect_events(rx).await;
     assert!(events
@@ -564,7 +571,11 @@ async fn test_executor_yield_signal() {
         summary.termination,
         TerminationReason::Natural(NaturalTermination::AgentYielded { .. })
     ));
-    assert!(summary.can_resume, "Yielded loops should be resumable");
+    assert!(
+        !summary.can_resume,
+        "without a continuation store there is nothing to resume from"
+    );
+    assert!(summary.continuation_token.is_none());
 
     let events = collect_events(rx).await;
     assert!(events.iter().any(|e| matches!(
@@ -907,4 +918,49 @@ async fn test_executor_bash_tool() {
         summary.termination,
         TerminationReason::Natural(NaturalTermination::AnswerProvided { .. })
     ));
+}
+
+/// `can_resume` and `continuation_token` agree in both directions.
+///
+/// The pair used to be incoherent: `can_resume` was computed from the
+/// termination reason alone and `continuation_token` was unconditionally
+/// `None` (`mod.rs`: "Set by the executor when stored" — nothing stored). The
+/// field was honest about a narrow question and misleading about the one every
+/// reader asks. These two runs differ only in whether a store is attached.
+#[tokio::test]
+async fn can_resume_agrees_with_continuation_token() {
+    let stuck = || {
+        Arc::new(ScriptedEngine::new(vec![r#"<stuck>
+<attempt>Tried the docs</attempt>
+<blocker>No idea</blocker>
+</stuck>"#
+            .to_string()]))
+    };
+
+    // Without a store: nothing to resume from, and it says so.
+    let executor = LoopExecutor::new(
+        stuck(),
+        Arc::new(ToolRegistry::with_code_tools()),
+        make_config("no-store"),
+    );
+    let (tx, _rx) = mpsc::channel(64);
+    let without = executor.run("go", tx).await.expect("runs");
+    assert!(!without.can_resume);
+    assert!(without.continuation_token.is_none());
+
+    // With a store: resumable, and a token to do it with.
+    let store = Arc::new(beleth::InMemoryContinuationStore::with_defaults());
+    let executor = LoopExecutor::new(
+        stuck(),
+        Arc::new(ToolRegistry::with_code_tools()),
+        make_config("with-store"),
+    )
+    .with_continuation_store(Arc::clone(&store) as Arc<dyn beleth::ContinuationStore>);
+    let (tx, _rx) = mpsc::channel(64);
+    let with = executor.run("go", tx).await.expect("runs");
+    assert!(with.can_resume, "a stuck loop with a store is resumable");
+    assert!(
+        with.continuation_token.is_some(),
+        "resumable must mean a token exists"
+    );
 }

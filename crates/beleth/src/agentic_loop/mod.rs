@@ -21,6 +21,7 @@ pub mod approval;
 pub mod autonomy;
 pub mod context;
 pub mod continuation;
+pub mod continuation_file;
 pub mod coordination;
 pub mod executor;
 pub mod meta_signal;

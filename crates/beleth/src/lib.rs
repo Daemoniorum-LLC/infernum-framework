@@ -38,6 +38,7 @@ pub use agent::{
     Agent, AgentAction, AgentBuilder, Persona, PersonaSource, PlanExecutionResult, PlanStepResult,
     StepResult, StepUsage,
 };
+pub use agentic_loop::continuation_file::FileContinuationStore;
 pub use agentic_loop::{
     apply_config_override,
     build_resumed_messages,
@@ -98,6 +99,8 @@ pub use agentic_loop::{
     ExternalTermination,
     FailureType,
     InMemoryContinuationStore,
+};
+pub use agentic_loop::{
     IterationOutcome,
     LifecycleTracker,
     LoopConfig,

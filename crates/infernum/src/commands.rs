@@ -1677,6 +1677,8 @@ pub struct AgentOptions {
     pub api_base: Option<String>,
     /// Bearer token for the `openai` backend.
     pub api_key: Option<String>,
+    /// Continuation token to resume instead of starting a new objective.
+    pub resume: Option<String>,
 }
 
 /// Runs the agentic loop.
@@ -1695,7 +1697,7 @@ pub async fn agent(opts: AgentOptions) -> Result<()> {
     };
     use infernum_core::{Message, SamplingParams};
 
-    if opts.objective.is_none() && !opts.interactive {
+    if opts.objective.is_none() && opts.resume.is_none() && !opts.interactive {
         return Err(eyre!(
             "An objective is required.\n\n\
              Provide one:      infernum agent \"fix the failing test\"\n\
@@ -1770,7 +1772,16 @@ pub async fn agent(opts: AgentOptions) -> Result<()> {
         config = config.with_system_prompt(prompt);
     }
 
-    let mut executor = LoopExecutor::new(engine, Arc::clone(&tools), config);
+    // File-backed, not in-memory: an in-memory store dies with the process, so
+    // the token printed at the end of a run would name state that no longer
+    // exists by the time anyone typed it — a fresh instance of the defect the
+    // resume driver exists to fix.
+    let store: Arc<dyn beleth::ContinuationStore> = Arc::new(
+        beleth::FileContinuationStore::with_defaults()
+            .map_err(|e| eyre!("could not open continuation store: {e}"))?,
+    );
+    let mut executor = LoopExecutor::new(engine, Arc::clone(&tools), config)
+        .with_continuation_store(Arc::clone(&store));
 
     // The gate is only attached in prompt mode. Without it the executor takes
     // its "no approval gate" branch and fails any tool needing approval, which
@@ -1800,8 +1811,28 @@ pub async fn agent(opts: AgentOptions) -> Result<()> {
 
     let mut history: Vec<Message> = Vec::new();
 
-    // One-shot objective first, then follow-ups if interactive.
-    if let Some(objective) = opts.objective.clone() {
+    if let Some(token) = opts.resume.clone() {
+        println!("\x1b[36mresuming\x1b[0m {token}\n");
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<beleth::LoopEvent>(512);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let summary = executor
+            .resume(&token, opts.objective.as_deref(), tx)
+            .await
+            .map_err(|e| eyre!("resume failed: {e}"))?;
+        let _ = drain.await;
+        println!(
+            "\x1b[90m[{} iterations, {} tool calls, {:.1}s]\x1b[0m",
+            summary.iterations_completed,
+            summary.tool_calls_made,
+            summary.wall_time.as_secs_f64()
+        );
+        if let Some(next) = &summary.continuation_token {
+            println!("\x1b[36mresume with\x1b[0m --resume {next}");
+        }
+        if !opts.interactive {
+            return Ok(());
+        }
+    } else if let Some(objective) = opts.objective.clone() {
         history = run_one_turn(&executor, &objective, history, gate.as_ref(), opts.verbose).await?;
     }
 
@@ -1940,6 +1971,10 @@ async fn run_one_turn(
         summary.tokens_generated,
         summary.wall_time.as_secs_f64()
     );
+
+    if let Some(token) = &summary.continuation_token {
+        println!("\x1b[36mresume with\x1b[0m --resume {token}");
+    }
 
     Ok(history)
 }
