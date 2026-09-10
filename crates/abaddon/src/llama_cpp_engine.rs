@@ -512,6 +512,12 @@ impl LlamaCppEngine {
             "Loading GGUF model with llama.cpp"
         );
 
+        // Refuse before touching llama.cpp: this build's vendored llama.cpp
+        // predates PR #6920, so a GGUF carrying `tokenizer.ggml.pre` would
+        // load here and then tokenize incorrectly and silently. See
+        // `crate::gguf_pretokenizer` and issue #56.
+        crate::gguf_pretokenizer::ensure_pre_tokenizer_supported(&model_path)?;
+
         let start = Instant::now();
 
         // Load model on blocking thread (can take seconds for large models)
