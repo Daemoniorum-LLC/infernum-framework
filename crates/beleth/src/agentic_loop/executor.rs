@@ -284,9 +284,10 @@ impl LoopExecutor {
 
     /// Resumes a loop that terminated with a resumable reason.
     ///
-    /// Loads the [`ContinuationState`] stored under `token`, rebuilds the
-    /// conversation as it stood at termination — including the tool results
-    /// already collected — and continues from there. `additional_context` is
+    /// Loads the [`ContinuationState`](super::continuation::ContinuationState)
+    /// stored under `token`, rebuilds the conversation as it stood at
+    /// termination — including the tool results already collected — and
+    /// continues from there. `additional_context` is
     /// appended as a user message, which is how a client answers a `Stuck`
     /// signal or redirects a `Yielded` one.
     ///
