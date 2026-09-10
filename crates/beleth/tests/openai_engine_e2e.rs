@@ -430,3 +430,91 @@ async fn loop_ends_when_model_emits_bare_prose() {
         "bare prose should end the loop after one iteration"
     );
 }
+
+// =============================================================================
+// Multi-turn sessions
+// =============================================================================
+
+/// A second turn sees the first turn's conversation.
+///
+/// `run()` rebuilds messages from scratch every call, so two `run()` calls are
+/// two amnesiac sessions. `run_turn` threads history through — this asserts
+/// the second request actually carries the first turn's messages, which is
+/// what makes a persistent interactive agent possible.
+#[tokio::test]
+async fn run_turn_threads_history_across_turns() {
+    let (_server, engine, seen) = scripted_server(vec![
+        r#"<answer confidence="0.9">First answer.</answer>"#,
+        r#"<answer confidence="0.9">Second answer.</answer>"#,
+    ])
+    .await;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let tools = Arc::new(ToolRegistry::with_code_tools());
+    let executor = LoopExecutor::new(engine, tools, permissive_config("multiturn", dir.path()));
+
+    let (tx1, _rx1) = mpsc::channel(64);
+    let (_s1, history) = executor
+        .run_turn("What is the first thing?", Vec::new(), tx1)
+        .await
+        .expect("turn 1 runs");
+
+    let (tx2, _rx2) = mpsc::channel(64);
+    let (_s2, history2) = executor
+        .run_turn("And the second?", history.clone(), tx2)
+        .await
+        .expect("turn 2 runs");
+
+    let bodies = seen.lock();
+    assert_eq!(bodies.len(), 2, "expected one request per turn");
+
+    let second = bodies[1]["messages"].to_string();
+    assert!(
+        second.contains("What is the first thing?"),
+        "turn 2 must carry turn 1's user message: {second}"
+    );
+    assert!(
+        second.contains("First answer."),
+        "turn 2 must carry turn 1's assistant reply: {second}"
+    );
+    assert!(
+        second.contains("And the second?"),
+        "turn 2 must carry the new instruction: {second}"
+    );
+
+    assert!(
+        history2.len() > history.len(),
+        "history should grow across turns ({} -> {})",
+        history.len(),
+        history2.len()
+    );
+}
+
+/// `run()` remains single-turn: two calls share nothing.
+///
+/// Pins the distinction so a future change cannot silently make `run()`
+/// stateful, which would surprise every existing caller.
+#[tokio::test]
+async fn run_stays_amnesiac_between_calls() {
+    let (_server, engine, seen) = scripted_server(vec![
+        r#"<answer confidence="0.9">A.</answer>"#,
+        r#"<answer confidence="0.9">B.</answer>"#,
+    ])
+    .await;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let tools = Arc::new(ToolRegistry::with_code_tools());
+    let executor = LoopExecutor::new(engine, tools, permissive_config("amnesiac", dir.path()));
+
+    let (tx1, _rx1) = mpsc::channel(64);
+    executor.run("first question", tx1).await.expect("run 1");
+    let (tx2, _rx2) = mpsc::channel(64);
+    executor.run("second question", tx2).await.expect("run 2");
+
+    let bodies = seen.lock();
+    let second = bodies[1]["messages"].to_string();
+    assert!(
+        !second.contains("first question"),
+        "run() must not carry prior turns: {second}"
+    );
+}

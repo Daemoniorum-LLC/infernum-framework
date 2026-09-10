@@ -215,8 +215,8 @@ enum Commands {
 
     /// Run an autonomous agent with tools
     Agent {
-        /// Objective or task for the agent
-        objective: String,
+        /// Objective or task for the agent (optional with --interactive)
+        objective: Option<String>,
 
         /// Model to use
         #[arg(short, long)]
@@ -226,11 +226,27 @@ enum Commands {
         #[arg(short, long)]
         system: Option<String>,
 
-        /// Maximum reasoning iterations
-        #[arg(long, default_value = "10")]
+        /// Stable session identifier (generated when omitted)
+        #[arg(long)]
+        session_id: Option<String>,
+
+        /// Take follow-up turns on stdin instead of exiting after one objective
+        #[arg(short, long)]
+        interactive: bool,
+
+        /// Maximum reasoning iterations per turn
+        #[arg(long, default_value = "100")]
         max_iterations: u32,
 
-        /// Enable verbose output (show reasoning)
+        /// Maximum tool calls per turn
+        #[arg(long, default_value = "500")]
+        max_tool_calls: u32,
+
+        /// Maximum tokens generated per turn
+        #[arg(long, default_value = "131072")]
+        max_tokens: u32,
+
+        /// Enable verbose output (tool arguments, results, meta-signals)
         #[arg(short, long)]
         verbose: bool,
 
@@ -242,7 +258,19 @@ enum Commands {
         #[arg(long)]
         code_tools: bool,
 
-        /// Inference backend: auto, llama-cpp, or candle
+        /// Tool name patterns to auto-approve (repeatable, glob syntax)
+        #[arg(long = "auto-approve")]
+        auto_approve: Vec<String>,
+
+        /// Tool name patterns to forbid outright (repeatable; never overridable)
+        #[arg(long = "forbid")]
+        forbid: Vec<String>,
+
+        /// How to handle tools requiring approval: prompt, auto, or deny
+        #[arg(long, default_value = "prompt")]
+        approval: String,
+
+        /// Inference backend: auto, llama-cpp, candle, or openai
         #[arg(short, long, default_value = "auto")]
         backend: String,
 
@@ -251,8 +279,16 @@ enum Commands {
         n_gpu_layers: i32,
 
         /// Context size in tokens
-        #[arg(long, default_value = "4096")]
+        #[arg(long, default_value = "32768")]
         context_size: usize,
+
+        /// Base URL of an OpenAI-compatible server (required by --backend openai)
+        #[arg(long, env = "INFERNUM_API_BASE")]
+        api_base: Option<String>,
+
+        /// Bearer token for the OpenAI-compatible server
+        #[arg(long, env = "INFERNUM_API_KEY", hide_env_values = true)]
+        api_key: Option<String>,
     },
 
     /// Manage configuration
@@ -734,28 +770,46 @@ async fn main() -> Result<()> {
             objective,
             model,
             system,
+            session_id,
+            interactive,
             max_iterations,
+            max_tool_calls,
+            max_tokens,
             verbose,
             working_dir,
             code_tools,
+            auto_approve,
+            forbid,
+            approval,
             backend,
             n_gpu_layers,
             context_size,
+            api_base,
+            api_key,
         }) => {
             let model = model.or(cli.model).or(cfg.default_model.clone());
             let system = system.or(cli.system);
-            commands::agent(
+            commands::agent(commands::AgentOptions {
                 objective,
                 model,
                 system,
-                max_iterations,
+                session_id,
+                interactive,
                 verbose,
                 working_dir,
                 code_tools,
                 backend,
                 n_gpu_layers,
                 context_size,
-            )
+                max_iterations,
+                max_tool_calls,
+                max_tokens,
+                auto_approve,
+                forbid,
+                approval,
+                api_base: api_base.or_else(|| cfg.api_base.clone()),
+                api_key: api_key.or_else(|| cfg.api_key.clone()),
+            })
             .await?;
         },
 

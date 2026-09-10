@@ -205,17 +205,58 @@ impl LoopExecutor {
         self.approval_gate.as_ref()
     }
 
-    /// Runs the agentic loop to completion.
+    /// Runs the agentic loop to completion as a fresh, single-turn session.
     ///
     /// Streams `LoopEvent`s through `event_tx` for real-time observability.
     /// Returns the final `LoopSummary` when the loop terminates.
+    ///
+    /// The conversation is discarded. For an interactive session that takes
+    /// follow-up turns, use [`run_turn`](Self::run_turn), which threads the
+    /// message history through.
     pub async fn run(
         &self,
         objective: &str,
         event_tx: mpsc::Sender<LoopEvent>,
     ) -> Result<LoopSummary, LoopError> {
+        self.run_turn(objective, Vec::new(), event_tx)
+            .await
+            .map(|(summary, _)| summary)
+    }
+
+    /// Runs one turn of a multi-turn agentic session.
+    ///
+    /// `history` is the conversation so far — pass the `Vec<Message>` returned
+    /// by the previous call, or an empty vector to start fresh. Returns the
+    /// summary along with the full history including this turn, so a caller
+    /// can feed it back for the next one.
+    ///
+    /// # Why this exists
+    ///
+    /// [`run`](Self::run) rebuilds the message list from scratch on every
+    /// call, so invoking it twice produces two independent sessions with no
+    /// memory of each other. That makes a persistent interactive agent
+    /// impossible to build on it: every turn would be an amnesiac one-shot.
+    ///
+    /// Note this is *not* the same as resuming a terminated loop from a
+    /// [`ContinuationState`](super::continuation::ContinuationState). This
+    /// threads a live conversation; continuation restores a stored one. The
+    /// continuation path still has no driver.
+    pub async fn run_turn(
+        &self,
+        objective: &str,
+        history: Vec<Message>,
+        event_tx: mpsc::Sender<LoopEvent>,
+    ) -> Result<(LoopSummary, Vec<Message>), LoopError> {
         let mut state_machine = AgenticLoop::new(self.config.loop_config.clone());
-        let mut messages = self.build_initial_messages(objective);
+        let mut messages = if history.is_empty() {
+            self.build_initial_messages(objective)
+        } else {
+            // Continuing: keep the established system prompt and prior turns,
+            // and append the new instruction as a user message.
+            let mut m = history;
+            m.push(Message::user(objective));
+            m
+        };
         let detection_config = DetectionConfig {
             detect_implicit: self.config.loop_config.detect_implicit_signals,
             ..Default::default()
@@ -285,6 +326,15 @@ impl LoopExecutor {
                     tokens,
                 })
                 .await;
+
+            // Record the assistant turn before any branch can exit the loop.
+            //
+            // This used to live after tool-call detection, which meant a
+            // natural termination (answer/stuck/yield) broke out before the
+            // final output was ever added. Invisible while `run` discarded
+            // the history; visible the moment `run_turn` threads it, as the
+            // agent would forget its own answers between turns.
+            messages.push(Message::assistant(&output));
 
             // =================================================================
             // DETECT
@@ -388,9 +438,6 @@ impl LoopExecutor {
                 return Err(e.into());
             }
 
-            // Add assistant message to context
-            messages.push(Message::assistant(&output));
-
             let mut agentic_results = Vec::new();
 
             for call in &detected_calls {
@@ -465,7 +512,7 @@ impl LoopExecutor {
             })
             .await;
 
-        Ok(summary)
+        Ok((summary, messages))
     }
 
     /// Computes the effective permission for a tool call.
