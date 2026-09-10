@@ -934,21 +934,27 @@ impl TieredHoloLoader {
         let tensor = match dtype_str {
             "F16" => {
                 let f16_data: Vec<half::f16> = data
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|b| half::f16::from_le_bytes([b[0], b[1]]))
                     .collect();
                 Tensor::from_vec(f16_data, shape.as_slice(), &self.inference_device)
             },
             "F32" => {
                 let f32_data: Vec<f32> = data
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                     .collect();
                 Tensor::from_vec(f32_data, shape.as_slice(), &self.inference_device)
             },
             "BF16" => {
                 let bf16_data: Vec<half::bf16> = data
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|b| half::bf16::from_le_bytes([b[0], b[1]]))
                     .collect();
                 Tensor::from_vec(bf16_data, shape.as_slice(), &self.inference_device)

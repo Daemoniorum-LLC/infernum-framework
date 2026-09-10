@@ -368,7 +368,7 @@ impl LongTermMemory {
             .filter(|e| e.importance >= min_importance)
             .collect();
 
-        entries.sort_by(|a, b| b.importance.cmp(&a.importance));
+        entries.sort_by_key(|e| std::cmp::Reverse(e.importance));
         entries.truncate(limit);
         entries
     }
@@ -376,7 +376,7 @@ impl LongTermMemory {
     /// Gets recently accessed memories.
     pub fn get_recent(&self, limit: usize) -> Vec<&MemoryEntry> {
         let mut entries: Vec<_> = self.cache.values().collect();
-        entries.sort_by(|a, b| b.last_accessed.cmp(&a.last_accessed));
+        entries.sort_by_key(|e| std::cmp::Reverse(e.last_accessed));
         entries.truncate(limit);
         entries
     }

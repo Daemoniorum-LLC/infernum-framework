@@ -568,21 +568,27 @@ impl HctLoader {
         let tensor = match native_dtype {
             DType::F32 => {
                 let floats: Vec<f32> = data
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                     .collect();
                 Tensor::from_vec(floats, shape.as_slice(), device)
             },
             DType::F16 => {
                 let halfs: Vec<f16> = data
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|chunk| f16::from_le_bytes([chunk[0], chunk[1]]))
                     .collect();
                 Tensor::from_vec(halfs, shape.as_slice(), device)
             },
             DType::BF16 => {
                 let bfloats: Vec<bf16> = data
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|chunk| bf16::from_le_bytes([chunk[0], chunk[1]]))
                     .collect();
                 Tensor::from_vec(bfloats, shape.as_slice(), device)
@@ -657,7 +663,9 @@ impl HctLoader {
                 let packed_data = &data[scales_bytes..];
 
                 let scales: Vec<f32> = scales_data
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|chunk| f16::from_le_bytes([chunk[0], chunk[1]]).to_f32())
                     .collect();
 
@@ -726,7 +734,9 @@ impl HctLoader {
 
                 // Parse FP16 scales
                 let scales: Vec<f32> = scales_data
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|chunk| f16::from_le_bytes([chunk[0], chunk[1]]).to_f32())
                     .collect();
 

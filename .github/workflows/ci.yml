@@ -14,6 +14,13 @@ env:
   # Platform-independent features (excludes cuda, metal which require hardware)
   # Note: lance temporarily excluded due to arrow version incompatibility (tracked in #33)
   SAFE_FEATURES: "--features llama-cpp,holotensor,integration-tests"
+  # Pinned toolchain for the two jobs that fail on *style* drift rather than on
+  # correctness (Clippy under -D warnings, and rustfmt --check). Tracking
+  # `stable` there means a Rust release can turn unchanged code red: that is
+  # exactly what happened between 2026-04-14 and 2026-04-22, when
+  # clippy::unnecessary_sort_by began firing on code untouched since 2026-02-10
+  # and left every open PR red for five months. Bump this deliberately.
+  RUST_LINT_TOOLCHAIN: "1.98"
 
 jobs:
   check:
@@ -31,8 +38,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_LINT_TOOLCHAIN }}
           components: rustfmt
       - name: Run cargo fmt
         run: cargo fmt --all -- --check
@@ -42,8 +50,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_LINT_TOOLCHAIN }}
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Run cargo clippy

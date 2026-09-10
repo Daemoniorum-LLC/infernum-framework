@@ -273,7 +273,7 @@ impl StreamManager {
             .collect();
 
         // Sort by priority (Critical first)
-        layer_priorities.sort_by(|a, b| b.1.cmp(&a.1));
+        layer_priorities.sort_by_key(|p| std::cmp::Reverse(p.1));
 
         // Submit requests in priority order
         for (layer, priority, count) in layer_priorities {
@@ -443,11 +443,10 @@ impl StreamManager {
         }
 
         let queue_depth = self.queue_depth();
-        let avg_fragment_size = if stats.requests_completed > 0 {
-            stats.bytes_transferred / stats.requests_completed
-        } else {
-            1024 * 1024 // Assume 1MB default
-        };
+        let avg_fragment_size = stats
+            .bytes_transferred
+            .checked_div(stats.requests_completed)
+            .unwrap_or(1024 * 1024); // Assume 1MB default
 
         let remaining_bytes = queue_depth * avg_fragment_size;
         ((remaining_bytes as f64 / stats.avg_speed_bps) * 1000.0) as u64

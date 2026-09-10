@@ -608,7 +608,7 @@ pub async fn list_cached_models(
     models.extend(scan_infernum_cache(&state.infernum_cache_dir));
 
     // Sort by name
-    models.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    models.sort_by_key(|a| a.name.to_lowercase());
 
     let total_size: u64 = models.iter().map(|m| m.size_bytes).sum();
 
@@ -1028,15 +1028,21 @@ pub async fn convert_model(
                     let raw_bytes = &tensor_data[start..end];
                     let tensor_f32: Vec<f32> = match dtype {
                         "F32" => raw_bytes
-                            .chunks_exact(4)
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
                             .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                             .collect(),
                         "F16" => raw_bytes
-                            .chunks_exact(2)
+                            .as_chunks::<2>()
+                            .0
+                            .iter()
                             .map(|b| half::f16::from_le_bytes([b[0], b[1]]).to_f32())
                             .collect(),
                         "BF16" => raw_bytes
-                            .chunks_exact(2)
+                            .as_chunks::<2>()
+                            .0
+                            .iter()
                             .map(|b| half::bf16::from_le_bytes([b[0], b[1]]).to_f32())
                             .collect(),
                         _ => continue,
