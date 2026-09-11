@@ -16,6 +16,15 @@
 //! claim couldn't actually be re-run by anyone — including a mistranscribed
 //! path in one of those strings and a synthetic (not captured) string that
 //! wasn't flagged as such. This test reads the real file instead.
+//!
+//! A second, sharper defect surfaced during review of *that* fix: one
+//! completion classified "no_attempt" was actually cut off mid-JSON-object
+//! by the harness's own 400-char capture cap on Phase A's diagnostic
+//! `sample` field — not evidence the model failed to try, evidence that the
+//! measurement lost its tail. Caught by lr-adhoc-13 reviewing #71, not by
+//! this session. It now has its own category, `truncated_ambiguous`,
+//! excluded from every claim about model behavior (see
+//! `truncated_completion_is_excluded_from_behavioral_claims` below).
 
 use std::collections::HashMap;
 
@@ -34,6 +43,7 @@ struct Completion {
     expect_tool: Option<String>,
     required_args: Option<Vec<String>>,
     text: String,
+    truncated: bool,
     category: String,
 }
 
@@ -143,6 +153,12 @@ fn phase_a_right_tool_and_schema_valid_match_the_claimed_numbers() {
 /// must still produce zero detected calls. This is what "do not relax the
 /// detector until it passes" actually means — checked against all 37 real
 /// non-recovered completions, not just the ones I remembered to name.
+///
+/// This includes the one `truncated_ambiguous` completion: asserting the
+/// detector produces zero calls on that *exact string* is a legitimate,
+/// pinned fact about the detector regardless of what caused the string to
+/// look that way. What it does NOT do — see the schema and the next test —
+/// is claim that string as evidence the model failed to attempt a call.
 #[test]
 fn every_non_recovered_completion_still_produces_zero_calls() {
     let fixture = load_fixture();
@@ -171,15 +187,48 @@ fn every_non_recovered_completion_still_produces_zero_calls() {
     );
 }
 
+/// The harness's own 400-char cap on Phase A's diagnostic `sample` field cut
+/// exactly one completion off mid-JSON-object. It must be flagged
+/// `truncated: true`, kept out of both `no_attempt` and `function_name_gap`
+/// (it is neither — its tail is simply missing), and given its own category
+/// so nothing downstream can mistake a measurement artifact for a model
+/// behavior. Caught reviewing #71, not writing it — see the module doc.
+#[test]
+fn truncated_completion_is_excluded_from_behavioral_claims() {
+    let fixture = load_fixture();
+
+    let truncated: Vec<&Completion> = fixture.completions.iter().filter(|c| c.truncated).collect();
+    assert_eq!(
+        truncated.len(),
+        1,
+        "expected exactly one completion to hit the harness's 400-char capture cap"
+    );
+
+    let c = truncated[0];
+    assert_eq!(c.id, "A/tempA/read-with-awkward-name#4");
+    assert_eq!(c.category, "truncated_ambiguous");
+    assert_eq!(
+        c.text.len(),
+        400,
+        "the defining evidence of truncation IS the exact 400-char length"
+    );
+    assert!(
+        c.text.ends_with("crates/abaddon/src/gguf_p"),
+        "sanity-check the fixture wasn't hand-edited: the cut should land mid-path, mid-JSON-object"
+    );
+}
+
 /// Per-category breakdown, so a category drifting silently (e.g. a future
 /// change accidentally starting to recognize `function_name`) is a failing
 /// test naming the exact category, not a vague count mismatch.
 ///
-/// Correction folded in here: #70's discriminator comment said "17 genuine
-/// non-attempts" and #71's tests hardcoded 17. Recomputing mechanically
-/// from the full corpus turns up 18 — one (`A/tempA/read-with-awkward-
-/// name#4`) was missed when that count was hand-assembled. This test uses
-/// the true, recomputed number.
+/// History, corrected twice over: #70's discriminator comment said "17
+/// genuine non-attempts." Recomputing mechanically from the full corpus
+/// first turned up 18 — but that 18th, `A/tempA/read-with-awkward-name#4`,
+/// turned out on closer look (lr-adhoc-13's review of #71) to be a
+/// truncation artifact, not a genuine non-attempt. The honest count is
+/// therefore 17 no_attempt after all, PLUS 1 separately-tracked
+/// truncated_ambiguous that must not be folded into either bucket.
 #[test]
 fn category_counts_match_the_corrected_breakdown() {
     let fixture = load_fixture();
@@ -189,13 +238,14 @@ fn category_counts_match_the_corrected_breakdown() {
     }
 
     assert_eq!(counts.get("recovered").copied().unwrap_or(0), 89);
-    assert_eq!(
-        counts.get("no_attempt").copied().unwrap_or(0),
-        18,
-        "corrected count — #70's discriminator comment undercounted this as 17"
-    );
+    assert_eq!(counts.get("no_attempt").copied().unwrap_or(0), 17);
     assert_eq!(counts.get("template_echo").copied().unwrap_or(0), 16);
     assert_eq!(counts.get("function_name_gap").copied().unwrap_or(0), 3);
+    assert_eq!(
+        counts.get("truncated_ambiguous").copied().unwrap_or(0),
+        1,
+        "the truncation artifact must stay in its own category, not be folded into no_attempt"
+    );
 }
 
 /// The two literal strings the template-ambiguity issue (#72) is about:
