@@ -300,6 +300,103 @@ async fn test_executor_tool_call_and_answer() {
         .any(|e| matches!(e, LoopEvent::ToolExecutionCompleted { .. })));
 }
 
+/// A call wrapped in `<answer>` instead of `<tool_call>` is executed, not
+/// treated as a final answer consisting of raw JSON.
+///
+/// Regression test for infernum-framework#70: on a real Qwen2.5-Coder-14B-
+/// Instruct model, this exact shape — a well-formed call, wrong envelope —
+/// was the dominant failure across 126 captured completions. Before the
+/// fix, `<answer>` was recognized as a terminal meta-signal before the tool
+/// call detector ever ran, so the loop terminated after 1 iteration with
+/// `AnswerProvided` and the "answer" was literally the unexecuted JSON.
+#[tokio::test]
+async fn test_executor_answer_wrapped_call_is_executed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = dir.path().join("test.txt");
+    std::fs::write(&file_path, "Hello from the test file!\n").expect("write seed file");
+    let file_path_str = file_path.to_string_lossy().to_string();
+
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        // Iteration 1: correct call, wrong envelope — the measured failure mode.
+        format!(
+            "<answer confidence=\"0.9\">\n\
+             {{\"name\": \"read_file\", \"arguments\": {{\"path\": \"{file_path_str}\"}}}}\n\
+             </answer>"
+        ),
+        // Iteration 2: a genuine final answer, correctly tagged.
+        r#"<answer confidence="0.9">The file contains: Hello from the test file!</answer>"#
+            .to_string(),
+    ]));
+
+    let tools = Arc::new(ToolRegistry::with_code_tools());
+    let config = make_permissive_config("test-answer-wrapped-call", dir.path()).with_loop_config(
+        LoopConfig {
+            detect_implicit_signals: false,
+            ..LoopConfig::default()
+        },
+    );
+
+    let executor = LoopExecutor::new(engine.clone(), tools, config);
+    let (tx, rx) = mpsc::channel(64);
+
+    let summary = executor
+        .run("Read test.txt", tx)
+        .await
+        .expect("run should succeed");
+
+    // The wrapped call must be executed, not swallowed as an implicit or
+    // explicit answer of raw JSON — two iterations (call, then real answer),
+    // one tool call made, and a genuine AnswerProvided only on iteration 2.
+    assert_eq!(summary.iterations_completed, 2);
+    assert_eq!(summary.tool_calls_made, 1);
+    assert!(matches!(
+        summary.termination,
+        TerminationReason::Natural(NaturalTermination::AnswerProvided { .. })
+    ));
+    assert_eq!(engine.call_count(), 2);
+
+    let events = collect_events(rx).await;
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, LoopEvent::ToolCallDetected { tool, .. } if tool == "read_file")),
+        "expected the wrapped read_file call to be detected and dispatched"
+    );
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, LoopEvent::ToolExecutionCompleted { .. })));
+}
+
+/// A genuine final answer with no call embedded in it still terminates the
+/// loop on iteration 1 — the negative control for the fix above. Without
+/// this, a change that made every `<answer>` execute-first regardless of
+/// content would pass the positive test above but break ordinary answers.
+#[tokio::test]
+async fn test_executor_plain_answer_wrapped_in_answer_tag_still_terminates() {
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        r#"<answer confidence="0.9">The port collision is between --stream and --system, both wanting -s.</answer>"#
+            .to_string(),
+    ]));
+
+    let tools = Arc::new(ToolRegistry::with_builtins());
+    let config = make_config("test-plain-answer-no-call");
+    let executor = LoopExecutor::new(engine.clone(), tools, config);
+    let (tx, _rx) = mpsc::channel(64);
+
+    let summary = executor
+        .run("What's the flag collision?", tx)
+        .await
+        .expect("run should succeed");
+
+    assert_eq!(summary.iterations_completed, 1);
+    assert_eq!(summary.tool_calls_made, 0);
+    assert!(matches!(
+        summary.termination,
+        TerminationReason::Natural(NaturalTermination::AnswerProvided { .. })
+    ));
+    assert_eq!(engine.call_count(), 1);
+}
+
 /// Multiple tool calls in one iteration.
 #[tokio::test]
 async fn test_executor_multiple_tool_calls_per_iteration() {
