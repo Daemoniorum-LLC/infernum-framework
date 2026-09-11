@@ -1194,16 +1194,28 @@ mod tests {
     // -----------------------------------------------------------------------
     // Wrapper-agnostic fallback (infernum-framework#70)
     //
-    // The positive and negative fixtures below are verbatim completions
-    // captured from a real Qwen2.5-Coder-14B-Instruct model on 2026-09-10
-    // (issue #70 and its discriminator comment). They are not constructed
-    // examples: they are the actual evidence the fix is based on, kept here
-    // so the claim is checkable without a live model.
+    // The real evidence — all 126 completions captured from a real
+    // Qwen2.5-Coder-14B-Instruct model, with full provenance — lives in
+    // `crates/beleth/tests/fixtures/issue_70_14b_completions.json`, and
+    // every aggregate number quoted in #70/#71 is recomputed against that
+    // committed file by `crates/beleth/tests/issue_70_regression.rs`. That
+    // is the source of truth; nothing here duplicates it.
+    //
+    // The unit tests below are fast, in-crate sanity checks for specific
+    // *shapes* of input (an answer-wrapped call, a fenced block, a bare
+    // object, a stray unrelated object alongside a real tag). Two use text
+    // copied verbatim from the fixture (noted on each); the rest are
+    // hand-written to exercise a shape distinctly from what the fixture
+    // happens to contain — labeled as such, not implied to be captured
+    // evidence. An earlier version of this file blurred that line: one of
+    // these was a paraphrased approximation of a captured sample presented
+    // as if verbatim, and the full dataset wasn't committed at all, so
+    // nothing here could actually be checked against source. Both are fixed.
     // -----------------------------------------------------------------------
 
     #[test]
     fn lenient_fallback_recovers_answer_wrapped_call() {
-        // Phase A, read-cargo-toml, temp 0.
+        // Verbatim: fixture id A/run1/read-cargo-toml#0.
         let output = "<answer confidence=\"0.9\">\n\
              {\n  \"name\": \"read_file\",\n  \"arguments\": {\n    \"path\": \"Cargo.toml\"\n  }\n}\n\
              </answer>";
@@ -1215,16 +1227,26 @@ mod tests {
 
     #[test]
     fn lenient_fallback_recovers_fenced_json_call() {
-        // Phase C, bash-cat-sentinel, temp 0.
-        let output = "```json\n{\n  \"name\": \"bash\",\n  \"arguments\": {\n    \"command\": \"cat /tmp/x/secret.txt\"\n  }\n}\n```";
+        // Verbatim: fixture id C/run1/bash-cat-sentinel#0, including the
+        // real generated fixture path (fixed here after an earlier version
+        // of this test quietly shortened it — that made it a paraphrase
+        // presented as a quote, which is exactly the kind of thing this
+        // whole exercise is supposed to catch, not commit).
+        let output = "```json\n{\n  \"name\": \"bash\",\n  \"arguments\": {\n    \"command\": \"cat /tmp/toolcall-eval-ca87b5d104f441bba930395b3320a9ac/secret.txt\"\n  }\n}\n```";
         let calls = parse_tool_call_tags(output);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "bash");
-        assert_eq!(calls[0].arguments["command"], "cat /tmp/x/secret.txt");
+        assert_eq!(
+            calls[0].arguments["command"],
+            "cat /tmp/toolcall-eval-ca87b5d104f441bba930395b3320a9ac/secret.txt"
+        );
     }
 
     #[test]
     fn lenient_fallback_recovers_bare_json_call() {
+        // Synthetic — not from the #70 corpus. Exercises the "no wrapper at
+        // all" shape, which the captured corpus happens not to contain in
+        // isolation (bare JSON there always co-occurs with a fence or tag).
         let output =
             "I'll do that now.\n{\"name\": \"list_files\", \"arguments\": {\"path\": \"src\"}}";
         let calls = parse_tool_call_tags(output);
@@ -1234,8 +1256,8 @@ mod tests {
 
     #[test]
     fn strict_tool_call_tag_takes_priority_over_stray_json() {
-        // If a real <tool_call> is present, the fallback must not also fire
-        // on unrelated JSON elsewhere in the same output.
+        // Synthetic. If a real <tool_call> is present, the fallback must
+        // not also fire on unrelated JSON elsewhere in the same output.
         let output = r#"For reference the config looks like {"name": "unrelated", "arguments": {}}.
 <tool_call>
 {"name": "read_file", "arguments": {"path": "real.rs"}}
@@ -1249,72 +1271,11 @@ mod tests {
         assert_eq!(calls[0].name, "read_file");
     }
 
-    /// The 17 completions issue #70's discriminator comment identified as
-    /// genuine non-attempts — no structured call, in prose or inside a
-    /// meta-signal tag. These are the negative control: the fix must not
-    /// move this number. If it does, that is the finding, per the review
-    /// that asked for this test.
-    const NEGATIVE_CONTROLS_NO_ATTEMPT: &[&str] = &[
-        "To read the file and provide its exact content, I will use the `read_file` function.",
-        "<yield>Reading the file crates/beleth/src/lib.rs...</yield>",
-        "<yield>Reading the file crates/beleth/src/lib.rs...</yield>",
-        "<yield>Reading the file crates/beleth/src/lib.rs...</yield>",
-        "<yield>Reading the file `crates/abaddon/src/gguf_pretokenizer.rs` to determine what it guards against.</yield>",
-        "<yield>Reading the file `crates/abaddon/src/gguf_pretokenizer.rs` to determine what it guards against.</yield>",
-        "<yield>Reading the file `crates/abaddon/src/gguf_pretokenizer.rs` to determine what it guards against.</yield>",
-        "<yield>\nTo find the root cause of the clap error, I will read the `crates/infernum/src/main.rs` file to identify the flags that might be causing the collision. I will look for any short option names that are defined more than once.\n</yield>",
-        "<yield>\nTo find the root cause of the clap error, I will read the `crates/infernum/src/main.rs` file to identify any conflicting short option names. I will look for instances where two flags are defined with the same short option name.\n</yield>",
-        "To read the file and get its exact content, I will use the `read_file` function.",
-        "<stuck>It seems like there might be an issue with the path or the file does not exist. Please ensure the path is correct and the file is accessible.</stuck>",
-        "<answer confidence=\"0.8\">\nTo summarise what the file `crates/beleth/src/lib.rs` declares, I will first read the file and then extract relevant information.\n\n<yield>...</yield>\n\n</answer>",
-        "<yield>Reading the file crates/beleth/src/lib.rs...</yield>",
-        "<yield>Reading and summarizing the file `crates/beleth/src/lib.rs`...</yield>",
-        "<yield>Running `git status --short` to check the status of the repository.</yield>",
-        "<yield>Executing `git status --short`...</yield>\n<answer confidence=\"0.9\">\n```json\n{\n  \"command_output\": \"M src/main.rs\\nA new_file.txt\"\n}\n```\n</answer>",
-        "<stuck>I'm unable to directly read or analyze the contents of files in the repository. To answer your question, I would need to read the file `crates/abaddon/src/gguf_pretokenizer.rs` and analyze its content. Since I can't do that, I'm stuck and can't provide the specific information you're looking for.</stuck>",
-    ];
-
-    #[test]
-    fn negative_control_no_attempt_transcripts_stay_rejected() {
-        assert_eq!(
-            NEGATIVE_CONTROLS_NO_ATTEMPT.len(),
-            17,
-            "this constant IS the count cited in the PR — keep it in sync"
-        );
-        for (i, transcript) in NEGATIVE_CONTROLS_NO_ATTEMPT.iter().enumerate() {
-            let calls = parse_tool_call_tags(transcript);
-            assert!(
-                calls.is_empty(),
-                "negative control #{i} should produce zero calls but got {calls:?}: {transcript:?}"
-            );
-        }
-    }
-
-    /// The system prompt's own illustrative example (`executor.rs`'s
-    /// `build_initial_messages`, "yield with <yield>...</yield>") uses a
-    /// literal ellipsis as a fill-in-the-blank placeholder. 16 of the 126
-    /// captured completions were the model echoing that example verbatim
-    /// instead of substituting real content — a template defect, tracked
-    /// separately, not fixed by this change. These must also stay rejected:
-    /// they are two exact strings, not real content, and accepting them
-    /// would mean treating the prompt's own instructional text as a call.
-    const NEGATIVE_CONTROLS_TEMPLATE_ECHO: &[&str] = &["<yield>...</yield>", "<stuck>...</stuck>"];
-
-    #[test]
-    fn negative_control_verbatim_template_echo_stays_rejected() {
-        for echo in NEGATIVE_CONTROLS_TEMPLATE_ECHO {
-            let calls = parse_tool_call_tags(echo);
-            assert!(
-                calls.is_empty(),
-                "verbatim template echo should produce zero calls but got {calls:?}: {echo:?}"
-            );
-        }
-    }
-
-    /// Known, deliberate gap: a `function_name` key instead of `name` is not
-    /// recognized. Three of the 126 captured completions used this shape.
-    /// This test documents the boundary so a future change to it is a
-    /// visible decision, not an accident.
+    /// Synthetic, documenting a deliberate boundary decision rather than
+    /// captured evidence — the fixture's own 3 real `function_name_gap`
+    /// completions are checked against this same detector in
+    /// `tests/issue_70_regression.rs::every_non_recovered_completion_-
+    /// still_produces_zero_calls`.
     #[test]
     fn function_name_key_variant_is_a_known_unhandled_gap() {
         let output = r#"<answer confidence="0.9">
