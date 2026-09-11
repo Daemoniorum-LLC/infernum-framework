@@ -52,6 +52,13 @@ pub trait ToolCallDetector: Send + Sync {
 }
 
 /// Default detector that parses `<tool_call>{"name":..., "arguments":...}</tool_call>` tags.
+///
+/// Falls back to a wrapper-agnostic scan when no `<tool_call>` tag is present
+/// — see `parse_tool_call_tags` (private, this module) for why. Measured against a real
+/// Qwen2.5-Coder-14B-Instruct model: the model reliably reasons to the
+/// correct tool and arguments but unreliably picks `<tool_call>` over one of
+/// the other tags this loop's own system prompt also offers
+/// (`<answer>`, `<yield>`, `<stuck>`). See infernum-framework#70.
 #[derive(Debug, Clone, Default)]
 pub struct QwenToolCallDetector;
 
@@ -464,7 +471,27 @@ impl LoopExecutor {
             // DETECT
             // =================================================================
 
-            // Check for meta-signals first
+            // Check for tool calls before honoring a terminal meta-signal.
+            //
+            // A model that wraps a well-formed call in `<answer>` or
+            // `<yield>` instead of `<tool_call>` is still attempting a call,
+            // not concluding — measured on Qwen2.5-Coder-14B-Instruct, where
+            // this was the dominant failure mode (infernum-framework#70): the
+            // tool name and arguments were correct in the large majority of
+            // attempts, just wrapped in the wrong tag. Previously this branch
+            // ran meta-signal detection first and broke out on Answer/Stuck/
+            // Yield before `self.detector.detect` ever ran, so the detector's
+            // own wrapper-leniency (see `parse_tool_call_tags`) could never
+            // take effect here even after being taught to recognize these
+            // wrappers — the call was discarded one step earlier. Computing
+            // `detected_calls` first, and only honoring the terminal signal
+            // when it's empty, fixes that without changing behavior for a
+            // model that already uses `<tool_call>` correctly, or for a
+            // genuine final answer/yield/stuck with no call embedded in it
+            // (both remain terminal exactly as before).
+            let detected_calls = self.detector.detect(&output);
+
+            // Check for meta-signals
             let mut terminal_signal = false;
             if let Some(signal) = detect_meta_signal(&output, &detection_config) {
                 debug!(?signal, "Meta-signal detected");
@@ -480,43 +507,49 @@ impl LoopExecutor {
                         confidence,
                         caveats,
                     } => {
-                        state_machine.answer_detected(content, confidence, caveats)?;
-                        let _ = event_tx
-                            .send(LoopEvent::IterationCompleted {
-                                iteration,
-                                outcome: IterationOutcome::AnswerProvided,
-                            })
-                            .await;
-                        terminal_signal = true;
+                        if detected_calls.is_empty() {
+                            state_machine.answer_detected(content, confidence, caveats)?;
+                            let _ = event_tx
+                                .send(LoopEvent::IterationCompleted {
+                                    iteration,
+                                    outcome: IterationOutcome::AnswerProvided,
+                                })
+                                .await;
+                            terminal_signal = true;
+                        }
                     },
                     MetaSignal::Stuck {
                         attempts, request, ..
                     } => {
-                        state_machine.stuck_detected(attempts, request)?;
-                        let _ = event_tx
-                            .send(LoopEvent::IterationCompleted {
-                                iteration,
-                                outcome: IterationOutcome::Stuck,
-                            })
-                            .await;
-                        terminal_signal = true;
+                        if detected_calls.is_empty() {
+                            state_machine.stuck_detected(attempts, request)?;
+                            let _ = event_tx
+                                .send(LoopEvent::IterationCompleted {
+                                    iteration,
+                                    outcome: IterationOutcome::Stuck,
+                                })
+                                .await;
+                            terminal_signal = true;
+                        }
                     },
                     MetaSignal::Yield {
                         partial_progress,
                         suggested_expertise,
                     } => {
-                        let reason = suggested_expertise
-                            .first()
-                            .cloned()
-                            .unwrap_or_else(|| "Agent yielded".to_string());
-                        state_machine.yield_detected(partial_progress, reason)?;
-                        let _ = event_tx
-                            .send(LoopEvent::IterationCompleted {
-                                iteration,
-                                outcome: IterationOutcome::Yielded,
-                            })
-                            .await;
-                        terminal_signal = true;
+                        if detected_calls.is_empty() {
+                            let reason = suggested_expertise
+                                .first()
+                                .cloned()
+                                .unwrap_or_else(|| "Agent yielded".to_string());
+                            state_machine.yield_detected(partial_progress, reason)?;
+                            let _ = event_tx
+                                .send(LoopEvent::IterationCompleted {
+                                    iteration,
+                                    outcome: IterationOutcome::Yielded,
+                                })
+                                .await;
+                            terminal_signal = true;
+                        }
                     },
                     MetaSignal::Uncertain { .. } | MetaSignal::Thinking { .. } => {
                         // Non-terminal: continue to tool call detection
@@ -527,9 +560,6 @@ impl LoopExecutor {
             if terminal_signal {
                 break;
             }
-
-            // Check for tool calls
-            let detected_calls = self.detector.detect(&output);
 
             if detected_calls.is_empty() {
                 // No tool calls and no terminal signal → treat as implicit answer
@@ -933,8 +963,54 @@ impl LoopExecutor {
 // Tool call parsing
 // ---------------------------------------------------------------------------
 
-/// Parse `<tool_call>{"name": "...", "arguments": {...}}</tool_call>` tags.
+/// Parse `<tool_call>{"name": "...", "arguments": {...}}</tool_call>` tags,
+/// falling back to a wrapper-agnostic scan when that finds nothing.
+///
+/// # Why the fallback exists
+///
+/// Measured against a real Qwen2.5-Coder-14B-Instruct model
+/// (infernum-framework#70 and its discriminator comment): across 126
+/// captured completions, 89 contained a JSON object with the exact
+/// `{"name": ..., "arguments": {...}}` shape the model was instructed to
+/// use — right tool, right arguments — just outside the `<tool_call>` tag.
+/// Most were wrapped in `<answer confidence="0.9">...</answer>`, some in a
+/// fenced ` ```json ` block, some bare. A model that gets the call right and
+/// only the tag wrong is attempting a call; scoring that as "no call
+/// happened" was a measurement and detection defect, not evidence the model
+/// can't do this.
+///
+/// The strict pass runs first and, if it finds anything, its result is
+/// returned unchanged — a model that already emits `<tool_call>` correctly
+/// is scored exactly as before, and the fallback only ever activates for the
+/// previously-100%-failing case of zero detected calls. This keeps the
+/// change narrowly scoped: it recovers a demonstrated failure mode without
+/// widening what a *successful* `<tool_call>` emission means.
+///
+/// # What is deliberately still rejected
+///
+/// The fallback requires the literal keys `name` (non-empty string) and
+/// `arguments` (a JSON object) — exactly the schema
+/// [`ToolRegistry::to_qwen_native_description`](crate::tool::ToolRegistry::to_qwen_native_description)
+/// instructs the model to use. It does **not** accept key variants such as
+/// `function_name`/`function` or `params`/`parameters`: three of the 126
+/// captured completions used `function_name` and remain unrecognized after
+/// this change — a known, deliberate gap rather than an oversight, left
+/// unhandled for lack of enough evidence to widen the schema without
+/// increasing false-positive risk on unrelated JSON (e.g. an echoed tool
+/// result). It also does not accept prose narrating an intent to call a tool
+/// with no JSON attached, or a bare tag with no content — see the
+/// `negative_control_*` tests below, each a verbatim transcript from that
+/// measurement that must keep producing zero calls.
 fn parse_tool_call_tags(output: &str) -> Vec<DetectedCall> {
+    let strict = parse_strict_tool_call_tags(output);
+    if !strict.is_empty() {
+        return strict;
+    }
+    parse_lenient_call_json(output)
+}
+
+/// Strict pass: `<tool_call>{"name": "...", "arguments": {...}}</tool_call>`.
+fn parse_strict_tool_call_tags(output: &str) -> Vec<DetectedCall> {
     let mut calls = Vec::new();
     let mut search_from = 0;
     let start_tag = "<tool_call>";
@@ -971,6 +1047,69 @@ fn parse_tool_call_tags(output: &str) -> Vec<DetectedCall> {
     }
 
     calls
+}
+
+/// Lenient fallback: scans the whole text for a JSON object shaped exactly
+/// like `{"name": "...", "arguments": {...}}`, regardless of what tag,
+/// fence, or nothing surrounds it. Only reached when the strict pass above
+/// finds nothing — see [`parse_tool_call_tags`] for why, and for what this
+/// deliberately does not match.
+fn parse_lenient_call_json(output: &str) -> Vec<DetectedCall> {
+    find_json_objects(output)
+        .into_iter()
+        .filter_map(|candidate| {
+            let name = candidate.get("name")?.as_str()?;
+            if name.is_empty() {
+                return None;
+            }
+            let arguments = candidate.get("arguments")?;
+            if !arguments.is_object() {
+                return None;
+            }
+            Some(DetectedCall {
+                id: format!("call_{}", uuid::Uuid::new_v4().simple()),
+                name: name.to_string(),
+                arguments: arguments.clone(),
+            })
+        })
+        .collect()
+}
+
+/// Finds every balanced top-level `{...}` object in `text` and returns the
+/// ones that parse as JSON, in order of appearance.
+///
+/// Brace-matching rather than a regex: tool arguments are themselves nested
+/// JSON objects, and a JSON-aware regex would not meaningfully simplify on
+/// hand-rolled depth counting. `{`/`}` are single-byte ASCII, so byte offsets
+/// from `char_indices` are valid UTF-8 slice boundaries here.
+fn find_json_objects(text: &str) -> Vec<serde_json::Value> {
+    let mut objects = Vec::new();
+    let mut depth = 0usize;
+    let mut start = None;
+
+    for (i, ch) in text.char_indices() {
+        match ch {
+            '{' => {
+                if depth == 0 {
+                    start = Some(i);
+                }
+                depth += 1;
+            },
+            '}' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(s) = start.take() {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text[s..=i]) {
+                            objects.push(v);
+                        }
+                    }
+                }
+            },
+            _ => {},
+        }
+    }
+
+    objects
 }
 
 #[cfg(test)]
@@ -1050,5 +1189,108 @@ mod tests {
         let calls = detector.detect(output);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "bash");
+    }
+
+    // -----------------------------------------------------------------------
+    // Wrapper-agnostic fallback (infernum-framework#70)
+    //
+    // The real evidence — all 126 completions captured from a real
+    // Qwen2.5-Coder-14B-Instruct model, with full provenance — lives in
+    // `crates/beleth/tests/fixtures/issue_70_14b_completions.json`, and
+    // every aggregate number quoted in #70/#71 is recomputed against that
+    // committed file by `crates/beleth/tests/issue_70_regression.rs`. That
+    // is the source of truth; nothing here duplicates it.
+    //
+    // The unit tests below are fast, in-crate sanity checks for specific
+    // *shapes* of input (an answer-wrapped call, a fenced block, a bare
+    // object, a stray unrelated object alongside a real tag). Two use text
+    // copied verbatim from the fixture (noted on each); the rest are
+    // hand-written to exercise a shape distinctly from what the fixture
+    // happens to contain — labeled as such, not implied to be captured
+    // evidence. An earlier version of this file blurred that line: one of
+    // these was a paraphrased approximation of a captured sample presented
+    // as if verbatim, and the full dataset wasn't committed at all, so
+    // nothing here could actually be checked against source. Both are fixed.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn lenient_fallback_recovers_answer_wrapped_call() {
+        // Verbatim: fixture id A/run1/read-cargo-toml#0.
+        let output = "<answer confidence=\"0.9\">\n\
+             {\n  \"name\": \"read_file\",\n  \"arguments\": {\n    \"path\": \"Cargo.toml\"\n  }\n}\n\
+             </answer>";
+        let calls = parse_tool_call_tags(output);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "read_file");
+        assert_eq!(calls[0].arguments["path"], "Cargo.toml");
+    }
+
+    #[test]
+    fn lenient_fallback_recovers_fenced_json_call() {
+        // Verbatim: fixture id C/run1/bash-cat-sentinel#0, including the
+        // real generated fixture path (fixed here after an earlier version
+        // of this test quietly shortened it — that made it a paraphrase
+        // presented as a quote, which is exactly the kind of thing this
+        // whole exercise is supposed to catch, not commit).
+        let output = "```json\n{\n  \"name\": \"bash\",\n  \"arguments\": {\n    \"command\": \"cat /tmp/toolcall-eval-ca87b5d104f441bba930395b3320a9ac/secret.txt\"\n  }\n}\n```";
+        let calls = parse_tool_call_tags(output);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "bash");
+        assert_eq!(
+            calls[0].arguments["command"],
+            "cat /tmp/toolcall-eval-ca87b5d104f441bba930395b3320a9ac/secret.txt"
+        );
+    }
+
+    #[test]
+    fn lenient_fallback_recovers_bare_json_call() {
+        // Synthetic — not from the #70 corpus. Exercises the "no wrapper at
+        // all" shape, which the captured corpus happens not to contain in
+        // isolation (bare JSON there always co-occurs with a fence or tag).
+        let output =
+            "I'll do that now.\n{\"name\": \"list_files\", \"arguments\": {\"path\": \"src\"}}";
+        let calls = parse_tool_call_tags(output);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "list_files");
+    }
+
+    #[test]
+    fn strict_tool_call_tag_takes_priority_over_stray_json() {
+        // Synthetic. If a real <tool_call> is present, the fallback must
+        // not also fire on unrelated JSON elsewhere in the same output.
+        let output = r#"For reference the config looks like {"name": "unrelated", "arguments": {}}.
+<tool_call>
+{"name": "read_file", "arguments": {"path": "real.rs"}}
+</tool_call>"#;
+        let calls = parse_tool_call_tags(output);
+        assert_eq!(
+            calls.len(),
+            1,
+            "expected only the tagged call, not the stray JSON too"
+        );
+        assert_eq!(calls[0].name, "read_file");
+    }
+
+    /// Synthetic, documenting a deliberate boundary decision rather than
+    /// captured evidence — the fixture's own 3 real `function_name_gap`
+    /// completions are checked against this same detector in
+    /// `tests/issue_70_regression.rs::every_non_recovered_completion_-
+    /// still_produces_zero_calls`.
+    #[test]
+    fn function_name_key_variant_is_a_known_unhandled_gap() {
+        let output = r#"<answer confidence="0.9">
+{
+  "function_name": "bash",
+  "arguments": {
+    "command": "pwd"
+  }
+}
+</answer>"#;
+        let calls = parse_tool_call_tags(output);
+        assert!(
+            calls.is_empty(),
+            "function_name is intentionally not accepted yet; if this now passes, \
+             the scope of the fix has changed and the PR description must be updated"
+        );
     }
 }
