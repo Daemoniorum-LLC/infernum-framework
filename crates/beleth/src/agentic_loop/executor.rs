@@ -54,7 +54,7 @@ pub trait ToolCallDetector: Send + Sync {
 /// Default detector that parses `<tool_call>{"name":..., "arguments":...}</tool_call>` tags.
 ///
 /// Falls back to a wrapper-agnostic scan when no `<tool_call>` tag is present
-/// — see [`parse_tool_call_tags`] for why. Measured against a real
+/// — see `parse_tool_call_tags` (private, this module) for why. Measured against a real
 /// Qwen2.5-Coder-14B-Instruct model: the model reliably reasons to the
 /// correct tool and arguments but unreliably picks `<tool_call>` over one of
 /// the other tags this loop's own system prompt also offers
