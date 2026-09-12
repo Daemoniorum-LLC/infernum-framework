@@ -34,6 +34,7 @@ use crate::api_types::{
     EmbeddingResponse, EmbeddingUsage, ModelObject, ModelsResponse, ToolChoice, Usage,
 };
 use crate::batching::{BatchConfig, BatchScheduler};
+use crate::engine_select::{engine_kind_for, EngineKind};
 use crate::error_response::{api_error, ApiError, ErrorCode};
 use crate::model_cache::{
     convert_model, delete_cached_model, download_model, find_model_path, is_holotensor_model,
@@ -62,6 +63,12 @@ use crate::validation::validate_chat_request;
 
 /// Default server address.
 const DEFAULT_ADDR: ([u8; 4], u16) = ([0, 0, 0, 0], 8080);
+
+/// Default GPU offload for GGUF models: every layer.
+pub const DEFAULT_N_GPU_LAYERS: i32 = -1;
+
+/// Default context window for GGUF models, in tokens.
+pub const DEFAULT_CONTEXT_SIZE: usize = 4096;
 
 /// Timeout configuration for different request types.
 #[derive(Debug, Clone)]
@@ -163,6 +170,14 @@ pub struct ServerConfig {
     pub timeouts: TimeoutConfig,
     /// Request queue configuration.
     pub queue: QueueConfig,
+    /// Layers to offload to the GPU for GGUF models: `-1` all, `0` CPU only.
+    ///
+    /// Only the llama.cpp backend reads this; Candle picks its own device.
+    pub n_gpu_layers: i32,
+    /// Context window in tokens for GGUF models. `0` uses the model default.
+    ///
+    /// Only the llama.cpp backend reads this.
+    pub context_size: usize,
 }
 
 impl Default for ServerConfig {
@@ -176,6 +191,8 @@ impl Default for ServerConfig {
             validation_limits: ValidationLimits::default(),
             timeouts: TimeoutConfig::default(),
             queue: QueueConfig::default(),
+            n_gpu_layers: DEFAULT_N_GPU_LAYERS,
+            context_size: DEFAULT_CONTEXT_SIZE,
         }
     }
 }
@@ -203,6 +220,8 @@ pub struct ServerConfigBuilder {
     validation_limits: Option<ValidationLimits>,
     timeouts: Option<TimeoutConfig>,
     queue: Option<QueueConfig>,
+    n_gpu_layers: Option<i32>,
+    context_size: Option<usize>,
 }
 
 impl ServerConfigBuilder {
@@ -270,6 +289,18 @@ impl ServerConfigBuilder {
         self
     }
 
+    /// Sets how many layers a GGUF model offloads to the GPU.
+    pub fn n_gpu_layers(mut self, n: i32) -> Self {
+        self.n_gpu_layers = Some(n);
+        self
+    }
+
+    /// Sets the context window, in tokens, for a GGUF model.
+    pub fn context_size(mut self, size: usize) -> Self {
+        self.context_size = Some(size);
+        self
+    }
+
     /// Builds the server config.
     pub fn build(self) -> ServerConfig {
         ServerConfig {
@@ -281,9 +312,17 @@ impl ServerConfigBuilder {
             validation_limits: self.validation_limits.unwrap_or_default(),
             timeouts: self.timeouts.unwrap_or_default(),
             queue: self.queue.unwrap_or_default(),
+            n_gpu_layers: self.n_gpu_layers.unwrap_or(DEFAULT_N_GPU_LAYERS),
+            context_size: self.context_size.unwrap_or(DEFAULT_CONTEXT_SIZE),
         }
     }
 }
+
+/// A loaded inference engine, whichever backend built it.
+///
+/// Candle ([`Engine`]) and llama.cpp (`abaddon::LlamaCppEngine`) both implement
+/// [`InferenceEngine`]; the server only ever calls trait methods on it.
+pub type LoadedEngine = Arc<dyn InferenceEngine + Send + Sync>;
 
 /// Shared application state.
 ///
@@ -300,7 +339,12 @@ pub struct AppState {
     /// The inference engine (None if no model is loaded).
     ///
     /// Use `read()` for inference operations, `write()` only for model load/unload.
-    pub engine: RwLock<Option<Arc<Engine>>>,
+    ///
+    /// Held behind the [`InferenceEngine`] trait rather than as a concrete
+    /// [`Engine`], because which backend loaded the model depends on the model:
+    /// a GGUF is read by llama.cpp and everything else by Candle. See
+    /// [`crate::engine_select`].
+    pub engine: RwLock<Option<LoadedEngine>>,
     /// Server configuration (read-only after initialization).
     pub config: ServerConfig,
     /// Server start time for uptime calculations.
@@ -377,7 +421,7 @@ impl AppState {
             .with_max_queue_size(config.queue.max_queue_size);
 
         // Create engine Arc and start the request batcher
-        let engine_arc = Arc::new(engine);
+        let engine_arc: LoadedEngine = Arc::new(engine);
         let batcher_config = BatcherConfig {
             max_batch_size: config.queue.max_concurrent_requests.min(8),
             max_queue_size: config.queue.max_queue_size,
@@ -599,8 +643,48 @@ impl Server {
                 .map_err(|e| infernum_core::Error::Internal { message: e })?
         };
 
-        let engine = Engine::new(engine_config).await?;
-        let engine_arc = Arc::new(engine);
+        let engine_arc: LoadedEngine = match engine_kind_for(model_source) {
+            #[cfg(feature = "llama-cpp")]
+            EngineKind::LlamaCpp => {
+                // Candle cannot read a GGUF -- it resolves the `.gguf` to its own
+                // config path and then tries to parse the weights as UTF-8 JSON.
+                // llama.cpp is the backend that reads the format.
+                tracing::info!(
+                    model = %model_source,
+                    n_gpu_layers = self.config.n_gpu_layers,
+                    context_size = self.config.context_size,
+                    "GGUF model: loading with the llama.cpp backend"
+                );
+                let llama_config = abaddon::LlamaCppConfig::builder()
+                    .model_path(model_source)
+                    .n_gpu_layers(self.config.n_gpu_layers)
+                    .context_size(self.config.context_size)
+                    .build()
+                    .map_err(|e| infernum_core::Error::Internal {
+                        message: e.to_string(),
+                    })?;
+                Arc::new(abaddon::LlamaCppEngine::load(llama_config).await?)
+            },
+            // Say so here rather than handing the GGUF to Candle, which fails
+            // further down with "stream did not contain valid UTF-8".
+            #[cfg(not(feature = "llama-cpp"))]
+            EngineKind::LlamaCpp => {
+                return Err(infernum_core::Error::InvalidConfig {
+                    message: format!(
+                        "{model_source} is a GGUF, which needs the llama.cpp \
+                         backend. This binary was built without it: rebuild with \
+                         --features llama-cpp (or llama-cpp-cuda for GPU offload)."
+                    ),
+                });
+            },
+            EngineKind::Candle => {
+                tracing::info!(
+                    model = %model_source,
+                    "Loading with the Candle backend"
+                );
+                Arc::new(Engine::new(engine_config).await?)
+            },
+        };
 
         // Start the request batcher for parallel inference
         let batcher_config = BatcherConfig {

@@ -22,10 +22,10 @@ cuda = ["abaddon/cuda"]
 metal = ["abaddon/metal"]
 haagenti-gpu = ["cuda", "abaddon/haagenti-gpu"]
 # llama.cpp backend (high-performance GGUF inference)
-llama-cpp = ["abaddon/llama-cpp"]
-llama-cpp-cuda = ["llama-cpp", "abaddon/llama-cpp-cuda"]
-llama-cpp-metal = ["llama-cpp", "abaddon/llama-cpp-metal"]
-llama-cpp-vulkan = ["llama-cpp", "abaddon/llama-cpp-vulkan"]
+llama-cpp = ["abaddon/llama-cpp", "infernum-server?/llama-cpp"]
+llama-cpp-cuda = ["llama-cpp", "abaddon/llama-cpp-cuda", "infernum-server?/llama-cpp-cuda"]
+llama-cpp-metal = ["llama-cpp", "abaddon/llama-cpp-metal", "infernum-server?/llama-cpp-metal"]
+llama-cpp-vulkan = ["llama-cpp", "abaddon/llama-cpp-vulkan", "infernum-server?/llama-cpp-vulkan"]
 
 [dependencies]
 infernum-core = { path = "../infernum-core", version = "0.2.0-rc.2" }

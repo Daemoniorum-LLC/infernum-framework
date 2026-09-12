@@ -137,7 +137,7 @@ impl RequestBatcher {
     ///
     /// The batcher runs a background task that collects requests into batches
     /// and processes them using the engine's generate_batch API.
-    pub fn start<E: InferenceEngine + Send + Sync + 'static>(
+    pub fn start<E: InferenceEngine + Send + Sync + ?Sized + 'static>(
         self,
         engine: Arc<E>,
     ) -> BatcherHandle {
