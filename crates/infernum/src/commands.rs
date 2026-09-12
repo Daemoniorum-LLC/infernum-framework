@@ -26,14 +26,31 @@ pub async fn serve(
     holo_target_quality: f32,
 ) -> Result<()> {
     // Parse backend type
-    let _backend_type = abaddon::BackendType::from_str(&backend).ok_or_else(|| {
+    let backend_type = abaddon::BackendType::from_str(&backend).ok_or_else(|| {
         color_eyre::eyre::eyre!(
             "Invalid backend: {}. Use auto, llama-cpp, or candle",
             backend
         )
     })?;
 
-    // Log backend configuration
+    // The server picks its backend per model: a GGUF goes to llama.cpp and
+    // everything else to Candle. `--backend candle` would therefore silently
+    // fail on a GGUF, so refuse it here rather than at load time.
+    if backend_type == abaddon::BackendType::Candle {
+        if let Some(model) = model.as_deref() {
+            if std::path::Path::new(model)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
+            {
+                return Err(color_eyre::eyre::eyre!(
+                    "--backend candle cannot read a GGUF file ({}). \
+                     Use --backend auto or --backend llama-cpp.",
+                    model
+                ));
+            }
+        }
+    }
+
     tracing::info!(
         backend = %backend,
         n_gpu_layers = n_gpu_layers,
@@ -41,7 +58,6 @@ pub async fn serve(
         "Backend configuration"
     );
 
-    // TODO(#TBD): Pass backend config to server when engine selection is implemented
     use infernum_server::{Server, ServerConfig};
 
     // Require a model - from args, env var, or prompt interactively
@@ -137,6 +153,8 @@ pub async fn serve(
         validation_limits: Default::default(),
         timeouts: Default::default(),
         queue: Default::default(),
+        n_gpu_layers,
+        context_size,
     };
 
     let server = Server::new(config);

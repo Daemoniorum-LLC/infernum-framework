@@ -95,6 +95,7 @@ pub mod config;
 pub mod config_error;
 pub mod config_reload;
 pub mod dedup;
+pub mod engine_select;
 pub mod error_response;
 pub mod gpu_metrics;
 pub mod grpc;

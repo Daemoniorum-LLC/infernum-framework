@@ -120,6 +120,13 @@ metal = ["abaddon/metal"]
 flash-attn = ["abaddon/flash-attn"]
 haagenti-gpu = ["holotensor", "abaddon/haagenti-gpu"]
 
+# llama.cpp backend (GGUF inference). Without it the server cannot load a
+# GGUF and says so at load time rather than failing inside Candle.
+llama-cpp = ["abaddon/llama-cpp"]
+llama-cpp-cuda = ["llama-cpp", "abaddon/llama-cpp-cuda"]
+llama-cpp-metal = ["llama-cpp", "abaddon/llama-cpp-metal"]
+llama-cpp-vulkan = ["llama-cpp", "abaddon/llama-cpp-vulkan"]
+
 # CPU optimizations
 mkl = ["abaddon/mkl"]
 accelerate = ["abaddon/accelerate"]
