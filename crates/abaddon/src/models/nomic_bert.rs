@@ -106,11 +106,23 @@ impl NomicBertConfig {
 struct RotaryEmbedding {
     cos: Tensor,
     sin: Tensor,
+    /// Leading slice of each head vector that gets rotated. Equals `head_dim`
+    /// when `rotary_emb_fraction` is 1.0 (the published `v1.5` setting); a
+    /// smaller value leaves the trailing components untouched.
+    rotary_dim: usize,
 }
 
 impl RotaryEmbedding {
     fn new(cfg: &NomicBertConfig, dtype: DType, device: &Device) -> CandleResult<Self> {
         let rotary_dim = cfg.rotary_dim();
+        if rotary_dim % 2 != 0 {
+            return Err(candle_core::Error::Msg(format!(
+                "NomicBERT rotary dimension must be even, got {rotary_dim} from \
+                 head_dim {} * rotary_emb_fraction {}",
+                cfg.head_dim(),
+                cfg.rotary_emb_fraction,
+            )));
+        }
         let max_seq = cfg.max_position_embeddings;
         let base = cfg.rotary_emb_base;
 
@@ -127,7 +139,31 @@ impl RotaryEmbedding {
         let cos = freqs.cos()?.to_dtype(dtype)?;
         let sin = freqs.sin()?.to_dtype(dtype)?;
 
-        Ok(Self { cos, sin })
+        Ok(Self {
+            cos,
+            sin,
+            rotary_dim,
+        })
+    }
+
+    /// Rotates the leading `rotary_dim` components of each head vector and
+    /// passes the remainder through unchanged, matching the reference's
+    /// `cat([x[..., :ro_dim] * cos + rotate_half(...) * sin, x[..., ro_dim:]])`.
+    fn rotate(&self, x: &Tensor, cos: &Tensor, sin: &Tensor) -> CandleResult<Tensor> {
+        let head_dim = x.dim(D::Minus1)?;
+        // `rotary_dim == 0` needs no special case: the general path below
+        // narrows to an empty prefix and concatenates the untouched tail,
+        // which is the identity.
+        if self.rotary_dim == head_dim {
+            let rot = rotate_half(x)?;
+            return x.broadcast_mul(cos)? + rot.broadcast_mul(sin)?;
+        }
+
+        let head = x.narrow(D::Minus1, 0, self.rotary_dim)?.contiguous()?;
+        let tail = x.narrow(D::Minus1, self.rotary_dim, head_dim - self.rotary_dim)?;
+        let rot = rotate_half(&head)?;
+        let rotated = (head.broadcast_mul(cos)? + rot.broadcast_mul(sin)?)?;
+        Tensor::cat(&[&rotated, &tail], D::Minus1)
     }
 
     fn apply(&self, q: &Tensor, k: &Tensor) -> CandleResult<(Tensor, Tensor)> {
@@ -141,13 +177,7 @@ impl RotaryEmbedding {
         let cos = cos.unsqueeze(0)?.unsqueeze(2)?;
         let sin = sin.unsqueeze(0)?.unsqueeze(2)?;
 
-        let q_rot = rotate_half(q)?;
-        let q_embed = (q.broadcast_mul(&cos)? + q_rot.broadcast_mul(&sin)?)?;
-
-        let k_rot = rotate_half(k)?;
-        let k_embed = (k.broadcast_mul(&cos)? + k_rot.broadcast_mul(&sin)?)?;
-
-        Ok((q_embed, k_embed))
+        Ok((self.rotate(q, &cos, &sin)?, self.rotate(k, &cos, &sin)?))
     }
 }
 
@@ -226,7 +256,11 @@ impl NomicAttention {
     fn new(vb: VarBuilder, cfg: &NomicBertConfig) -> CandleResult<Self> {
         let hidden = cfg.hidden_size;
         let wqkv = linear_maybe_bias(hidden, 3 * hidden, cfg.qkv_proj_bias, vb.pp("Wqkv"))?;
-        let out_proj = linear_maybe_bias(hidden, hidden, false, vb.pp("out_proj"))?;
+        // The reference wires out_proj's bias to the same `qkv_proj_bias`
+        // flag as Wqkv (modeling_hf_nomic_bert.py: `nn.Linear(embed_dim,
+        // embed_dim, bias=config.qkv_proj_bias)`). Hardcoding `false` here
+        // silently dropped the bias for any checkpoint that has one.
+        let out_proj = linear_maybe_bias(hidden, hidden, cfg.qkv_proj_bias, vb.pp("out_proj"))?;
         Ok(Self {
             wqkv,
             out_proj,
@@ -235,7 +269,15 @@ impl NomicAttention {
         })
     }
 
-    fn forward(&self, xs: &Tensor, rotary: &RotaryEmbedding) -> CandleResult<Tensor> {
+    /// `additive_mask`, when present, is broadcast onto the attention scores
+    /// before the softmax: `0.0` for a real token, a large negative value for
+    /// a padding one. Shape `(batch, 1, 1, seq_len)`.
+    fn forward(
+        &self,
+        xs: &Tensor,
+        rotary: &RotaryEmbedding,
+        additive_mask: Option<&Tensor>,
+    ) -> CandleResult<Tensor> {
         let (batch, seq_len, hidden) = xs.dims3()?;
 
         let qkv = self.wqkv.forward(xs)?;
@@ -256,6 +298,10 @@ impl NomicAttention {
 
         let scale = (self.head_dim as f64).sqrt();
         let attn_weights = q.matmul(&k.t()?)?.affine(1.0 / scale, 0.0)?;
+        let attn_weights = match additive_mask {
+            Some(mask) => attn_weights.broadcast_add(mask)?,
+            None => attn_weights,
+        };
         let attn_weights = candle_nn::ops::softmax_last_dim(&attn_weights)?;
         let attn_out = attn_weights.matmul(&v)?;
 
@@ -319,10 +365,15 @@ impl NomicBlock {
         })
     }
 
-    fn forward(&self, xs: &Tensor, rotary: &RotaryEmbedding) -> CandleResult<Tensor> {
+    fn forward(
+        &self,
+        xs: &Tensor,
+        rotary: &RotaryEmbedding,
+        additive_mask: Option<&Tensor>,
+    ) -> CandleResult<Tensor> {
         // Post-norm: attn → residual → norm, mlp → residual → norm
         let residual = xs;
-        let h = self.attn.forward(xs, rotary)?;
+        let h = self.attn.forward(xs, rotary, additive_mask)?;
         let xs = self.norm1.forward(&(h + residual)?)?;
 
         let residual = &xs;
@@ -362,12 +413,57 @@ impl NomicBert {
     }
 
     /// Forward pass returning sequence hidden states.
+    ///
+    /// Every position attends to every other. Correct for a single sequence
+    /// or an evenly sized batch; for a padded batch use
+    /// [`Self::forward_with_mask`].
     pub fn forward(&self, input_ids: &Tensor) -> CandleResult<Tensor> {
+        self.forward_with_mask(input_ids, None)
+    }
+
+    /// Forward pass honouring an attention mask.
+    ///
+    /// `attention_mask` is `(batch, seq_len)`, non-zero for a real token and
+    /// zero for padding. Masked positions are excluded from every other
+    /// token's attention, so a sequence's hidden states do not depend on how
+    /// much padding happens to sit beside it in the batch.
+    pub fn forward_with_mask(
+        &self,
+        input_ids: &Tensor,
+        attention_mask: Option<&Tensor>,
+    ) -> CandleResult<Tensor> {
+        let additive = attention_mask
+            .map(|m| Self::additive_mask(m, input_ids))
+            .transpose()?;
+
         let mut xs = self.embeddings.forward(input_ids)?;
         for layer in &self.layers {
-            xs = layer.forward(&xs, &self.rotary)?;
+            xs = layer.forward(&xs, &self.rotary, additive.as_ref())?;
         }
         Ok(xs)
+    }
+
+    /// Turns a `(batch, seq)` keep/drop mask into the `(batch, 1, 1, seq)`
+    /// additive mask the attention softmax wants.
+    ///
+    /// Padding gets a large finite negative rather than `-inf`: a row that is
+    /// entirely padding would otherwise softmax to NaN, and a padded row's
+    /// output is still multiplied into the residual stream even though the
+    /// pooling discards it.
+    fn additive_mask(attention_mask: &Tensor, input_ids: &Tensor) -> CandleResult<Tensor> {
+        let (batch, seq_len) = input_ids.dims2()?;
+        let mask = attention_mask.to_dtype(DType::F32)?;
+        if mask.dims2()? != (batch, seq_len) {
+            return Err(candle_core::Error::Msg(format!(
+                "attention_mask shape {:?} does not match input_ids shape {:?}",
+                mask.dims2()?,
+                (batch, seq_len),
+            )));
+        }
+        // keep → 0.0, pad → -1e30
+        let keep = mask.ne(0.0)?.to_dtype(DType::F32)?;
+        let additive = (keep.affine(1.0, -1.0)? * 1e30)?;
+        additive.reshape((batch, 1, 1, seq_len))
     }
 
     /// Forward pass for embedding extraction (same as `forward` for BERT-style models).
@@ -383,9 +479,44 @@ impl NomicBert {
     /// returns embeddings on the same scale and truncated Matryoshka
     /// embeddings get normalized after slicing rather than before.
     pub fn extract_embeddings(&self, input_ids: &Tensor) -> CandleResult<Tensor> {
-        let hidden = self.forward(input_ids)?;
-        let pooled = hidden.mean(1)?;
-        pooled.to_dtype(candle_core::DType::F32)
+        self.extract_embeddings_with_mask(input_ids, None)
+    }
+
+    /// Mean-pool over the sequence, counting only unmasked positions.
+    ///
+    /// `attention_mask` is `(batch, seq_len)`, non-zero for a real token. With
+    /// a mask, padding is excluded from both the attention and the pool, so
+    /// appending padding to a sequence leaves its embedding unchanged — which
+    /// is what makes batching variable-length inputs safe.
+    ///
+    /// Returns raw pooled hidden states; see [`Self::extract_embeddings`] for
+    /// where normalization happens.
+    pub fn extract_embeddings_with_mask(
+        &self,
+        input_ids: &Tensor,
+        attention_mask: Option<&Tensor>,
+    ) -> CandleResult<Tensor> {
+        let hidden = self
+            .forward_with_mask(input_ids, attention_mask)?
+            .to_dtype(DType::F32)?;
+
+        let pooled = match attention_mask {
+            None => hidden.mean(1)?,
+            Some(mask) => {
+                let (batch, seq_len) = input_ids.dims2()?;
+                let keep = mask
+                    .to_dtype(DType::F32)?
+                    .ne(0.0)?
+                    .to_dtype(DType::F32)?
+                    .reshape((batch, seq_len, 1))?;
+                let summed = hidden.broadcast_mul(&keep)?.sum(1)?;
+                // An all-padding row would divide by zero; clamp so it yields
+                // zeros rather than NaNs.
+                let counts = keep.sum(1)?.clamp(1.0, f64::INFINITY)?;
+                summed.broadcast_div(&counts)?
+            },
+        };
+        Ok(pooled)
     }
 
     /// No-op: NomicBERT has no KV cache.
@@ -1469,5 +1600,463 @@ mod tests {
                 "reference embedding row {b} is degenerate; the fixture proves nothing",
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // out_proj bias (LARES-465 item 1)
+    // -----------------------------------------------------------------------
+
+    /// Builds the weight map for `cfg`, then adds the QKV/out_proj bias
+    /// tensors a `qkv_proj_bias: true` checkpoint would carry.
+    fn tensors_with_attn_bias(
+        cfg: &NomicBertConfig,
+        w: &TinyWeights,
+        out_proj_bias: Option<&[f32]>,
+    ) -> HashMap<String, Tensor> {
+        let device = Device::Cpu;
+        let h = cfg.hidden_size;
+        let mut ts = w.tensors(cfg, &device).expect("fixture tensors build");
+        for i in 0..cfg.num_hidden_layers {
+            ts.insert(
+                format!("encoder.layers.{i}.attn.Wqkv.bias"),
+                Tensor::zeros(3 * h, DType::F32, &device).unwrap(),
+            );
+            if let Some(b) = out_proj_bias {
+                ts.insert(
+                    format!("encoder.layers.{i}.attn.out_proj.bias"),
+                    Tensor::from_slice(b, h, &device).unwrap(),
+                );
+            }
+        }
+        ts
+    }
+
+    /// With `qkv_proj_bias: true` the loader must actually *ask* for
+    /// `out_proj.bias`, so a checkpoint missing it fails loudly.
+    ///
+    /// This is the regression guard for the original defect: `out_proj` was
+    /// built with `bias = false` hardcoded, so the tensor was never requested.
+    /// A checkpoint carrying one loaded happily and silently ignored it, and
+    /// this assertion would have passed vacuously — hence the companion test
+    /// below, which proves the bias actually reaches the output.
+    #[test]
+    fn out_proj_bias_is_required_when_qkv_proj_bias_is_set() {
+        let mut cfg = tiny_config(4, 1, 1, 4, 6);
+        cfg.qkv_proj_bias = true;
+        let w = TinyWeights::deterministic(&cfg, 31);
+
+        let missing = tensors_with_attn_bias(&cfg, &w, None);
+        let vb = VarBuilder::from_tensors(missing, DType::F32, &Device::Cpu);
+        assert!(
+            NomicBert::load(cfg.clone(), vb).is_err(),
+            "loading should fail when qkv_proj_bias is set but out_proj.bias is absent",
+        );
+
+        // The same fixture with the bias present loads fine, so the failure
+        // above is about the bias and not something else in the map.
+        let complete = tensors_with_attn_bias(&cfg, &w, Some(&[0.0; 4]));
+        let vb = VarBuilder::from_tensors(complete, DType::F32, &Device::Cpu);
+        assert!(
+            NomicBert::load(cfg, vb).is_ok(),
+            "loading should succeed once out_proj.bias is supplied",
+        );
+    }
+
+    /// The bias reaches the output, with an analytically derived expectation.
+    ///
+    /// Every projection is zeroed and both layer norms are at identity gain,
+    /// so `q = k = v = 0` and the attention output is exactly `out_proj`'s
+    /// bias `b`, the same at every position. The MLP contributes nothing:
+    ///
+    /// ```text
+    /// out_t = norm2(0 + norm1(b + x_t)) = LN(LN(b + x_t)) = LN(b + x_t)
+    /// ```
+    ///
+    /// Dropping the bias would give `LN(x_t)`, which the final assertion rules
+    /// out explicitly.
+    #[test]
+    fn out_proj_bias_is_applied_to_the_attention_output() {
+        let h = 4usize;
+        let mut cfg = tiny_config(h, 1, 1, 4, 6);
+        cfg.qkv_proj_bias = true;
+
+        let mut r = Lcg::new(33);
+        let mut w = TinyWeights::zeroed(&cfg);
+        w.word_emb = r.vec(cfg.vocab_size * h, 2.0);
+        let bias: Vec<f32> = vec![0.5, -1.25, 0.75, -0.5];
+
+        let ts = tensors_with_attn_bias(&cfg, &w, Some(&bias));
+        let vb = VarBuilder::from_tensors(ts, DType::F32, &Device::Cpu);
+        let model = NomicBert::load(cfg, vb).expect("model loads");
+
+        let ids: Vec<u32> = vec![1, 3, 5, 2];
+        let got = model
+            .forward(&ids_tensor(&[&ids]))
+            .expect("forward runs")
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap();
+
+        let ones = vec![1.0f32; h];
+        let zeros = vec![0.0f32; h];
+        for (t, &id) in ids.iter().enumerate() {
+            let row = &w.word_emb[id as usize * h..(id as usize + 1) * h];
+            let x = reference::layer_norm(row, &w.emb_ln_w, &w.emb_ln_b, EPS_F32);
+
+            let sum: Vec<f32> = bias.iter().zip(&x).map(|(a, b)| a + b).collect();
+            let expected = reference::layer_norm(&sum, &ones, &zeros, EPS_F32);
+            assert_close(
+                &got[t * h..(t + 1) * h],
+                &expected,
+                1e-5,
+                &format!("position {t} with out_proj bias"),
+            );
+
+            // Non-vacuity: the bias must actually move the result.
+            let without = reference::layer_norm(&x, &ones, &zeros, EPS_F32);
+            let diff = expected
+                .iter()
+                .zip(&without)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0f32, f32::max);
+            assert!(
+                diff > 1e-2,
+                "fixture is vacuous at position {t}: the bias barely changes the \
+                 result (max diff {diff})",
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Partial rotary (LARES-465 item 3)
+    // -----------------------------------------------------------------------
+
+    /// `rotary_emb_fraction < 1.0` rotates only the leading `rotary_dim`
+    /// components and passes the rest through untouched, matching the
+    /// reference's `cat([rotated_prefix, x[..., ro_dim:]])`.
+    ///
+    /// This configuration previously failed outright: the cos/sin tables were
+    /// built `rotary_dim` wide and broadcast against a `head_dim`-wide vector.
+    #[test]
+    fn partial_rotary_rotates_only_the_leading_components() {
+        let mut cfg = tiny_config(8, 1, 1, 16, 8);
+        cfg.rotary_emb_fraction = 0.5; // head_dim 8 → rotary_dim 4
+        assert_eq!(cfg.rotary_dim(), 4);
+
+        let rotary =
+            RotaryEmbedding::new(&cfg, DType::F32, &Device::Cpu).expect("rotary table builds");
+
+        let x = [0.3f32, -0.7, 1.1, 0.25, 9.0, -9.5, 2.5, -2.75];
+        let q = Tensor::from_slice(
+            &[
+                0.0f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, // position 0
+                x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7], // position 1
+            ],
+            (1, 2, 1, 8),
+            &Device::Cpu,
+        )
+        .unwrap();
+
+        let (out, _) = rotary.apply(&q, &q).expect("rotary applies");
+        let got = out.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+
+        // rotary_dim 4 pairs (0,2) and (1,3), turned by 1 * inv_freq[i] with
+        // inv_freq = [1/1000^0, 1/1000^(2/4)].
+        let a0 = 1.0f32;
+        let a1 = 1.0f32 / 1000f32.powf(0.5);
+        let expected_rotated = [
+            x[0] * a0.cos() - x[2] * a0.sin(),
+            x[1] * a1.cos() - x[3] * a1.sin(),
+            x[2] * a0.cos() + x[0] * a0.sin(),
+            x[3] * a1.cos() + x[1] * a1.sin(),
+        ];
+
+        assert_close(
+            &got[8..12],
+            &expected_rotated,
+            1e-6,
+            "rotated prefix at position 1",
+        );
+        assert_close(
+            &got[12..16],
+            &x[4..8],
+            0.0,
+            "components past rotary_dim must pass through untouched",
+        );
+    }
+
+    /// `rotary_emb_fraction: 0.0` disables rotary entirely rather than
+    /// erroring, matching the reference's `if self.rotary_emb_dim > 0` guard.
+    #[test]
+    fn zero_rotary_fraction_is_the_identity() {
+        let mut cfg = tiny_config(8, 2, 1, 16, 8);
+        cfg.rotary_emb_fraction = 0.0;
+        assert_eq!(cfg.rotary_dim(), 0);
+
+        let rotary = RotaryEmbedding::new(&cfg, DType::F32, &Device::Cpu).expect("builds");
+        let mut r = Lcg::new(35);
+        let data = r.vec(3 * 2 * 4, 1.5);
+        let q = Tensor::from_slice(&data, (1, 3, 2, 4), &Device::Cpu).unwrap();
+
+        let (out, _) = rotary.apply(&q, &q).expect("applies");
+        assert_close(
+            &out.flatten_all().unwrap().to_vec1::<f32>().unwrap(),
+            &data,
+            0.0,
+            "zero rotary fraction should leave the vector alone",
+        );
+    }
+
+    /// An odd rotary width cannot be split into rotation pairs. Rejecting it
+    /// at construction beats a shape-mismatch panic from inside `apply`.
+    #[test]
+    fn odd_rotary_dimension_is_rejected_with_a_clear_error() {
+        let mut cfg = tiny_config(8, 2, 1, 16, 8); // head_dim 4
+        cfg.rotary_emb_fraction = 0.75; // → rotary_dim 3
+
+        assert_eq!(cfg.rotary_dim(), 3);
+        let msg = match RotaryEmbedding::new(&cfg, DType::F32, &Device::Cpu) {
+            Ok(_) => panic!("odd rotary dim should be rejected"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("even"),
+            "error should explain the constraint, got: {msg}",
+        );
+    }
+
+    /// A partial-rotary model runs end to end. Before the fix this panicked
+    /// inside the attention on a broadcast shape mismatch.
+    #[test]
+    fn partial_rotary_model_runs_end_to_end() {
+        let mut cfg = tiny_config(8, 2, 2, 16, 12);
+        cfg.rotary_emb_fraction = 0.5;
+        let model = load(&cfg, &TinyWeights::deterministic(&cfg, 37));
+
+        let out = model
+            .extract_embeddings(&ids_tensor(&[&[1, 4, 7, 2], &[9, 0, 3, 5]]))
+            .expect("partial-rotary forward should not error");
+
+        assert_eq!(out.dims2().unwrap(), (2, 8));
+        let flat = out.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        assert!(flat.iter().all(|v| v.is_finite()), "got {flat:?}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Attention mask (LARES-465 item 2)
+    // -----------------------------------------------------------------------
+
+    fn mask_tensor(rows: &[&[u32]]) -> Tensor {
+        ids_tensor(rows)
+    }
+
+    /// The guarantee that makes batching variable-length inputs safe: padding
+    /// a sequence, with a mask that marks the padding, must not change its
+    /// embedding.
+    ///
+    /// Without the mask it does change it — padding tokens are attended to and
+    /// pooled over — which is why the unmasked comparison is asserted to
+    /// differ. That second assertion is what stops this test passing for the
+    /// wrong reason.
+    #[test]
+    fn padding_does_not_change_an_embedding_when_masked() {
+        let cfg = tiny_config(8, 2, 2, 16, 12);
+        let model = load(&cfg, &TinyWeights::deterministic(&cfg, 41));
+
+        let bare = model
+            .extract_embeddings(&ids_tensor(&[&[1, 4, 7]]))
+            .expect("bare extract runs")
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap();
+
+        let padded_ids = ids_tensor(&[&[1, 4, 7, 0, 0]]);
+        let mask = mask_tensor(&[&[1, 1, 1, 0, 0]]);
+
+        let masked = model
+            .extract_embeddings_with_mask(&padded_ids, Some(&mask))
+            .expect("masked extract runs")
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap();
+        assert_close(&masked, &bare, 1e-5, "masked padded vs unpadded");
+
+        // Same input without the mask: padding leaks in.
+        let unmasked = model
+            .extract_embeddings(&padded_ids)
+            .expect("unmasked extract runs")
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap();
+        let diff = unmasked
+            .iter()
+            .zip(&bare)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            diff > 1e-3,
+            "padding should change the result when unmasked (max diff {diff}); \
+             if it does not, this fixture cannot prove the mask does anything",
+        );
+    }
+
+    /// What sits in a masked position is irrelevant — attention never sees it
+    /// and pooling never counts it.
+    #[test]
+    fn masked_positions_do_not_affect_the_output() {
+        let cfg = tiny_config(8, 2, 2, 16, 12);
+        let model = load(&cfg, &TinyWeights::deterministic(&cfg, 43));
+        let mask = mask_tensor(&[&[1, 1, 1, 0, 0]]);
+
+        let a = model
+            .extract_embeddings_with_mask(&ids_tensor(&[&[1, 4, 7, 0, 0]]), Some(&mask))
+            .unwrap()
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap();
+        let b = model
+            .extract_embeddings_with_mask(&ids_tensor(&[&[1, 4, 7, 11, 9]]), Some(&mask))
+            .unwrap()
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap();
+
+        assert_close(&a, &b, 1e-5, "differing padding content");
+    }
+
+    /// The point of the whole exercise: a padded batch embeds each row exactly
+    /// as if that row had been embedded alone.
+    #[test]
+    fn padded_batch_rows_match_their_standalone_embeddings() {
+        let cfg = tiny_config(8, 2, 2, 16, 12);
+        let model = load(&cfg, &TinyWeights::deterministic(&cfg, 45));
+
+        let sequences: [&[u32]; 3] = [&[1, 4, 7, 2, 9], &[3, 3], &[5, 2, 11]];
+        let width = 5;
+
+        let padded: Vec<Vec<u32>> = sequences
+            .iter()
+            .map(|s| {
+                let mut v = s.to_vec();
+                v.resize(width, 0);
+                v
+            })
+            .collect();
+        let masks: Vec<Vec<u32>> = sequences
+            .iter()
+            .map(|s| {
+                let mut v = vec![1u32; s.len()];
+                v.resize(width, 0);
+                v
+            })
+            .collect();
+
+        let padded_refs: Vec<&[u32]> = padded.iter().map(|v| v.as_slice()).collect();
+        let mask_refs: Vec<&[u32]> = masks.iter().map(|v| v.as_slice()).collect();
+
+        let batched = model
+            .extract_embeddings_with_mask(&ids_tensor(&padded_refs), Some(&mask_tensor(&mask_refs)))
+            .expect("batched masked extract runs")
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap();
+
+        for (b, seq) in sequences.iter().enumerate() {
+            let alone = model
+                .extract_embeddings(&ids_tensor(&[seq]))
+                .expect("standalone extract runs")
+                .flatten_all()
+                .unwrap()
+                .to_vec1::<f32>()
+                .unwrap();
+            assert_close(
+                &batched[b * 8..(b + 1) * 8],
+                &alone,
+                1e-5,
+                &format!("padded batch row {b} (len {}) vs standalone", seq.len()),
+            );
+        }
+    }
+
+    /// A row that is entirely padding divides by a zero count. It must come
+    /// back as zeros rather than NaNs, so one empty input cannot poison a
+    /// batch.
+    #[test]
+    fn all_padding_row_pools_to_zero_not_nan() {
+        let cfg = tiny_config(8, 2, 1, 16, 12);
+        let model = load(&cfg, &TinyWeights::deterministic(&cfg, 47));
+
+        let out = model
+            .extract_embeddings_with_mask(
+                &ids_tensor(&[&[1, 4, 7], &[0, 0, 0]]),
+                Some(&mask_tensor(&[&[1, 1, 1], &[0, 0, 0]])),
+            )
+            .expect("extract runs")
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap();
+
+        assert!(
+            out.iter().all(|v| v.is_finite()),
+            "all-padding row produced non-finite values: {out:?}",
+        );
+        assert_close(&out[8..16], &vec![0.0; 8], 0.0, "all-padding row");
+        assert!(
+            l2(&out[0..8]) > 1e-3,
+            "the real row should still carry signal",
+        );
+    }
+
+    /// A mask that does not line up with the input is a caller bug worth
+    /// naming, not a silent broadcast.
+    #[test]
+    fn mismatched_mask_shape_is_rejected() {
+        let cfg = tiny_config(8, 2, 1, 16, 12);
+        let model = load(&cfg, &TinyWeights::deterministic(&cfg, 49));
+
+        let err = model
+            .extract_embeddings_with_mask(
+                &ids_tensor(&[&[1, 4, 7]]),
+                Some(&mask_tensor(&[&[1, 1, 1, 1]])),
+            )
+            .expect_err("a mask of the wrong width should be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("attention_mask"),
+            "error should name the offending argument, got: {msg}",
+        );
+    }
+
+    /// An all-ones mask is the same as no mask at all.
+    #[test]
+    fn full_mask_matches_the_unmasked_path() {
+        let cfg = tiny_config(8, 2, 2, 16, 12);
+        let model = load(&cfg, &TinyWeights::deterministic(&cfg, 51));
+        let ids = ids_tensor(&[&[1, 4, 7, 2]]);
+
+        let unmasked = model
+            .extract_embeddings(&ids)
+            .unwrap()
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap();
+        let masked = model
+            .extract_embeddings_with_mask(&ids, Some(&mask_tensor(&[&[1, 1, 1, 1]])))
+            .unwrap()
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap();
+
+        assert_close(&masked, &unmasked, 1e-6, "all-ones mask vs no mask");
     }
 }
