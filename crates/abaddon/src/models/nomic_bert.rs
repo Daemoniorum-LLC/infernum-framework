@@ -375,13 +375,17 @@ impl NomicBert {
         self.forward(input_ids)
     }
 
-    /// Mean-pool over the sequence dimension, then L2-normalize. Always returns F32.
+    /// Mean-pool over the sequence dimension. Always returns F32.
+    ///
+    /// Returns raw pooled hidden states, matching `Bert`, `Llama` and `Qwen2`.
+    /// L2 normalization is applied once on the way out of the embedding
+    /// endpoint by [`crate::models::l2_normalize`], so that every architecture
+    /// returns embeddings on the same scale and truncated Matryoshka
+    /// embeddings get normalized after slicing rather than before.
     pub fn extract_embeddings(&self, input_ids: &Tensor) -> CandleResult<Tensor> {
         let hidden = self.forward(input_ids)?;
         let pooled = hidden.mean(1)?;
-        let pooled = pooled.to_dtype(candle_core::DType::F32)?;
-        let norm = pooled.sqr()?.sum_keepdim(D::Minus1)?.sqrt()?;
-        pooled.broadcast_div(&norm.clamp(1e-12, f64::INFINITY)?)
+        pooled.to_dtype(candle_core::DType::F32)
     }
 
     /// No-op: NomicBERT has no KV cache.
@@ -812,7 +816,9 @@ mod tests {
             xs
         }
 
-        /// Mean-pool over the sequence then L2-normalise.
+        /// Mean-pool over the sequence. Deliberately does *not* normalise:
+        /// `extract_embeddings` returns raw pooled hidden states, and
+        /// `models::l2_normalize` is applied later by the embedding endpoint.
         pub fn extract(cfg: &NomicBertConfig, w: &TinyWeights, ids: &[u32]) -> Vec<f32> {
             let hidden = forward(cfg, w, ids);
             let seq = hidden.len() as f32;
@@ -825,8 +831,7 @@ mod tests {
             for p in pooled.iter_mut() {
                 *p /= seq;
             }
-            let norm = pooled.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-12);
-            pooled.iter().map(|v| v / norm).collect()
+            pooled
         }
     }
 
@@ -1081,11 +1086,53 @@ mod tests {
     // Invariants of the pooled embedding
     // -----------------------------------------------------------------------
 
-    /// Mean-pool then L2-normalise means every row has magnitude 1, whatever
-    /// the input. Dropping or misplacing the normalise — for example
-    /// normalising before pooling — fails this immediately.
+    /// `extract_embeddings` is exactly the mean over the sequence axis of
+    /// `forward`. Checking the two against each other pins the pooling without
+    /// needing the full reference, and catches a pool that collapses the wrong
+    /// axis or weights positions unevenly.
     #[test]
-    fn extract_embeddings_are_unit_norm() {
+    fn extract_embeddings_mean_pool_the_hidden_states() {
+        let cfg = tiny_config(8, 2, 2, 16, 12);
+        let model = load(&cfg, &TinyWeights::deterministic(&cfg, 3));
+        let rows: [&[u32]; 2] = [&[1, 4, 7, 2, 9], &[3, 3, 0, 11, 5]];
+        let ids = ids_tensor(&rows);
+
+        let hidden = model.forward(&ids).expect("forward runs");
+        let (batch, seq, h) = hidden.dims3().unwrap();
+        let hidden = hidden.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+
+        let pooled = model
+            .extract_embeddings(&ids)
+            .expect("extract runs")
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap();
+
+        for b in 0..batch {
+            let expected: Vec<f32> = (0..h)
+                .map(|d| (0..seq).map(|t| hidden[(b * seq + t) * h + d]).sum::<f32>() / seq as f32)
+                .collect();
+            assert_close(
+                &pooled[b * h..(b + 1) * h],
+                &expected,
+                1e-6,
+                &format!("row {b} pooled vs manual mean of forward()"),
+            );
+        }
+    }
+
+    /// The contract the embedding endpoint actually ships: pooled hidden
+    /// states passed through [`crate::models::l2_normalize`] come out at unit
+    /// magnitude for any input.
+    ///
+    /// The normalize lives in the endpoint rather than in this model (see
+    /// LARES-464 — it used to be here and nowhere else, so NomicBERT returned
+    /// unit vectors while Bert, Llama and Qwen2 returned raw pooled ones
+    /// through the same API). This test covers the seam so the guarantee
+    /// cannot quietly disappear from both halves at once.
+    #[test]
+    fn pooled_embeddings_are_unit_norm_once_normalized() {
         for (hidden, heads, layers, seed) in [(8usize, 2usize, 1usize, 3u64), (16, 4, 3, 4)] {
             let cfg = tiny_config(hidden, heads, layers, hidden * 2, 12);
             let model = load(&cfg, &TinyWeights::deterministic(&cfg, seed));
@@ -1103,15 +1150,17 @@ mod tests {
                 let flat = out.flatten_all().unwrap().to_vec1::<f32>().unwrap();
 
                 for b in 0..batch {
-                    let row = &flat[b * hidden..(b + 1) * hidden];
+                    let mut row = flat[b * hidden..(b + 1) * hidden].to_vec();
                     assert!(
                         row.iter().all(|v| v.is_finite()),
                         "h{hidden} batch row {b} contains non-finite values: {row:?}",
                     );
-                    let n = l2(row);
+
+                    crate::models::l2_normalize(&mut row);
+                    let n = l2(&row);
                     assert!(
                         (n - 1.0).abs() < 1e-5,
-                        "h{hidden} batch row {b} has magnitude {n}, expected 1.0",
+                        "h{hidden} batch row {b} has magnitude {n} after normalize, expected 1.0",
                     );
                 }
             }
@@ -1214,9 +1263,12 @@ mod tests {
     /// With every projection at zero the whole forward pass collapses to zero:
     /// `LayerNorm(0)` is `0 / sqrt(0 + eps) = 0`, attention averages zeros, and
     /// the MLP's `silu(0) = 0` kills the gate. Mean-pooling zeros gives a zero
-    /// vector whose norm is zero — so this is the case where the L2 divide is
-    /// by zero, and the `clamp(1e-12, ..)` in `extract_embeddings` is the only
-    /// thing standing between the caller and a vector of NaNs.
+    /// vector — the degenerate input that a naive L2 divide turns into NaNs.
+    ///
+    /// The divide now lives in [`crate::models::l2_normalize`], which leaves a
+    /// zero-norm vector alone; `l2_normalize_leaves_degenerate_vectors_alone`
+    /// covers that half. This test covers the half that produces the zero
+    /// vector in the first place, and asserts it stays finite end to end.
     #[test]
     fn zero_weights_produce_zero_embedding_without_nan() {
         let cfg = tiny_config(8, 2, 2, 16, 12);
@@ -1249,6 +1301,15 @@ mod tests {
             "zero-norm embedding produced non-finite values: {emb:?}",
         );
         assert_close(&emb, &vec![0.0; emb.len()], 0.0, "zero-weight embedding");
+
+        // End to end through the endpoint's normalize: still zeros, no NaNs.
+        let mut normalized = emb.clone();
+        crate::models::l2_normalize(&mut normalized);
+        assert!(
+            normalized.iter().all(|v| v.is_finite()),
+            "normalizing a zero embedding produced non-finite values: {normalized:?}",
+        );
+        assert_close(&normalized, &emb, 0.0, "normalized zero-weight embedding");
     }
 
     // -----------------------------------------------------------------------
@@ -1400,9 +1461,12 @@ mod tests {
                 2e-4,
                 &format!("pooled embedding row {b} vs reference"),
             );
+            // Guard against a reference that has collapsed to something
+            // trivial: a degenerate all-zero expectation would match almost
+            // any broken implementation.
             assert!(
-                (l2(&expected) - 1.0).abs() < 1e-5,
-                "reference embedding row {b} is not unit-norm",
+                l2(&expected) > 1e-3,
+                "reference embedding row {b} is degenerate; the fixture proves nothing",
             );
         }
     }
