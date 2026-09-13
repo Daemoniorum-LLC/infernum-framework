@@ -110,3 +110,9 @@ vite.config.d.ts
 # Rust
 **/target/
 moloch/target/
+
+# Paimon studio artefacts: PromptStudio persists one UUID-named JSON per
+# template. Tests used to write these into the crate directory (LARES-454);
+# the studio now defaults to the user data dir, but ignore the shape so a
+# stray run can never land them in the tree again.
+/crates/paimon/*.json
