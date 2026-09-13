@@ -58,16 +58,36 @@ pub struct NomicBertConfig {
     pub mlp_fc2_bias: bool,
 }
 
-fn d_vocab() -> usize { 30528 }
-fn d_hidden() -> usize { 768 }
-fn d_layers() -> usize { 12 }
-fn d_heads() -> usize { 12 }
-fn d_inter() -> usize { 3072 }
-fn d_type_vocab() -> usize { 2 }
-fn d_ln_eps() -> f64 { 1e-12 }
-fn d_max_pos() -> usize { 2048 }
-fn d_rotary_base() -> f64 { 1000.0 }
-fn d_rotary_frac() -> f64 { 1.0 }
+fn d_vocab() -> usize {
+    30528
+}
+fn d_hidden() -> usize {
+    768
+}
+fn d_layers() -> usize {
+    12
+}
+fn d_heads() -> usize {
+    12
+}
+fn d_inter() -> usize {
+    3072
+}
+fn d_type_vocab() -> usize {
+    2
+}
+fn d_ln_eps() -> f64 {
+    1e-12
+}
+fn d_max_pos() -> usize {
+    2048
+}
+fn d_rotary_base() -> f64 {
+    1000.0
+}
+fn d_rotary_frac() -> f64 {
+    1.0
+}
 
 impl NomicBertConfig {
     fn head_dim(&self) -> usize {
@@ -161,14 +181,18 @@ impl NomicEmbeddings {
             vb.pp("embeddings").pp("token_type_embeddings"),
         )?;
         let emb_ln = layer_norm(cfg.hidden_size, cfg.layer_norm_eps, vb.pp("emb_ln"))?;
-        Ok(Self { word_embeddings, token_type_embeddings, emb_ln })
+        Ok(Self {
+            word_embeddings,
+            token_type_embeddings,
+            emb_ln,
+        })
     }
 
     fn forward(&self, input_ids: &Tensor) -> CandleResult<Tensor> {
         let (batch, seq_len) = input_ids.dims2()?;
         let word_emb = self.word_embeddings.forward(input_ids)?;
-        let tt_ids = Tensor::zeros(seq_len, DType::U32, input_ids.device())?
-            .broadcast_left(batch)?;
+        let tt_ids =
+            Tensor::zeros(seq_len, DType::U32, input_ids.device())?.broadcast_left(batch)?;
         let tt_emb = self.token_type_embeddings.forward(&tt_ids)?;
         self.emb_ln.forward(&(word_emb + tt_emb)?)
     }
@@ -185,7 +209,12 @@ struct NomicAttention {
     head_dim: usize,
 }
 
-fn linear_maybe_bias(in_d: usize, out_d: usize, bias: bool, vb: VarBuilder) -> CandleResult<Linear> {
+fn linear_maybe_bias(
+    in_d: usize,
+    out_d: usize,
+    bias: bool,
+    vb: VarBuilder,
+) -> CandleResult<Linear> {
     if bias {
         candle_nn::linear(in_d, out_d, vb)
     } else {
@@ -282,7 +311,12 @@ impl NomicBlock {
         let attn = NomicAttention::new(vb.pp("attn"), cfg)?;
         let norm2 = layer_norm(cfg.hidden_size, cfg.layer_norm_eps, vb.pp("norm2"))?;
         let mlp = NomicMlp::new(vb.pp("mlp"), cfg)?;
-        Ok(Self { norm1, attn, norm2, mlp })
+        Ok(Self {
+            norm1,
+            attn,
+            norm2,
+            mlp,
+        })
     }
 
     fn forward(&self, xs: &Tensor, rotary: &RotaryEmbedding) -> CandleResult<Tensor> {
@@ -319,7 +353,12 @@ impl NomicBert {
             .map(|i| NomicBlock::new(vb.pp("encoder").pp("layers").pp(i), &cfg))
             .collect::<CandleResult<Vec<_>>>()?;
         let rotary = RotaryEmbedding::new(&cfg, dtype, &device)?;
-        Ok(Self { embeddings, layers, rotary, device })
+        Ok(Self {
+            embeddings,
+            layers,
+            rotary,
+            device,
+        })
     }
 
     /// Forward pass returning sequence hidden states.

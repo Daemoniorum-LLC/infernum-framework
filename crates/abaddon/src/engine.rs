@@ -437,7 +437,10 @@ impl Engine {
         }
 
         // BERT embedding models are small — always use F32 for numerical stability on CPU
-        let dtype = if matches!(arch_type, ArchitectureType::Bert | ArchitectureType::NomicBert) {
+        let dtype = if matches!(
+            arch_type,
+            ArchitectureType::Bert | ArchitectureType::NomicBert
+        ) {
             DType::F32
         } else {
             dtype
@@ -452,37 +455,43 @@ impl Engine {
         // Load the appropriate model based on architecture
         let model = match arch_type {
             ArchitectureType::Bert => {
-                let config_json = std::fs::read_to_string(&files.config)
-                    .map_err(|e| infernum_core::Error::ModelLoad {
+                let config_json = std::fs::read_to_string(&files.config).map_err(|e| {
+                    infernum_core::Error::ModelLoad {
                         message: format!("Failed to read BERT config: {}", e),
-                    })?;
+                    }
+                })?;
 
-                let bert_config: crate::models::BertConfig =
-                    serde_json::from_str(&config_json).map_err(|e| infernum_core::Error::ModelLoad {
+                let bert_config: crate::models::BertConfig = serde_json::from_str(&config_json)
+                    .map_err(|e| infernum_core::Error::ModelLoad {
                         message: format!("Failed to parse BERT config: {}", e),
                     })?;
 
-                let bert = crate::models::Bert::load(bert_config, vb)
-                    .map_err(|e| infernum_core::Error::ModelLoad {
+                let bert = crate::models::Bert::load(bert_config, vb).map_err(|e| {
+                    infernum_core::Error::ModelLoad {
                         message: format!("Failed to load BERT model: {}", e),
-                    })?;
+                    }
+                })?;
                 ModelKind::Bert(bert)
             },
             ArchitectureType::NomicBert => {
-                let config_json = std::fs::read_to_string(&files.config)
-                    .map_err(|e| infernum_core::Error::ModelLoad {
+                let config_json = std::fs::read_to_string(&files.config).map_err(|e| {
+                    infernum_core::Error::ModelLoad {
                         message: format!("Failed to read NomicBERT config: {}", e),
-                    })?;
+                    }
+                })?;
 
                 let nomic_config: crate::models::NomicBertConfig =
-                    serde_json::from_str(&config_json).map_err(|e| infernum_core::Error::ModelLoad {
-                        message: format!("Failed to parse NomicBERT config: {}", e),
+                    serde_json::from_str(&config_json).map_err(|e| {
+                        infernum_core::Error::ModelLoad {
+                            message: format!("Failed to parse NomicBERT config: {}", e),
+                        }
                     })?;
 
-                let nomic = crate::models::NomicBert::load(nomic_config, vb)
-                    .map_err(|e| infernum_core::Error::ModelLoad {
+                let nomic = crate::models::NomicBert::load(nomic_config, vb).map_err(|e| {
+                    infernum_core::Error::ModelLoad {
                         message: format!("Failed to load NomicBERT model: {}", e),
-                    })?;
+                    }
+                })?;
                 ModelKind::NomicBert(nomic)
             },
             ArchitectureType::Qwen2 => {

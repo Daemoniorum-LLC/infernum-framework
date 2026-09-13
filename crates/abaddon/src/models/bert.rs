@@ -74,15 +74,33 @@ pub struct BertConfig {
     pub rotary_emb_base: Option<f64>,
 }
 
-fn default_vocab_size() -> usize { 30522 }
-fn default_hidden_size() -> usize { 768 }
-fn default_num_hidden_layers() -> usize { 12 }
-fn default_num_attention_heads() -> usize { 12 }
-fn default_intermediate_size() -> usize { 3072 }
-fn default_max_position_embeddings() -> usize { 512 }
-fn default_type_vocab_size() -> usize { 2 }
-fn default_layer_norm_eps() -> f64 { 1e-12 }
-fn default_pad_token_id() -> usize { 0 }
+fn default_vocab_size() -> usize {
+    30522
+}
+fn default_hidden_size() -> usize {
+    768
+}
+fn default_num_hidden_layers() -> usize {
+    12
+}
+fn default_num_attention_heads() -> usize {
+    12
+}
+fn default_intermediate_size() -> usize {
+    3072
+}
+fn default_max_position_embeddings() -> usize {
+    512
+}
+fn default_type_vocab_size() -> usize {
+    2
+}
+fn default_layer_norm_eps() -> f64 {
+    1e-12
+}
+fn default_pad_token_id() -> usize {
+    0
+}
 
 impl BertConfig {
     /// Returns `true` when the config indicates a Jina/Nomic-style BERT

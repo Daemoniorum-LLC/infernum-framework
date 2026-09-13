@@ -56,7 +56,8 @@ impl ModelKind {
                 .forward(input_ids, start_pos)
                 .map_err(|e| candle_core::Error::Msg(e.to_string())),
             Self::Bert(_) | Self::NomicBert(_) => Err(candle_core::Error::Msg(
-                "BERT is an embedding-only model and does not support causal generation".to_string(),
+                "BERT is an embedding-only model and does not support causal generation"
+                    .to_string(),
             )),
         }
     }
@@ -77,17 +78,13 @@ impl ModelKind {
     pub fn forward_embedding(&mut self, input_ids: &Tensor) -> CandleResult<Tensor> {
         match self {
             Self::Llama(model) => model.forward_embedding(input_ids),
-            Self::LazyLlama(_model) => {
-                Err(candle_core::Error::Msg(
-                    "Embedding extraction not supported for LazyLlama".to_string(),
-                ))
-            },
+            Self::LazyLlama(_model) => Err(candle_core::Error::Msg(
+                "Embedding extraction not supported for LazyLlama".to_string(),
+            )),
             Self::Qwen2(model) => model.forward_embedding(input_ids),
-            Self::LazyQwen2(_model) => {
-                Err(candle_core::Error::Msg(
-                    "Embedding extraction not supported for LazyQwen2".to_string(),
-                ))
-            },
+            Self::LazyQwen2(_model) => Err(candle_core::Error::Msg(
+                "Embedding extraction not supported for LazyQwen2".to_string(),
+            )),
             Self::Bert(model) => model.forward_embedding(input_ids),
             Self::NomicBert(model) => model.forward_embedding(input_ids),
         }
@@ -97,17 +94,13 @@ impl ModelKind {
     pub fn extract_embeddings(&mut self, input_ids: &Tensor) -> CandleResult<Tensor> {
         match self {
             Self::Llama(model) => model.extract_embeddings(input_ids),
-            Self::LazyLlama(_model) => {
-                Err(candle_core::Error::Msg(
-                    "Embedding extraction not supported for LazyLlama".to_string(),
-                ))
-            },
+            Self::LazyLlama(_model) => Err(candle_core::Error::Msg(
+                "Embedding extraction not supported for LazyLlama".to_string(),
+            )),
             Self::Qwen2(model) => model.extract_embeddings(input_ids),
-            Self::LazyQwen2(_model) => {
-                Err(candle_core::Error::Msg(
-                    "Embedding extraction not supported for LazyQwen2".to_string(),
-                ))
-            },
+            Self::LazyQwen2(_model) => Err(candle_core::Error::Msg(
+                "Embedding extraction not supported for LazyQwen2".to_string(),
+            )),
             Self::Bert(model) => model.extract_embeddings(input_ids),
             Self::NomicBert(model) => model.extract_embeddings(input_ids),
         }
@@ -193,41 +186,71 @@ mod tests {
 
     #[test]
     fn detect_bert_from_model_type() {
-        assert_eq!(ArchitectureType::detect(Some("bert"), None), ArchitectureType::Bert);
-        assert_eq!(ArchitectureType::detect(Some("jina_bert"), None), ArchitectureType::Bert);
+        assert_eq!(
+            ArchitectureType::detect(Some("bert"), None),
+            ArchitectureType::Bert
+        );
+        assert_eq!(
+            ArchitectureType::detect(Some("jina_bert"), None),
+            ArchitectureType::Bert
+        );
     }
 
     #[test]
     fn detect_nomic_bert_from_model_type() {
-        assert_eq!(ArchitectureType::detect(Some("nomic_bert"), None), ArchitectureType::NomicBert);
+        assert_eq!(
+            ArchitectureType::detect(Some("nomic_bert"), None),
+            ArchitectureType::NomicBert
+        );
     }
 
     #[test]
     fn detect_bert_from_architectures() {
         let archs = vec!["BertForMaskedLM".to_string()];
-        assert_eq!(ArchitectureType::detect(None, Some(&archs)), ArchitectureType::Bert);
+        assert_eq!(
+            ArchitectureType::detect(None, Some(&archs)),
+            ArchitectureType::Bert
+        );
     }
 
     #[test]
     fn detect_nomic_bert_from_architectures() {
         let archs = vec!["NomicBertModel".to_string()];
-        assert_eq!(ArchitectureType::detect(None, Some(&archs)), ArchitectureType::NomicBert);
+        assert_eq!(
+            ArchitectureType::detect(None, Some(&archs)),
+            ArchitectureType::NomicBert
+        );
     }
 
     #[test]
     fn detect_llama_still_works() {
-        assert_eq!(ArchitectureType::detect(Some("llama"), None), ArchitectureType::Llama);
-        assert_eq!(ArchitectureType::detect(Some("mistral"), None), ArchitectureType::Llama);
+        assert_eq!(
+            ArchitectureType::detect(Some("llama"), None),
+            ArchitectureType::Llama
+        );
+        assert_eq!(
+            ArchitectureType::detect(Some("mistral"), None),
+            ArchitectureType::Llama
+        );
     }
 
     #[test]
     fn detect_qwen2_still_works() {
-        assert_eq!(ArchitectureType::detect(Some("qwen2"), None), ArchitectureType::Qwen2);
+        assert_eq!(
+            ArchitectureType::detect(Some("qwen2"), None),
+            ArchitectureType::Qwen2
+        );
     }
 
     #[test]
     fn detect_unknown_fallback() {
-        assert_eq!(ArchitectureType::detect(Some("gpt-j"), None), ArchitectureType::Unknown);
-        assert_eq!(ArchitectureType::detect(None, None), ArchitectureType::Unknown);
+        assert_eq!(
+            ArchitectureType::detect(Some("gpt-j"), None),
+            ArchitectureType::Unknown
+        );
+        assert_eq!(
+            ArchitectureType::detect(None, None),
+            ArchitectureType::Unknown
+        );
     }
 }
