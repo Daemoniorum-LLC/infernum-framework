@@ -1029,8 +1029,22 @@ impl PromptStudio {
 }
 
 impl Default for PromptStudio {
+    /// Persists under the user's data directory, matching [`StudioConfig`].
+    ///
+    /// This deliberately does NOT use the process working directory. It used to,
+    /// which meant every `cargo test` run that touched a default `PromptStudio`
+    /// wrote a UUID-named template file into whatever directory the process
+    /// happened to start in -- for this workspace, `crates/paimon/`, where five
+    /// of them were eventually committed.
+    ///
+    /// [`StudioConfig`]: crate::studio::StudioConfig
     fn default() -> Self {
-        Self::new(std::path::PathBuf::from("."))
+        let base = dirs::data_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("infernum")
+            .join("studio")
+            .join("prompts");
+        Self::new(base)
     }
 }
 
@@ -1154,7 +1168,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_prompt_studio() {
-        let studio = PromptStudio::default();
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let studio = PromptStudio::new(temp.path());
 
         let template = studio
             .create_template("greeting")
@@ -1189,8 +1204,9 @@ mod tests {
         use crate::persistence::StudioDatabase;
         use std::sync::Arc;
 
+        let temp = tempfile::TempDir::new().expect("temp dir");
         let db = Arc::new(StudioDatabase::in_memory().expect("create db"));
-        let studio = PromptStudio::with_database(".", db);
+        let studio = PromptStudio::with_database(temp.path(), db);
 
         // Create template
         let template = studio
@@ -1255,7 +1271,7 @@ mod tests {
         // Create template with first studio instance
         {
             let db = Arc::new(StudioDatabase::new(&db_path).expect("create db"));
-            let studio = PromptStudio::with_database(".", db);
+            let studio = PromptStudio::with_database(temp.path(), db);
 
             let template = studio
                 .create_template("persistent-template")
@@ -1271,7 +1287,7 @@ mod tests {
         // Verify data persists with new studio instance
         {
             let db = Arc::new(StudioDatabase::new(&db_path).expect("reopen db"));
-            let studio = PromptStudio::with_database(".", db);
+            let studio = PromptStudio::with_database(temp.path(), db);
 
             assert_eq!(studio.count().await, 1);
 
