@@ -219,3 +219,167 @@ impl Bert {
         &self.device
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+//
+// `Bert` is a thin wrapper: the transformer maths belongs to
+// `candle_transformers` and is tested upstream. What this module actually owns
+// — and what was previously untested — is the config layer: the serde
+// defaults, the `is_jina_style` routing decision, and the two mappings onto
+// the candle configs. Getting that routing wrong loads a *different
+// architecture* against the same weights, which produces plausible-looking
+// garbage rather than an error, so it is worth pinning precisely.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_from(json: serde_json::Value) -> BertConfig {
+        serde_json::from_value(json).expect("config deserializes")
+    }
+
+    /// An empty `config.json` must fall back to `bert-base-uncased` geometry.
+    #[test]
+    fn config_defaults_match_bert_base() {
+        let cfg: BertConfig = serde_json::from_str("{}").expect("empty config deserializes");
+
+        assert_eq!(cfg.vocab_size, 30522);
+        assert_eq!(cfg.hidden_size, 768);
+        assert_eq!(cfg.num_hidden_layers, 12);
+        assert_eq!(cfg.num_attention_heads, 12);
+        assert_eq!(cfg.intermediate_size, 3072);
+        assert_eq!(cfg.max_position_embeddings, 512);
+        assert_eq!(cfg.type_vocab_size, 2);
+        assert_eq!(cfg.layer_norm_eps, 1e-12);
+        assert_eq!(cfg.pad_token_id, 0);
+        assert_eq!(cfg.position_embedding_type, None);
+        assert_eq!(cfg.model_type, None);
+        assert_eq!(cfg.rotary_emb_base, None);
+
+        // No positional hints at all: this is a plain BERT.
+        assert!(!cfg.is_jina_style());
+    }
+
+    #[test]
+    fn jina_style_detected_from_position_embedding_type() {
+        for pet in ["alibi", "ALiBi", "rotary", "ROTARY"] {
+            let cfg = config_from(serde_json::json!({ "position_embedding_type": pet }));
+            assert!(
+                cfg.is_jina_style(),
+                "position_embedding_type {pet:?} should select the Jina variant",
+            );
+        }
+    }
+
+    #[test]
+    fn jina_style_detected_from_model_type() {
+        for mt in ["nomic_bert", "NomicBert", "jina_bert", "JinaBertModel"] {
+            let cfg = config_from(serde_json::json!({ "model_type": mt }));
+            assert!(
+                cfg.is_jina_style(),
+                "model_type {mt:?} should select the Jina variant",
+            );
+        }
+    }
+
+    /// Standard BERT checkpoints — including ones that spell out
+    /// `"absolute"` — must stay on the standard path.
+    #[test]
+    fn standard_bert_is_not_jina_style() {
+        for json in [
+            serde_json::json!({ "model_type": "bert" }),
+            serde_json::json!({ "model_type": "bert", "position_embedding_type": "absolute" }),
+            serde_json::json!({ "model_type": "roberta" }),
+            serde_json::json!({}),
+        ] {
+            let cfg = config_from(json.clone());
+            assert!(
+                !cfg.is_jina_style(),
+                "{json} should stay on the standard BERT path",
+            );
+        }
+    }
+
+    #[test]
+    fn standard_config_mapping_carries_fields_through() {
+        let cfg = config_from(serde_json::json!({
+            "vocab_size": 1000,
+            "hidden_size": 64,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 4,
+            "intermediate_size": 128,
+            "max_position_embeddings": 77,
+            "type_vocab_size": 3,
+            "layer_norm_eps": 1e-5,
+            "pad_token_id": 7,
+            "model_type": "bert",
+        }));
+        let out = cfg.to_standard_config();
+
+        assert_eq!(out.vocab_size, 1000);
+        assert_eq!(out.hidden_size, 64);
+        assert_eq!(out.num_hidden_layers, 2);
+        assert_eq!(out.num_attention_heads, 4);
+        assert_eq!(out.intermediate_size, 128);
+        assert_eq!(out.max_position_embeddings, 77);
+        assert_eq!(out.type_vocab_size, 3);
+        assert_eq!(out.layer_norm_eps, 1e-5);
+        assert_eq!(out.pad_token_id, 7);
+        assert_eq!(out.model_type.as_deref(), Some("bert"));
+    }
+
+    #[test]
+    fn jina_config_mapping_carries_fields_through() {
+        let cfg = config_from(serde_json::json!({
+            "vocab_size": 1000,
+            "hidden_size": 64,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 4,
+            "intermediate_size": 128,
+            "max_position_embeddings": 77,
+            "type_vocab_size": 3,
+            "layer_norm_eps": 1e-5,
+            "pad_token_id": 7,
+            "position_embedding_type": "alibi",
+        }));
+        let out = cfg.to_jina_config();
+
+        assert_eq!(out.vocab_size, 1000);
+        assert_eq!(out.hidden_size, 64);
+        assert_eq!(out.num_hidden_layers, 2);
+        assert_eq!(out.num_attention_heads, 4);
+        assert_eq!(out.intermediate_size, 128);
+        assert_eq!(out.max_position_embeddings, 77);
+        assert_eq!(out.type_vocab_size, 3);
+        assert_eq!(out.layer_norm_eps, 1e-5);
+        assert_eq!(out.pad_token_id, 7);
+        assert!(matches!(
+            out.position_embedding_type,
+            ct_jina::PositionEmbeddingType::Alibi
+        ));
+    }
+
+    /// Documents a sharp edge rather than endorsing it: `"rotary"` is enough
+    /// to route *away* from standard BERT, but `candle_transformers`' Jina
+    /// model has no rotary mode, so the mapping silently lands on `Absolute`.
+    ///
+    /// Rotary checkpoints are meant to reach `NomicBert` (see
+    /// `ArchitectureType::detect`), never this wrapper. If a config ever does
+    /// arrive here with `"rotary"`, it gets absolute position embeddings and
+    /// no warning — so this assertion exists to make that behaviour visible
+    /// and to fail loudly if someone later wires rotary through here.
+    #[test]
+    fn rotary_position_type_falls_back_to_absolute_in_jina_mapping() {
+        let cfg = config_from(serde_json::json!({ "position_embedding_type": "rotary" }));
+
+        assert!(cfg.is_jina_style(), "rotary routes off the standard path");
+        assert!(
+            matches!(
+                cfg.to_jina_config().position_embedding_type,
+                ct_jina::PositionEmbeddingType::Absolute
+            ),
+            "candle's jina_bert has no rotary mode; the mapping degrades to Absolute",
+        );
+    }
+}

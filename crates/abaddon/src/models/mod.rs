@@ -213,6 +213,61 @@ mod tests {
         );
     }
 
+    /// `"nomic_bert"` contains both `"nomic"` and `"bert"`, so the order of
+    /// the branches in `detect` is load-bearing. If the generic bert check
+    /// ever moves ahead of the nomic one, every NomicBERT checkpoint quietly
+    /// loads as a Jina/ALiBi BERT against NomicBERT weights — no error, just
+    /// wrong embeddings. Same trap for `"NomicBertModel"` in `architectures`.
+    #[test]
+    fn nomic_wins_over_generic_bert_in_detection() {
+        for mt in ["nomic_bert", "NomicBertModel", "nomic-bert-2048"] {
+            assert_eq!(
+                ArchitectureType::detect(Some(mt), None),
+                ArchitectureType::NomicBert,
+                "model_type {mt:?} must not fall through to generic Bert",
+            );
+        }
+
+        let archs = vec!["NomicBertModel".to_string()];
+        assert_eq!(
+            ArchitectureType::detect(None, Some(&archs)),
+            ArchitectureType::NomicBert,
+            "architectures entry must not fall through to generic Bert",
+        );
+    }
+
+    /// `model_type` is consulted before `architectures`, and the real
+    /// `nomic-embed-text-v1.5` config sets both.
+    #[test]
+    fn model_type_takes_precedence_over_architectures() {
+        let archs = vec!["BertForMaskedLM".to_string()];
+        assert_eq!(
+            ArchitectureType::detect(Some("nomic_bert"), Some(&archs)),
+            ArchitectureType::NomicBert,
+        );
+
+        let archs = vec!["NomicBertModel".to_string()];
+        assert_eq!(
+            ArchitectureType::detect(Some("nomic_bert"), Some(&archs)),
+            ArchitectureType::NomicBert,
+            "the shape the published checkpoint actually ships",
+        );
+    }
+
+    #[test]
+    fn unknown_architectures_are_reported_as_unknown() {
+        assert_eq!(
+            ArchitectureType::detect(None, None),
+            ArchitectureType::Unknown
+        );
+        assert_eq!(
+            ArchitectureType::detect(Some("mamba"), None),
+            ArchitectureType::Unknown,
+        );
+        assert_eq!(ArchitectureType::NomicBert.name(), "NomicBert");
+        assert_eq!(ArchitectureType::Bert.name(), "Bert");
+    }
+
     #[test]
     fn detect_nomic_bert_from_architectures() {
         let archs = vec!["NomicBertModel".to_string()];
