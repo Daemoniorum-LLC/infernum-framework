@@ -566,6 +566,127 @@ mod tests {
     const EPS_F32: f32 = 1e-12;
 
     // -----------------------------------------------------------------------
+    // Tensor-backend seam
+    // -----------------------------------------------------------------------
+    //
+    // Everything in this test module that touches the tensor backend lives
+    // here. The fixtures below are plain `Vec<f32>`, the reference
+    // implementation is plain scalar Rust, and the assertions go through
+    // `TensorValues`. Only this module names candle.
+    //
+    // That matters because `docs/NIHIL-INTEGRATION-SPEC.md` plans to replace
+    // candle with the Nihil tensor framework. `VarBuilder` in particular has
+    // no direct Nihil equivalent (spec §3.3: it becomes `nihil_io::
+    // SafetensorsFile` plus manual loading), so weight loading has to be
+    // rewritten whenever that lands. Keeping it in one place makes that a
+    // single-module edit rather than a sweep over ~80 call sites.
+    //
+    // The seam is not total: `NomicBert`'s own signatures take and return
+    // `candle_core::Tensor`, so the model API changes with the backend no
+    // matter what. What this buys is that the *fixture construction and
+    // readback* boilerplate — the bulk of it — is centralised.
+    mod backend {
+        use super::*;
+
+        /// One weight as flat row-major data plus its shape. Backend-free, so
+        /// `TinyWeights` can describe a whole checkpoint without naming a
+        /// tensor type.
+        pub struct NamedWeight {
+            pub name: String,
+            pub data: Vec<f32>,
+            pub shape: Vec<usize>,
+        }
+
+        impl NamedWeight {
+            pub fn new(
+                name: impl Into<String>,
+                data: &[f32],
+                shape: impl Into<Vec<usize>>,
+            ) -> Self {
+                Self {
+                    name: name.into(),
+                    data: data.to_vec(),
+                    shape: shape.into(),
+                }
+            }
+        }
+
+        /// The tensor type `NomicBert`'s own signatures take and return.
+        /// Aliased so the rest of the module never names the backend's type
+        /// directly, even where the model API forces the dependency.
+        pub type Ids = Tensor;
+
+        pub fn device() -> Device {
+            Device::Cpu
+        }
+
+        /// Builds an f32 tensor of the given shape from flat row-major data.
+        pub fn f32_tensor(data: &[f32], shape: impl Into<candle_core::Shape>) -> Tensor {
+            Tensor::from_slice(data, shape, &device()).expect("f32 fixture tensor")
+        }
+
+        /// Builds a `(batch, seq)` u32 tensor — token ids, or a 1/0 mask.
+        pub fn u32_rows(rows: &[&[u32]]) -> Tensor {
+            let seq = rows[0].len();
+            assert!(rows.iter().all(|r| r.len() == seq), "ragged fixture input");
+            let flat: Vec<u32> = rows.iter().flat_map(|r| r.iter().copied()).collect();
+            Tensor::from_slice(&flat, (rows.len(), seq), &device()).expect("u32 fixture tensor")
+        }
+
+        /// Materialises weights and loads a model. Returns the backend's error
+        /// as a string so callers can assert on load failures without naming
+        /// the backend's error type.
+        pub fn load_model(
+            cfg: &NomicBertConfig,
+            weights: Vec<NamedWeight>,
+        ) -> Result<NomicBert, String> {
+            let ts: HashMap<String, Tensor> = weights
+                .into_iter()
+                .map(|w| (w.name, f32_tensor(&w.data, w.shape)))
+                .collect();
+            let vb = VarBuilder::from_tensors(ts, DType::F32, &device());
+            NomicBert::load(cfg.clone(), vb).map_err(|e| e.to_string())
+        }
+
+        /// Builds the rotary table directly, for the isolation tests.
+        pub fn rotary(cfg: &NomicBertConfig) -> Result<RotaryEmbedding, String> {
+            RotaryEmbedding::new(cfg, DType::F32, &device()).map_err(|e| e.to_string())
+        }
+
+        /// Reading values and shapes back out of a tensor.
+        pub trait TensorValues {
+            /// Every element, flattened to row-major f32.
+            fn values(&self) -> Vec<f32>;
+            fn shape2(&self) -> (usize, usize);
+            fn shape3(&self) -> (usize, usize, usize);
+            fn is_f32(&self) -> bool;
+        }
+
+        impl TensorValues for Tensor {
+            fn values(&self) -> Vec<f32> {
+                self.flatten_all()
+                    .expect("flatten")
+                    .to_vec1::<f32>()
+                    .expect("read f32 values")
+            }
+
+            fn shape2(&self) -> (usize, usize) {
+                self.dims2().expect("expected a rank-2 tensor")
+            }
+
+            fn shape3(&self) -> (usize, usize, usize) {
+                self.dims3().expect("expected a rank-3 tensor")
+            }
+
+            fn is_f32(&self) -> bool {
+                self.dtype() == DType::F32
+            }
+        }
+    }
+
+    use backend::{NamedWeight, TensorValues};
+
+    // -----------------------------------------------------------------------
     // Fixtures
     // -----------------------------------------------------------------------
 
@@ -704,31 +825,26 @@ mod tests {
         /// Materialises the weights under the exact names `NomicBert::load`
         /// asks for. A rename on either side fails the load, which is itself
         /// worth catching.
-        fn tensors(
-            &self,
-            cfg: &NomicBertConfig,
-            device: &Device,
-        ) -> CandleResult<HashMap<String, Tensor>> {
+        /// Describes the whole checkpoint under the exact names
+        /// `NomicBert::load` asks for. Backend-free: see `mod backend` for
+        /// where these become tensors.
+        fn named_weights(&self, cfg: &NomicBertConfig) -> Vec<NamedWeight> {
             let h = cfg.hidden_size;
             let inter = cfg.intermediate_size;
-            let mut ts: HashMap<String, Tensor> = HashMap::new();
-
-            ts.insert(
-                "embeddings.word_embeddings.weight".to_string(),
-                Tensor::from_slice(&self.word_emb, (cfg.vocab_size, h), device)?,
-            );
-            ts.insert(
-                "embeddings.token_type_embeddings.weight".to_string(),
-                Tensor::from_slice(&self.tt_emb, (cfg.type_vocab_size, h), device)?,
-            );
-            ts.insert(
-                "emb_ln.weight".to_string(),
-                Tensor::from_slice(&self.emb_ln_w, h, device)?,
-            );
-            ts.insert(
-                "emb_ln.bias".to_string(),
-                Tensor::from_slice(&self.emb_ln_b, h, device)?,
-            );
+            let mut ws = vec![
+                NamedWeight::new(
+                    "embeddings.word_embeddings.weight",
+                    &self.word_emb,
+                    [cfg.vocab_size, h],
+                ),
+                NamedWeight::new(
+                    "embeddings.token_type_embeddings.weight",
+                    &self.tt_emb,
+                    [cfg.type_vocab_size, h],
+                ),
+                NamedWeight::new("emb_ln.weight", &self.emb_ln_w, [h]),
+                NamedWeight::new("emb_ln.bias", &self.emb_ln_b, [h]),
+            ];
 
             for (i, l) in self.layers.iter().enumerate() {
                 let p = format!("encoder.layers.{i}");
@@ -743,29 +859,20 @@ mod tests {
                     ("mlp.fc12.weight", &l.fc12, vec![inter, h]),
                     ("mlp.fc2.weight", &l.fc2, vec![h, inter]),
                 ] {
-                    ts.insert(
-                        format!("{p}.{name}"),
-                        Tensor::from_slice(data.as_slice(), shape, device)?,
-                    );
+                    ws.push(NamedWeight::new(format!("{p}.{name}"), data, shape));
                 }
             }
 
-            Ok(ts)
+            ws
         }
     }
 
     fn load(cfg: &NomicBertConfig, w: &TinyWeights) -> NomicBert {
-        let device = Device::Cpu;
-        let ts = w.tensors(cfg, &device).expect("fixture tensors build");
-        let vb = VarBuilder::from_tensors(ts, DType::F32, &device);
-        NomicBert::load(cfg.clone(), vb).expect("fixture model loads")
+        backend::load_model(cfg, w.named_weights(cfg)).expect("fixture model loads")
     }
 
-    fn ids_tensor(rows: &[&[u32]]) -> Tensor {
-        let seq = rows[0].len();
-        assert!(rows.iter().all(|r| r.len() == seq), "ragged fixture input");
-        let flat: Vec<u32> = rows.iter().flat_map(|r| r.iter().copied()).collect();
-        Tensor::from_slice(&flat, (rows.len(), seq), &Device::Cpu).expect("input ids")
+    fn ids_tensor(rows: &[&[u32]]) -> backend::Ids {
+        backend::u32_rows(rows)
     }
 
     fn assert_close(actual: &[f32], expected: &[f32], tol: f32, what: &str) {
@@ -1005,8 +1112,7 @@ mod tests {
 
     fn rotary_fixture(hidden: usize, heads: usize) -> (NomicBertConfig, RotaryEmbedding) {
         let cfg = tiny_config(hidden, heads, 1, hidden * 2, 8);
-        let rotary =
-            RotaryEmbedding::new(&cfg, DType::F32, &Device::Cpu).expect("rotary table builds");
+        let rotary = backend::rotary(&cfg).expect("rotary table builds");
         (cfg, rotary)
     }
 
@@ -1015,11 +1121,11 @@ mod tests {
     #[test]
     fn rotary_at_position_zero_is_identity() {
         let (_, rotary) = rotary_fixture(4, 1);
-        let q = Tensor::from_slice(&[1.0f32, -2.0, 3.0, 0.5], (1, 1, 1, 4), &Device::Cpu).unwrap();
+        let q = backend::f32_tensor(&[1.0f32, -2.0, 3.0, 0.5], (1, 1, 1, 4));
         let (out, _) = rotary.apply(&q, &q).expect("rotary applies");
 
         assert_close(
-            &out.flatten_all().unwrap().to_vec1::<f32>().unwrap(),
+            &out.values(),
             &[1.0, -2.0, 3.0, 0.5],
             0.0,
             "position 0 rotation",
@@ -1046,14 +1152,12 @@ mod tests {
 
         // Two positions in one sequence: row 0 is the identity, row 1 is the
         // interesting one.
-        let q = Tensor::from_slice(
+        let q = backend::f32_tensor(
             &[0.0f32, 0.0, 0.0, 0.0, x[0], x[1], x[2], x[3]],
             (1, 2, 1, 4),
-            &Device::Cpu,
-        )
-        .unwrap();
+        );
         let (out, _) = rotary.apply(&q, &q).expect("rotary applies");
-        let got = out.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        let got = out.values();
 
         let a0 = 1.0f32; // 1 * 1/1000^0
         let a1 = 1.0f32 / 1000f32.powf(0.5); // 1 * 1/1000^(2/4)
@@ -1077,10 +1181,10 @@ mod tests {
         let mut r = Lcg::new(7);
         let seq = 6;
         let data = r.vec(seq * 2 * 4, 2.0);
-        let q = Tensor::from_slice(&data, (1, seq, 2, 4), &Device::Cpu).unwrap();
+        let q = backend::f32_tensor(&data, (1, seq, 2, 4));
 
         let (out, _) = rotary.apply(&q, &q).expect("rotary applies");
-        let got = out.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        let got = out.values();
 
         for head in 0..seq * 2 {
             let before = l2(&data[head * 4..(head + 1) * 4]);
@@ -1122,11 +1226,11 @@ mod tests {
             k[pos * 2 * hd..pos * 2 * hd + hd].copy_from_slice(kv);
         }
 
-        let qt = Tensor::from_slice(&q, (1, seq, 2, hd), &Device::Cpu).unwrap();
-        let kt = Tensor::from_slice(&k, (1, seq, 2, hd), &Device::Cpu).unwrap();
+        let qt = backend::f32_tensor(&q, (1, seq, 2, hd));
+        let kt = backend::f32_tensor(&k, (1, seq, 2, hd));
         let (qr, kr) = rotary.apply(&qt, &kt).expect("rotary applies");
-        let qr = qr.flatten_all().unwrap().to_vec1::<f32>().unwrap();
-        let kr = kr.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        let qr = qr.values();
+        let kr = kr.values();
 
         let dot = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
         let head0 = |v: &[f32], pos: usize| v[pos * 2 * hd..pos * 2 * hd + hd].to_vec();
@@ -1155,18 +1259,18 @@ mod tests {
     #[test]
     fn rotary_base_changes_the_rotation() {
         let mut cfg = tiny_config(8, 2, 1, 16, 8);
-        let rot_1000 = RotaryEmbedding::new(&cfg, DType::F32, &Device::Cpu).unwrap();
+        let rot_1000 = backend::rotary(&cfg).unwrap();
         cfg.rotary_emb_base = 10_000.0;
-        let rot_10000 = RotaryEmbedding::new(&cfg, DType::F32, &Device::Cpu).unwrap();
+        let rot_10000 = backend::rotary(&cfg).unwrap();
 
         let mut r = Lcg::new(13);
         let data = r.vec(4 * 2 * 4, 1.0);
-        let q = Tensor::from_slice(&data, (1, 4, 2, 4), &Device::Cpu).unwrap();
+        let q = backend::f32_tensor(&data, (1, 4, 2, 4));
 
         let a = rot_1000.apply(&q, &q).unwrap().0;
         let b = rot_10000.apply(&q, &q).unwrap().0;
-        let a = a.flatten_all().unwrap().to_vec1::<f32>().unwrap();
-        let b = b.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        let a = a.values();
+        let b = b.values();
 
         let max_diff = a
             .iter()
@@ -1191,7 +1295,7 @@ mod tests {
         let ids = ids_tensor(&[&[1, 4, 7, 2, 9], &[3, 3, 0, 11, 5]]);
         let out = model.forward(&ids).expect("forward runs");
 
-        assert_eq!(out.dims3().expect("rank 3 output"), (2, 5, cfg.hidden_size));
+        assert_eq!(out.shape3(), (2, 5, cfg.hidden_size));
     }
 
     #[test]
@@ -1205,11 +1309,11 @@ mod tests {
                 .expect("extract runs");
 
             assert_eq!(
-                out.dims2().expect("rank 2 output"),
+                out.shape2(),
                 (3, hidden),
                 "pooled embedding should be (batch, hidden_size)",
             );
-            assert_eq!(out.dtype(), DType::F32, "embeddings must be F32");
+            assert!(out.is_f32(), "embeddings must be F32");
         }
     }
 
@@ -1229,16 +1333,13 @@ mod tests {
         let ids = ids_tensor(&rows);
 
         let hidden = model.forward(&ids).expect("forward runs");
-        let (batch, seq, h) = hidden.dims3().unwrap();
-        let hidden = hidden.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        let (batch, seq, h) = hidden.shape3();
+        let hidden = hidden.values();
 
         let pooled = model
             .extract_embeddings(&ids)
             .expect("extract runs")
-            .flatten_all()
-            .unwrap()
-            .to_vec1::<f32>()
-            .unwrap();
+            .values();
 
         for b in 0..batch {
             let expected: Vec<f32> = (0..h)
@@ -1277,8 +1378,8 @@ mod tests {
                 let out = model
                     .extract_embeddings(&ids_tensor(&rows))
                     .expect("extract runs");
-                let (batch, _) = out.dims2().unwrap();
-                let flat = out.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+                let (batch, _) = out.shape2();
+                let flat = out.values();
 
                 for b in 0..batch {
                     let mut row = flat[b * hidden..(b + 1) * hidden].to_vec();
@@ -1310,19 +1411,13 @@ mod tests {
         let batched = model
             .extract_embeddings(&ids_tensor(&rows))
             .expect("batched extract runs")
-            .flatten_all()
-            .unwrap()
-            .to_vec1::<f32>()
-            .unwrap();
+            .values();
 
         for (b, row) in rows.iter().enumerate() {
             let single = model
                 .extract_embeddings(&ids_tensor(&[row]))
                 .expect("single extract runs")
-                .flatten_all()
-                .unwrap()
-                .to_vec1::<f32>()
-                .unwrap();
+                .values();
             assert_close(
                 &batched[b * 8..(b + 1) * 8],
                 &single,
@@ -1338,20 +1433,8 @@ mod tests {
         let model = load(&cfg, &TinyWeights::deterministic(&cfg, 6));
         let ids = ids_tensor(&[&[1, 4, 7, 2, 9]]);
 
-        let a = model
-            .extract_embeddings(&ids)
-            .unwrap()
-            .flatten_all()
-            .unwrap()
-            .to_vec1::<f32>()
-            .unwrap();
-        let b = model
-            .extract_embeddings(&ids)
-            .unwrap()
-            .flatten_all()
-            .unwrap()
-            .to_vec1::<f32>()
-            .unwrap();
+        let a = model.extract_embeddings(&ids).unwrap().values();
+        let b = model.extract_embeddings(&ids).unwrap().values();
 
         assert_close(&a, &b, 0.0, "repeated extraction");
     }
@@ -1367,17 +1450,11 @@ mod tests {
         let forward = model
             .extract_embeddings(&ids_tensor(&[&[1, 4, 7, 2]]))
             .unwrap()
-            .flatten_all()
-            .unwrap()
-            .to_vec1::<f32>()
-            .unwrap();
+            .values();
         let reversed = model
             .extract_embeddings(&ids_tensor(&[&[2, 7, 4, 1]]))
             .unwrap()
-            .flatten_all()
-            .unwrap()
-            .to_vec1::<f32>()
-            .unwrap();
+            .values();
 
         let max_diff = forward
             .iter()
@@ -1408,10 +1485,7 @@ mod tests {
         let hidden = model
             .forward(&ids_tensor(&[&[1, 4, 7, 2]]))
             .expect("forward runs")
-            .flatten_all()
-            .unwrap()
-            .to_vec1::<f32>()
-            .unwrap();
+            .values();
         assert_close(
             &hidden,
             &vec![0.0; hidden.len()],
@@ -1422,10 +1496,7 @@ mod tests {
         let emb = model
             .extract_embeddings(&ids_tensor(&[&[1, 4, 7, 2]]))
             .expect("extract runs")
-            .flatten_all()
-            .unwrap()
-            .to_vec1::<f32>()
-            .unwrap();
+            .values();
 
         assert!(
             emb.iter().all(|v| v.is_finite()),
@@ -1483,10 +1554,7 @@ mod tests {
         let got = load(&cfg, &w)
             .forward(&ids_tensor(&[&ids]))
             .expect("forward runs")
-            .flatten_all()
-            .unwrap()
-            .to_vec1::<f32>()
-            .unwrap();
+            .values();
 
         // x_t = emb_ln(word_emb[id_t]); the token-type table is all zeros.
         let xs: Vec<Vec<f32>> = ids
@@ -1552,10 +1620,7 @@ mod tests {
         let got = model
             .forward(&ids_tensor(&[&ids]))
             .expect("forward runs")
-            .flatten_all()
-            .unwrap()
-            .to_vec1::<f32>()
-            .unwrap();
+            .values();
 
         let expected = reference::forward(&cfg, &w, &ids);
         let flat: Vec<f32> = expected.into_iter().flatten().collect();
@@ -1579,10 +1644,7 @@ mod tests {
         let got = model
             .extract_embeddings(&ids_tensor(&rows))
             .expect("extract runs")
-            .flatten_all()
-            .unwrap()
-            .to_vec1::<f32>()
-            .unwrap();
+            .values();
 
         for (b, ids) in rows.iter().enumerate() {
             let expected = reference::extract(&cfg, &w, ids);
@@ -1606,29 +1668,30 @@ mod tests {
     // out_proj bias (LARES-465 item 1)
     // -----------------------------------------------------------------------
 
-    /// Builds the weight map for `cfg`, then adds the QKV/out_proj bias
-    /// tensors a `qkv_proj_bias: true` checkpoint would carry.
-    fn tensors_with_attn_bias(
+    /// The checkpoint for `cfg`, plus the QKV/out_proj bias entries a
+    /// `qkv_proj_bias: true` checkpoint would carry.
+    fn weights_with_attn_bias(
         cfg: &NomicBertConfig,
         w: &TinyWeights,
         out_proj_bias: Option<&[f32]>,
-    ) -> HashMap<String, Tensor> {
-        let device = Device::Cpu;
+    ) -> Vec<NamedWeight> {
         let h = cfg.hidden_size;
-        let mut ts = w.tensors(cfg, &device).expect("fixture tensors build");
+        let mut ws = w.named_weights(cfg);
         for i in 0..cfg.num_hidden_layers {
-            ts.insert(
+            ws.push(NamedWeight::new(
                 format!("encoder.layers.{i}.attn.Wqkv.bias"),
-                Tensor::zeros(3 * h, DType::F32, &device).unwrap(),
-            );
+                &vec![0.0; 3 * h],
+                [3 * h],
+            ));
             if let Some(b) = out_proj_bias {
-                ts.insert(
+                ws.push(NamedWeight::new(
                     format!("encoder.layers.{i}.attn.out_proj.bias"),
-                    Tensor::from_slice(b, h, &device).unwrap(),
-                );
+                    b,
+                    [h],
+                ));
             }
         }
-        ts
+        ws
     }
 
     /// With `qkv_proj_bias: true` the loader must actually *ask* for
@@ -1645,19 +1708,17 @@ mod tests {
         cfg.qkv_proj_bias = true;
         let w = TinyWeights::deterministic(&cfg, 31);
 
-        let missing = tensors_with_attn_bias(&cfg, &w, None);
-        let vb = VarBuilder::from_tensors(missing, DType::F32, &Device::Cpu);
+        let missing = weights_with_attn_bias(&cfg, &w, None);
         assert!(
-            NomicBert::load(cfg.clone(), vb).is_err(),
+            backend::load_model(&cfg, missing).is_err(),
             "loading should fail when qkv_proj_bias is set but out_proj.bias is absent",
         );
 
         // The same fixture with the bias present loads fine, so the failure
         // above is about the bias and not something else in the map.
-        let complete = tensors_with_attn_bias(&cfg, &w, Some(&[0.0; 4]));
-        let vb = VarBuilder::from_tensors(complete, DType::F32, &Device::Cpu);
+        let complete = weights_with_attn_bias(&cfg, &w, Some(&[0.0; 4]));
         assert!(
-            NomicBert::load(cfg, vb).is_ok(),
+            backend::load_model(&cfg, complete).is_ok(),
             "loading should succeed once out_proj.bias is supplied",
         );
     }
@@ -1685,18 +1746,14 @@ mod tests {
         w.word_emb = r.vec(cfg.vocab_size * h, 2.0);
         let bias: Vec<f32> = vec![0.5, -1.25, 0.75, -0.5];
 
-        let ts = tensors_with_attn_bias(&cfg, &w, Some(&bias));
-        let vb = VarBuilder::from_tensors(ts, DType::F32, &Device::Cpu);
-        let model = NomicBert::load(cfg, vb).expect("model loads");
+        let ws = weights_with_attn_bias(&cfg, &w, Some(&bias));
+        let model = backend::load_model(&cfg, ws).expect("model loads");
 
         let ids: Vec<u32> = vec![1, 3, 5, 2];
         let got = model
             .forward(&ids_tensor(&[&ids]))
             .expect("forward runs")
-            .flatten_all()
-            .unwrap()
-            .to_vec1::<f32>()
-            .unwrap();
+            .values();
 
         let ones = vec![1.0f32; h];
         let zeros = vec![0.0f32; h];
@@ -1744,22 +1801,19 @@ mod tests {
         cfg.rotary_emb_fraction = 0.5; // head_dim 8 → rotary_dim 4
         assert_eq!(cfg.rotary_dim(), 4);
 
-        let rotary =
-            RotaryEmbedding::new(&cfg, DType::F32, &Device::Cpu).expect("rotary table builds");
+        let rotary = backend::rotary(&cfg).expect("rotary table builds");
 
         let x = [0.3f32, -0.7, 1.1, 0.25, 9.0, -9.5, 2.5, -2.75];
-        let q = Tensor::from_slice(
+        let q = backend::f32_tensor(
             &[
                 0.0f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, // position 0
                 x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7], // position 1
             ],
             (1, 2, 1, 8),
-            &Device::Cpu,
-        )
-        .unwrap();
+        );
 
         let (out, _) = rotary.apply(&q, &q).expect("rotary applies");
-        let got = out.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        let got = out.values();
 
         // rotary_dim 4 pairs (0,2) and (1,3), turned by 1 * inv_freq[i] with
         // inv_freq = [1/1000^0, 1/1000^(2/4)].
@@ -1794,14 +1848,14 @@ mod tests {
         cfg.rotary_emb_fraction = 0.0;
         assert_eq!(cfg.rotary_dim(), 0);
 
-        let rotary = RotaryEmbedding::new(&cfg, DType::F32, &Device::Cpu).expect("builds");
+        let rotary = backend::rotary(&cfg).expect("builds");
         let mut r = Lcg::new(35);
         let data = r.vec(3 * 2 * 4, 1.5);
-        let q = Tensor::from_slice(&data, (1, 3, 2, 4), &Device::Cpu).unwrap();
+        let q = backend::f32_tensor(&data, (1, 3, 2, 4));
 
         let (out, _) = rotary.apply(&q, &q).expect("applies");
         assert_close(
-            &out.flatten_all().unwrap().to_vec1::<f32>().unwrap(),
+            &out.values(),
             &data,
             0.0,
             "zero rotary fraction should leave the vector alone",
@@ -1816,9 +1870,9 @@ mod tests {
         cfg.rotary_emb_fraction = 0.75; // → rotary_dim 3
 
         assert_eq!(cfg.rotary_dim(), 3);
-        let msg = match RotaryEmbedding::new(&cfg, DType::F32, &Device::Cpu) {
+        let msg = match backend::rotary(&cfg) {
             Ok(_) => panic!("odd rotary dim should be rejected"),
-            Err(e) => e.to_string(),
+            Err(e) => e,
         };
         assert!(
             msg.contains("even"),
@@ -1838,8 +1892,8 @@ mod tests {
             .extract_embeddings(&ids_tensor(&[&[1, 4, 7, 2], &[9, 0, 3, 5]]))
             .expect("partial-rotary forward should not error");
 
-        assert_eq!(out.dims2().unwrap(), (2, 8));
-        let flat = out.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        assert_eq!(out.shape2(), (2, 8));
+        let flat = out.values();
         assert!(flat.iter().all(|v| v.is_finite()), "got {flat:?}");
     }
 
@@ -1847,7 +1901,7 @@ mod tests {
     // Attention mask (LARES-465 item 2)
     // -----------------------------------------------------------------------
 
-    fn mask_tensor(rows: &[&[u32]]) -> Tensor {
+    fn mask_tensor(rows: &[&[u32]]) -> backend::Ids {
         ids_tensor(rows)
     }
 
@@ -1867,10 +1921,7 @@ mod tests {
         let bare = model
             .extract_embeddings(&ids_tensor(&[&[1, 4, 7]]))
             .expect("bare extract runs")
-            .flatten_all()
-            .unwrap()
-            .to_vec1::<f32>()
-            .unwrap();
+            .values();
 
         let padded_ids = ids_tensor(&[&[1, 4, 7, 0, 0]]);
         let mask = mask_tensor(&[&[1, 1, 1, 0, 0]]);
@@ -1878,20 +1929,14 @@ mod tests {
         let masked = model
             .extract_embeddings_with_mask(&padded_ids, Some(&mask))
             .expect("masked extract runs")
-            .flatten_all()
-            .unwrap()
-            .to_vec1::<f32>()
-            .unwrap();
+            .values();
         assert_close(&masked, &bare, 1e-5, "masked padded vs unpadded");
 
         // Same input without the mask: padding leaks in.
         let unmasked = model
             .extract_embeddings(&padded_ids)
             .expect("unmasked extract runs")
-            .flatten_all()
-            .unwrap()
-            .to_vec1::<f32>()
-            .unwrap();
+            .values();
         let diff = unmasked
             .iter()
             .zip(&bare)
@@ -1915,17 +1960,11 @@ mod tests {
         let a = model
             .extract_embeddings_with_mask(&ids_tensor(&[&[1, 4, 7, 0, 0]]), Some(&mask))
             .unwrap()
-            .flatten_all()
-            .unwrap()
-            .to_vec1::<f32>()
-            .unwrap();
+            .values();
         let b = model
             .extract_embeddings_with_mask(&ids_tensor(&[&[1, 4, 7, 11, 9]]), Some(&mask))
             .unwrap()
-            .flatten_all()
-            .unwrap()
-            .to_vec1::<f32>()
-            .unwrap();
+            .values();
 
         assert_close(&a, &b, 1e-5, "differing padding content");
     }
@@ -1963,19 +2002,13 @@ mod tests {
         let batched = model
             .extract_embeddings_with_mask(&ids_tensor(&padded_refs), Some(&mask_tensor(&mask_refs)))
             .expect("batched masked extract runs")
-            .flatten_all()
-            .unwrap()
-            .to_vec1::<f32>()
-            .unwrap();
+            .values();
 
         for (b, seq) in sequences.iter().enumerate() {
             let alone = model
                 .extract_embeddings(&ids_tensor(&[seq]))
                 .expect("standalone extract runs")
-                .flatten_all()
-                .unwrap()
-                .to_vec1::<f32>()
-                .unwrap();
+                .values();
             assert_close(
                 &batched[b * 8..(b + 1) * 8],
                 &alone,
@@ -1999,10 +2032,7 @@ mod tests {
                 Some(&mask_tensor(&[&[1, 1, 1], &[0, 0, 0]])),
             )
             .expect("extract runs")
-            .flatten_all()
-            .unwrap()
-            .to_vec1::<f32>()
-            .unwrap();
+            .values();
 
         assert!(
             out.iter().all(|v| v.is_finite()),
@@ -2042,20 +2072,11 @@ mod tests {
         let model = load(&cfg, &TinyWeights::deterministic(&cfg, 51));
         let ids = ids_tensor(&[&[1, 4, 7, 2]]);
 
-        let unmasked = model
-            .extract_embeddings(&ids)
-            .unwrap()
-            .flatten_all()
-            .unwrap()
-            .to_vec1::<f32>()
-            .unwrap();
+        let unmasked = model.extract_embeddings(&ids).unwrap().values();
         let masked = model
             .extract_embeddings_with_mask(&ids, Some(&mask_tensor(&[&[1, 1, 1, 1]])))
             .unwrap()
-            .flatten_all()
-            .unwrap()
-            .to_vec1::<f32>()
-            .unwrap();
+            .values();
 
         assert_close(&masked, &unmasked, 1e-6, "all-ones mask vs no mask");
     }
