@@ -298,72 +298,177 @@ impl PhaseA {
 // ===========================================================================
 
 /// A multi-turn task with a known-correct answer.
+///
+/// # Why the conclusion is parsed, not pattern-matched
+///
+/// Every task used to be graded by substring-matching the model's free text.
+/// Measured against real output, that was wrong in **both** directions on four
+/// of the five tasks (infernum-framework#24):
+///
+/// - `exit-code-discipline` rejected an answer for containing `"status 0"` —
+///   a phrase its own objective, "explain why reading the pipeline's status
+///   would have been misleading", forces a correct answer to write. The run
+///   that scored correct differed only by being *less* complete.
+/// - `claude-code-unregistered` demanded the literal `"0"`; the model answered
+///   "is not called anywhere else in the repository" and scored zero.
+/// - `grammar-unused` and `supervisor-spawns-nothing` required `"no"`, which
+///   matches inside `"not"`, `"none"` and `"cannot"` — so
+///   *"Yes. Beleth sets a grammar ... although I could not confirm every call
+///   site"* scores **correct**. Latent rather than observed: the model happened
+///   to answer the single word "No". It is a false pass waiting to happen, and
+///   it inflates, which is the more dangerous direction.
+///
+/// So the conclusion now travels on its own line, `ANSWER: <value>`, and is
+/// compared exactly. Free prose around it can say anything without disturbing
+/// the score — which is the property the substring rubric could never have.
+///
+/// Explanations are deliberately **not** graded. Every attempt to match a
+/// one-sentence justification by substring produced one of the failures above;
+/// a marker loose enough to admit every correct phrasing admits wrong ones too.
+/// `expect_all` survives only for genuinely unambiguous identifiers lifted from
+/// the source, such as a flag name.
 struct Task {
     id: &'static str,
     objective: &'static str,
-    /// Substrings that must all appear in the final answer (case-insensitive).
+    /// Exact value required on the `ANSWER:` line, compared case-insensitively
+    /// after trimming. `None` leaves the task graded by the marker lists alone.
+    expect_answer: Option<&'static str>,
+    /// Literal identifiers that must appear somewhere in the answer.
     ///
-    /// Deliberately a substring check, not a judge: it is reproducible and
-    /// cheap, and every marker below is a specific token that a correct
-    /// answer is hard to phrase without. It will under-credit a correct
-    /// answer worded unusually — treat `correct` as a lower bound.
+    /// For source-level tokens a correct answer cannot avoid naming — a flag,
+    /// a symbol. **Not** for prose: see the type docs.
     expect_all: &'static [&'static str],
     /// Any one of these appearing marks a known-wrong conclusion.
     expect_none: &'static [&'static str],
+    /// The pre-#24 rubric, kept so every run can be scored **both** ways.
+    ///
+    /// A rubric change that silently moved the number would be indistinguishable
+    /// from a real improvement. Reporting both scorings over identical model
+    /// output makes the change's effect exactly measurable, and is why this
+    /// field exists rather than being deleted along with the old behaviour.
+    legacy_expect_all: &'static [&'static str],
+    legacy_expect_none: &'static [&'static str],
     max_iterations: u32,
 }
 
-/// Tasks drawn from investigative work actually done on this repository
-/// today. Every answer was established independently, with evidence, before
-/// this harness existed — so they are not reverse-engineered from what a
-/// model happens to produce.
+/// Extracts the value from the last `ANSWER:` line in `text`.
+///
+/// Last rather than first: a model that restates the format before using it
+/// should be read as meaning its final one. `None` when no such line exists,
+/// which is a miss, not a pass — an unparseable conclusion is exactly the
+/// ambiguity this replaced.
+fn answer_value(text: &str) -> Option<String> {
+    text.lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix("ANSWER:")?;
+            let value = rest.trim().trim_matches(['`', '"', '*', '.']).trim();
+            (!value.is_empty()).then(|| value.to_lowercase())
+        })
+        .next_back()
+}
+
+/// Scores one answer under the current rubric and the pre-#24 one.
+///
+/// Both are computed for every run so the report can show what the rubric
+/// change did, rather than asking anyone to take it on trust.
+fn score(task: &Task, answer: &str, completed: bool) -> (bool, bool) {
+    let lower = answer.to_lowercase();
+    let markers = |all: &[&str], none: &[&str]| {
+        all.iter().all(|m| lower.contains(&m.to_lowercase()))
+            && !none.iter().any(|m| lower.contains(&m.to_lowercase()))
+    };
+
+    let conclusion_ok = match task.expect_answer {
+        Some(expected) => answer_value(answer).is_some_and(|v| v == expected.to_lowercase()),
+        None => true,
+    };
+
+    let current = completed && conclusion_ok && markers(task.expect_all, task.expect_none);
+    let legacy = completed && markers(task.legacy_expect_all, task.legacy_expect_none);
+    (current, legacy)
+}
+
+/// Tasks drawn from investigative work actually done on this repository.
+/// Every answer was established independently, with evidence, before this
+/// harness existed — so they are not reverse-engineered from what a model
+/// happens to produce.
+///
+/// The objectives carry their own `ANSWER:` wording rather than having it
+/// appended blindly, so each one reads as a sentence and says what shape of
+/// value it wants.
 const TASKS: &[Task] = &[
     Task {
         id: "clap-collision",
         objective: "In this Rust repository, the command `infernum generate --help` used to panic at \
                     startup with a clap error about short option names. Find the root cause by reading \
                     crates/infernum/src/main.rs. Name the two flags that collided and the single \
-                    letter they both wanted.",
-        expect_all: &["-s", "system", "stream"],
+                    letter they both wanted. Name both flags in your explanation, and end your reply \
+                    with that letter on its own line as `ANSWER: <letter>` — for example `ANSWER: x`.",
+        expect_answer: Some("s"),
+        // Both long flags are literal identifiers in main.rs; a correct answer
+        // cannot name the collision without naming them.
+        expect_all: &["system", "stream"],
         expect_none: &[],
+        legacy_expect_all: &["-s", "system", "stream"],
+        legacy_expect_none: &[],
         max_iterations: 25,
     },
     Task {
         id: "grammar-unused",
         objective: "The crate infernum-core defines a GrammarConstraint type for constraining model \
                     output. Determine whether the crate `beleth` (crates/beleth/src) ever sets a \
-                    grammar on a generation request. Answer yes or no and say how you checked.",
-        expect_all: &["no"],
-        expect_none: &["yes, beleth sets", "beleth does set"],
+                    grammar on a generation request. Say how you checked, and end your reply with \
+                    your verdict on its own line as `ANSWER: yes` or `ANSWER: no`.",
+        expect_answer: Some("no"),
+        expect_all: &[],
+        expect_none: &[],
+        legacy_expect_all: &["no"],
+        legacy_expect_none: &["yes, beleth sets", "beleth does set"],
         max_iterations: 25,
     },
     Task {
         id: "claude-code-unregistered",
         objective: "In crates/beleth, the ToolRegistry has a constructor named with_all_tools which \
                     registers ClaudeCodeTool. Determine whether anything in this repository actually \
-                    calls with_all_tools. Answer with the number of call sites outside its own \
-                    definition.",
-        expect_all: &["0"],
+                    calls with_all_tools. End your reply with the number of call sites outside its \
+                    own definition, on its own line, as `ANSWER: <number>`.",
+        expect_answer: Some("0"),
+        expect_all: &[],
         expect_none: &[],
+        legacy_expect_all: &["0"],
+        legacy_expect_none: &[],
         max_iterations: 25,
     },
     Task {
         id: "supervisor-spawns-nothing",
         objective: "Read crates/beleth/src/agentic_loop/supervisor.rs. Its doc comment claims it \
                     orchestrates concurrent LoopExecutor instances. Determine whether the \
-                    implementation actually spawns or runs any LoopExecutor. Answer yes or no and \
-                    cite what you looked for.",
-        expect_all: &["no"],
+                    implementation actually spawns or runs any LoopExecutor. Cite what you looked \
+                    for, and end your reply with your verdict on its own line as `ANSWER: yes` or \
+                    `ANSWER: no`.",
+        expect_answer: Some("no"),
+        expect_all: &[],
         expect_none: &[],
+        legacy_expect_all: &["no"],
+        legacy_expect_none: &[],
         max_iterations: 30,
     },
     Task {
         id: "exit-code-discipline",
         objective: "Run the shell command `false | tail -1` and then report the exit status of the \
-                    `false` command itself, not of the pipeline. State the number and explain in one \
-                    sentence why reading the pipeline's status would have been misleading.",
-        expect_all: &["1"],
-        expect_none: &["exit code 0", "exited 0", "status 0"],
+                    `false` command itself, not of the pipeline. Explain in one sentence why reading \
+                    the pipeline's status would have been misleading, and end your reply with that \
+                    number on its own line as `ANSWER: <number>`.",
+        expect_answer: Some("1"),
+        // The explanation is required by the objective but deliberately not
+        // scored: matching a one-sentence justification by substring is the
+        // defect #24 exists to remove, and every candidate marker here either
+        // rejects a correct phrasing or is handed to the model free by the
+        // objective's own text.
+        expect_all: &[],
+        expect_none: &[],
+        legacy_expect_all: &["1"],
+        legacy_expect_none: &["exit code 0", "exited 0", "status 0"],
         max_iterations: 20,
     },
 ];
@@ -374,8 +479,14 @@ struct TaskResult {
     id: String,
     /// Loop reached a natural answer rather than a resource limit.
     completed: bool,
-    /// Answer satisfied `expect_all` and avoided `expect_none`.
+    /// Answer satisfied the task's rubric.
     correct: bool,
+    /// The same answer scored under the pre-#24 substring rubric.
+    ///
+    /// Carried per run so the effect of the rubric change is visible in the
+    /// report rather than asserted. Where the two disagree, the run is listed
+    /// with which way it moved.
+    legacy_correct: bool,
     /// Turns-to-completion. The interactive-cost metric.
     turns: u32,
     tool_calls: u32,
@@ -392,6 +503,8 @@ struct PhaseB {
     attempts: usize,
     completed: usize,
     correct: usize,
+    /// Total under the pre-#24 rubric, over identical model output.
+    legacy_correct: usize,
     /// Mean turns over *correct* runs only — turns on a failed run measure
     /// nothing useful.
     mean_turns_correct: f64,
@@ -1019,21 +1132,13 @@ async fn run_phase_b(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseB {
                         s.termination,
                         TerminationReason::Natural(NaturalTermination::AnswerProvided { .. })
                     );
-                    let lower = answer.to_lowercase();
-                    let correct = completed
-                        && task
-                            .expect_all
-                            .iter()
-                            .all(|m| lower.contains(&m.to_lowercase()))
-                        && !task
-                            .expect_none
-                            .iter()
-                            .any(|m| lower.contains(&m.to_lowercase()));
+                    let (correct, legacy_correct) = score(task, &answer, completed);
 
                     TaskResult {
                         id: format!("{}#{run}", task.id),
                         completed,
                         correct,
+                        legacy_correct,
                         turns: s.iterations_completed,
                         tool_calls: s.tool_calls_made,
                         malformed_tool_calls: malformed,
@@ -1046,6 +1151,7 @@ async fn run_phase_b(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseB {
                     id: format!("{}#{run}", task.id),
                     completed: false,
                     correct: false,
+                    legacy_correct: false,
                     turns: 0,
                     tool_calls: 0,
                     malformed_tool_calls: malformed,
@@ -1077,6 +1183,9 @@ async fn run_phase_b(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseB {
             if result.correct {
                 agg.correct += 1;
                 correct_turns.push(result.turns);
+            }
+            if result.legacy_correct {
+                agg.legacy_correct += 1;
             }
             agg.total_malformed += result.malformed_tool_calls;
             agg.results.push(result);
@@ -1417,6 +1526,12 @@ fn print_phase_b(b: &PhaseB) {
         b.attempts
     );
     println!(
+        "  (pre-#24 rubric)      {:.1}%   ({}/{})   same model output, old scorer",
+        ratio(b.legacy_correct, b.attempts) * 100.0,
+        b.legacy_correct,
+        b.attempts
+    );
+    println!(
         "  turns-to-completion   mean {:.1}, median {:.0}   (correct runs only)",
         b.mean_turns_correct, b.median_turns_correct
     );
@@ -1442,5 +1557,191 @@ fn print_phase_b(b: &PhaseB) {
             "-".to_string()
         };
         println!("    {task:28} {ok}/{n} correct   mean turns {mean}");
+    }
+
+    // Any run the two rubrics disagree about, named individually. An
+    // aggregate that moved without saying which runs moved would be exactly
+    // the "one number hiding several causes" problem #24 was filed about.
+    let disagreements: Vec<&TaskResult> = b
+        .results
+        .iter()
+        .filter(|r| r.correct != r.legacy_correct)
+        .collect();
+    if disagreements.is_empty() {
+        println!("\n  rubric change (#24): no run scored differently under the two rubrics.");
+    } else {
+        println!(
+            "\n  rubric change (#24): {} run(s) scored differently — identical model output:",
+            disagreements.len()
+        );
+        for r in &disagreements {
+            let direction = if r.correct {
+                "old rubric MISSED a correct answer"
+            } else {
+                "old rubric PASSED a wrong answer"
+            };
+            println!("    {:28} {}", r.id, direction);
+        }
+    }
+}
+
+// ===========================================================================
+// Tests
+// ===========================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn task(id: &str) -> &'static Task {
+        TASKS.iter().find(|t| t.id == id).expect("task must exist")
+    }
+
+    // === The conclusion is parsed, not pattern-matched (#24) ===
+
+    #[test]
+    fn the_answer_line_is_extracted_from_surrounding_prose() {
+        assert_eq!(
+            answer_value("Some reasoning here.\nANSWER: 1").as_deref(),
+            Some("1")
+        );
+        // Decoration the grammar or the model may add around the value.
+        assert_eq!(answer_value("ANSWER: `no`").as_deref(), Some("no"));
+        assert_eq!(answer_value("ANSWER: **0**.").as_deref(), Some("0"));
+        assert_eq!(
+            answer_value("  answer: 1").as_deref(),
+            None,
+            "case-sensitive marker"
+        );
+        assert_eq!(answer_value("no marker here").as_deref(), None);
+        assert_eq!(
+            answer_value("ANSWER:   ").as_deref(),
+            None,
+            "empty is not a value"
+        );
+    }
+
+    #[test]
+    fn a_restated_format_does_not_win_over_the_real_answer() {
+        // A model that echoes the instruction before using it should be read
+        // as meaning its last line, not its first.
+        let text = "I will reply as ANSWER: <number>\nWorking...\nANSWER: 1";
+        assert_eq!(answer_value(text).as_deref(), Some("1"));
+    }
+
+    /// The defect this ticket was filed for: the pipeline's status is 0, the
+    /// objective demands an explanation of why that misleads, and the old
+    /// rubric rejected the answer for saying so.
+    #[test]
+    fn exit_code_discipline_no_longer_penalises_the_complete_answer() {
+        let t = task("exit-code-discipline");
+        let answer = "The exit status of the `false` command is 1. Reading the pipeline's \
+                      status would have been misleading because the pipeline's exit status is \
+                      determined by the last command, `tail -1`, which succeeded (exit status \
+                      0), not by the `false` command itself.\nANSWER: 1";
+
+        let (current, legacy) = score(t, answer, true);
+        assert!(
+            current,
+            "a correct answer that explains why 0 misleads must score correct"
+        );
+        assert!(
+            !legacy,
+            "this is the exact answer the old rubric rejected — if it now passes \
+             there, the fixture for this claim has changed"
+        );
+    }
+
+    #[test]
+    fn exit_code_discipline_still_rejects_the_wrong_conclusion() {
+        // The job `expect_none: ["status 0"]` was doing. Reporting the
+        // pipeline's 0 as the answer must still fail, and now does so because
+        // the conclusion is compared, not searched for.
+        let t = task("exit-code-discipline");
+        let answer = "Running `false | tail -1` gave exit status 0.\nANSWER: 0";
+        let (current, _) = score(t, answer, true);
+        assert!(!current, "answering 0 must fail");
+    }
+
+    /// The opposite direction, and the more dangerous one: `expect_all:
+    /// ["no"]` matches inside "not", so an answer saying **Yes** scored
+    /// correct. Latent rather than observed — the model happened to answer
+    /// the single word "No" — but a false pass inflates, and nothing in the
+    /// old rubric would ever have revealed it.
+    #[test]
+    fn a_yes_answer_no_longer_passes_a_task_whose_answer_is_no() {
+        let t = task("grammar-unused");
+        let answer = "Yes. Beleth sets a grammar on its generation requests, although I \
+                      could not confirm every call site.\nANSWER: yes";
+
+        let (current, legacy) = score(t, answer, true);
+        assert!(
+            !current,
+            "an answer of `yes` must fail a task whose answer is `no`"
+        );
+        assert!(
+            legacy,
+            "the old rubric accepted this, via the `no` inside `could not` — \
+             that is the defect being pinned, not a typo"
+        );
+    }
+
+    /// The under-credit case from PR #86: the model answered in words and the
+    /// rubric wanted a digit.
+    #[test]
+    fn a_number_stated_in_words_now_scores_when_the_answer_line_carries_it() {
+        let t = task("claude-code-unregistered");
+        let answer = "The constructor `with_all_tools` is only defined in `src/tool.rs` and is \
+                      not called anywhere else in the repository.\nANSWER: 0";
+        let (current, _) = score(t, answer, true);
+        assert!(current);
+    }
+
+    #[test]
+    fn a_missing_answer_line_is_a_miss_not_a_pass() {
+        // An unparseable conclusion is the ambiguity this replaced; it must
+        // not fall through to "no rubric objected, therefore correct".
+        let t = task("grammar-unused");
+        let (current, _) = score(t, "No, beleth never sets one.", true);
+        assert!(!current);
+    }
+
+    #[test]
+    fn an_incomplete_run_is_never_correct() {
+        let t = task("grammar-unused");
+        let (current, legacy) = score(t, "ANSWER: no", false);
+        assert!(!current);
+        assert!(!legacy);
+    }
+
+    #[test]
+    fn every_task_states_the_answer_format_it_will_be_graded_on() {
+        // A task graded on an `ANSWER:` line it never asked for would be
+        // scoring the model's ability to guess a private convention.
+        for t in TASKS {
+            if t.expect_answer.is_some() {
+                assert!(
+                    t.objective.contains("ANSWER:"),
+                    "{} is graded on an ANSWER line its objective never requests",
+                    t.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_task_grades_prose_by_substring_any_more() {
+        // `expect_all` survives only for literal source identifiers. Anything
+        // longer than a token is prose, and prose is what #24 is about.
+        for t in TASKS {
+            for marker in t.expect_all {
+                assert!(
+                    !marker.contains(' '),
+                    "{}: {marker:?} is a phrase, not an identifier — grading prose \
+                     by substring is the defect this replaced",
+                    t.id
+                );
+            }
+        }
     }
 }
