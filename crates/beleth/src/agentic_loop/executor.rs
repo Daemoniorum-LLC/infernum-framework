@@ -115,7 +115,7 @@ pub struct ExecutorConfig {
     /// Constrain generation to the tool-call envelope with a GBNF grammar.
     ///
     /// Defaults to `true`. When on, every tool-eligible turn carries the
-    /// grammar from [`tool_call_grammar`](crate::grammar::tool_call_grammar)
+    /// grammar from [`tool_call_grammar`]
     /// and the system prompt advertises only the envelopes that grammar
     /// permits.
     ///
@@ -172,7 +172,7 @@ impl ExecutorConfig {
 
     /// Enables or disables the tool-call grammar constraint.
     ///
-    /// See [`tool_call_grammar`](crate::grammar::tool_call_grammar) for what
+    /// See [`tool_call_grammar`] for what
     /// the constraint costs as well as what it buys.
     pub fn with_tool_call_grammar(mut self, enabled: bool) -> Self {
         self.tool_call_grammar = enabled;
@@ -1038,7 +1038,7 @@ impl LoopExecutor {
     ///
     /// A registry that defines its own `final_answer` tool keeps it: the
     /// grammar does not synthesise one in that case (see
-    /// [`FINAL_ANSWER_TOOL`](crate::grammar::FINAL_ANSWER_TOOL)), so the call
+    /// [`FINAL_ANSWER_TOOL`]), so the call
     /// belongs to that tool and must dispatch normally.
     fn intercept_final_answer(&self, calls: &mut Vec<DetectedCall>) -> Option<FinalAnswer> {
         if self.grammar_constraint().is_none() || self.tools.get(FINAL_ANSWER_TOOL).is_some() {

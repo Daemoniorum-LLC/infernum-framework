@@ -94,8 +94,8 @@
 //! # Dialect
 //!
 //! llama.cpp GBNF. Rule names may contain only `[a-zA-Z0-9-]` — notably **not**
-//! underscore — so tool names are sanitised and index-suffixed by
-//! [`rule_ident`], which keeps them both readable and collision-free.
+//! underscore — so tool names are sanitised and index-suffixed by `rule_ident`
+//! (private), which keeps them both readable and collision-free.
 
 use std::fmt::Write as _;
 
