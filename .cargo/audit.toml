@@ -1,4 +1,4 @@
-# cargo-audit configuration — LARES-597.
+# cargo-audit configuration — INFERNUM-6.
 #
 # WHY THIS FILE EXISTS. `cargo audit` reads Cargo.lock, and a lockfile contains
 # every OPTIONAL dependency regardless of which features are actually selected.
