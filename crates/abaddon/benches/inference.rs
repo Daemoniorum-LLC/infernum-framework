@@ -368,10 +368,12 @@ fn serialization_benchmark(c: &mut Criterion) {
     group.bench_function("serialize_generate_response", |b| {
         let response = GenerateResponse {
             request_id: infernum_core::RequestId::new(),
+            created: 0,
             model: infernum_core::ModelId::new("test-model"),
             choices: vec![Choice {
                 index: 0,
                 text: "Hello, I'm an AI assistant. How can I help you today?".to_string(),
+                message: None,
                 finish_reason: Some(infernum_core::FinishReason::Stop),
                 logprobs: None,
             }],
@@ -389,6 +391,7 @@ fn serialization_benchmark(c: &mut Criterion) {
             .map(|i| Choice {
                 index: i,
                 text: format!("Generated response number {}", i),
+                message: None,
                 finish_reason: Some(infernum_core::FinishReason::Stop),
                 logprobs: None,
             })
@@ -396,6 +399,7 @@ fn serialization_benchmark(c: &mut Criterion) {
 
         let response = GenerateResponse {
             request_id: infernum_core::RequestId::new(),
+            created: 0,
             model: infernum_core::ModelId::new("test-model"),
             choices,
             usage: Usage::new(50, 100),

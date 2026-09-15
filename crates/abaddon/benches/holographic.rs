@@ -404,11 +404,7 @@ fn file_io_benchmark(c: &mut Criterion) {
                 b.iter(|| {
                     let mut buffer = Cursor::new(Vec::new());
                     haagenti::holotensor::HoloTensorWriter::new(&mut buffer)
-                        .write_header(*header)
-                        .unwrap()
-                        .write_fragments(*fragments)
-                        .unwrap()
-                        .finish()
+                        .write(header, fragments)
                 })
             },
         );
@@ -416,11 +412,7 @@ fn file_io_benchmark(c: &mut Criterion) {
         // Read from buffer (pre-write to buffer first)
         let mut write_buffer = Cursor::new(Vec::new());
         haagenti::holotensor::HoloTensorWriter::new(&mut write_buffer)
-            .write_header(&header)
-            .unwrap()
-            .write_fragments(&fragments)
-            .unwrap()
-            .finish()
+            .write(&header, &fragments)
             .unwrap();
         let read_data = write_buffer.into_inner();
 
@@ -430,7 +422,8 @@ fn file_io_benchmark(c: &mut Criterion) {
             |b, data| {
                 b.iter(|| {
                     let cursor = Cursor::new(black_box(data.as_slice()));
-                    haagenti::holotensor::HoloTensorReader::open(cursor).and_then(|r| r.read_all())
+                    haagenti::holotensor::HoloTensorReader::new(cursor)
+                        .and_then(|mut r| r.read_all())
                 })
             },
         );
