@@ -1,0 +1,58 @@
+# cargo-audit configuration — INFERNUM-6.
+#
+# WHY THIS FILE EXISTS. `cargo audit` reads Cargo.lock, and a lockfile contains
+# every OPTIONAL dependency regardless of which features are actually selected.
+# So an advisory inside a feature nobody enables is reported exactly like one in
+# the shipped binary. The ignores below are all of the first kind, and each one
+# records the condition under which it stops being ignorable.
+#
+# This is not a place to silence inconvenient findings. Four other advisories
+# were live on 2026-09-14 and were FIXED rather than listed here, by
+# `cargo update`: crossbeam-epoch 0.9.18 -> 0.9.21, h2 0.4.13 -> 0.4.19,
+# lz4_flex 0.11.5 -> 0.11.6 (RUSTSEC-2026-0041, 8.2 high) and
+# rustls 0.23.36 -> 0.23.45. If a finding can be fixed, fix it.
+
+[advisories]
+ignore = [
+    # ---------------------------------------------------------------------
+    # All five below enter ONLY through the optional `lance` feature.
+    #
+    #   infernum -> stolas -> lancedb -> lance-io -> opendal -> reqsign
+    #                                                        -> rsa
+    #                                                        -> quick-xml
+    #
+    # `crates/stolas/Cargo.toml` declares `default = []`, every consumer
+    # (infernum, infernum-server, beleth, paimon) depends on stolas with
+    # `default-features = false`, and `infernum-server` exposes it opt-in as
+    # `lance = ["stolas/lance"]`.
+    #
+    # Measured 2026-09-14, not assumed:
+    #
+    #   cargo tree -p infernum-server                    rsa 0  quick-xml 0  lancedb 0
+    #   cargo tree -p infernum-server --features lance   rsa 1  quick-xml 3  lancedb 1
+    #
+    # RE-EVALUATE THESE THE MOMENT `lance` BECOMES A DEFAULT FEATURE, or any
+    # shipped build starts passing --features lance. At that point rsa in
+    # particular is a real exposure and this list is wrong.
+    # ---------------------------------------------------------------------
+
+    # quick-xml 0.37.5 and 0.38.4 (both present, via object_store/opendal).
+    # Quadratic runtime on duplicate attribute names, and unbounded
+    # namespace-declaration allocation — both remote-input DoS paths, which
+    # WOULD matter for an HTTP-facing service if they were reachable.
+    # Fix needs 0.41.0, a semver-major jump from a transitive dependency this
+    # repo does not control; it cannot be reached by `cargo update`.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+
+    # rsa 0.9.10 — the Marvin attack, key recovery through a timing sidechannel.
+    # `patched = []`: there is NO fixed release. It is normally designed around
+    # rather than upgraded away, so this one would still need a decision even if
+    # it were reachable. It is not: `cargo tree -p infernum-server` does not
+    # resolve rsa at all without the `lance` feature.
+    "RUSTSEC-2023-0071",
+]
+
+# Yanked crates are reported as warnings, not vulnerabilities, and are left
+# visible on purpose: adler, atomic-polyfill, number_prefix, paste. They are a
+# maintenance signal worth seeing, and nothing here depends on them being quiet.
