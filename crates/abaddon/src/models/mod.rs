@@ -22,7 +22,7 @@ pub use llama::{Llama, LlamaConfig};
 pub use nomic_bert::{NomicBert, NomicBertConfig};
 pub use qwen2::{CacheType, Qwen2, Qwen2Config};
 
-use candle_core::{Result as CandleResult, Tensor};
+use candle_core::{DType, Result as CandleResult, Tensor};
 
 /// Loaded model variant - wraps different model implementations.
 ///
@@ -91,8 +91,22 @@ impl ModelKind {
     }
 
     /// Extract embeddings by mean pooling.
+    ///
+    /// The result is always F32, whatever dtype the model was loaded in.
+    ///
+    /// A causal LM keeps whatever `select_dtype` chose, which is F16 on a GPU
+    /// with tensor cores *and* on a default CPU build — the CPU branch only
+    /// yields F32 under `mkl` or `accelerate`. The embedding endpoint reads the
+    /// tensor with `to_vec1::<f32>()`, which errors on a half dtype rather than
+    /// converting, so without this the request fails outright.
+    ///
+    /// Each architecture already converts on its own way out; the conversion is
+    /// repeated here so that adding a sixth variant cannot reintroduce
+    /// INFERNUM-1 by forgetting to. `to_dtype` on a tensor that is already F32
+    /// returns a clone rather than copying, so the guard is free on the paths
+    /// that already do it right.
     pub fn extract_embeddings(&mut self, input_ids: &Tensor) -> CandleResult<Tensor> {
-        match self {
+        let pooled = match self {
             Self::Llama(model) => model.extract_embeddings(input_ids),
             Self::LazyLlama(_model) => Err(candle_core::Error::Msg(
                 "Embedding extraction not supported for LazyLlama".to_string(),
@@ -103,7 +117,9 @@ impl ModelKind {
             )),
             Self::Bert(model) => model.extract_embeddings(input_ids),
             Self::NomicBert(model) => model.extract_embeddings(input_ids),
-        }
+        }?;
+
+        pooled.to_dtype(DType::F32)
     }
 }
 
@@ -230,6 +246,59 @@ impl ArchitectureType {
 #[cfg(test)]
 mod tests {
     use super::{finalize_embedding, l2_normalize, ArchitectureType};
+    use super::{Llama, LlamaConfig, ModelKind};
+    use candle_core::{DType, Device, Tensor};
+    use candle_nn::VarBuilder;
+
+    // -----------------------------------------------------------------------
+    // ModelKind::extract_embeddings dtype contract (INFERNUM-1)
+    // -----------------------------------------------------------------------
+
+    /// Whatever dtype a model is loaded in, the dispatcher hands back F32.
+    ///
+    /// This is the call the embedding endpoint actually makes, and the endpoint
+    /// reads the result with `to_vec1::<f32>()`, which errors on a half dtype
+    /// rather than converting. Asserting the contract here — rather than only
+    /// in each architecture's own tests — is what keeps a newly added variant
+    /// from reintroducing INFERNUM-1.
+    #[test]
+    fn dispatch_returns_f32_embeddings_for_a_half_precision_model() {
+        let device = Device::Cpu;
+        let config = LlamaConfig {
+            hidden_size: 8,
+            intermediate_size: 16,
+            vocab_size: 32,
+            num_hidden_layers: 1,
+            num_attention_heads: 2,
+            num_key_value_heads: Some(1),
+            rms_norm_eps: 1e-5,
+            rope_theta: 10000.0,
+            max_position_embeddings: 32,
+            tie_word_embeddings: true,
+            bos_token_id: None,
+            eos_token_id: None,
+            rope_scaling: None,
+        };
+        let vb = VarBuilder::zeros(DType::F16, &device);
+        let model = Llama::load(config, vb).expect("tiny llama loads");
+        let mut kind = ModelKind::Llama(model);
+
+        let input_ids = Tensor::new(&[[1u32, 2, 3]], &device).expect("input ids");
+        let embeddings = kind
+            .extract_embeddings(&input_ids)
+            .expect("extract_embeddings succeeds");
+
+        assert_eq!(
+            embeddings.dtype(),
+            DType::F32,
+            "the dispatcher must normalize every architecture's dtype to F32",
+        );
+        embeddings
+            .squeeze(0)
+            .expect("squeeze batch dim")
+            .to_vec1::<f32>()
+            .expect("endpoint reads the embedding as f32");
+    }
 
     // -----------------------------------------------------------------------
     // l2_normalize

@@ -897,6 +897,74 @@ impl Qwen2 {
     /// Extracts embeddings by mean pooling over the sequence dimension.
     pub fn extract_embeddings(&mut self, input_ids: &Tensor) -> CandleResult<Tensor> {
         let hidden_states = self.forward_embedding(input_ids)?;
-        hidden_states.mean(1)
+        // Mean pool, then convert to F32 — see `models::llama::Llama::extract_embeddings`
+        // for why a half-precision model must not hand back its native dtype here.
+        hidden_states.mean(1)?.to_dtype(DType::F32)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use candle_nn::VarBuilder;
+
+    /// The smallest Qwen2 that still exercises embed -> attention -> norm.
+    ///
+    /// Weights come from `VarBuilder::zeros`, so the *values* are meaningless.
+    /// This fixture exists to pin the *dtype* the embedding path returns, which
+    /// is independent of the weights.
+    fn tiny_config() -> Qwen2Config {
+        Qwen2Config {
+            hidden_size: 8,
+            intermediate_size: 16,
+            vocab_size: 32,
+            num_hidden_layers: 1,
+            num_attention_heads: 2,
+            num_key_value_heads: Some(1),
+            rms_norm_eps: 1e-6,
+            rope_theta: 1000000.0,
+            max_position_embeddings: 32,
+            tie_word_embeddings: true,
+            bos_token_id: None,
+            eos_token_id: None,
+            use_sliding_window: false,
+            sliding_window: None,
+        }
+    }
+
+    /// A Qwen2 loaded in F16 — which is what `select_dtype` picks on a GPU
+    /// with tensor cores, and on a default CPU build too — must still hand
+    /// back F32 embeddings.
+    ///
+    /// See the matching test in `models::llama` for the full failure mode;
+    /// this is INFERNUM-1's second affected architecture.
+    #[test]
+    fn extract_embeddings_returns_f32_from_an_f16_model() {
+        // BF16 is the other dtype `select_dtype` can pick, but candle's CPU
+        // backend has no BF16 matmul, so it cannot be exercised here. The
+        // conversion under test is dtype-generic, so F16 covers the mechanism.
+        for dtype in [DType::F16, DType::F32] {
+            let device = Device::Cpu;
+            let vb = VarBuilder::zeros(dtype, &device);
+            let mut model = Qwen2::load(tiny_config(), vb).expect("tiny qwen2 loads");
+
+            let input_ids = Tensor::new(&[[1u32, 2, 3]], &device).expect("input ids");
+            let embeddings = model
+                .extract_embeddings(&input_ids)
+                .expect("extract_embeddings succeeds");
+
+            assert_eq!(
+                embeddings.dtype(),
+                DType::F32,
+                "a model loaded in {dtype:?} must still return F32 embeddings",
+            );
+
+            // The symptom, exactly as the endpoint hits it.
+            embeddings
+                .squeeze(0)
+                .expect("squeeze batch dim")
+                .to_vec1::<f32>()
+                .expect("endpoint reads the embedding as f32");
+        }
     }
 }
