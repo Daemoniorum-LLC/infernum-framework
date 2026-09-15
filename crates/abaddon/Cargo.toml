@@ -53,7 +53,7 @@ cudarc = { workspace = true, optional = true }
 crossbeam = { version = "0.8", features = ["crossbeam-channel"] }
 
 # Flash Attention (optional, enabled with flash-attn feature)
-candle-flash-attn = { version = "0.9", optional = true }
+candle-flash-attn = { version = "0.11", optional = true }
 
 # llama.cpp bindings for production inference (optional, enabled with llama-cpp feature)
 # Provides 50-100x speedup over Candle for GGUF models
@@ -82,9 +82,9 @@ memmap2 = { workspace = true }
 rayon = { workspace = true }
 num_cpus = { workspace = true }
 humansize = { workspace = true }
-dirs = "6.0"
+dirs = "7.0"
 fastrand = "2.2"
-sysinfo = "0.38"
+sysinfo = "0.39"
 ureq = { version = "3.2", features = ["native-tls"] }
 
 # Compression (HCT format for compressed weights)
@@ -92,7 +92,7 @@ haagenti = { workspace = true }
 haagenti-core = { workspace = true }
 haagenti-hct = { workspace = true }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
-zstd = "0.13"
+zstd = "0.14"
 
 # GPU decompression (optional)
 haagenti-cuda = { workspace = true, optional = true }
@@ -112,8 +112,8 @@ tracing-subscriber = "0.3"
 clap = { version = "4.5", features = ["derive"] }
 tempfile = "3.10"
 bytemuck = "1.25"
-zstd = "0.13"
-lz4_flex = "0.12"
+zstd = "0.14"
+lz4_flex = "0.13"
 wiremock = { workspace = true }
 
 [[bench]]

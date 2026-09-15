@@ -46,7 +46,7 @@ futures = { workspace = true }
 
 # Model management
 hf-hub = { workspace = true }
-dirs = "6.0"
+dirs = "7.0"
 
 # ML
 candle-core = { workspace = true }
