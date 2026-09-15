@@ -13,10 +13,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
+use infernum_core::sampling::GrammarConstraint;
 use infernum_core::{GenerateRequest, Message, Role, SamplingParams};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
+use crate::grammar::{compose_system_prompt, tool_call_grammar, FINAL_ANSWER_TOOL};
 use crate::tool::{ToolCall as BelethToolCall, ToolContext, ToolRegistry};
 
 use super::approval::{ApprovalDecision, ApprovalGate};
@@ -76,6 +78,20 @@ impl ToolCallDetector for QwenToolCallDetector {
     }
 }
 
+/// Confidence recorded for a `final_answer` call that omits the argument.
+///
+/// Matches the default the retired `<answer>` tag's parser used, so a run with
+/// the grammar off and one with it on report comparable confidences.
+const DEFAULT_ANSWER_CONFIDENCE: f32 = 0.8;
+
+/// A terminal answer recovered from a `final_answer` call.
+struct FinalAnswer {
+    /// Id of the call it came from, so the loop can still report it detected.
+    call_id: String,
+    content: String,
+    confidence: f32,
+}
+
 // ---------------------------------------------------------------------------
 // Executor configuration
 // ---------------------------------------------------------------------------
@@ -95,6 +111,19 @@ pub struct ExecutorConfig {
     pub session_id: String,
     /// Working directory for file tools.
     pub working_dir: Option<PathBuf>,
+
+    /// Constrain generation to the tool-call envelope with a GBNF grammar.
+    ///
+    /// Defaults to `true`. When on, every tool-eligible turn carries the
+    /// grammar from [`tool_call_grammar`](crate::grammar::tool_call_grammar)
+    /// and the system prompt advertises only the envelopes that grammar
+    /// permits.
+    ///
+    /// Turn it off for a backend with no grammar facility — the engine
+    /// refuses a grammar it cannot honour rather than dropping it, so leaving
+    /// this on against such a server produces a hard error, by design. See
+    /// infernum-framework#17.
+    pub tool_call_grammar: bool,
 }
 
 impl ExecutorConfig {
@@ -107,6 +136,7 @@ impl ExecutorConfig {
             sampling: SamplingParams::default().with_max_tokens(2048),
             session_id: session_id.into(),
             working_dir: None,
+            tool_call_grammar: true,
         }
     }
 
@@ -137,6 +167,15 @@ impl ExecutorConfig {
     /// Sets the working directory for file tools.
     pub fn with_working_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.working_dir = Some(dir.into());
+        self
+    }
+
+    /// Enables or disables the tool-call grammar constraint.
+    ///
+    /// See [`tool_call_grammar`](crate::grammar::tool_call_grammar) for what
+    /// the constraint costs as well as what it buys.
+    pub fn with_tool_call_grammar(mut self, enabled: bool) -> Self {
+        self.tool_call_grammar = enabled;
         self
     }
 }
@@ -489,7 +528,42 @@ impl LoopExecutor {
             // model that already uses `<tool_call>` correctly, or for a
             // genuine final answer/yield/stuck with no call embedded in it
             // (both remain terminal exactly as before).
-            let detected_calls = self.detector.detect(&output);
+            let mut detected_calls = self.detector.detect(&output);
+
+            // Under the tool-call grammar there is no `<answer>` tag to
+            // detect: the model finishes by CALLING `final_answer`, because a
+            // grammar can remove an alternative but cannot re-rank one, and
+            // leaving `<answer>` reachable meant Qwen2.5-Coder-14B opened it
+            // 30/30 and never emitted a `<tool_call>` at all. See
+            // `crate::grammar` for the measurements.
+            //
+            // Terminal only when it is the sole call in the turn: a model that
+            // asks for one more tool *and* declares itself done has not
+            // finished, and dropping the real call to honour the declaration
+            // would lose work the model just asked for.
+            if let Some(answer) = self.intercept_final_answer(&mut detected_calls) {
+                // Report it as detected even though nothing executes it. The
+                // call is well-formed and the executor consumed it, so a
+                // consumer counting `<tool_call>` tags and subtracting
+                // detections — which is how `toolcall-eval` derives its
+                // malformed count — would otherwise score every completed run
+                // as carrying one malformed call. The absence of a following
+                // ToolExecutionStarted is what marks it as not dispatched.
+                let _ = event_tx
+                    .send(LoopEvent::ToolCallDetected {
+                        call_id: answer.call_id,
+                        tool: FINAL_ANSWER_TOOL.to_string(),
+                    })
+                    .await;
+                state_machine.answer_detected(answer.content, answer.confidence, vec![])?;
+                let _ = event_tx
+                    .send(LoopEvent::IterationCompleted {
+                        iteration,
+                        outcome: IterationOutcome::AnswerProvided,
+                    })
+                    .await;
+                break;
+            }
 
             // Check for meta-signals
             let mut terminal_signal = false;
@@ -931,20 +1005,79 @@ impl LoopExecutor {
             .system_prompt
             .as_deref()
             .unwrap_or("You are a helpful assistant.");
-        let tool_desc = self.tools.to_qwen_native_description();
-        let system_prompt = format!(
-            "{system}\n\n{tool_desc}\n\n\
-             You may express uncertainty with <uncertain>...</uncertain>, \
-             signal you're stuck with <stuck>...</stuck>, \
-             yield with <yield>...</yield>, \
-             or provide a final answer with <answer confidence=\"0.9\">...</answer>."
-        );
+
+        // Composed through the shared builder so the prompt always matches
+        // the grammar the same turn will carry. A prompt offering tags the
+        // grammar forbids sets the model against the sampler, which is what
+        // infernum-framework#72 looks like from the outside.
+        let system_prompt =
+            compose_system_prompt(system, &self.tools, self.grammar_constraint().is_some());
 
         vec![Message::system(system_prompt), Message::user(objective)]
     }
 
+    /// The grammar this turn should carry, if any.
+    ///
+    /// `None` when the caller disabled it, and `None` for an empty registry:
+    /// there is no tool call to constrain, and a grammar permitting only
+    /// `<answer>` would quietly turn the loop into a single-shot completion.
+    /// Every turn of this loop is tool-eligible — the model may act or
+    /// conclude at any point — so there is no narrower gate to apply.
+    fn grammar_constraint(&self) -> Option<GrammarConstraint> {
+        if !self.config.tool_call_grammar {
+            return None;
+        }
+        tool_call_grammar(&self.tools)
+    }
+
+    /// Consumes a terminal `final_answer` call, if this turn has one.
+    ///
+    /// Returns the answer when `final_answer` is the only call detected. When
+    /// it appears alongside real tool calls it is *removed* from the list and
+    /// `None` is returned, so the turn dispatches the real work and continues.
+    ///
+    /// A registry that defines its own `final_answer` tool keeps it: the
+    /// grammar does not synthesise one in that case (see
+    /// [`FINAL_ANSWER_TOOL`](crate::grammar::FINAL_ANSWER_TOOL)), so the call
+    /// belongs to that tool and must dispatch normally.
+    fn intercept_final_answer(&self, calls: &mut Vec<DetectedCall>) -> Option<FinalAnswer> {
+        if self.grammar_constraint().is_none() || self.tools.get(FINAL_ANSWER_TOOL).is_some() {
+            return None;
+        }
+        if !calls.iter().any(|c| c.name == FINAL_ANSWER_TOOL) {
+            return None;
+        }
+
+        if calls.len() > 1 {
+            calls.retain(|c| c.name != FINAL_ANSWER_TOOL);
+            return None;
+        }
+
+        let call = calls.pop()?;
+        Some(FinalAnswer {
+            call_id: call.id.clone(),
+            content: call
+                .arguments
+                .get("answer")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            confidence: call
+                .arguments
+                .get("confidence")
+                .and_then(serde_json::Value::as_f64)
+                .map_or(DEFAULT_ANSWER_CONFIDENCE, |c| (c as f32).clamp(0.0, 1.0)),
+        })
+    }
+
     fn build_generate_request(&self, messages: &[Message]) -> GenerateRequest {
-        GenerateRequest::chat(messages.to_vec()).with_sampling(self.config.sampling.clone())
+        let mut sampling = self.config.sampling.clone();
+        // An explicit grammar on the caller's SamplingParams wins: they asked
+        // for something more specific than the loop's default envelope.
+        if sampling.grammar.is_none() {
+            sampling.grammar = self.grammar_constraint();
+        }
+        GenerateRequest::chat(messages.to_vec()).with_sampling(sampling)
     }
 
     fn build_tool_context(&self) -> ToolContext {
@@ -1291,6 +1424,186 @@ mod tests {
             calls.is_empty(),
             "function_name is intentionally not accepted yet; if this now passes, \
              the scope of the fix has changed and the PR description must be updated"
+        );
+    }
+
+    // === final_answer interception (infernum-framework#17) ===
+
+    /// A do-nothing engine. These tests exercise request construction and
+    /// call interception; none of them generates.
+    struct NullEngine {
+        metadata: infernum_core::model::ModelMetadata,
+    }
+
+    impl Default for NullEngine {
+        fn default() -> Self {
+            Self {
+                metadata: infernum_core::model::ModelMetadata::builder(
+                    "test-model",
+                    infernum_core::model::ModelArchitecture::Llama {
+                        version: infernum_core::model::LlamaVersion::V3,
+                    },
+                )
+                .source(infernum_core::model::ModelSource::huggingface("test-model"))
+                .build(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl abaddon::InferenceEngine for NullEngine {
+        async fn generate(
+            &self,
+            _request: GenerateRequest,
+        ) -> infernum_core::Result<infernum_core::GenerateResponse> {
+            unreachable!("these tests never generate")
+        }
+        async fn generate_stream(
+            &self,
+            _request: GenerateRequest,
+        ) -> infernum_core::Result<infernum_core::TokenStream> {
+            unreachable!("these tests never generate")
+        }
+        async fn embed(
+            &self,
+            _request: infernum_core::EmbedRequest,
+        ) -> infernum_core::Result<infernum_core::EmbedResponse> {
+            unreachable!("these tests never embed")
+        }
+        fn model_info(&self) -> &infernum_core::model::ModelMetadata {
+            &self.metadata
+        }
+        fn is_ready(&self) -> bool {
+            true
+        }
+    }
+
+    /// An executor over the code registry, with the given config.
+    fn executor_with(config: ExecutorConfig) -> LoopExecutor {
+        LoopExecutor::new(
+            Arc::new(NullEngine::default()),
+            Arc::new(ToolRegistry::with_code_tools()),
+            config,
+        )
+    }
+
+    fn executor_with_grammar(enabled: bool) -> LoopExecutor {
+        executor_with(ExecutorConfig::new("test").with_tool_call_grammar(enabled))
+    }
+
+    fn call(name: &str, arguments: serde_json::Value) -> DetectedCall {
+        DetectedCall {
+            id: format!("call_{name}"),
+            name: name.to_string(),
+            arguments,
+        }
+    }
+
+    #[test]
+    fn a_lone_final_answer_call_terminates_the_turn() {
+        let exec = executor_with_grammar(true);
+        let mut calls = vec![call(
+            "final_answer",
+            serde_json::json!({"answer": "the flags were -s and --stream", "confidence": 0.95}),
+        )];
+
+        let answer = exec
+            .intercept_final_answer(&mut calls)
+            .expect("a lone final_answer must terminate");
+        assert_eq!(answer.content, "the flags were -s and --stream");
+        assert!((answer.confidence - 0.95).abs() < 1e-6);
+        assert!(
+            calls.is_empty(),
+            "the call must be consumed, not dispatched"
+        );
+    }
+
+    #[test]
+    fn an_intercepted_final_answer_still_reports_its_call_id() {
+        // Consumers derive a malformed-call count by subtracting detections
+        // from raw `<tool_call>` tags. A terminal call that produced a tag but
+        // no detection would score as malformed on every completed run — a
+        // wrong number produced by the fix itself.
+        let exec = executor_with_grammar(true);
+        let mut calls = vec![call("final_answer", serde_json::json!({"answer": "no"}))];
+        let id = calls[0].id.clone();
+        let answer = exec.intercept_final_answer(&mut calls).unwrap();
+        assert_eq!(answer.call_id, id);
+    }
+
+    #[test]
+    fn final_answer_alongside_real_work_is_dropped_not_honoured() {
+        // The model asked for one more tool AND declared itself done. It has
+        // not finished; honouring the declaration would discard the call it
+        // just asked for.
+        let exec = executor_with_grammar(true);
+        let mut calls = vec![
+            call("read_file", serde_json::json!({"path": "Cargo.toml"})),
+            call("final_answer", serde_json::json!({"answer": "done"})),
+        ];
+
+        assert!(exec.intercept_final_answer(&mut calls).is_none());
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "read_file");
+    }
+
+    #[test]
+    fn final_answer_without_a_confidence_gets_the_documented_default() {
+        let exec = executor_with_grammar(true);
+        let mut calls = vec![call("final_answer", serde_json::json!({"answer": "no"}))];
+        let answer = exec.intercept_final_answer(&mut calls).unwrap();
+        assert!((answer.confidence - DEFAULT_ANSWER_CONFIDENCE).abs() < 1e-6);
+    }
+
+    #[test]
+    fn final_answer_is_not_intercepted_with_the_grammar_off() {
+        // With no grammar the model still has `<answer>`, and `final_answer`
+        // is not in its prompt at all. Intercepting a call by that name would
+        // be inventing a contract the model was never told about.
+        let exec = executor_with_grammar(false);
+        let mut calls = vec![call("final_answer", serde_json::json!({"answer": "x"}))];
+        assert!(exec.intercept_final_answer(&mut calls).is_none());
+        assert_eq!(calls.len(), 1, "the call must be left for normal dispatch");
+    }
+
+    #[test]
+    fn the_grammar_reaches_the_request_beleth_actually_sends() {
+        // `with_grammar` appeared zero times in crates/beleth/src before #17.
+        // This is the end-to-end assertion that it no longer does: the
+        // constraint is on the GenerateRequest the loop hands the engine.
+        let exec = executor_with_grammar(true);
+        let request = exec.build_generate_request(&[Message::user("hi")]);
+        let grammar = request
+            .sampling
+            .grammar
+            .as_ref()
+            .expect("a tool-eligible turn must carry the tool-call grammar");
+        assert!(grammar.to_gbnf().contains("call-final-answer"));
+
+        let off = executor_with_grammar(false);
+        assert!(
+            off.build_generate_request(&[Message::user("hi")])
+                .sampling
+                .grammar
+                .is_none(),
+            "an opted-out executor must send nothing"
+        );
+    }
+
+    #[test]
+    fn an_explicit_caller_grammar_is_not_overwritten() {
+        // A caller that set its own constraint asked for something more
+        // specific than the loop's default envelope.
+        let mine = infernum_core::sampling::GrammarConstraint::gbnf("root ::= \"x\"");
+        let exec = executor_with(
+            ExecutorConfig::new("test")
+                .with_sampling(SamplingParams::default().with_grammar(mine.clone())),
+        );
+        assert_eq!(
+            exec.build_generate_request(&[Message::user("hi")])
+                .sampling
+                .grammar,
+            Some(mine)
         );
     }
 }

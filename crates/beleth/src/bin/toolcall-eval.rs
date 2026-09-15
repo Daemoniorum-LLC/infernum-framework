@@ -58,6 +58,30 @@
 //! is the malformed count. That subtraction *is* the instrumentation the
 //! executor itself lacks.
 //!
+//! # The tool-call grammar arm
+//!
+//! `--grammar on` (the default since infernum-framework#17) constrains
+//! generation to the envelope in [`beleth::grammar`], and composes the system
+//! prompt to match. `--grammar off` reproduces the unconstrained behaviour the
+//! #70/#71 numbers were taken under, so the two arms are directly comparable.
+//!
+//! Measured on Qwen2.5-Coder-14B-Instruct through `llama-server`, 3 runs per
+//! item, temperature 0:
+//!
+//! | | off | on |
+//! |---|---|---|
+//! | Phase A emission (a `<tool_call>` was emitted) | 0/30 | **30/30** |
+//! | Phase A right tool | 27/30 | **30/30** |
+//! | Phase A wrong envelope | 27/30 | **0/30** |
+//! | Phase B completed | 3/15 | **14/15** |
+//! | Phase B correct | 2/15 | **6/15** |
+//!
+//! Note the two Phase A rows do not move together: with the grammar off the
+//! model emitted a `<tool_call>` tag **zero** times, and the 27/30 comes
+//! entirely from [`QwenToolCallDetector`]'s wrapper-agnostic fallback. That is
+//! also what the "80.0% (72/90)" quoted in #70/#71 is — detector recovery, not
+//! envelope fidelity, which was 0%.
+//!
 //! # Usage
 //!
 //! ```text
@@ -67,6 +91,9 @@
 //!     --repo /path/to/infernum-framework \
 //!     --phase all --runs 3 --json results.json
 //! ```
+//!
+//! `--dump-grammar` and `--dump-prompt` print what a given build actually
+//! holds the model to, and exit.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -77,8 +104,9 @@ use std::time::Instant;
 use abaddon::openai_engine::{OpenAiConfig, OpenAiEngine};
 use abaddon::InferenceEngine;
 use beleth::{
-    AutonomyGrant, ExecutorConfig, LoopConfig, LoopEvent, LoopExecutor, NaturalTermination,
-    QwenToolCallDetector, TerminationReason, ToolCallDetector, ToolPattern, ToolRegistry,
+    compose_system_prompt, tool_call_gbnf, tool_call_grammar, AutonomyGrant, ExecutorConfig,
+    LoopConfig, LoopEvent, LoopExecutor, NaturalTermination, QwenToolCallDetector,
+    TerminationReason, ToolCallDetector, ToolPattern, ToolRegistry,
 };
 use infernum_core::{GenerateRequest, Message, SamplingParams};
 use serde::Serialize;
@@ -191,6 +219,15 @@ struct ProbeResult {
     /// malformed JSON": the reasoning is right and only the envelope is
     /// wrong, so it is a prompt/format problem rather than a capability one.
     wrong_wrapper: bool,
+    /// Output contains one of the system prompt's own fill-in-the-blank
+    /// examples verbatim, ellipsis included (`<yield>...</yield>`).
+    ///
+    /// 16 of the 126 captures in `fixtures/issue_70_14b_completions.json` are
+    /// exactly this, and the loop treats `<yield>`/`<stuck>` as terminal, so a
+    /// turn-one echo ends a Phase B run before it starts. Counted here rather
+    /// than inferred, because infernum-framework#72 asks whether a grammar
+    /// removes it — and "we assumed it would" is not an answer.
+    template_echo: bool,
     /// Generation wall time.
     latency_ms: u128,
     /// First 400 chars of raw output, kept only for failures.
@@ -215,6 +252,8 @@ struct PhaseA {
     schema_valid: usize,
     /// Attempts emitting well-formed call JSON in the wrong envelope.
     wrong_wrapper: usize,
+    /// Attempts echoing a prompt template example verbatim (#72).
+    template_echo: usize,
     mean_latency_ms: f64,
     results: Vec<ProbeResult>,
 }
@@ -518,6 +557,12 @@ struct Report {
     api_base: String,
     runs_per_item: u32,
     temperature: f32,
+    /// Whether the tool-call GBNF grammar was applied (infernum-framework#17).
+    ///
+    /// Recorded in the report because every number below means something
+    /// different depending on it, and a results file that did not say which
+    /// arm it came from would be unusable a week later.
+    grammar: bool,
     phase_a: Option<PhaseA>,
     phase_b: Option<PhaseB>,
     phase_c: Option<PhaseC>,
@@ -535,6 +580,9 @@ struct Args {
     runs: u32,
     temperature: f32,
     json: Option<PathBuf>,
+    /// Apply the tool-call grammar. Default on; `--grammar off` measures the
+    /// unconstrained baseline the #70/#71 numbers were taken under.
+    grammar: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -545,6 +593,7 @@ fn parse_args() -> Result<Args, String> {
     let mut runs = 1u32;
     let mut temperature = 0.0f32;
     let mut json = None;
+    let mut grammar = true;
 
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -585,6 +634,39 @@ fn parse_args() -> Result<Args, String> {
                 json = Some(PathBuf::from(next(i)?));
                 i += 2;
             },
+            "--grammar" => {
+                let v = next(i)?;
+                grammar = match v.as_str() {
+                    "on" | "true" | "1" => true,
+                    "off" | "false" | "0" => false,
+                    other => return Err(format!("--grammar: expected on|off, got {other}")),
+                };
+                i += 2;
+            },
+            "--dump-prompt" => {
+                // The other half of "what is this model actually being held
+                // to". Takes the current --grammar setting into account,
+                // because the prompt changes with it.
+                println!(
+                    "{}",
+                    compose_system_prompt(
+                        "You are a coding assistant working in a repository.",
+                        &ToolRegistry::with_code_tools(),
+                        grammar,
+                    )
+                );
+                std::process::exit(0);
+            },
+            "--dump-grammar" => {
+                // Print the GBNF and exit. The grammar is generated from the
+                // registry, so this is the only way to see what a given build
+                // actually holds the model to.
+                match tool_call_gbnf(&ToolRegistry::with_code_tools()) {
+                    Some(g) => println!("{g}"),
+                    None => eprintln!("registry is empty; no grammar"),
+                }
+                std::process::exit(0);
+            },
             "-h" | "--help" => {
                 println!(
                     "toolcall-eval — tool-call reliability and agentic-task harness\n\n\
@@ -594,7 +676,10 @@ fn parse_args() -> Result<Args, String> {
                      --phase a|b|c|all     which phase to run (default all)\n\
                      --runs <N>            repetitions per item (default 1)\n\
                      --temperature <F>     sampling temperature (default 0.0)\n\
-                     --json <PATH>         write the full report as JSON"
+                     --json <PATH>         write the full report as JSON\n\
+                     --grammar on|off      constrain the tool-call envelope (default on)\n\
+                     --dump-grammar        print the generated GBNF and exit\n\
+                     --dump-prompt         print the composed system prompt and exit"
                 );
                 std::process::exit(0);
             },
@@ -610,6 +695,7 @@ fn parse_args() -> Result<Args, String> {
         runs,
         temperature,
         json,
+        grammar,
     })
 }
 
@@ -627,12 +713,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     eprintln!(
-        "connected: {} @ {}\nrepo: {}\nruns per item: {}, temperature: {}\n",
+        "connected: {} @ {}\nrepo: {}\nruns per item: {}, temperature: {}\n\
+         tool-call grammar: {}\n",
         args.model,
         args.api_base,
         args.repo.display(),
         args.runs,
-        args.temperature
+        args.temperature,
+        if args.grammar { "ON" } else { "off" }
     );
 
     let run_a = matches!(args.phase.as_str(), "a" | "all");
@@ -676,6 +764,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         api_base: args.api_base.clone(),
         runs_per_item: args.runs,
         temperature: args.temperature,
+        grammar: args.grammar,
         phase_a,
         phase_b,
         phase_c,
@@ -697,16 +786,17 @@ async fn run_phase_a(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseA {
     let tools = ToolRegistry::with_code_tools();
     let detector = QwenToolCallDetector::new();
 
-    // Reproduces the executor's own system prompt so the probe measures what
-    // the agentic loop would actually elicit, not a hand-written variant.
-    let tool_desc = tools.to_qwen_native_description();
-    let system = format!(
-        "You are a coding assistant working in a repository.\n\n{tool_desc}\n\n\
-         You may express uncertainty with <uncertain>...</uncertain>, \
-         signal you're stuck with <stuck>...</stuck>, \
-         yield with <yield>...</yield>, \
-         or provide a final answer with <answer confidence=\"0.9\">...</answer>."
+    // Built through the executor's own prompt composer rather than a copy of
+    // it, so Phase A cannot silently drift from what the agentic loop elicits.
+    // That drift is exactly what this file used to carry.
+    let system = compose_system_prompt(
+        "You are a coding assistant working in a repository.",
+        &tools,
+        args.grammar,
     );
+
+    // The same grammar the executor applies, for the same reason.
+    let grammar = args.grammar.then(|| tool_call_grammar(&tools)).flatten();
 
     let mut agg = PhaseA::default();
     let mut latencies = Vec::new();
@@ -721,6 +811,7 @@ async fn run_phase_a(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseA {
             .with_sampling(SamplingParams {
                 temperature: args.temperature,
                 max_tokens: 512,
+                grammar: grammar.clone(),
                 ..SamplingParams::default()
             });
 
@@ -746,6 +837,7 @@ async fn run_phase_a(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseA {
             // properly wrapped call.
             let wrong_wrapper = tags == 0 && looks_like_tool_json(&text, probe.expect_tool);
 
+            let template_echo = is_template_echo(&text);
             let right_tool = parsed.iter().any(|c| c.name == probe.expect_tool);
             let schema_valid = parsed.iter().any(|c| {
                 c.name == probe.expect_tool
@@ -771,6 +863,9 @@ async fn run_phase_a(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseA {
             if wrong_wrapper {
                 agg.wrong_wrapper += 1;
             }
+            if template_echo {
+                agg.template_echo += 1;
+            }
             latencies.push(latency);
 
             agg.results.push(ProbeResult {
@@ -781,6 +876,7 @@ async fn run_phase_a(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseA {
                 right_tool,
                 schema_valid,
                 wrong_wrapper,
+                template_echo,
                 latency_ms: latency,
                 // Keep evidence only where something went wrong.
                 sample: (!schema_valid).then(|| text.chars().take(400).collect()),
@@ -847,6 +943,7 @@ async fn run_phase_b(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseB {
                         .allow(ToolPattern::Tool("*".to_string()))
                         .build(),
                 )
+                .with_tool_call_grammar(args.grammar)
                 .with_loop_config(LoopConfig {
                     max_iterations: task.max_iterations,
                     max_tool_calls: task.max_iterations * 3,
@@ -1041,6 +1138,7 @@ async fn run_phase_c(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseC {
                         .allow(ToolPattern::Tool("*".to_string()))
                         .build(),
                 )
+                .with_tool_call_grammar(args.grammar)
                 .with_loop_config(LoopConfig {
                     max_iterations: 12,
                     max_tool_calls: 24,
@@ -1123,6 +1221,28 @@ async fn run_phase_c(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseC {
 /// Deliberately loose — it is a diagnostic, not a parser. Its job is to
 /// distinguish "the model had the right idea and mis-tagged it" from "the
 /// model produced nothing usable", which the emission rate alone conflates.
+/// The system prompt's own fill-in-the-blank examples, ellipsis included.
+///
+/// `fixtures/issue_70_14b_completions.json` categorises 16 of its 126
+/// completions `template_echo`, and every one of them is exactly one of these
+/// two strings — see `template_echo_completions_are_the_exact_literal_examples`
+/// in `tests/issue_70_regression.rs`. `<uncertain>` is included for symmetry:
+/// the prompt offers it in the same paragraph, so it is echoable for the same
+/// reason even though the captured corpus happens not to contain one.
+const TEMPLATE_EXAMPLES: &[&str] = &[
+    "<yield>...</yield>",
+    "<stuck>...</stuck>",
+    "<uncertain>...</uncertain>",
+];
+
+/// True when the model reproduced a prompt template example verbatim (#72).
+///
+/// `contains`, not `==`: an echo buried in a longer completion is the same
+/// defect, and the loop's meta-signal detector finds the tag wherever it sits.
+fn is_template_echo(text: &str) -> bool {
+    TEMPLATE_EXAMPLES.iter().any(|e| text.contains(e))
+}
+
 fn looks_like_tool_json(text: &str, tool: &str) -> bool {
     let Some(start) = text.find('{') else {
         return false;
@@ -1177,6 +1297,13 @@ fn print_phase_a(a: &PhaseA) {
          outside <tool_call>)",
         ratio(a.wrong_wrapper, a.attempts) * 100.0,
         a.wrong_wrapper,
+        a.attempts
+    );
+    println!(
+        "  template echo         {:.1}%   ({}/{} reproduced a prompt example \
+         verbatim — issue #72)",
+        ratio(a.template_echo, a.attempts) * 100.0,
+        a.template_echo,
         a.attempts
     );
     println!("  mean latency          {:.0} ms", a.mean_latency_ms);

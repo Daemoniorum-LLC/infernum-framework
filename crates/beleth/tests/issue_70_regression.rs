@@ -273,3 +273,69 @@ fn template_echo_completions_are_the_exact_literal_examples() {
         );
     }
 }
+
+/// What the 80.0% actually measures — the correction that motivated
+/// infernum-framework#17's grammar being shaped the way it is.
+///
+/// #70/#71 quote "80.0% (72/90)" for Phase A, and INFERNUM-17's ticket text
+/// carries it forward as *envelope fidelity*. It is not. It is the recovery
+/// rate of [`QwenToolCallDetector`]'s wrapper-agnostic fallback over a corpus
+/// in which **the correct envelope was never used even once**. Recomputed
+/// here rather than asserted, because the distinction decides whether a
+/// grammar can help at all: a grammar that still admitted `<answer>` would be
+/// satisfied by the exact bytes below and would change nothing.
+#[test]
+fn not_one_captured_completion_used_the_tool_call_envelope() {
+    let fixture = load_fixture();
+
+    let with_tag = fixture
+        .completions
+        .iter()
+        .filter(|c| c.text.contains("<tool_call>"))
+        .count();
+
+    assert_eq!(
+        with_tag, 0,
+        "0/126 is the whole point: true envelope fidelity on this corpus is 0%, \
+         not the 80.0% quoted for it. If this ever becomes non-zero the fixture \
+         has been regenerated, and every claim in #17 needs recomputing."
+    );
+}
+
+/// The envelope each completion *did* open with.
+///
+/// Pins the distribution behind #17's design decision: `<answer>` is not an
+/// edge case the model occasionally falls into, it is where three-fifths of
+/// its output goes. That is why the grammar removes the alternative outright
+/// instead of merely making call JSON unable to hide inside it — a grammar can
+/// remove an alternative, but it cannot re-rank one.
+#[test]
+fn the_envelope_actually_opened_is_answer_or_a_meta_signal() {
+    let fixture = load_fixture();
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+
+    for c in &fixture.completions {
+        let text = c.text.trim_start();
+        let opened = [
+            "<answer",
+            "<yield>",
+            "<stuck>",
+            "<uncertain>",
+            "<tool_call>",
+        ]
+        .into_iter()
+        .find(|tag| text.starts_with(tag))
+        .unwrap_or("(prose or fence)");
+        *counts.entry(opened).or_default() += 1;
+    }
+
+    assert_eq!(counts.get("<answer").copied().unwrap_or(0), 74);
+    assert_eq!(counts.get("<yield>").copied().unwrap_or(0), 33);
+    assert_eq!(counts.get("<stuck>").copied().unwrap_or(0), 9);
+    assert_eq!(counts.get("(prose or fence)").copied().unwrap_or(0), 10);
+    assert_eq!(
+        counts.get("<tool_call>").copied().unwrap_or(0),
+        0,
+        "the envelope the system prompt asked for was never opened"
+    );
+}

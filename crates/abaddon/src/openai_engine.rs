@@ -70,6 +70,33 @@ const DEFAULT_CONTEXT_LENGTH: u32 = 32_768;
 // Configuration
 // ---------------------------------------------------------------------------
 
+/// How the target server accepts a [`GrammarConstraint`].
+///
+/// This exists because "the server ignored it" and "the server enforced it"
+/// are indistinguishable from the response, and the difference is the whole
+/// point of asking for a grammar. Rather than guess, the caller declares what
+/// it is pointed at, and a constraint that cannot be honoured is refused
+/// before the request leaves the process.
+///
+/// [`GrammarConstraint`]: infernum_core::sampling::GrammarConstraint
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GrammarSupport {
+    /// The server accepts a GBNF string in a top-level `grammar` field.
+    ///
+    /// This is llama.cpp's `llama-server`, which is Infernum's settled
+    /// out-of-process runtime, so it is the default.
+    #[default]
+    Gbnf,
+
+    /// The server has no grammar facility.
+    ///
+    /// A request carrying a grammar is refused with [`Error::Backend`]
+    /// rather than sent unconstrained. Declare this for vLLM, TGI, or the
+    /// OpenAI API itself, none of which read a `grammar` field — they would
+    /// drop it silently, which is exactly the failure this type prevents.
+    None,
+}
+
 /// Configuration for [`OpenAiEngine`].
 #[derive(Debug, Clone)]
 pub struct OpenAiConfig {
@@ -102,6 +129,12 @@ pub struct OpenAiConfig {
     /// server owns tokenization and templating. It exists because
     /// [`ModelMetadata`] requires a variant and has no `Unknown`.
     pub architecture: ModelArchitecture,
+
+    /// Whether the target server can honour a grammar constraint.
+    ///
+    /// Defaults to [`GrammarSupport::Gbnf`]. See that type for why this is
+    /// declared rather than detected.
+    pub grammar_support: GrammarSupport,
 }
 
 impl OpenAiConfig {
@@ -118,6 +151,7 @@ impl OpenAiConfig {
                 architecture: ModelArchitecture::Llama {
                     version: LlamaVersion::V3,
                 },
+                grammar_support: GrammarSupport::default(),
             },
         }
     }
@@ -165,6 +199,18 @@ impl OpenAiConfigBuilder {
     #[must_use]
     pub fn architecture(mut self, architecture: ModelArchitecture) -> Self {
         self.config.architecture = architecture;
+        self
+    }
+
+    /// Declares whether the server can honour a grammar constraint.
+    ///
+    /// Leave at the default ([`GrammarSupport::Gbnf`]) for `llama-server`.
+    /// Set [`GrammarSupport::None`] for a backend with no grammar facility,
+    /// which makes a grammar-carrying request fail loudly instead of
+    /// generating unconstrained text that looks constrained.
+    #[must_use]
+    pub fn grammar_support(mut self, support: GrammarSupport) -> Self {
+        self.config.grammar_support = support;
         self
     }
 
@@ -319,6 +365,35 @@ impl OpenAiEngine {
         }
         if !s.stop_sequences.is_empty() {
             body["stop"] = json!(s.stop_sequences);
+        }
+
+        // A grammar is not one of the "omit when it carries no signal" knobs
+        // above, and must never be treated as one. The others degrade
+        // gracefully when dropped — a missing `top_k` yields slightly
+        // different text. A dropped grammar yields *unconstrained* text that
+        // the caller will parse as though it were constrained, which is the
+        // same defect shape as a check that passes because nothing ran.
+        // So: carried when it can be honoured, refused when it cannot,
+        // silently dropped never. See infernum-framework#17.
+        if let Some(grammar) = &s.grammar {
+            match self.config.grammar_support {
+                GrammarSupport::Gbnf => {
+                    body["grammar"] = json!(grammar.to_gbnf());
+                },
+                GrammarSupport::None => {
+                    return Err(Error::Backend {
+                        backend: BACKEND.to_string(),
+                        message: format!(
+                            "request carries a grammar constraint but {} is configured as \
+                             GrammarSupport::None, so the constraint cannot be honoured. \
+                             Refusing rather than generating unconstrained output that would \
+                             look constrained to the caller. Point at a llama.cpp `llama-server` \
+                             (GrammarSupport::Gbnf), or drop SamplingParams.grammar.",
+                            self.config.trimmed_base()
+                        ),
+                    });
+                },
+            }
         }
 
         let path = match &request.prompt {
@@ -799,6 +874,8 @@ use crate::engine::InferenceEngine;
 
 #[cfg(test)]
 mod tests {
+    use infernum_core::SamplingParams;
+
     use super::*;
 
     fn cfg() -> OpenAiConfig {
@@ -915,5 +992,101 @@ mod tests {
     #[test]
     fn engine_is_not_ready_before_probe() {
         assert!(!OpenAiEngine::new(cfg()).unwrap().is_ready());
+    }
+
+    // === Grammar constraints (infernum-framework#17) ===
+    //
+    // `build_body` used to assemble eleven sampling knobs and omit
+    // `s.grammar` entirely — no warning, no error, no test. The caller
+    // believed it was constrained; nothing said otherwise. These four
+    // tests pin the three states a grammar can be in on the wire: carried,
+    // absent, or refused. None of them can pass by accident, because each
+    // asserts on a key that the unfixed `build_body` never writes.
+
+    #[test]
+    fn gbnf_grammar_reaches_the_wire() {
+        let engine = OpenAiEngine::new(cfg()).unwrap();
+        let gbnf = "root ::= \"yes\" | \"no\"";
+        let req = GenerateRequest::chat(vec![Message::user("hi")])
+            .with_sampling(SamplingParams::default().with_gbnf(gbnf));
+
+        let (_, body) = engine.build_body(&req, false).unwrap();
+
+        assert_eq!(
+            body["grammar"],
+            json!(gbnf),
+            "SamplingParams.grammar must reach llama-server's `grammar` field; \
+             a dropped constraint is indistinguishable from an honoured one at \
+             the call site, which is the whole defect"
+        );
+    }
+
+    #[test]
+    fn json_mode_is_expanded_to_gbnf_on_the_wire() {
+        // llama-server speaks GBNF, not our enum. `Json` and `JsonSchema`
+        // must be rendered through `to_gbnf()` rather than serialised as the
+        // Rust variant name, which the server would reject.
+        let engine = OpenAiEngine::new(cfg()).unwrap();
+        let req = GenerateRequest::chat(vec![Message::user("hi")])
+            .with_sampling(SamplingParams::default().with_json_mode());
+
+        let (_, body) = engine.build_body(&req, false).unwrap();
+
+        let sent = body["grammar"].as_str().expect("grammar must be a string");
+        assert!(
+            sent.contains("root ::= value"),
+            "expected the expanded JSON GBNF, got {sent:?}"
+        );
+    }
+
+    #[test]
+    fn no_grammar_sends_no_grammar_key() {
+        // The other knobs are omitted when they carry no signal so strict
+        // servers stay happy; `grammar` follows the same rule.
+        let engine = OpenAiEngine::new(cfg()).unwrap();
+        let req = GenerateRequest::chat(vec![Message::user("hi")]);
+
+        let (_, body) = engine.build_body(&req, false).unwrap();
+
+        assert!(
+            body.get("grammar").is_none(),
+            "an unconstrained request must not carry a grammar key"
+        );
+    }
+
+    #[test]
+    fn grammar_against_a_server_without_one_is_refused_not_dropped() {
+        // The failure this whole ticket is about: a constraint that cannot be
+        // honoured must stop the request, never travel as a no-op.
+        let engine = OpenAiEngine::new(
+            OpenAiConfig::builder("http://localhost:9/v1", "test-model")
+                .grammar_support(GrammarSupport::None)
+                .build(),
+        )
+        .unwrap();
+        let req = GenerateRequest::chat(vec![Message::user("hi")])
+            .with_sampling(SamplingParams::default().with_gbnf("root ::= \"a\""));
+
+        let err = engine
+            .build_body(&req, false)
+            .expect_err("a grammar the backend cannot honour must be an error");
+        let message = err.to_string();
+        assert!(
+            message.contains("grammar"),
+            "the error must name the constraint it refused: {message}"
+        );
+    }
+
+    #[test]
+    fn unconstrained_request_still_works_without_grammar_support() {
+        // Refusal is scoped to requests that actually carry a constraint.
+        let engine = OpenAiEngine::new(
+            OpenAiConfig::builder("http://localhost:9/v1", "test-model")
+                .grammar_support(GrammarSupport::None)
+                .build(),
+        )
+        .unwrap();
+        let req = GenerateRequest::chat(vec![Message::user("hi")]);
+        assert!(engine.build_body(&req, false).is_ok());
     }
 }
