@@ -298,72 +298,198 @@ impl PhaseA {
 // ===========================================================================
 
 /// A multi-turn task with a known-correct answer.
+///
+/// # Why the conclusion is parsed, not pattern-matched
+///
+/// Every task used to be graded by substring-matching the model's free text.
+/// Measured against real output, that was wrong in **both** directions on four
+/// of the five tasks (infernum-framework#24):
+///
+/// - `exit-code-discipline` rejected an answer for containing `"status 0"` —
+///   a phrase its own objective, "explain why reading the pipeline's status
+///   would have been misleading", forces a correct answer to write. The run
+///   that scored correct differed only by being *less* complete.
+/// - `claude-code-unregistered` demanded the literal `"0"`; the model answered
+///   "is not called anywhere else in the repository" and scored zero.
+/// - `grammar-unused` and `supervisor-spawns-nothing` required `"no"`, which
+///   matches inside `"not"`, `"none"` and `"cannot"` — so
+///   *"Yes. Beleth sets a grammar ... although I could not confirm every call
+///   site"* scores **correct**. Latent rather than observed: the model happened
+///   to answer the single word "No". It is a false pass waiting to happen, and
+///   it inflates, which is the more dangerous direction.
+///
+/// So the conclusion now travels on its own line, `ANSWER: <value>`, and is
+/// compared exactly. Free prose around it can say anything without disturbing
+/// the score — which is the property the substring rubric could never have.
+///
+/// Explanations are deliberately **not** graded. Every attempt to match a
+/// one-sentence justification by substring produced one of the failures above;
+/// a marker loose enough to admit every correct phrasing admits wrong ones too.
+/// `expect_all` survives only for genuinely unambiguous identifiers lifted from
+/// the source, such as a flag name.
 struct Task {
     id: &'static str,
     objective: &'static str,
-    /// Substrings that must all appear in the final answer (case-insensitive).
+    /// Exact value required on the `ANSWER:` line, compared case-insensitively
+    /// after trimming. `None` leaves the task graded by the marker lists alone.
+    expect_answer: Option<&'static str>,
+    /// Literal identifiers that must appear somewhere in the answer.
     ///
-    /// Deliberately a substring check, not a judge: it is reproducible and
-    /// cheap, and every marker below is a specific token that a correct
-    /// answer is hard to phrase without. It will under-credit a correct
-    /// answer worded unusually — treat `correct` as a lower bound.
+    /// For source-level tokens a correct answer cannot avoid naming — a flag,
+    /// a symbol. **Not** for prose: see the type docs.
     expect_all: &'static [&'static str],
     /// Any one of these appearing marks a known-wrong conclusion.
     expect_none: &'static [&'static str],
+    /// The pre-#24 rubric, kept so every run can be scored **both** ways.
+    ///
+    /// A rubric change that silently moved the number would be indistinguishable
+    /// from a real improvement. Reporting both scorings over identical model
+    /// output makes the change's effect exactly measurable, and is why this
+    /// field exists rather than being deleted along with the old behaviour.
+    legacy_expect_all: &'static [&'static str],
+    legacy_expect_none: &'static [&'static str],
     max_iterations: u32,
 }
 
-/// Tasks drawn from investigative work actually done on this repository
-/// today. Every answer was established independently, with evidence, before
-/// this harness existed — so they are not reverse-engineered from what a
-/// model happens to produce.
+/// Extracts the value following the last `ANSWER:` marker in `text`.
+///
+/// Last rather than first: a model that restates the format before using it
+/// should be read as meaning its final one. `None` when no marker is present,
+/// which is a miss, not a pass — an unparseable conclusion is exactly the
+/// ambiguity this replaced.
+///
+/// # Why the marker is found anywhere, not only at the start of a line
+///
+/// The first version of this required the line to *begin* with `ANSWER:`. It
+/// rejected this, verbatim, from a real run:
+///
+/// ```text
+/// Reading the pipeline's status would have been misleading because ...
+/// and not by the `false` command itself. ANSWER: 1
+/// ```
+///
+/// The conclusion is right and in the requested form; it is merely at the end
+/// of a sentence rather than on a line of its own. Rejecting it is #24's own
+/// defect — a scorer failing a correct answer over formatting — reintroduced
+/// by the fix for #24. Caught by reading the answers behind a number that
+/// looked wrong, not by the tests.
+///
+/// The value is the first whitespace-delimited token after the marker,
+/// stripped of surrounding punctuation and markup, so `` `no` ``, `**0**.` and
+/// `-s` read as `no`, `0` and `s`. Single-token answers only —
+/// `every_expected_answer_is_a_single_token` enforces that, so a task needing
+/// a multi-word answer fails loudly rather than being silently truncated.
+fn answer_value(text: &str) -> Option<String> {
+    let (_, rest) = text.rsplit_once("ANSWER:")?;
+    let token = rest.split_whitespace().next()?;
+    let value = token
+        .trim_matches(|c: char| !c.is_alphanumeric())
+        .to_lowercase();
+    (!value.is_empty()).then_some(value)
+}
+
+/// Scores one answer under the current rubric and the pre-#24 one.
+///
+/// Both are computed for every run so the report can show what the rubric
+/// change did, rather than asking anyone to take it on trust.
+fn score(task: &Task, answer: &str, completed: bool) -> (bool, bool) {
+    let lower = answer.to_lowercase();
+    let markers = |all: &[&str], none: &[&str]| {
+        all.iter().all(|m| lower.contains(&m.to_lowercase()))
+            && !none.iter().any(|m| lower.contains(&m.to_lowercase()))
+    };
+
+    let conclusion_ok = match task.expect_answer {
+        Some(expected) => answer_value(answer).is_some_and(|v| v == expected.to_lowercase()),
+        None => true,
+    };
+
+    let current = completed && conclusion_ok && markers(task.expect_all, task.expect_none);
+    let legacy = completed && markers(task.legacy_expect_all, task.legacy_expect_none);
+    (current, legacy)
+}
+
+/// Tasks drawn from investigative work actually done on this repository.
+/// Every answer was established independently, with evidence, before this
+/// harness existed — so they are not reverse-engineered from what a model
+/// happens to produce.
+///
+/// The objectives carry their own `ANSWER:` wording rather than having it
+/// appended blindly, so each one reads as a sentence and says what shape of
+/// value it wants.
 const TASKS: &[Task] = &[
     Task {
         id: "clap-collision",
         objective: "In this Rust repository, the command `infernum generate --help` used to panic at \
                     startup with a clap error about short option names. Find the root cause by reading \
                     crates/infernum/src/main.rs. Name the two flags that collided and the single \
-                    letter they both wanted.",
-        expect_all: &["-s", "system", "stream"],
+                    letter they both wanted. Name both flags in your explanation, and end your reply \
+                    with that letter on its own line as `ANSWER: <letter>` — for example `ANSWER: x`.",
+        expect_answer: Some("s"),
+        // Both long flags are literal identifiers in main.rs; a correct answer
+        // cannot name the collision without naming them.
+        expect_all: &["system", "stream"],
         expect_none: &[],
+        legacy_expect_all: &["-s", "system", "stream"],
+        legacy_expect_none: &[],
         max_iterations: 25,
     },
     Task {
         id: "grammar-unused",
         objective: "The crate infernum-core defines a GrammarConstraint type for constraining model \
                     output. Determine whether the crate `beleth` (crates/beleth/src) ever sets a \
-                    grammar on a generation request. Answer yes or no and say how you checked.",
-        expect_all: &["no"],
-        expect_none: &["yes, beleth sets", "beleth does set"],
+                    grammar on a generation request. Say how you checked, and end your reply with \
+                    your verdict on its own line as `ANSWER: yes` or `ANSWER: no`.",
+        expect_answer: Some("no"),
+        expect_all: &[],
+        expect_none: &[],
+        legacy_expect_all: &["no"],
+        legacy_expect_none: &["yes, beleth sets", "beleth does set"],
         max_iterations: 25,
     },
     Task {
         id: "claude-code-unregistered",
         objective: "In crates/beleth, the ToolRegistry has a constructor named with_all_tools which \
                     registers ClaudeCodeTool. Determine whether anything in this repository actually \
-                    calls with_all_tools. Answer with the number of call sites outside its own \
-                    definition.",
-        expect_all: &["0"],
+                    calls with_all_tools. End your reply with the number of call sites outside its \
+                    own definition, on its own line, as `ANSWER: <number>`.",
+        expect_answer: Some("0"),
+        expect_all: &[],
         expect_none: &[],
+        legacy_expect_all: &["0"],
+        legacy_expect_none: &[],
         max_iterations: 25,
     },
     Task {
         id: "supervisor-spawns-nothing",
         objective: "Read crates/beleth/src/agentic_loop/supervisor.rs. Its doc comment claims it \
                     orchestrates concurrent LoopExecutor instances. Determine whether the \
-                    implementation actually spawns or runs any LoopExecutor. Answer yes or no and \
-                    cite what you looked for.",
-        expect_all: &["no"],
+                    implementation actually spawns or runs any LoopExecutor. Cite what you looked \
+                    for, and end your reply with your verdict on its own line as `ANSWER: yes` or \
+                    `ANSWER: no`.",
+        expect_answer: Some("no"),
+        expect_all: &[],
         expect_none: &[],
+        legacy_expect_all: &["no"],
+        legacy_expect_none: &[],
         max_iterations: 30,
     },
     Task {
         id: "exit-code-discipline",
         objective: "Run the shell command `false | tail -1` and then report the exit status of the \
-                    `false` command itself, not of the pipeline. State the number and explain in one \
-                    sentence why reading the pipeline's status would have been misleading.",
-        expect_all: &["1"],
-        expect_none: &["exit code 0", "exited 0", "status 0"],
+                    `false` command itself, not of the pipeline. Explain in one sentence why reading \
+                    the pipeline's status would have been misleading, and end your reply with that \
+                    number on its own line as `ANSWER: <number>`.",
+        expect_answer: Some("1"),
+        // The explanation is required by the objective but deliberately not
+        // scored: matching a one-sentence justification by substring is the
+        // defect #24 exists to remove, and every candidate marker here either
+        // rejects a correct phrasing or is handed to the model free by the
+        // objective's own text.
+        expect_all: &[],
+        expect_none: &[],
+        legacy_expect_all: &["1"],
+        legacy_expect_none: &["exit code 0", "exited 0", "status 0"],
         max_iterations: 20,
     },
 ];
@@ -374,8 +500,14 @@ struct TaskResult {
     id: String,
     /// Loop reached a natural answer rather than a resource limit.
     completed: bool,
-    /// Answer satisfied `expect_all` and avoided `expect_none`.
+    /// Answer satisfied the task's rubric.
     correct: bool,
+    /// The same answer scored under the pre-#24 substring rubric.
+    ///
+    /// Carried per run so the effect of the rubric change is visible in the
+    /// report rather than asserted. Where the two disagree, the run is listed
+    /// with which way it moved.
+    legacy_correct: bool,
     /// Turns-to-completion. The interactive-cost metric.
     turns: u32,
     tool_calls: u32,
@@ -392,12 +524,392 @@ struct PhaseB {
     attempts: usize,
     completed: usize,
     correct: usize,
+    /// Total under the pre-#24 rubric, over identical model output.
+    legacy_correct: usize,
     /// Mean turns over *correct* runs only — turns on a failed run measure
     /// nothing useful.
     mean_turns_correct: f64,
     median_turns_correct: f64,
     total_malformed: usize,
     results: Vec<TaskResult>,
+}
+
+// ===========================================================================
+// Phase D — deterministic, machine-checked tasks
+// ===========================================================================
+
+/// A task whose correctness is decided by a command's exit status.
+///
+/// Phase B asks investigative questions and grades the prose that comes back.
+/// That is the hardest class to get right and the hardest to score — four of
+/// its five rubrics were provably broken (infernum-framework#24). Phase D asks
+/// for *work* instead, in a sandbox, and checks the result by running
+/// something.
+///
+/// The distinction is the whole point of the measurement, per
+/// `docs/OFFLOAD-RELIABILITY-PRE-REGISTRATION.md`: a worker that is 60%
+/// correct on work a machine can check may be worth having, where one that is
+/// 90% correct on work only a human can check may not be, because the review
+/// cost lands on the human either way.
+struct DetTask {
+    id: &'static str,
+    /// What the model is asked to do. Paths are relative to the sandbox,
+    /// which is its working directory.
+    objective: &'static str,
+    /// Fixture written fresh for every run: `(relative path, contents)`.
+    files: &'static [(&'static str, &'static str)],
+    /// Files that must be byte-identical when the run finishes.
+    ///
+    /// Compared in Rust against a snapshot taken before the run — deliberately
+    /// **not** a check inside `verify`, because `verify` runs in the sandbox
+    /// the model has been editing. This is what stops "make the tests pass"
+    /// being solved by rewriting the tests.
+    immutable: &'static [&'static str],
+    /// Shell command run in the sandbox afterwards. Exit 0 is a pass.
+    verify: &'static str,
+    /// A hand-written correct solution, as whole-file replacements.
+    ///
+    /// Never shown to the model, and never used by a measurement run — which
+    /// is why it is dead code outside the test build. Its job is to prove the
+    /// task is well-formed: `every_check_passes_on_its_reference_solution`
+    /// runs it in CI, because a check nothing can satisfy reports a free
+    /// failure exactly as a check that passes on the untouched fixture
+    /// reports a free pass. It lives beside the task rather than in the test
+    /// module so that adding a task without a reference solution is a
+    /// compile error rather than an omission nobody notices.
+    #[cfg_attr(not(test), allow(dead_code))]
+    reference: &'static [(&'static str, &'static str)],
+    max_iterations: u32,
+}
+
+/// Why a run did not pass.
+///
+/// Mandatory on every miss. The 6/15 headline from INFERNUM-17 hid three
+/// different causes behind one number, and the pre-registration forbids that
+/// being possible again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+enum MissCause {
+    /// The check ran and rejected the model's work.
+    Model,
+    /// The model edited a file the task told it not to touch.
+    ///
+    /// Distinct from [`Model`](MissCause::Model) because it is a different
+    /// failure — not "could not do the work" but "broke the rules of the
+    /// exercise", which is worth seeing separately when deciding whether to
+    /// hand work over unattended.
+    ModelTamperedWithCheck,
+    /// The loop hit its iteration or tool-call budget without concluding.
+    ModelRanOutOfBudget,
+    /// The run never got a fair attempt: executor error, or the verification
+    /// command could not be spawned. Excluded from the pass rate.
+    Harness,
+}
+
+/// How much of a failing verification's output to keep.
+///
+/// Generous on purpose. `tests/fixtures/issue_70_14b_completions.json` carries
+/// a completion categorised `truncated_ambiguous` for exactly this reason: a
+/// 400-char diagnostic cap cut a completion mid-JSON, and the result was
+/// mistaken for evidence of model behaviour until review caught it. A first
+/// pass here repeated the mistake at 300 chars — one miss's real error was a
+/// `cargo test` failure several hundred characters past a "running 0 tests"
+/// preamble, and the cap kept only the preamble.
+///
+/// A capture cap that hides the evidence turns a miss into a guess, which is
+/// the whole failure mode this harness exists to avoid.
+const VERIFY_CAPTURE_LIMIT: usize = 4000;
+
+const DET_TASKS: &[DetTask] = &[
+    // -- 1. make a broken crate compile ------------------------------------
+    DetTask {
+        id: "fix-compile-error",
+        objective: "The Rust crate in this directory does not compile. Fix it so that \
+                    `cargo test --offline` passes. Do not change anything in tests/.",
+        files: &[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"rect\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            ),
+            (
+                "src/lib.rs",
+                "pub struct Rect {\n    pub w: u32,\n    pub h: u32,\n}\n\n\
+                 impl Rect {\n    \
+                 pub fn new(w: u32, h: u32) -> Self {\n        Self { w, h }\n    }\n\n    \
+                 pub fn area(&self) -> u32 {\n        self.w * self.h\n    }\n\n    \
+                 pub fn describe(&self) -> String {\n        self.area()\n    }\n}\n",
+            ),
+            (
+                "tests/spec.rs",
+                "use rect::Rect;\n\n\
+                 #[test]\nfn describes_its_area() {\n    \
+                 assert_eq!(Rect::new(3, 4).describe(), \"12\");\n}\n",
+            ),
+        ],
+        immutable: &["tests/spec.rs"],
+        verify: "cargo test --offline -q",
+        reference: &[(
+            "src/lib.rs",
+            "pub struct Rect {\n    pub w: u32,\n    pub h: u32,\n}\n\n\
+             impl Rect {\n    \
+             pub fn new(w: u32, h: u32) -> Self {\n        Self { w, h }\n    }\n\n    \
+             pub fn area(&self) -> u32 {\n        self.w * self.h\n    }\n\n    \
+             pub fn describe(&self) -> String {\n        self.area().to_string()\n    }\n}\n",
+        )],
+        max_iterations: 20,
+    },
+    // -- 2. implement a stub against a spec --------------------------------
+    DetTask {
+        id: "implement-stub",
+        objective: "In this Rust crate, src/lib.rs has a function `distinct_words` that is \
+                    unimplemented. Implement it so that `cargo test --offline` passes. Do not \
+                    change anything in tests/.",
+        files: &[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"wordcount\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            ),
+            (
+                "src/lib.rs",
+                "/// Returns how many distinct words `text` contains, comparing words\n\
+                 /// case-insensitively. Words are separated by whitespace.\n\
+                 pub fn distinct_words(text: &str) -> usize {\n    \
+                 todo!(\"implement distinct_words\")\n}\n",
+            ),
+            (
+                "tests/spec.rs",
+                "use wordcount::distinct_words;\n\n\
+                 #[test]\nfn ignores_case() {\n    \
+                 assert_eq!(distinct_words(\"the The tHe cat\"), 2);\n}\n\n\
+                 #[test]\nfn counts_each_word_once() {\n    \
+                 assert_eq!(distinct_words(\"a b c a\"), 3);\n}\n\n\
+                 #[test]\nfn empty_text_has_no_words() {\n    \
+                 assert_eq!(distinct_words(\"\"), 0);\n}\n",
+            ),
+        ],
+        immutable: &["tests/spec.rs"],
+        verify: "cargo test --offline -q",
+        reference: &[(
+            "src/lib.rs",
+            "/// Returns how many distinct words `text` contains, comparing words\n\
+             /// case-insensitively. Words are separated by whitespace.\n\
+             pub fn distinct_words(text: &str) -> usize {\n    \
+             let mut seen: Vec<String> = Vec::new();\n    \
+             for word in text.split_whitespace() {\n        \
+             let word = word.to_lowercase();\n        \
+             if !seen.contains(&word) {\n            seen.push(word);\n        }\n    }\n    \
+             seen.len()\n}\n",
+        )],
+        max_iterations: 20,
+    },
+    // -- 3. a mechanical rename across several files -----------------------
+    DetTask {
+        id: "rename-symbol",
+        objective: "In this Rust crate, the function `legacy_slug` is to be renamed to \
+                    `make_slug`. Rename it and update every caller, so that \
+                    `cargo test --offline` passes and the name `legacy_slug` no longer \
+                    appears anywhere under src/. Do not change anything in tests/.",
+        files: &[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"slugs\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            ),
+            (
+                "src/lib.rs",
+                "pub mod parse;\npub mod render;\n\n\
+                 pub fn legacy_slug(s: &str) -> String {\n    \
+                 s.to_lowercase().replace(' ', \"-\")\n}\n",
+            ),
+            (
+                "src/parse.rs",
+                "pub fn parse_title(s: &str) -> String {\n    crate::legacy_slug(s)\n}\n",
+            ),
+            (
+                "src/render.rs",
+                "pub fn render_link(s: &str) -> String {\n    \
+                 format!(\"/{}\", crate::legacy_slug(s))\n}\n",
+            ),
+            (
+                "tests/spec.rs",
+                "#[test]\nfn the_renamed_function_exists() {\n    \
+                 assert_eq!(slugs::make_slug(\"Hello World\"), \"hello-world\");\n}\n\n\
+                 #[test]\nfn callers_still_work() {\n    \
+                 assert_eq!(slugs::render::render_link(\"A B\"), \"/a-b\");\n    \
+                 assert_eq!(slugs::parse::parse_title(\"A B\"), \"a-b\");\n}\n",
+            ),
+        ],
+        immutable: &["tests/spec.rs"],
+        verify: "cargo test --offline -q && ! grep -rq legacy_slug src/",
+        reference: &[
+            (
+                "src/lib.rs",
+                "pub mod parse;\npub mod render;\n\n\
+                 pub fn make_slug(s: &str) -> String {\n    \
+                 s.to_lowercase().replace(' ', \"-\")\n}\n",
+            ),
+            (
+                "src/parse.rs",
+                "pub fn parse_title(s: &str) -> String {\n    crate::make_slug(s)\n}\n",
+            ),
+            (
+                "src/render.rs",
+                "pub fn render_link(s: &str) -> String {\n    \
+                 format!(\"/{}\", crate::make_slug(s))\n}\n",
+            ),
+        ],
+        max_iterations: 25,
+    },
+    // -- 4. a config sweep with a deliberate distractor --------------------
+    DetTask {
+        id: "config-repoint",
+        objective: "The TOML files under services/ configure several services. Every service \
+                    currently pointing at the endpoint https://old.internal/v1 must be \
+                    repointed to https://new.internal/v2. Leave every other setting, and any \
+                    endpoint that is not https://old.internal/v1, exactly as it is.",
+        files: &[
+            (
+                "services/alpha.toml",
+                "[service]\nname = \"alpha\"\nendpoint = \"https://old.internal/v1\"\n\
+                 timeout_secs = 30\nretries = 3\n",
+            ),
+            (
+                "services/beta.toml",
+                "[service]\nname = \"beta\"\nendpoint = \"https://old.internal/v1\"\n\
+                 timeout_secs = 45\nretries = 1\n",
+            ),
+            (
+                "services/gamma.toml",
+                "[service]\nname = \"gamma\"\nendpoint = \"https://other.internal/v1\"\n\
+                 timeout_secs = 10\nretries = 5\n",
+            ),
+        ],
+        // gamma is the distractor: a blanket sweep that rewrites every
+        // endpoint passes a naive grep but fails this.
+        immutable: &["services/gamma.toml"],
+        verify: "test \"$(grep -rl 'https://old.internal/v1' services/ | wc -l)\" = 0 && \
+                 test \"$(grep -rl 'https://new.internal/v2' services/ | wc -l)\" = 2 && \
+                 grep -q 'timeout_secs = 30' services/alpha.toml && \
+                 grep -q 'retries = 1' services/beta.toml",
+        reference: &[
+            (
+                "services/alpha.toml",
+                "[service]\nname = \"alpha\"\nendpoint = \"https://new.internal/v2\"\n\
+                 timeout_secs = 30\nretries = 3\n",
+            ),
+            (
+                "services/beta.toml",
+                "[service]\nname = \"beta\"\nendpoint = \"https://new.internal/v2\"\n\
+                 timeout_secs = 45\nretries = 1\n",
+            ),
+        ],
+        max_iterations: 25,
+    },
+    // -- 5. restore exhaustiveness without a catch-all ---------------------
+    DetTask {
+        id: "exhaustive-match",
+        objective: "This Rust crate does not compile: a `match` no longer covers every variant \
+                    of the `Level` enum. Fix it so that `cargo test --offline` passes. Handle \
+                    the missing variant explicitly — do not add a catch-all `_` arm, because \
+                    that would silently swallow any variant added later. Do not change \
+                    anything in tests/.",
+        files: &[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"levels\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            ),
+            (
+                "src/lib.rs",
+                "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n\
+                 pub enum Level {\n    Debug,\n    Info,\n    Warn,\n    Error,\n}\n\n\
+                 pub fn label(level: Level) -> &'static str {\n    \
+                 match level {\n        \
+                 Level::Debug => \"debug\",\n        \
+                 Level::Info => \"info\",\n        \
+                 Level::Warn => \"warn\",\n    }\n}\n",
+            ),
+            (
+                "tests/spec.rs",
+                "use levels::{label, Level};\n\n\
+                 #[test]\nfn every_level_has_a_label() {\n    \
+                 assert_eq!(label(Level::Debug), \"debug\");\n    \
+                 assert_eq!(label(Level::Info), \"info\");\n    \
+                 assert_eq!(label(Level::Warn), \"warn\");\n    \
+                 assert_eq!(label(Level::Error), \"error\");\n}\n",
+            ),
+        ],
+        immutable: &["tests/spec.rs"],
+        verify: "cargo test --offline -q && ! grep -q '_ =>' src/lib.rs",
+        reference: &[(
+            "src/lib.rs",
+            "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n\
+             pub enum Level {\n    Debug,\n    Info,\n    Warn,\n    Error,\n}\n\n\
+             pub fn label(level: Level) -> &'static str {\n    \
+             match level {\n        \
+             Level::Debug => \"debug\",\n        \
+             Level::Info => \"info\",\n        \
+             Level::Warn => \"warn\",\n        \
+             Level::Error => \"error\",\n    }\n}\n",
+        )],
+        max_iterations: 25,
+    },
+];
+
+/// Outcome of one deterministic-task attempt.
+#[derive(Debug, Clone, Serialize)]
+struct DetResult {
+    id: String,
+    passed: bool,
+    /// Why not, when `passed` is false.
+    miss: Option<MissCause>,
+    turns: u32,
+    tool_calls: u32,
+    wall_ms: u128,
+    /// The verification command's output, on a miss, up to
+    /// [`VERIFY_CAPTURE_LIMIT`].
+    verify_output: Option<String>,
+}
+
+/// Aggregated Phase D metrics.
+#[derive(Debug, Default, Serialize)]
+struct PhaseD {
+    attempts: usize,
+    passed: usize,
+    /// Misses attributable to our plumbing, excluded from the pass rate.
+    harness_misses: usize,
+    results: Vec<DetResult>,
+}
+
+impl PhaseD {
+    /// Runs that gave the model a fair attempt.
+    fn scored(&self) -> usize {
+        self.attempts - self.harness_misses
+    }
+
+    /// Pass rate over scored runs. `None` when nothing was scored — an
+    /// undefined rate, not zero (see `PhaseA::malformed_rate`).
+    fn pass_rate(&self) -> Option<f64> {
+        (self.scored() > 0).then(|| self.passed as f64 / self.scored() as f64)
+    }
+}
+
+/// Lower and upper bounds of the 95% Wilson score interval.
+///
+/// Wilson rather than the normal approximation because at these sample sizes
+/// and pass rates the normal interval runs past 1.0 and understates the
+/// spread. Fixed in the pre-registration before any measurement.
+fn wilson_interval(passes: usize, n: usize) -> Option<(f64, f64)> {
+    if n == 0 {
+        return None;
+    }
+    let z = 1.959_964_f64;
+    let n_f = n as f64;
+    let p = passes as f64 / n_f;
+    let denom = 1.0 + z * z / n_f;
+    let centre = p + z * z / (2.0 * n_f);
+    let spread = z * ((p * (1.0 - p) / n_f) + z * z / (4.0 * n_f * n_f)).sqrt();
+    Some((
+        ((centre - spread) / denom).max(0.0),
+        ((centre + spread) / denom).min(1.0),
+    ))
 }
 
 // ===========================================================================
@@ -566,6 +1078,7 @@ struct Report {
     phase_a: Option<PhaseA>,
     phase_b: Option<PhaseB>,
     phase_c: Option<PhaseC>,
+    phase_d: Option<PhaseD>,
 }
 
 // ===========================================================================
@@ -583,6 +1096,12 @@ struct Args {
     /// Apply the tool-call grammar. Default on; `--grammar off` measures the
     /// unconstrained baseline the #70/#71 numbers were taken under.
     grammar: bool,
+    /// Keep Phase D sandboxes instead of deleting them, and print each path.
+    ///
+    /// For diagnosing a miss: the sandbox is the only record of what the model
+    /// actually did to the files, and a cause classified without looking at it
+    /// is a guess.
+    keep_sandboxes: bool,
     /// Run only the Phase B task with this id. `None` runs all of them.
     ///
     /// For re-measuring one task after a fix aimed at it, without paying for
@@ -601,6 +1120,7 @@ fn parse_args() -> Result<Args, String> {
     let mut json = None;
     let mut grammar = true;
     let mut task = None;
+    let mut keep_sandboxes = false;
 
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -641,10 +1161,18 @@ fn parse_args() -> Result<Args, String> {
                 json = Some(PathBuf::from(next(i)?));
                 i += 2;
             },
+            "--keep-sandboxes" => {
+                keep_sandboxes = true;
+                i += 1;
+            },
             "--task" => {
                 let id = next(i)?;
-                if !TASKS.iter().any(|t| t.id == id) {
-                    let known: Vec<&str> = TASKS.iter().map(|t| t.id).collect();
+                let known: Vec<&str> = TASKS
+                    .iter()
+                    .map(|t| t.id)
+                    .chain(DET_TASKS.iter().map(|t| t.id))
+                    .collect();
+                if !known.contains(&id.as_str()) {
                     return Err(format!("--task: unknown id {id:?}; known: {known:?}"));
                 }
                 task = Some(id);
@@ -689,11 +1217,12 @@ fn parse_args() -> Result<Args, String> {
                      --api-base <URL>      OpenAI-compatible base (default http://localhost:8080/v1)\n\
                      --model <NAME>        model name sent in requests\n\
                      --repo <PATH>         repository the agentic tasks investigate\n\
-                     --phase a|b|c|all     which phase to run (default all)\n\
+                     --phase a|b|c|d|all   which phase to run (default all)\n\
                      --runs <N>            repetitions per item (default 1)\n\
                      --temperature <F>     sampling temperature (default 0.0)\n\
                      --json <PATH>         write the full report as JSON\n\
-                     --task <ID>           run only this Phase B task (default: all)\n\
+                     --task <ID>           run only this Phase B or D task (default: all)\n\
+                     --keep-sandboxes      keep Phase D sandboxes for inspection\n\
                      --grammar on|off      constrain the tool-call envelope (default on)\n\
                      --dump-grammar        print the generated GBNF and exit\n\
                      --dump-prompt         print the composed system prompt and exit"
@@ -713,6 +1242,7 @@ fn parse_args() -> Result<Args, String> {
         temperature,
         json,
         grammar,
+        keep_sandboxes,
         task,
     })
 }
@@ -744,6 +1274,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let run_a = matches!(args.phase.as_str(), "a" | "all");
     let run_b = matches!(args.phase.as_str(), "b" | "all");
     let run_c = matches!(args.phase.as_str(), "c" | "all");
+    let run_d = matches!(args.phase.as_str(), "d" | "all");
 
     let phase_a = if run_a {
         Some(run_phase_a(&engine, &args).await)
@@ -777,6 +1308,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         print_phase_c(c);
     }
 
+    let phase_d = if run_d {
+        Some(run_phase_d(&engine, &args).await)
+    } else {
+        None
+    };
+
+    if let Some(d) = &phase_d {
+        print_phase_d(d);
+    }
+
     let report = Report {
         model: args.model.clone(),
         api_base: args.api_base.clone(),
@@ -786,6 +1327,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         phase_a,
         phase_b,
         phase_c,
+        phase_d,
     };
 
     if let Some(path) = &args.json {
@@ -986,7 +1528,11 @@ async fn run_phase_b(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseB {
 
             // Count malformed calls during the run the same way Phase A does:
             // raw tags seen in generated text, minus calls the executor
-            // actually dispatched.
+            // actually dispatched. Under --keep-sandboxes, also echo each
+            // call and result: a task that exhausts its budget looks identical
+            // from the outside whether the model is confused or a tool is
+            // returning nothing, and those are different findings.
+            let trace = args.keep_sandboxes;
             let counter = tokio::spawn(async move {
                 let mut tags = 0usize;
                 let mut detected = 0usize;
@@ -995,7 +1541,23 @@ async fn run_phase_b(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseB {
                         LoopEvent::GenerationCompleted { ref content, .. } => {
                             tags += content.matches("<tool_call>").count();
                         },
-                        LoopEvent::ToolCallDetected { .. } => detected += 1,
+                        LoopEvent::ToolCallDetected { ref tool, .. } => {
+                            detected += 1;
+                            if trace {
+                                eprintln!("      -> call {tool}");
+                            }
+                        },
+                        LoopEvent::ToolExecutionCompleted { ref result, .. } if trace => {
+                            eprintln!(
+                                "         {:?}: {}",
+                                result.status,
+                                serde_json::to_string(&result.data)
+                                    .unwrap_or_default()
+                                    .chars()
+                                    .take(200)
+                                    .collect::<String>()
+                            );
+                        },
                         _ => {},
                     }
                 }
@@ -1019,21 +1581,13 @@ async fn run_phase_b(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseB {
                         s.termination,
                         TerminationReason::Natural(NaturalTermination::AnswerProvided { .. })
                     );
-                    let lower = answer.to_lowercase();
-                    let correct = completed
-                        && task
-                            .expect_all
-                            .iter()
-                            .all(|m| lower.contains(&m.to_lowercase()))
-                        && !task
-                            .expect_none
-                            .iter()
-                            .any(|m| lower.contains(&m.to_lowercase()));
+                    let (correct, legacy_correct) = score(task, &answer, completed);
 
                     TaskResult {
                         id: format!("{}#{run}", task.id),
                         completed,
                         correct,
+                        legacy_correct,
                         turns: s.iterations_completed,
                         tool_calls: s.tool_calls_made,
                         malformed_tool_calls: malformed,
@@ -1046,6 +1600,7 @@ async fn run_phase_b(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseB {
                     id: format!("{}#{run}", task.id),
                     completed: false,
                     correct: false,
+                    legacy_correct: false,
                     turns: 0,
                     tool_calls: 0,
                     malformed_tool_calls: malformed,
@@ -1078,6 +1633,9 @@ async fn run_phase_b(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseB {
                 agg.correct += 1;
                 correct_turns.push(result.turns);
             }
+            if result.legacy_correct {
+                agg.legacy_correct += 1;
+            }
             agg.total_malformed += result.malformed_tool_calls;
             agg.results.push(result);
         }
@@ -1088,6 +1646,243 @@ async fn run_phase_b(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseB {
             correct_turns.iter().map(|t| *t as f64).sum::<f64>() / correct_turns.len() as f64;
         correct_turns.sort_unstable();
         agg.median_turns_correct = correct_turns[correct_turns.len() / 2] as f64;
+    }
+    agg
+}
+
+// ---------------------------------------------------------------------------
+// Phase D execution
+// ---------------------------------------------------------------------------
+
+/// Writes a task's fixture into a fresh directory.
+fn materialise(task: &DetTask, root: &std::path::Path) -> std::io::Result<()> {
+    for (rel, contents) in task.files {
+        let path = root.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, contents)?;
+    }
+    Ok(())
+}
+
+/// Applies the hand-written reference solution over a materialised fixture.
+///
+/// Test-only: a measurement run must never touch the answer.
+#[cfg_attr(not(test), allow(dead_code))]
+fn apply_reference(task: &DetTask, root: &std::path::Path) -> std::io::Result<()> {
+    for (rel, contents) in task.reference {
+        std::fs::write(root.join(rel), contents)?;
+    }
+    Ok(())
+}
+
+/// Runs a task's verification command in `root`.
+///
+/// `Ok(passed, output)` when the command ran; `Err` only when it could not be
+/// spawned at all, which is a harness failure rather than a model one.
+fn run_verify(task: &DetTask, root: &std::path::Path) -> std::io::Result<(bool, String)> {
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(task.verify)
+        .current_dir(root)
+        .output()?;
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    Ok((output.status.success(), text))
+}
+
+/// Contents of every file the task declares immutable, before the run.
+fn snapshot_immutable(task: &DetTask, root: &std::path::Path) -> BTreeMap<String, Vec<u8>> {
+    task.immutable
+        .iter()
+        .filter_map(|rel| {
+            std::fs::read(root.join(rel))
+                .ok()
+                .map(|bytes| ((*rel).to_string(), bytes))
+        })
+        .collect()
+}
+
+async fn run_phase_d(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseD {
+    let mut agg = PhaseD::default();
+
+    let selected: Vec<&DetTask> = DET_TASKS
+        .iter()
+        .filter(|t| args.task.as_deref().is_none_or(|id| t.id == id))
+        .collect();
+
+    for task in selected {
+        for run in 0..args.runs {
+            let started = Instant::now();
+            let id = format!("{}#{run}", task.id);
+
+            // A fresh sandbox per run. The model never sees this repository,
+            // so a task's answer cannot be read out of the harness — the
+            // failure mode `assert_uncontaminated` exists to prevent in
+            // Phase B is structurally absent here.
+            let dir = std::env::temp_dir()
+                .join(format!("toolcall-eval-d-{}", uuid::Uuid::new_v4().simple()));
+            if let Err(e) = std::fs::create_dir_all(&dir).and_then(|()| materialise(task, &dir)) {
+                eprintln!("  {id:28} sandbox setup failed: {e}");
+                agg.attempts += 1;
+                agg.harness_misses += 1;
+                agg.results.push(DetResult {
+                    id,
+                    passed: false,
+                    miss: Some(MissCause::Harness),
+                    turns: 0,
+                    tool_calls: 0,
+                    wall_ms: started.elapsed().as_millis(),
+                    verify_output: Some(format!("sandbox setup failed: {e}")),
+                });
+                continue;
+            }
+            let before = snapshot_immutable(task, &dir);
+
+            let tools = Arc::new(ToolRegistry::with_code_tools());
+            let config = ExecutorConfig::new(format!("det-{}-{run}", task.id))
+                .with_system_prompt(
+                    "You are a coding assistant working in a repository. Make the change you \
+                     are asked for by editing real files with the tools, then verify your work.",
+                )
+                .with_working_dir(&dir)
+                .with_autonomy(
+                    AutonomyGrant::builder()
+                        .allow(ToolPattern::Tool("*".to_string()))
+                        .build(),
+                )
+                .with_tool_call_grammar(args.grammar)
+                .with_loop_config(LoopConfig {
+                    max_iterations: task.max_iterations,
+                    max_tool_calls: task.max_iterations * 3,
+                    detect_implicit_signals: false,
+                    ..LoopConfig::default()
+                })
+                .with_sampling(SamplingParams {
+                    temperature: args.temperature,
+                    max_tokens: 1024,
+                    ..SamplingParams::default()
+                });
+
+            let dyn_engine: Arc<dyn InferenceEngine> =
+                Arc::clone(engine) as Arc<dyn InferenceEngine>;
+            let executor = LoopExecutor::new(dyn_engine, tools, config);
+            let (tx, mut rx) = mpsc::channel::<LoopEvent>(512);
+            // Under --keep-sandboxes, echo every tool call and its result.
+            // A miss classified without seeing what the tools returned is a
+            // guess, and "the model did nothing" and "every edit was rejected"
+            // look identical from the finished sandbox.
+            let trace = args.keep_sandboxes;
+            let drain = tokio::spawn(async move {
+                while let Some(event) = rx.recv().await {
+                    if !trace {
+                        continue;
+                    }
+                    match event {
+                        LoopEvent::ToolCallDetected { tool, .. } => {
+                            eprintln!("      -> call {tool}");
+                        },
+                        LoopEvent::ToolExecutionCompleted { result, .. } => {
+                            eprintln!(
+                                "         {:?}: {}",
+                                result.status,
+                                serde_json::to_string(&result.data)
+                                    .unwrap_or_default()
+                                    .chars()
+                                    .take(260)
+                                    .collect::<String>()
+                            );
+                        },
+                        _ => {},
+                    }
+                }
+            });
+
+            let summary = executor.run(task.objective, tx).await;
+            let _ = drain.await;
+
+            // Decide the outcome from the sandbox, never from what the model
+            // said about its own work. Phase C exists because those two can
+            // look identical in a transcript.
+            let (turns, tool_calls, ran_out) = match &summary {
+                Ok(s) => (
+                    s.iterations_completed,
+                    s.tool_calls_made,
+                    !matches!(s.termination, TerminationReason::Natural(_)),
+                ),
+                Err(_) => (0, 0, false),
+            };
+
+            let mut miss = None;
+            let mut verify_output = None;
+            let mut passed = false;
+
+            if summary.is_err() {
+                miss = Some(MissCause::Harness);
+                verify_output = summary
+                    .as_ref()
+                    .err()
+                    .map(|e| format!("executor error: {e}"));
+            } else if snapshot_immutable(task, &dir) != before {
+                // Checked in Rust against a pre-run snapshot, so it cannot be
+                // defeated from inside the sandbox.
+                miss = Some(MissCause::ModelTamperedWithCheck);
+                verify_output = Some(format!("modified a protected file: {:?}", task.immutable));
+            } else {
+                match run_verify(task, &dir) {
+                    Ok((ok, out)) => {
+                        passed = ok;
+                        if !ok {
+                            miss = Some(if ran_out {
+                                MissCause::ModelRanOutOfBudget
+                            } else {
+                                MissCause::Model
+                            });
+                            verify_output = Some(out.chars().take(VERIFY_CAPTURE_LIMIT).collect());
+                        }
+                    },
+                    Err(e) => {
+                        miss = Some(MissCause::Harness);
+                        verify_output = Some(format!("verify could not run: {e}"));
+                    },
+                }
+            }
+
+            let wall_ms = started.elapsed().as_millis();
+            if args.keep_sandboxes {
+                eprintln!("      sandbox kept: {}", dir.display());
+            } else {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+
+            agg.attempts += 1;
+            if passed {
+                agg.passed += 1;
+            }
+            if miss == Some(MissCause::Harness) {
+                agg.harness_misses += 1;
+            }
+
+            eprintln!(
+                "  {id:28} {turns:>3} turns  {tool_calls:>2} calls  {}",
+                if passed {
+                    "PASS".to_string()
+                } else {
+                    format!("{:?}", miss.unwrap_or(MissCause::Model))
+                }
+            );
+
+            agg.results.push(DetResult {
+                id,
+                passed,
+                miss,
+                turns,
+                tool_calls,
+                wall_ms,
+                verify_output,
+            });
+        }
     }
     agg
 }
@@ -1402,6 +2197,91 @@ fn print_phase_c(c: &PhaseC) {
     }
 }
 
+fn print_phase_d(d: &PhaseD) {
+    println!("\n=== Phase D — deterministic, machine-checked tasks ===\n");
+    println!(
+        "  Correctness is decided by running a command, not by reading prose.\n           Thresholds fixed in advance: docs/OFFLOAD-RELIABILITY-PRE-REGISTRATION.md\n"
+    );
+    println!("  attempts              {}", d.attempts);
+    println!(
+        "  harness misses        {}   (excluded from the pass rate — our plumbing, not the model)",
+        d.harness_misses
+    );
+    println!("  scored runs           {}", d.scored());
+
+    match (d.pass_rate(), wilson_interval(d.passed, d.scored())) {
+        (Some(rate), Some((lo, hi))) => {
+            println!(
+                "  PASS RATE             {:.1}%   ({}/{})",
+                rate * 100.0,
+                d.passed,
+                d.scored()
+            );
+            println!(
+                "  95% Wilson interval   [{:.1}%, {:.1}%]",
+                lo * 100.0,
+                hi * 100.0
+            );
+            // The tier is read off the pre-registered table, not chosen here.
+            let tier = if rate >= 0.75 && lo >= 0.60 {
+                "QUALIFIED (machine-checked handover, no human in the loop)"
+            } else if lo >= 0.40 {
+                "QUALIFIED WITH RETRY (budget 2-3 attempts per accepted result)"
+            } else {
+                "NOT QUALIFIED"
+            };
+            println!("  pre-registered tier   {tier}");
+        },
+        _ => println!("  PASS RATE             n/a     (no run was scored — undefined, NOT 0%)"),
+    }
+
+    // The share of runs lost to our own plumbing decides whether this result
+    // is evidence about the model at all.
+    let harness_share = ratio(d.harness_misses, d.attempts);
+    if harness_share > 0.20 {
+        println!(
+            "\n  *** RESULT VOID: {:.0}% of runs were harness misses (limit 20%). ***\n               Fix the plumbing and re-run; this measures us, not the model.",
+            harness_share * 100.0
+        );
+    }
+
+    let mut by_task: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+    for r in &d.results {
+        let base = r.id.split('#').next().unwrap_or(&r.id);
+        let e = by_task.entry(base).or_insert((0, 0));
+        e.0 += 1;
+        if r.passed {
+            e.1 += 1;
+        }
+    }
+    // Raw counts, never percentages: at n=5 a per-task rate invents precision.
+    println!("\n  per task (raw counts — see the pre-registration on why not %):");
+    for (task, (n, ok)) in by_task {
+        println!("    {task:28} {ok}/{n}");
+    }
+
+    let misses: Vec<&DetResult> = d.results.iter().filter(|r| !r.passed).collect();
+    if !misses.is_empty() {
+        println!("\n  every miss, with its cause:");
+        for m in &misses {
+            println!(
+                "    {:28} {:<26} {}",
+                m.id,
+                format!("{:?}", m.miss.unwrap_or(MissCause::Model)),
+                // Truncated for the terminal only — the full text is in the
+                // --json report, which is what a later reader will have.
+                m.verify_output
+                    .as_deref()
+                    .unwrap_or("")
+                    .replace('\n', " ")
+                    .chars()
+                    .take(88)
+                    .collect::<String>()
+            );
+        }
+    }
+}
+
 fn print_phase_b(b: &PhaseB) {
     println!("\n=== Phase B — agentic tasks (known-correct answers) ===\n");
     println!(
@@ -1414,6 +2294,12 @@ fn print_phase_b(b: &PhaseB) {
         "  correct               {:.1}%   ({}/{})",
         ratio(b.correct, b.attempts) * 100.0,
         b.correct,
+        b.attempts
+    );
+    println!(
+        "  (pre-#24 rubric)      {:.1}%   ({}/{})   same model output, old scorer",
+        ratio(b.legacy_correct, b.attempts) * 100.0,
+        b.legacy_correct,
         b.attempts
     );
     println!(
@@ -1442,5 +2328,383 @@ fn print_phase_b(b: &PhaseB) {
             "-".to_string()
         };
         println!("    {task:28} {ok}/{n} correct   mean turns {mean}");
+    }
+
+    // Any run the two rubrics disagree about, named individually. An
+    // aggregate that moved without saying which runs moved would be exactly
+    // the "one number hiding several causes" problem #24 was filed about.
+    let disagreements: Vec<&TaskResult> = b
+        .results
+        .iter()
+        .filter(|r| r.correct != r.legacy_correct)
+        .collect();
+    if disagreements.is_empty() {
+        println!("\n  rubric change (#24): no run scored differently under the two rubrics.");
+    } else {
+        println!(
+            "\n  rubric change (#24): {} run(s) scored differently — identical model output:",
+            disagreements.len()
+        );
+        // Neutral wording on purpose. Labelling these "the old rubric was
+        // wrong" assumes the new one is right, and that assumption is exactly
+        // what failed once already: the first `ANSWER:` extractor rejected a
+        // correct answer whose marker sat at the end of a sentence, and a
+        // confident label would have presented that as the old rubric passing
+        // a wrong answer. A disagreement is a flag to go and read the answer,
+        // not a verdict.
+        for r in &disagreements {
+            let which = if r.correct {
+                "passed by the current rubric only"
+            } else {
+                "passed by the pre-#24 rubric only"
+            };
+            println!(
+                "    {:28} {which} — read the answer before concluding",
+                r.id
+            );
+        }
+    }
+}
+
+// ===========================================================================
+// Tests
+// ===========================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn task(id: &str) -> &'static Task {
+        TASKS.iter().find(|t| t.id == id).expect("task must exist")
+    }
+
+    // === The conclusion is parsed, not pattern-matched (#24) ===
+
+    #[test]
+    fn the_answer_line_is_extracted_from_surrounding_prose() {
+        assert_eq!(
+            answer_value("Some reasoning here.\nANSWER: 1").as_deref(),
+            Some("1")
+        );
+        // Decoration the grammar or the model may add around the value.
+        assert_eq!(answer_value("ANSWER: `no`").as_deref(), Some("no"));
+        assert_eq!(answer_value("ANSWER: **0**.").as_deref(), Some("0"));
+        assert_eq!(answer_value("ANSWER: -s").as_deref(), Some("s"));
+        assert_eq!(
+            answer_value("  answer: 1").as_deref(),
+            None,
+            "case-sensitive marker"
+        );
+        assert_eq!(answer_value("no marker here").as_deref(), None);
+        assert_eq!(
+            answer_value("ANSWER:   ").as_deref(),
+            None,
+            "empty is not a value"
+        );
+    }
+
+    /// Verbatim from a real 14B run, and rejected by the FIRST version of this
+    /// extractor because the marker sits at the end of a sentence rather than
+    /// on its own line. Kept exactly as captured — this is the evidence, not
+    /// an illustration.
+    #[test]
+    fn a_marker_at_the_end_of_a_sentence_is_still_the_answer() {
+        let captured = "Reading the pipeline's status would have been misleading because the \
+                        exit status of the pipeline is determined by the last command in the \
+                        pipeline, which is `tail -1`, and not by the `false` command itself. \
+                        ANSWER: 1";
+        assert_eq!(answer_value(captured).as_deref(), Some("1"));
+
+        let (current, _) = score(task("exit-code-discipline"), captured, true);
+        assert!(
+            current,
+            "rejecting this is #24's defect reintroduced by #24's own fix"
+        );
+    }
+
+    #[test]
+    fn every_expected_answer_is_a_single_token() {
+        // `answer_value` reads one token, so a task expecting more would be
+        // silently graded on a prefix. Fail here instead.
+        for t in TASKS {
+            if let Some(expected) = t.expect_answer {
+                assert!(
+                    !expected.trim().contains(char::is_whitespace),
+                    "{}: expected answer {expected:?} is more than one token, which \
+                     answer_value cannot represent",
+                    t.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_restated_format_does_not_win_over_the_real_answer() {
+        // A model that echoes the instruction before using it should be read
+        // as meaning its last line, not its first.
+        let text = "I will reply as ANSWER: <number>\nWorking...\nANSWER: 1";
+        assert_eq!(answer_value(text).as_deref(), Some("1"));
+    }
+
+    /// The defect this ticket was filed for: the pipeline's status is 0, the
+    /// objective demands an explanation of why that misleads, and the old
+    /// rubric rejected the answer for saying so.
+    #[test]
+    fn exit_code_discipline_no_longer_penalises_the_complete_answer() {
+        let t = task("exit-code-discipline");
+        let answer = "The exit status of the `false` command is 1. Reading the pipeline's \
+                      status would have been misleading because the pipeline's exit status is \
+                      determined by the last command, `tail -1`, which succeeded (exit status \
+                      0), not by the `false` command itself.\nANSWER: 1";
+
+        let (current, legacy) = score(t, answer, true);
+        assert!(
+            current,
+            "a correct answer that explains why 0 misleads must score correct"
+        );
+        assert!(
+            !legacy,
+            "this is the exact answer the old rubric rejected — if it now passes \
+             there, the fixture for this claim has changed"
+        );
+    }
+
+    #[test]
+    fn exit_code_discipline_still_rejects_the_wrong_conclusion() {
+        // The job `expect_none: ["status 0"]` was doing. Reporting the
+        // pipeline's 0 as the answer must still fail, and now does so because
+        // the conclusion is compared, not searched for.
+        let t = task("exit-code-discipline");
+        let answer = "Running `false | tail -1` gave exit status 0.\nANSWER: 0";
+        let (current, _) = score(t, answer, true);
+        assert!(!current, "answering 0 must fail");
+    }
+
+    /// The opposite direction, and the more dangerous one: `expect_all:
+    /// ["no"]` matches inside "not", so an answer saying **Yes** scored
+    /// correct. Latent rather than observed — the model happened to answer
+    /// the single word "No" — but a false pass inflates, and nothing in the
+    /// old rubric would ever have revealed it.
+    #[test]
+    fn a_yes_answer_no_longer_passes_a_task_whose_answer_is_no() {
+        let t = task("grammar-unused");
+        let answer = "Yes. Beleth sets a grammar on its generation requests, although I \
+                      could not confirm every call site.\nANSWER: yes";
+
+        let (current, legacy) = score(t, answer, true);
+        assert!(
+            !current,
+            "an answer of `yes` must fail a task whose answer is `no`"
+        );
+        assert!(
+            legacy,
+            "the old rubric accepted this, via the `no` inside `could not` — \
+             that is the defect being pinned, not a typo"
+        );
+    }
+
+    /// The under-credit case from PR #86: the model answered in words and the
+    /// rubric wanted a digit.
+    #[test]
+    fn a_number_stated_in_words_now_scores_when_the_answer_line_carries_it() {
+        let t = task("claude-code-unregistered");
+        let answer = "The constructor `with_all_tools` is only defined in `src/tool.rs` and is \
+                      not called anywhere else in the repository.\nANSWER: 0";
+        let (current, _) = score(t, answer, true);
+        assert!(current);
+    }
+
+    #[test]
+    fn a_missing_answer_line_is_a_miss_not_a_pass() {
+        // An unparseable conclusion is the ambiguity this replaced; it must
+        // not fall through to "no rubric objected, therefore correct".
+        let t = task("grammar-unused");
+        let (current, _) = score(t, "No, beleth never sets one.", true);
+        assert!(!current);
+    }
+
+    #[test]
+    fn an_incomplete_run_is_never_correct() {
+        let t = task("grammar-unused");
+        let (current, legacy) = score(t, "ANSWER: no", false);
+        assert!(!current);
+        assert!(!legacy);
+    }
+
+    #[test]
+    fn every_task_states_the_answer_format_it_will_be_graded_on() {
+        // A task graded on an `ANSWER:` line it never asked for would be
+        // scoring the model's ability to guess a private convention.
+        for t in TASKS {
+            if t.expect_answer.is_some() {
+                assert!(
+                    t.objective.contains("ANSWER:"),
+                    "{} is graded on an ANSWER line its objective never requests",
+                    t.id
+                );
+            }
+        }
+    }
+
+    // === Phase D checker soundness (pre-registration §5) ===
+    //
+    // These run in CI, before any measurement. A check that passes on the
+    // untouched fixture reports a free pass; a check nothing can satisfy
+    // reports a free failure. Both are the defect shape this whole sequence
+    // has been about: a result that was never actually tested.
+
+    fn sandbox(task: &DetTask) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        materialise(task, dir.path()).expect("materialise fixture");
+        dir
+    }
+
+    #[test]
+    fn every_check_fails_on_the_untouched_fixture() {
+        for task in DET_TASKS {
+            let dir = sandbox(task);
+            let (passed, output) = run_verify(task, dir.path()).expect("verify must run");
+            assert!(
+                !passed,
+                "{}: the check PASSES before the model has done anything, so the task                  scores a free pass and measures nothing.\n{output}",
+                task.id
+            );
+        }
+    }
+
+    #[test]
+    fn every_check_passes_on_its_reference_solution() {
+        for task in DET_TASKS {
+            let dir = sandbox(task);
+            apply_reference(task, dir.path()).expect("apply reference");
+            let (passed, output) = run_verify(task, dir.path()).expect("verify must run");
+            assert!(
+                passed,
+                "{}: the hand-written correct solution does NOT satisfy the check, so the                  task is unpassable and would report a free failure.\n{output}",
+                task.id
+            );
+        }
+    }
+
+    #[test]
+    fn the_reference_solution_never_touches_a_protected_file() {
+        // If the known-correct solution has to edit a file the task forbids
+        // editing, the task contradicts itself.
+        for task in DET_TASKS {
+            for (rel, _) in task.reference {
+                assert!(
+                    !task.immutable.contains(rel),
+                    "{}: reference solution edits {rel}, which the task declares immutable",
+                    task.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn protected_files_exist_in_the_fixture() {
+        // An immutable path that does not exist snapshots as absent and
+        // compares equal to absent — the guard would silently never fire.
+        for task in DET_TASKS {
+            for rel in task.immutable {
+                assert!(
+                    task.files.iter().any(|(p, _)| p == rel),
+                    "{}: declares {rel} immutable but never creates it, so the guard                      can never fire",
+                    task.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tampering_with_a_protected_file_is_detected() {
+        // The guard itself needs proving, not just declaring.
+        for task in DET_TASKS {
+            let dir = sandbox(task);
+            let before = snapshot_immutable(task, dir.path());
+            assert!(!before.is_empty(), "{}: nothing protected", task.id);
+
+            let victim = task.immutable[0];
+            std::fs::write(dir.path().join(victim), "tampered").expect("write");
+            assert_ne!(
+                snapshot_immutable(task, dir.path()),
+                before,
+                "{}: editing {victim} went undetected",
+                task.id
+            );
+        }
+    }
+
+    #[test]
+    fn no_fixture_contains_the_answer_it_is_testing() {
+        // Phase D's sandbox holds only what the task defines, so the harness
+        // is out of reach — but a fixture could still hand over its own
+        // answer. The reference solution's new content must not already be
+        // sitting in the files the model starts from.
+        for task in DET_TASKS {
+            let starting: String = task.files.iter().map(|(_, c)| *c).collect();
+            for (rel, solution) in task.reference {
+                let novel: Vec<&str> = solution
+                    .lines()
+                    .map(str::trim)
+                    .filter(|l| l.len() > 12 && !starting.contains(*l))
+                    .collect();
+                assert!(
+                    !novel.is_empty(),
+                    "{}: every line of the solution for {rel} is already present in the                      fixture, so the task may be answerable by copying",
+                    task.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn wilson_interval_brackets_the_point_estimate() {
+        let (lo, hi) = wilson_interval(24, 30).expect("n > 0");
+        assert!(lo < 0.8 && 0.8 < hi, "[{lo}, {hi}] must contain 24/30");
+        assert!(lo > 0.0 && hi < 1.0);
+
+        // Degenerate cases stay inside [0, 1] rather than running past it,
+        // which is why this is Wilson and not the normal approximation.
+        let (lo, hi) = wilson_interval(5, 5).unwrap();
+        assert!(lo > 0.0 && (hi - 1.0).abs() < 1e-9, "[{lo}, {hi}]");
+        let (lo, hi) = wilson_interval(0, 5).unwrap();
+        assert!(lo.abs() < 1e-9 && hi < 1.0, "[{lo}, {hi}]");
+
+        assert!(wilson_interval(0, 0).is_none(), "undefined, not zero");
+    }
+
+    #[test]
+    fn a_pass_rate_over_nothing_is_undefined_not_zero() {
+        let d = PhaseD::default();
+        assert!(d.pass_rate().is_none());
+    }
+
+    #[test]
+    fn harness_misses_are_excluded_from_the_denominator() {
+        let d = PhaseD {
+            attempts: 10,
+            passed: 6,
+            harness_misses: 2,
+            results: Vec::new(),
+        };
+        assert_eq!(d.scored(), 8);
+        assert!((d.pass_rate().unwrap() - 0.75).abs() < 1e-9);
+    }
+
+    #[test]
+    fn no_task_grades_prose_by_substring_any_more() {
+        // `expect_all` survives only for literal source identifiers. Anything
+        // longer than a token is prose, and prose is what #24 is about.
+        for t in TASKS {
+            for marker in t.expect_all {
+                assert!(
+                    !marker.contains(' '),
+                    "{}: {marker:?} is a phrase, not an identifier — grading prose \
+                     by substring is the defect this replaced",
+                    t.id
+                );
+            }
+        }
     }
 }
