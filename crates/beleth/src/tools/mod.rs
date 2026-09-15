@@ -95,6 +95,49 @@ pub fn validate_path(path: &str, ctx: &ToolContext) -> Result<PathBuf> {
     Ok(canonical)
 }
 
+/// Returns the canonicalized agent working directory from the tool context.
+///
+/// This is the frame every path in this module is expressed in: the paths
+/// `read_file`, `edit_file` and `write_file` accept, and — via
+/// [`display_path`] — the paths `search_files` and `list_files` emit.
+///
+/// # Errors
+///
+/// Returns an error if no `working_dir` is set in the tool context state.
+pub(crate) fn working_dir(ctx: &ToolContext) -> Result<PathBuf> {
+    let working_dir = ctx
+        .get_state("working_dir")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            infernum_core::Error::internal(
+                "No working_dir set in tool context. The agent runner must set \
+                 ToolContext.state[\"working_dir\"] before executing file tools.",
+            )
+        })?;
+
+    let working_dir = PathBuf::from(working_dir);
+    Ok(working_dir.canonicalize().unwrap_or(working_dir))
+}
+
+/// Renders an absolute path in the frame the file tools resolve against.
+///
+/// Tools that *report* paths (`search_files`, `list_files`) must express them
+/// the same way tools that *accept* paths (`read_file`, `edit_file`,
+/// `write_file`) resolve them — relative to the agent working directory, not
+/// to whatever subdirectory was searched. Otherwise the output of one tool is
+/// not a valid input to its sibling (infernum-framework INFERNUM-25).
+///
+/// Paths outside the working directory are rendered absolute; `validate_path`
+/// rejects those before they reach a tool, so this is a fallback, not a path
+/// the agent is expected to see.
+pub(crate) fn display_path(path: &Path, working_dir: &Path) -> String {
+    match path.strip_prefix(working_dir) {
+        Ok(relative) if relative.as_os_str().is_empty() => ".".to_string(),
+        Ok(relative) => relative.display().to_string(),
+        Err(_) => path.display().to_string(),
+    }
+}
+
 /// Extracts a required string parameter from JSON params.
 pub(crate) fn require_str_param<'a>(params: &'a Value, key: &str) -> Result<&'a str> {
     params.get(key).and_then(Value::as_str).ok_or_else(|| {

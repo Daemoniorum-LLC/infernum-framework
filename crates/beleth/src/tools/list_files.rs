@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use infernum_core::Result;
 use serde_json::Value;
 
-use super::{optional_str_param, validate_path};
+use super::{display_path, optional_str_param, validate_path, working_dir};
 use crate::tool::{RiskLevel, Tool, ToolContext, ToolResult};
 
 /// Maximum number of entries to return.
@@ -50,6 +50,10 @@ impl Tool for ListFilesTool {
         let pattern = optional_str_param(&params, "pattern");
 
         let resolved = validate_path(path_str, ctx)?;
+        // Entries are reported relative to the agent working directory, not to
+        // `path`, so a path from this tool can be handed to `read_file` or
+        // `edit_file` unchanged (INFERNUM-25).
+        let working = working_dir(ctx)?;
 
         if let Some(glob_pattern) = pattern {
             // Glob mode: find files matching pattern
@@ -72,12 +76,7 @@ impl Tool for ListFilesTool {
                     break;
                 }
                 if let Ok(path) = entry {
-                    // Show path relative to the search directory
-                    if let Ok(relative) = path.strip_prefix(&resolved) {
-                        results.push(relative.display().to_string());
-                    } else {
-                        results.push(path.display().to_string());
-                    }
+                    results.push(display_path(&path, &working));
                 }
             }
 
@@ -119,14 +118,13 @@ impl Tool for ListFilesTool {
                 if entries.len() >= MAX_ENTRIES {
                     break;
                 }
-                let name = entry.file_name().to_string_lossy().to_string();
                 let file_type = entry.file_type().await.ok();
                 let suffix = match file_type {
                     Some(ft) if ft.is_dir() => "/",
                     Some(ft) if ft.is_symlink() => "@",
                     _ => "",
                 };
-                entries.push(format!("{}{}", name, suffix));
+                entries.push(format!("{}{}", display_path(&entry.path(), &working), suffix));
             }
 
             entries.sort();
@@ -187,6 +185,40 @@ mod tests {
         assert!(result.output.contains("main.rs"));
         assert!(result.output.contains("lib.rs"));
         assert!(!result.output.contains("README.md"));
+    }
+
+    /// Entries listed under a subdirectory must be reported in the working
+    /// directory's frame, for the same reason as `search_files` (INFERNUM-25).
+    #[tokio::test]
+    async fn test_list_files_directory_paths_are_working_dir_relative() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("src/nested")).expect("mkdir");
+        std::fs::write(dir.path().join("src/lib.rs"), "").expect("write");
+
+        let ctx = make_ctx_with_dir(dir.path());
+        let tool = ListFilesTool;
+        let params = serde_json::json!({"path": "src"});
+        let result = tool.execute(params, &ctx).await.expect("execute");
+
+        assert!(result.success);
+        let lines: Vec<&str> = result.output.lines().collect();
+        assert_eq!(lines, vec!["src/lib.rs", "src/nested/"], "got: {:?}", lines);
+    }
+
+    /// The same, through the glob arm.
+    #[tokio::test]
+    async fn test_list_files_glob_paths_are_working_dir_relative() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("src")).expect("mkdir");
+        std::fs::write(dir.path().join("src/lib.rs"), "").expect("write");
+
+        let ctx = make_ctx_with_dir(dir.path());
+        let tool = ListFilesTool;
+        let params = serde_json::json!({"path": "src", "pattern": "**/*.rs"});
+        let result = tool.execute(params, &ctx).await.expect("execute");
+
+        assert!(result.success, "glob should succeed: {:?}", result.error);
+        assert_eq!(result.output, "src/lib.rs");
     }
 
     #[tokio::test]

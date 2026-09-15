@@ -7,7 +7,10 @@ use infernum_core::Result;
 use regex::Regex;
 use serde_json::Value;
 
-use super::{optional_str_param, optional_u64_param, require_str_param, validate_path};
+use super::{
+    display_path, optional_str_param, optional_u64_param, require_str_param, validate_path,
+    working_dir,
+};
 use crate::tool::{RiskLevel, Tool, ToolContext, ToolResult};
 
 /// Default maximum number of matching lines to return.
@@ -74,6 +77,10 @@ impl Tool for SearchFilesTool {
         };
 
         let resolved = validate_path(path_str, ctx)?;
+        // Matches are reported relative to the agent working directory, not to
+        // `path`, so a path from this tool can be handed to `read_file` or
+        // `edit_file` unchanged (INFERNUM-25).
+        let working = working_dir(ctx)?;
 
         // Collect files to search
         let files = if let Some(glob_pat) = file_glob {
@@ -122,11 +129,7 @@ impl Tool for SearchFilesTool {
                 Err(_) => continue,
             };
 
-            let relative = file_path
-                .strip_prefix(&resolved)
-                .unwrap_or(file_path)
-                .display()
-                .to_string();
+            let relative = display_path(file_path, &working);
 
             let mut file_had_match = false;
             for (line_num, line) in text.lines().enumerate() {
@@ -226,6 +229,57 @@ mod tests {
         let data = result.data.expect("data");
         assert_eq!(data["matches"], 2);
         assert_eq!(data["files_with_matches"], 2);
+    }
+
+    /// Matches found under a subdirectory must be reported in the working
+    /// directory's frame, so the path can be handed straight to `read_file`
+    /// or `edit_file` (INFERNUM-25).
+    #[tokio::test]
+    async fn test_search_files_paths_are_working_dir_relative() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("src")).expect("mkdir");
+        std::fs::write(
+            dir.path().join("src/lib.rs"),
+            "pub fn legacy_slug(s: &str) -> String {\n    s.to_string()\n}\n",
+        )
+        .expect("write");
+
+        let ctx = make_ctx_with_dir(dir.path());
+        let tool = SearchFilesTool;
+        let params = serde_json::json!({"pattern": "legacy_slug", "path": "src"});
+        let result = tool.execute(params, &ctx).await.expect("execute");
+
+        assert!(result.success);
+        assert!(
+            result.output.starts_with("src/lib.rs:"),
+            "expected a working-dir-relative path, got: {}",
+            result.output
+        );
+    }
+
+    /// The same, through the `file_glob` arm, which collects files by a
+    /// different code path.
+    #[tokio::test]
+    async fn test_search_files_glob_paths_are_working_dir_relative() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("src/nested")).expect("mkdir");
+        std::fs::write(dir.path().join("src/nested/deep.rs"), "let x = 42;\n").expect("write");
+
+        let ctx = make_ctx_with_dir(dir.path());
+        let tool = SearchFilesTool;
+        let params = serde_json::json!({
+            "pattern": "let x",
+            "path": "src",
+            "file_glob": "*.rs"
+        });
+        let result = tool.execute(params, &ctx).await.expect("execute");
+
+        assert!(result.success);
+        assert!(
+            result.output.starts_with("src/nested/deep.rs:"),
+            "expected a working-dir-relative path, got: {}",
+            result.output
+        );
     }
 
     #[tokio::test]
