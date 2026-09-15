@@ -1,0 +1,18 @@
+# OnFailure= target of infernum.service.
+#
+# Reached when infernum lands in `failed`: an unclean exit, or a start that
+# keeps failing (missing model, held port, a binary that will not run).
+#
+# KNOWN LIMIT, stated rather than hidden. This writes a log line and a journal
+# entry. It deliberately does not call back into whatever service consumes
+# these embeddings, because that service being down may be the very thing this
+# alert is reporting — a notifier that depends on the thing it reports about is
+# not a notifier. Route this to a channel a human actually watches.
+
+[Unit]
+Description=Infernum ALERT — infernum.service has failed
+
+[Service]
+Type=oneshot
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/bin/sh -c 'systemd-cat -t infernum-alert -p err echo "infernum.service entered failed state — embedding endpoint is down"'

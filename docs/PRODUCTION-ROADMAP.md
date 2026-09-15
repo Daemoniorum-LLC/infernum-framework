@@ -380,7 +380,7 @@ Target: 75% public item documentation
 - [ ] Create Dockerfile with multi-stage build
 - [ ] Add Kubernetes manifests (Deployment, Service, ConfigMap)
 - [ ] Create Helm chart
-- [ ] Add systemd service file
+- [x] Add systemd service file — `ops/systemd/`
 - [ ] Create docker-compose for development
 
 ### 9.2 CI/CD
