@@ -2371,17 +2371,15 @@ impl InferenceEngine for Engine {
                     message: format!("Failed to convert embedding to vector: {}", e),
                 })?;
 
-            // Apply dimension reduction if requested
-            let final_embedding = if let Some(dims) = request.dimensions {
-                let dims = dims as usize;
-                if dims < embedding_vec.len() {
-                    embedding_vec[..dims].to_vec()
-                } else {
-                    embedding_vec
-                }
-            } else {
-                embedding_vec
-            };
+            // Truncate to `dimensions` if asked, then L2-normalize. Models
+            // return raw mean-pooled hidden states, whose magnitude varies by
+            // architecture and input length, so normalizing here is what makes
+            // every architecture's embeddings comparable on the same scale.
+            // See `models::finalize_embedding` for why the order matters.
+            let final_embedding = crate::models::finalize_embedding(
+                embedding_vec,
+                request.dimensions.map(|d| d as usize),
+            );
 
             embeddings.push(Embedding {
                 index: idx as u32,
