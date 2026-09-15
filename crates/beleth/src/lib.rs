@@ -19,6 +19,7 @@
 pub mod agent;
 pub mod agentic_loop;
 pub mod dynamic_context;
+pub mod grammar;
 pub mod http_engine;
 pub mod long_term_memory;
 pub mod memory;
@@ -163,6 +164,7 @@ pub use dynamic_context::{
     score_message_relevance, semantic_chunk, ChunkType, ContextComplexity, ContextConfig,
     DynamicContextManager, RelevanceFactors, SemanticChunk,
 };
+pub use grammar::{compose_system_prompt, tool_call_gbnf, tool_call_grammar};
 pub use http_engine::{HttpEngine, HttpEngineError, SimpleMessage};
 pub use long_term_memory::{ImportanceLevel, LongTermMemory, MemoryEntry, MemoryStats, MemoryType};
 pub use memory::{
