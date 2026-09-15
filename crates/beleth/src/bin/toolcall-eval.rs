@@ -351,20 +351,41 @@ struct Task {
     max_iterations: u32,
 }
 
-/// Extracts the value from the last `ANSWER:` line in `text`.
+/// Extracts the value following the last `ANSWER:` marker in `text`.
 ///
 /// Last rather than first: a model that restates the format before using it
-/// should be read as meaning its final one. `None` when no such line exists,
+/// should be read as meaning its final one. `None` when no marker is present,
 /// which is a miss, not a pass — an unparseable conclusion is exactly the
 /// ambiguity this replaced.
+///
+/// # Why the marker is found anywhere, not only at the start of a line
+///
+/// The first version of this required the line to *begin* with `ANSWER:`. It
+/// rejected this, verbatim, from a real run:
+///
+/// ```text
+/// Reading the pipeline's status would have been misleading because ...
+/// and not by the `false` command itself. ANSWER: 1
+/// ```
+///
+/// The conclusion is right and in the requested form; it is merely at the end
+/// of a sentence rather than on a line of its own. Rejecting it is #24's own
+/// defect — a scorer failing a correct answer over formatting — reintroduced
+/// by the fix for #24. Caught by reading the answers behind a number that
+/// looked wrong, not by the tests.
+///
+/// The value is the first whitespace-delimited token after the marker,
+/// stripped of surrounding punctuation and markup, so `` `no` ``, `**0**.` and
+/// `-s` read as `no`, `0` and `s`. Single-token answers only —
+/// `every_expected_answer_is_a_single_token` enforces that, so a task needing
+/// a multi-word answer fails loudly rather than being silently truncated.
 fn answer_value(text: &str) -> Option<String> {
-    text.lines()
-        .filter_map(|line| {
-            let rest = line.trim().strip_prefix("ANSWER:")?;
-            let value = rest.trim().trim_matches(['`', '"', '*', '.']).trim();
-            (!value.is_empty()).then(|| value.to_lowercase())
-        })
-        .next_back()
+    let (_, rest) = text.rsplit_once("ANSWER:")?;
+    let token = rest.split_whitespace().next()?;
+    let value = token
+        .trim_matches(|c: char| !c.is_alphanumeric())
+        .to_lowercase();
+    (!value.is_empty()).then_some(value)
 }
 
 /// Scores one answer under the current rubric and the pre-#24 one.
@@ -583,6 +604,20 @@ enum MissCause {
     /// command could not be spawned. Excluded from the pass rate.
     Harness,
 }
+
+/// How much of a failing verification's output to keep.
+///
+/// Generous on purpose. `tests/fixtures/issue_70_14b_completions.json` carries
+/// a completion categorised `truncated_ambiguous` for exactly this reason: a
+/// 400-char diagnostic cap cut a completion mid-JSON, and the result was
+/// mistaken for evidence of model behaviour until review caught it. A first
+/// pass here repeated the mistake at 300 chars — one miss's real error was a
+/// `cargo test` failure several hundred characters past a "running 0 tests"
+/// preamble, and the cap kept only the preamble.
+///
+/// A capture cap that hides the evidence turns a miss into a guess, which is
+/// the whole failure mode this harness exists to avoid.
+const VERIFY_CAPTURE_LIMIT: usize = 4000;
 
 const DET_TASKS: &[DetTask] = &[
     // -- 1. make a broken crate compile ------------------------------------
@@ -828,7 +863,8 @@ struct DetResult {
     turns: u32,
     tool_calls: u32,
     wall_ms: u128,
-    /// First 300 chars of the verification command's output, on a miss.
+    /// The verification command's output, on a miss, up to
+    /// [`VERIFY_CAPTURE_LIMIT`].
     verify_output: Option<String>,
 }
 
@@ -1060,6 +1096,12 @@ struct Args {
     /// Apply the tool-call grammar. Default on; `--grammar off` measures the
     /// unconstrained baseline the #70/#71 numbers were taken under.
     grammar: bool,
+    /// Keep Phase D sandboxes instead of deleting them, and print each path.
+    ///
+    /// For diagnosing a miss: the sandbox is the only record of what the model
+    /// actually did to the files, and a cause classified without looking at it
+    /// is a guess.
+    keep_sandboxes: bool,
     /// Run only the Phase B task with this id. `None` runs all of them.
     ///
     /// For re-measuring one task after a fix aimed at it, without paying for
@@ -1078,6 +1120,7 @@ fn parse_args() -> Result<Args, String> {
     let mut json = None;
     let mut grammar = true;
     let mut task = None;
+    let mut keep_sandboxes = false;
 
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -1117,6 +1160,10 @@ fn parse_args() -> Result<Args, String> {
             "--json" => {
                 json = Some(PathBuf::from(next(i)?));
                 i += 2;
+            },
+            "--keep-sandboxes" => {
+                keep_sandboxes = true;
+                i += 1;
             },
             "--task" => {
                 let id = next(i)?;
@@ -1174,7 +1221,8 @@ fn parse_args() -> Result<Args, String> {
                      --runs <N>            repetitions per item (default 1)\n\
                      --temperature <F>     sampling temperature (default 0.0)\n\
                      --json <PATH>         write the full report as JSON\n\
-                     --task <ID>           run only this Phase B task (default: all)\n\
+                     --task <ID>           run only this Phase B or D task (default: all)\n\
+                     --keep-sandboxes      keep Phase D sandboxes for inspection\n\
                      --grammar on|off      constrain the tool-call envelope (default on)\n\
                      --dump-grammar        print the generated GBNF and exit\n\
                      --dump-prompt         print the composed system prompt and exit"
@@ -1194,6 +1242,7 @@ fn parse_args() -> Result<Args, String> {
         temperature,
         json,
         grammar,
+        keep_sandboxes,
         task,
     })
 }
@@ -1479,7 +1528,11 @@ async fn run_phase_b(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseB {
 
             // Count malformed calls during the run the same way Phase A does:
             // raw tags seen in generated text, minus calls the executor
-            // actually dispatched.
+            // actually dispatched. Under --keep-sandboxes, also echo each
+            // call and result: a task that exhausts its budget looks identical
+            // from the outside whether the model is confused or a tool is
+            // returning nothing, and those are different findings.
+            let trace = args.keep_sandboxes;
             let counter = tokio::spawn(async move {
                 let mut tags = 0usize;
                 let mut detected = 0usize;
@@ -1488,7 +1541,23 @@ async fn run_phase_b(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseB {
                         LoopEvent::GenerationCompleted { ref content, .. } => {
                             tags += content.matches("<tool_call>").count();
                         },
-                        LoopEvent::ToolCallDetected { .. } => detected += 1,
+                        LoopEvent::ToolCallDetected { ref tool, .. } => {
+                            detected += 1;
+                            if trace {
+                                eprintln!("      -> call {tool}");
+                            }
+                        },
+                        LoopEvent::ToolExecutionCompleted { ref result, .. } if trace => {
+                            eprintln!(
+                                "         {:?}: {}",
+                                result.status,
+                                serde_json::to_string(&result.data)
+                                    .unwrap_or_default()
+                                    .chars()
+                                    .take(200)
+                                    .collect::<String>()
+                            );
+                        },
                         _ => {},
                     }
                 }
@@ -1700,7 +1769,35 @@ async fn run_phase_d(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseD {
                 Arc::clone(engine) as Arc<dyn InferenceEngine>;
             let executor = LoopExecutor::new(dyn_engine, tools, config);
             let (tx, mut rx) = mpsc::channel::<LoopEvent>(512);
-            let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+            // Under --keep-sandboxes, echo every tool call and its result.
+            // A miss classified without seeing what the tools returned is a
+            // guess, and "the model did nothing" and "every edit was rejected"
+            // look identical from the finished sandbox.
+            let trace = args.keep_sandboxes;
+            let drain = tokio::spawn(async move {
+                while let Some(event) = rx.recv().await {
+                    if !trace {
+                        continue;
+                    }
+                    match event {
+                        LoopEvent::ToolCallDetected { tool, .. } => {
+                            eprintln!("      -> call {tool}");
+                        },
+                        LoopEvent::ToolExecutionCompleted { result, .. } => {
+                            eprintln!(
+                                "         {:?}: {}",
+                                result.status,
+                                serde_json::to_string(&result.data)
+                                    .unwrap_or_default()
+                                    .chars()
+                                    .take(260)
+                                    .collect::<String>()
+                            );
+                        },
+                        _ => {},
+                    }
+                }
+            });
 
             let summary = executor.run(task.objective, tx).await;
             let _ = drain.await;
@@ -1742,7 +1839,7 @@ async fn run_phase_d(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseD {
                             } else {
                                 MissCause::Model
                             });
-                            verify_output = Some(out.chars().take(300).collect());
+                            verify_output = Some(out.chars().take(VERIFY_CAPTURE_LIMIT).collect());
                         }
                     },
                     Err(e) => {
@@ -1753,7 +1850,11 @@ async fn run_phase_d(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseD {
             }
 
             let wall_ms = started.elapsed().as_millis();
-            let _ = std::fs::remove_dir_all(&dir);
+            if args.keep_sandboxes {
+                eprintln!("      sandbox kept: {}", dir.display());
+            } else {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
 
             agg.attempts += 1;
             if passed {
@@ -2167,6 +2268,8 @@ fn print_phase_d(d: &PhaseD) {
                 "    {:28} {:<26} {}",
                 m.id,
                 format!("{:?}", m.miss.unwrap_or(MissCause::Model)),
+                // Truncated for the terminal only — the full text is in the
+                // --json report, which is what a later reader will have.
                 m.verify_output
                     .as_deref()
                     .unwrap_or("")
@@ -2242,13 +2345,23 @@ fn print_phase_b(b: &PhaseB) {
             "\n  rubric change (#24): {} run(s) scored differently — identical model output:",
             disagreements.len()
         );
+        // Neutral wording on purpose. Labelling these "the old rubric was
+        // wrong" assumes the new one is right, and that assumption is exactly
+        // what failed once already: the first `ANSWER:` extractor rejected a
+        // correct answer whose marker sat at the end of a sentence, and a
+        // confident label would have presented that as the old rubric passing
+        // a wrong answer. A disagreement is a flag to go and read the answer,
+        // not a verdict.
         for r in &disagreements {
-            let direction = if r.correct {
-                "old rubric MISSED a correct answer"
+            let which = if r.correct {
+                "passed by the current rubric only"
             } else {
-                "old rubric PASSED a wrong answer"
+                "passed by the pre-#24 rubric only"
             };
-            println!("    {:28} {}", r.id, direction);
+            println!(
+                "    {:28} {which} — read the answer before concluding",
+                r.id
+            );
         }
     }
 }
@@ -2276,6 +2389,7 @@ mod tests {
         // Decoration the grammar or the model may add around the value.
         assert_eq!(answer_value("ANSWER: `no`").as_deref(), Some("no"));
         assert_eq!(answer_value("ANSWER: **0**.").as_deref(), Some("0"));
+        assert_eq!(answer_value("ANSWER: -s").as_deref(), Some("s"));
         assert_eq!(
             answer_value("  answer: 1").as_deref(),
             None,
@@ -2287,6 +2401,41 @@ mod tests {
             None,
             "empty is not a value"
         );
+    }
+
+    /// Verbatim from a real 14B run, and rejected by the FIRST version of this
+    /// extractor because the marker sits at the end of a sentence rather than
+    /// on its own line. Kept exactly as captured — this is the evidence, not
+    /// an illustration.
+    #[test]
+    fn a_marker_at_the_end_of_a_sentence_is_still_the_answer() {
+        let captured = "Reading the pipeline's status would have been misleading because the \
+                        exit status of the pipeline is determined by the last command in the \
+                        pipeline, which is `tail -1`, and not by the `false` command itself. \
+                        ANSWER: 1";
+        assert_eq!(answer_value(captured).as_deref(), Some("1"));
+
+        let (current, _) = score(task("exit-code-discipline"), captured, true);
+        assert!(
+            current,
+            "rejecting this is #24's defect reintroduced by #24's own fix"
+        );
+    }
+
+    #[test]
+    fn every_expected_answer_is_a_single_token() {
+        // `answer_value` reads one token, so a task expecting more would be
+        // silently graded on a prefix. Fail here instead.
+        for t in TASKS {
+            if let Some(expected) = t.expect_answer {
+                assert!(
+                    !expected.trim().contains(char::is_whitespace),
+                    "{}: expected answer {expected:?} is more than one token, which \
+                     answer_value cannot represent",
+                    t.id
+                );
+            }
+        }
     }
 
     #[test]
