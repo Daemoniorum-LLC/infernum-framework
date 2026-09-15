@@ -795,7 +795,11 @@ mod tests {
                 Just("edit_file".to_string()),
                 Just("list_files".to_string()),
                 Just("search_files".to_string()),
-                Just("claude_code".to_string()),
+                // Every name here must be a tool the registry can actually
+                // produce; otherwise the generator spends draws on approval
+                // cases that cannot arise. `claude_code` was removed in
+                // infernum-framework#27.
+                Just("calculator".to_string()),
             ]
         }
 

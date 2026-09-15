@@ -92,6 +92,18 @@ pass" was never solved by editing the tests.
 | `clap-collision` | 0/5 | **model** — answered `--model`/`--system` on `m`, and `'H'`/`'n'` |
 | `claude-code-unregistered` | 0/5 | **model** — see below |
 
+> **Task lineage.** `claude-code-unregistered` was replaced by
+> `detector-override-unused` in INFERNUM-27, which removed the `ClaudeCodeTool`
+> and `ToolRegistry::with_all_tools` its objective asserted. The successor keeps
+> the shape — count call sites of an unreferenced symbol, answer a number — and
+> targets `LoopExecutor::with_detector`, verified unreferenced in the pinned
+> fixture by two independent methods before the task was written.
+>
+> **The 13/25 above is unchanged and was not re-measured.** Whether the
+> successor task scores the same is an open question and a separate
+> measurement; treating it as equivalent without checking would be assuming the
+> thing to be shown.
+
 ---
 
 ## Two tool defects that suppress class D, reported not fixed
