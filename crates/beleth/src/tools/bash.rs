@@ -47,8 +47,16 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
+        // The contract is stated because the model has to be able to rely on
+        // it: without the last sentence, a non-zero status is ambiguous
+        // between "the command reported something" and "the tool broke", and
+        // a model that guesses the second stops investigating. See
+        // infernum-framework#20.
         "Executes a shell command and returns its output. Use for running builds, \
-         tests, git commands, and other system operations. Commands run with sh -c."
+         tests, git commands, and other system operations. Commands run with sh -c. \
+         Output includes stdout and stderr; if the command exits non-zero, its \
+         status is appended as [exit status: N]. A non-zero exit is a result, \
+         not a tool failure — read it and carry on."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -147,24 +155,36 @@ impl Tool for BashTool {
                     combined = "(no output)".to_string();
                 }
 
-                let success = output.status.success();
-                let mut tool_result = if success {
-                    ToolResult::success(combined)
-                } else {
-                    ToolResult {
-                        success: false,
-                        output: combined,
-                        error: Some(format!("Command exited with code {}", exit_code)),
-                        data: None,
-                    }
-                };
+                // The command ran. That makes this a successful tool call
+                // whatever the command thought of its own work.
+                //
+                // `ToolResult::success` answers "did the tool do its job?".
+                // Conflating it with "did the command exit zero?" told the
+                // model its shell was broken every time a test failed, a
+                // `grep` matched nothing, or a `false` did exactly what it
+                // says on the tin — and the model believed it, because that
+                // is a reasonable reading of what it was told. See
+                // infernum-framework#20.
+                //
+                // The exit status is not swallowed, though. It goes in the
+                // `output` text as well as `data`, because `output` is the
+                // field that reliably reaches the model's context: the
+                // agentic loop renders a failed result as a bare error string
+                // and never serialises `data` at all.
+                if !output.status.success() {
+                    combined.push_str(&match output.status.code() {
+                        Some(code) => format!("\n[exit status: {code}]"),
+                        // No code means a signal killed it. Reporting the
+                        // `-1` placeholder as if it were an exit status would
+                        // be inventing a number the process never returned.
+                        None => "\n[terminated by signal]".to_string(),
+                    });
+                }
 
-                tool_result.data = Some(serde_json::json!({
+                Ok(ToolResult::success(combined).with_data(serde_json::json!({
                     "exit_code": exit_code,
                     "command": command,
-                }));
-
-                Ok(tool_result)
+                })))
             },
             Ok(Err(e)) => Ok(ToolResult::error(format!(
                 "Command execution failed: {}",
@@ -205,8 +225,21 @@ mod tests {
         assert!(result.output.contains("hello"));
     }
 
+    /// CHANGED DELIBERATELY for infernum-framework#20 — this test used to
+    /// assert `!result.success` for `exit 42`, which encoded the defect
+    /// rather than guarding against it.
+    ///
+    /// `success` on a [`ToolResult`] answers "did the tool work?". A command
+    /// that runs to completion and returns 42 is a tool that worked and a
+    /// command that returned 42. Reporting it as a tool failure told the
+    /// model its shell was broken, and the model believed it — see
+    /// `exit-code-discipline` in `toolcall-eval`'s Phase B, 0/3.
+    ///
+    /// If a future change makes this assert `!result.success` again, that is
+    /// this bug coming back. The exit code is still asserted below: not
+    /// treating a non-zero exit as a failure must not mean hiding it.
     #[tokio::test]
-    async fn test_bash_exit_code() {
+    async fn a_non_zero_exit_is_a_result_not_a_tool_failure() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = make_ctx_with_dir(dir.path());
         let tool = BashTool::default();
@@ -214,9 +247,108 @@ mod tests {
         let params = serde_json::json!({"command": "exit 42"});
         let result = tool.execute(params, &ctx).await.expect("execute");
 
-        assert!(!result.success);
+        assert!(
+            result.success,
+            "the command ran; `success` reports whether the TOOL worked, not \
+             whether the command exited zero: {:?}",
+            result.error
+        );
+        assert!(
+            result.error.is_none(),
+            "a non-zero exit is not a tool error: {:?}",
+            result.error
+        );
+
         let data = result.data.expect("data");
-        assert_eq!(data["exit_code"], 42);
+        assert_eq!(data["exit_code"], 42, "the exit code must still be carried");
+    }
+
+    /// The exit status has to be in `output`, because that is the field that
+    /// reliably reaches the model's context. `data.exit_code` alone was not
+    /// enough: the agentic loop renders a failed result as a bare
+    /// `"Error: ..."` string and never serialises `data` at all.
+    #[tokio::test]
+    async fn the_exit_status_appears_in_the_text_the_model_reads() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = make_ctx_with_dir(dir.path());
+        let tool = BashTool::default();
+
+        let params = serde_json::json!({"command": "exit 42"});
+        let result = tool.execute(params, &ctx).await.expect("execute");
+
+        assert!(
+            result.output.contains("42"),
+            "the model reads `output`; an exit code only in `data` is invisible \
+             to it: {:?}",
+            result.output
+        );
+    }
+
+    /// Both streams survive alongside a non-zero exit. The failing case is a
+    /// compiler or test runner: its diagnostics go to stderr *and* it exits
+    /// non-zero, which is exactly when the model most needs to read them.
+    #[tokio::test]
+    async fn output_of_a_failing_command_is_not_discarded() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = make_ctx_with_dir(dir.path());
+        let tool = BashTool::default();
+
+        let params = serde_json::json!({
+            "command": "echo to-stdout; echo to-stderr >&2; exit 3"
+        });
+        let result = tool.execute(params, &ctx).await.expect("execute");
+
+        assert!(result.success);
+        assert!(result.output.contains("to-stdout"), "{:?}", result.output);
+        assert!(result.output.contains("to-stderr"), "{:?}", result.output);
+        assert!(result.output.contains('3'), "{:?}", result.output);
+    }
+
+    /// A successful command stays clean — no status noise on the hot path.
+    #[tokio::test]
+    async fn a_zero_exit_carries_no_status_marker() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = make_ctx_with_dir(dir.path());
+        let tool = BashTool::default();
+
+        let params = serde_json::json!({"command": "echo hello"});
+        let result = tool.execute(params, &ctx).await.expect("execute");
+
+        assert!(result.success);
+        assert!(
+            !result.output.contains("exit status"),
+            "exit 0 is the overwhelming majority of calls; marking every one \
+             of them is pure token cost: {:?}",
+            result.output
+        );
+        assert_eq!(result.data.expect("data")["exit_code"], 0);
+    }
+
+    // === The other direction: a tool that genuinely could not run ===
+    //
+    // `success: false` has to keep meaning something. These pin the cases
+    // where the tool really did fail, so widening "ran and exited non-zero"
+    // into success cannot quietly swallow them too.
+
+    #[tokio::test]
+    async fn a_command_that_cannot_be_spawned_is_a_tool_failure() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = make_ctx_with_dir(dir.path());
+        let tool = BashTool::default();
+
+        // A working_dir that does not exist: the shell is never started, so
+        // there is no exit status to report and nothing ran.
+        let params = serde_json::json!({
+            "command": "echo hello",
+            "working_dir": "no/such/directory"
+        });
+        let result = tool.execute(params, &ctx).await.expect("execute");
+
+        assert!(
+            !result.success,
+            "nothing ran, so this is a tool failure, not a command result"
+        );
+        assert!(result.error.is_some());
     }
 
     #[tokio::test]

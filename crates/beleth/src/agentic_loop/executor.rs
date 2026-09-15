@@ -679,23 +679,10 @@ impl LoopExecutor {
                 let result = self.execute_single_tool(call, &tool_ctx, &event_tx).await;
 
                 // Add tool result to conversation context
-                let content = match &result.status {
-                    ResultStatus::Success | ResultStatus::PartialSuccess { .. } => {
-                        serde_json::to_string(&result.data).unwrap_or_default()
-                    },
-                    ResultStatus::Empty => "No results found.".to_string(),
-                    ResultStatus::Failed { .. } => {
-                        format!(
-                            "Error: {}",
-                            result
-                                .data
-                                .get("error")
-                                .and_then(|e| e.as_str())
-                                .unwrap_or("Tool execution failed")
-                        )
-                    },
-                };
-                messages.push(Message::tool_result(&call.id, &content));
+                messages.push(Message::tool_result(
+                    &call.id,
+                    &tool_result_content(&result),
+                ));
 
                 agentic_results.push(result);
             }
@@ -949,10 +936,22 @@ impl LoopExecutor {
                 // Always include the tool's output in data so the model can see it
                 let data = match result.data {
                     Some(mut d) => {
-                        // If data exists but doesn't have output, add it
-                        if d.get("output").is_none() && d.get("content").is_none() {
-                            if let Some(obj) = d.as_object_mut() {
+                        let needs_output = d.get("output").is_none() && d.get("content").is_none();
+                        // A tool that reported an error AND attached data used
+                        // to lose the error entirely: the branch below only
+                        // synthesises `{"error": ..}` when there is no data at
+                        // all, and `tool_result_content` reads the message from
+                        // `data`. The model got "Tool execution failed" and
+                        // nothing else. Inert for every tool in the current
+                        // registry — `bash` was the only one taking this path,
+                        // and no longer does — but the trap is worth closing.
+                        let needs_error = result.error.is_some() && d.get("error").is_none();
+                        if let Some(obj) = d.as_object_mut() {
+                            if needs_output {
                                 obj.insert("output".to_string(), serde_json::json!(result.output));
+                            }
+                            if needs_error {
+                                obj.insert("error".to_string(), serde_json::json!(result.error));
                             }
                         }
                         d
@@ -1089,6 +1088,37 @@ impl LoopExecutor {
             );
         }
         ctx
+    }
+}
+
+/// Renders a tool result as the `tool` message the model will read.
+///
+/// Extracted so it can be tested directly: this is the last point at which
+/// anything a tool learned can be dropped, and a drop here is invisible
+/// everywhere else — the `AgenticToolResult` still carries the data, the
+/// events still report it, and only the model goes without. See
+/// infernum-framework#20.
+fn tool_result_content(result: &AgenticToolResult) -> String {
+    match &result.status {
+        ResultStatus::Success | ResultStatus::PartialSuccess { .. } => {
+            serde_json::to_string(&result.data).unwrap_or_default()
+        },
+        ResultStatus::Empty => "No results found.".to_string(),
+        ResultStatus::Failed { .. } => match result.data.get("error").and_then(|e| e.as_str()) {
+            Some(message) => format!("Error: {message}"),
+            // Last line of defence. "Tool execution failed" on its own tells
+            // the model nothing it can act on, and whatever the tool DID
+            // learn is sitting right here in `data`. Prefer handing that over
+            // to inventing a placeholder — a message that says nothing is how
+            // infernum-framework#20 stayed invisible.
+            None if !result.data.is_null() => {
+                format!(
+                    "Error: {}",
+                    serde_json::to_string(&result.data).unwrap_or_default()
+                )
+            },
+            None => "Error: Tool execution failed".to_string(),
+        },
     }
 }
 
@@ -1588,6 +1618,54 @@ mod tests {
                 .is_none(),
             "an opted-out executor must send nothing"
         );
+    }
+
+    // === What the model actually reads back (infernum-framework#20) ===
+
+    fn agentic_result(status: ResultStatus, data: serde_json::Value) -> AgenticToolResult {
+        AgenticToolResult {
+            call_id: "call_1".to_string(),
+            tool_name: "bash".to_string(),
+            status,
+            data,
+            confidence: Confidence::Measured,
+            latency_ms: 1,
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn a_failed_tool_result_still_names_what_went_wrong() {
+        // The `Failed` branch renders only `data["error"]`. A tool that fails
+        // without putting its message there vanishes into a generic string —
+        // which is what `bash` did, because it reported its message on
+        // `ToolResult.error` while also setting `data`, and `data` is what
+        // this branch reads.
+        let content = tool_result_content(&agentic_result(
+            ResultStatus::Failed { recoverable: true },
+            serde_json::json!({"exit_code": 1, "command": "false", "output": "(no output)"}),
+        ));
+
+        assert!(
+            !content.contains("Tool execution failed"),
+            "the model must be told what happened, not handed a placeholder \
+             while the real detail sits unread in `data`: {content:?}"
+        );
+        assert!(
+            content.contains('1'),
+            "the exit code was known and must survive to the model: {content:?}"
+        );
+    }
+
+    #[test]
+    fn a_successful_tool_result_serialises_its_data() {
+        // Control: the success path was never broken, and the fix must not
+        // change it.
+        let content = tool_result_content(&agentic_result(
+            ResultStatus::Success,
+            serde_json::json!({"output": "hello"}),
+        ));
+        assert!(content.contains("hello"), "{content:?}");
     }
 
     #[test]
