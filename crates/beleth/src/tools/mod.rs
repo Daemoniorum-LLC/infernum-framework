@@ -4,7 +4,6 @@
 //! and execute code — the foundation for self-modifying capability.
 
 mod bash;
-mod claude_code;
 mod edit_file;
 mod list_files;
 mod read_file;
@@ -12,7 +11,6 @@ mod search_files;
 mod write_file;
 
 pub use bash::BashTool;
-pub use claude_code::ClaudeCodeTool;
 pub use edit_file::EditFileTool;
 pub use list_files::ListFilesTool;
 pub use read_file::ReadFileTool;

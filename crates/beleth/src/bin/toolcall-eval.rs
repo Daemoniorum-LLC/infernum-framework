@@ -309,8 +309,9 @@ impl PhaseA {
 ///   a phrase its own objective, "explain why reading the pipeline's status
 ///   would have been misleading", forces a correct answer to write. The run
 ///   that scored correct differed only by being *less* complete.
-/// - `claude-code-unregistered` demanded the literal `"0"`; the model answered
-///   "is not called anywhere else in the repository" and scored zero.
+/// - `claude-code-unregistered` (since replaced by `detector-override-unused`,
+///   see #27) demanded the literal `"0"`; the model answered "is not called
+///   anywhere else in the repository" and scored zero.
 /// - `grammar-unused` and `supervisor-spawns-nothing` required `"no"`, which
 ///   matches inside `"not"`, `"none"` and `"cannot"` — so
 ///   *"Yes. Beleth sets a grammar ... although I could not confirm every call
@@ -333,6 +334,19 @@ struct Task {
     /// Exact value required on the `ANSWER:` line, compared case-insensitively
     /// after trimming. `None` leaves the task graded by the marker lists alone.
     expect_answer: Option<&'static str>,
+    /// A symbol the objective asserts exists in the repository under test.
+    ///
+    /// Checked against `--repo` before the task runs. `claude-code-unregistered`
+    /// asked the model to count call sites of `ToolRegistry::with_all_tools`;
+    /// when that constructor was deleted (infernum-framework#27) the objective
+    /// began asserting something false, and nothing would have noticed — the
+    /// model would simply have failed a task whose premise had evaporated, and
+    /// the miss would have been recorded against the model.
+    ///
+    /// `None` for tasks whose premise is not a single greppable symbol:
+    /// `clap-collision` is about two flags competing for a short option, and
+    /// `exit-code-discipline` makes no claim about the repository at all.
+    asserts_symbol: Option<&'static str>,
     /// Literal identifiers that must appear somewhere in the answer.
     ///
     /// For source-level tokens a correct answer cannot avoid naming — a flag,
@@ -426,6 +440,7 @@ const TASKS: &[Task] = &[
                     letter they both wanted. Name both flags in your explanation, and end your reply \
                     with that letter on its own line as `ANSWER: <letter>` — for example `ANSWER: x`.",
         expect_answer: Some("s"),
+        asserts_symbol: None,
         // Both long flags are literal identifiers in main.rs; a correct answer
         // cannot name the collision without naming them.
         expect_all: &["system", "stream"],
@@ -441,19 +456,37 @@ const TASKS: &[Task] = &[
                     grammar on a generation request. Say how you checked, and end your reply with \
                     your verdict on its own line as `ANSWER: yes` or `ANSWER: no`.",
         expect_answer: Some("no"),
+        asserts_symbol: Some("GrammarConstraint"),
         expect_all: &[],
         expect_none: &[],
         legacy_expect_all: &["no"],
         legacy_expect_none: &["yes, beleth sets", "beleth does set"],
         max_iterations: 25,
     },
+    // Successor to `claude-code-unregistered`, which asked the same question
+    // about `ToolRegistry::with_all_tools` and `ClaudeCodeTool`. Both were
+    // removed in infernum-framework#27, which made that objective assert a
+    // fact that is no longer true.
+    //
+    // Rewritten rather than deleted so class J keeps five tasks and the
+    // 13/25 baseline in docs/OFFLOAD-RELIABILITY-RESULT.md stays comparable:
+    // same shape (count call sites -> a number), same expected answer, same
+    // iteration budget.
+    //
+    // `LoopExecutor::with_detector` was verified unreferenced in the pinned
+    // eval fixture at 95097d5 BEFORE this task was written, by two independent
+    // methods — an AST-ish scan of every `pub fn` in the workspace, and a
+    // whole-tree `grep -w` across all file types outside .git and target.
+    // Both return exactly one occurrence: the definition itself.
     Task {
-        id: "claude-code-unregistered",
-        objective: "In crates/beleth, the ToolRegistry has a constructor named with_all_tools which \
-                    registers ClaudeCodeTool. Determine whether anything in this repository actually \
-                    calls with_all_tools. End your reply with the number of call sites outside its \
-                    own definition, on its own line, as `ANSWER: <number>`.",
+        id: "detector-override-unused",
+        objective: "In crates/beleth, LoopExecutor has a builder method named with_detector which \
+                    replaces the default tool-call detector. Determine whether anything in this \
+                    repository actually calls with_detector. End your reply with the number of \
+                    call sites outside its own definition, on its own line, as \
+                    `ANSWER: <number>`.",
         expect_answer: Some("0"),
+        asserts_symbol: Some("with_detector"),
         expect_all: &[],
         expect_none: &[],
         legacy_expect_all: &["0"],
@@ -468,6 +501,7 @@ const TASKS: &[Task] = &[
                     for, and end your reply with your verdict on its own line as `ANSWER: yes` or \
                     `ANSWER: no`.",
         expect_answer: Some("no"),
+        asserts_symbol: Some("LoopExecutor"),
         expect_all: &[],
         expect_none: &[],
         legacy_expect_all: &["no"],
@@ -481,6 +515,7 @@ const TASKS: &[Task] = &[
                     the pipeline's status would have been misleading, and end your reply with that \
                     number on its own line as `ANSWER: <number>`.",
         expect_answer: Some("1"),
+        asserts_symbol: None,
         // The explanation is required by the objective but deliberately not
         // scored: matching a one-sentence justification by substring is the
         // defect #24 exists to remove, and every candidate marker here either
@@ -1481,6 +1516,73 @@ fn assert_uncontaminated(repo: &std::path::Path) {
     }
 }
 
+/// Whether `symbol` appears as a whole word in `repo`'s own source.
+///
+/// Split out from [`assert_premises_hold`] so the check itself is testable:
+/// that function ends in `process::exit`, which a test cannot survive, and an
+/// untested guard is the thing this harness exists to be suspicious of.
+///
+/// Whole-word, so `with_detector` is not satisfied by `with_detector_foo`.
+/// Conservative on failure: if `grep` cannot run at all, report absent, so a
+/// broken check refuses the run rather than waving it through.
+///
+/// # What is excluded, and why it matters
+///
+/// This harness file and any `fixtures/` directory are skipped. Both mention
+/// symbols without those symbols existing: `toolcall-eval.rs` carries the task
+/// text that names them, and `tests/fixtures/` holds captured model output
+/// from earlier runs. Counting either as evidence would make the guard
+/// self-satisfying — a task could assert a symbol, be checked against a tree
+/// where the only occurrence is its own objective, and pass. **The harness
+/// naming a symbol is never evidence that the symbol exists.**
+fn repo_contains_symbol(repo: &std::path::Path, symbol: &str) -> bool {
+    std::process::Command::new("grep")
+        .args([
+            "-rqw",
+            "--binary-files=without-match",
+            "--exclude-dir=.git",
+            "--exclude-dir=target",
+            "--exclude-dir=fixtures",
+            "--exclude=toolcall-eval.rs",
+            symbol,
+        ])
+        .arg(repo)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Refuses a task whose objective asserts a symbol the repo does not contain.
+///
+/// A task premise can go stale silently: the symbol it asks about gets deleted,
+/// the objective keeps asserting it exists, and every run records a model miss
+/// on a question that no longer has an answer. That is what
+/// `claude-code-unregistered` would have become in infernum-framework#27.
+///
+/// Refusing rather than warning, for the same reason
+/// [`assert_uncontaminated`] refuses: a measurement that silently scored a
+/// stale task would report the model's failure to answer an unanswerable
+/// question.
+fn assert_premises_hold(repo: &std::path::Path, tasks: &[&Task]) {
+    for task in tasks {
+        let Some(symbol) = task.asserts_symbol else {
+            continue;
+        };
+        if !repo_contains_symbol(repo, symbol) {
+            eprintln!(
+                "\nREFUSING to run Phase B: task `{}` asserts that `{symbol}` exists in\n{},\n\
+                 and it does not.\n\n\
+                 The task's premise has gone stale — every run would record a model miss on a\n\
+                 question with no answer. Rewrite the task against a symbol that is actually\n\
+                 there, or point --repo at the checkout the task was written for.\n",
+                task.id,
+                repo.display()
+            );
+            std::process::exit(2);
+        }
+    }
+}
+
 async fn run_phase_b(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseB {
     assert_uncontaminated(&args.repo);
     let mut agg = PhaseB::default();
@@ -1490,6 +1592,8 @@ async fn run_phase_b(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseB {
         .iter()
         .filter(|t| args.task.as_deref().is_none_or(|id| t.id == id))
         .collect();
+
+    assert_premises_hold(&args.repo, &selected);
 
     for task in selected {
         for run in 0..args.runs {
@@ -2504,12 +2608,14 @@ mod tests {
     }
 
     /// The under-credit case from PR #86: the model answered in words and the
-    /// rubric wanted a digit.
+    /// rubric wanted a digit. The wording is the shape of answer the 14B
+    /// actually gave, carried over to this task's successor.
     #[test]
     fn a_number_stated_in_words_now_scores_when_the_answer_line_carries_it() {
-        let t = task("claude-code-unregistered");
-        let answer = "The constructor `with_all_tools` is only defined in `src/tool.rs` and is \
-                      not called anywhere else in the repository.\nANSWER: 0";
+        let t = task("detector-override-unused");
+        let answer = "The method `with_detector` is only defined in \
+                      `src/agentic_loop/executor.rs` and is not called anywhere else in the \
+                      repository.\nANSWER: 0";
         let (current, _) = score(t, answer, true);
         assert!(current);
     }
@@ -2529,6 +2635,90 @@ mod tests {
         let (current, legacy) = score(t, "ANSWER: no", false);
         assert!(!current);
         assert!(!legacy);
+    }
+
+    // === Stale-premise guard (#27) ===
+
+    /// A throwaway tree with one source file, so the predicate is tested
+    /// against what it is designed to scan — a repository — rather than
+    /// against this checkout, which also contains the task text naming the
+    /// very symbols under test.
+    fn tree_containing(body: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("src")).expect("mkdir");
+        std::fs::write(dir.path().join("src/lib.rs"), body).expect("write");
+        dir
+    }
+
+    #[test]
+    fn the_premise_guard_sees_a_symbol_that_is_present() {
+        let dir = tree_containing("pub fn with_detector() {}\n");
+        assert!(repo_contains_symbol(dir.path(), "with_detector"));
+    }
+
+    #[test]
+    fn the_premise_guard_notices_a_symbol_that_is_absent() {
+        // The shape of infernum-framework#27: the task keeps asking about
+        // `with_all_tools` after the constructor has been deleted.
+        let dir = tree_containing("pub fn with_code_tools() {}\n");
+        assert!(!repo_contains_symbol(dir.path(), "with_all_tools"));
+    }
+
+    #[test]
+    fn the_premise_guard_matches_whole_words_only() {
+        let dir = tree_containing("pub fn with_detector_extended() {}\n");
+        assert!(
+            !repo_contains_symbol(dir.path(), "with_detector"),
+            "a longer name must not satisfy a premise about the shorter one"
+        );
+    }
+
+    #[test]
+    fn a_symbol_named_only_by_the_harness_is_not_evidence() {
+        // The self-satisfying case. A tree whose only mention of the symbol is
+        // a copy of this harness must not count as containing it.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("toolcall-eval.rs"),
+            "objective: \"... calls with_all_tools ...\"",
+        )
+        .expect("write");
+        assert!(!repo_contains_symbol(dir.path(), "with_all_tools"));
+    }
+
+    #[test]
+    fn a_symbol_surviving_only_in_captured_output_is_not_evidence() {
+        // `tests/fixtures/issue_70_14b_completions.json` still contains
+        // `with_all_tools`, because it records what a model said in 2026-09.
+        // That is history, not a symbol table.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("fixtures")).expect("mkdir");
+        std::fs::write(
+            dir.path().join("fixtures/captures.json"),
+            "{\"text\": \"calls with_all_tools\"}",
+        )
+        .expect("write");
+        assert!(!repo_contains_symbol(dir.path(), "with_all_tools"));
+    }
+
+    #[test]
+    fn every_asserted_symbol_is_present_in_this_workspace() {
+        // Catches what #27 hit: a symbol deleted from the workspace while a
+        // task kept asserting it. Scans the workspace, not just this crate,
+        // because `grammar-unused` asserts a type from infernum-core.
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(std::path::Path::parent)
+            .expect("crates/<crate> has a workspace root two levels up");
+        for t in TASKS {
+            if let Some(symbol) = t.asserts_symbol {
+                assert!(
+                    repo_contains_symbol(workspace, symbol),
+                    "{}: asserts `{symbol}`, which is not in this workspace",
+                    t.id
+                );
+            }
+        }
     }
 
     #[test]

@@ -192,8 +192,7 @@ pub use tool::{
     ValidationResult,
 };
 pub use tools::{
-    BashTool, ClaudeCodeTool, EditFileTool, ListFilesTool, ReadFileTool, SearchFilesTool,
-    WriteFileTool,
+    BashTool, EditFileTool, ListFilesTool, ReadFileTool, SearchFilesTool, WriteFileTool,
 };
 pub use tracing_spans::{
     agent_execution_span, context_optimization_span, llm_call_span, memory_operation_span,

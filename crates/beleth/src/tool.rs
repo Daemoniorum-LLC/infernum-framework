@@ -636,9 +636,8 @@ impl ToolRegistry {
 
     /// Creates a registry with built-in tools plus code-relevant tools.
     ///
-    /// Includes file I/O (read, write, edit), search (list, grep), and
-    /// shell execution. Does NOT include `claude_code` — use
-    /// [`with_all_tools`](Self::with_all_tools) for that.
+    /// Includes file I/O (read, write, edit), search (list, grep), and shell
+    /// execution. This is the registry the agentic loop runs on.
     #[must_use]
     pub fn with_code_tools() -> Self {
         use crate::tools::{
@@ -652,18 +651,6 @@ impl ToolRegistry {
         registry.register(Arc::new(ListFilesTool));
         registry.register(Arc::new(SearchFilesTool));
         registry.register(Arc::new(BashTool::default()));
-        registry
-    }
-
-    /// Creates a registry with all tools, including Claude Code delegation.
-    ///
-    /// Requires the `claude` CLI to be installed and on `$PATH`.
-    #[must_use]
-    pub fn with_all_tools() -> Self {
-        use crate::tools::ClaudeCodeTool;
-
-        let mut registry = Self::with_code_tools();
-        registry.register(Arc::new(ClaudeCodeTool::new()));
         registry
     }
 
