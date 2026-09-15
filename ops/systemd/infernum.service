@@ -1,0 +1,48 @@
+# Infernum embedding server, supervised by systemd.
+#
+# A user unit (`~/.config/systemd/user/`) by default; see ops/systemd/README.md
+# for the system-unit variant and for why the binary path matters.
+#
+# Replace the three marked paths, then:
+#     systemctl --user daemon-reload
+#     systemctl --user enable --now infernum.service
+
+[Unit]
+Description=Infernum embedding server (:11434)
+Documentation=https://github.com/Daemoniorum-LLC/infernum-framework
+
+# A crash LOOP stops and alerts instead of restarting forever: 5 starts inside
+# 120s drops the unit into `failed` and fires OnFailure. A genuine crash loop
+# trips this in seconds; a legitimate restart is one start and cannot approach
+# it. Drop the OnFailure line if you do not install the alert unit.
+StartLimitIntervalSec=120
+StartLimitBurst=5
+OnFailure=infernum-alert.service
+
+[Service]
+Type=simple
+
+# CHANGE ME. Point at an INSTALLED binary, not at a build directory such as
+# target/release. A unit pointing into a git checkout runs whatever that
+# checkout last compiled, on whatever branch it happened to be on, and the
+# resulting failures look like anything except a stale binary.
+ExecStart=/usr/local/bin/infernum serve --port 11434 --host 127.0.0.1 --model /var/lib/infernum/models/nomic-embed-text-v1.5
+
+# Explicit, never inherited: a unit's environment should not depend on which
+# shell happened to start it.
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+
+# `always`, not `on-failure`. A clean exit that nobody asked for is exactly the
+# outage supervision exists to prevent, and a deliberate `systemctl stop` is a
+# state change rather than an exit, so it is never restarted.
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+
+# CHANGE ME. Appended, never truncated, so a restart does not erase the
+# evidence of why it restarted.
+StandardOutput=append:/var/log/infernum/infernum.log
+StandardError=append:/var/log/infernum/infernum.log
+
+[Install]
+WantedBy=default.target
