@@ -514,6 +514,369 @@ struct PhaseB {
 }
 
 // ===========================================================================
+// Phase D — deterministic, machine-checked tasks
+// ===========================================================================
+
+/// A task whose correctness is decided by a command's exit status.
+///
+/// Phase B asks investigative questions and grades the prose that comes back.
+/// That is the hardest class to get right and the hardest to score — four of
+/// its five rubrics were provably broken (infernum-framework#24). Phase D asks
+/// for *work* instead, in a sandbox, and checks the result by running
+/// something.
+///
+/// The distinction is the whole point of the measurement, per
+/// `docs/OFFLOAD-RELIABILITY-PRE-REGISTRATION.md`: a worker that is 60%
+/// correct on work a machine can check may be worth having, where one that is
+/// 90% correct on work only a human can check may not be, because the review
+/// cost lands on the human either way.
+struct DetTask {
+    id: &'static str,
+    /// What the model is asked to do. Paths are relative to the sandbox,
+    /// which is its working directory.
+    objective: &'static str,
+    /// Fixture written fresh for every run: `(relative path, contents)`.
+    files: &'static [(&'static str, &'static str)],
+    /// Files that must be byte-identical when the run finishes.
+    ///
+    /// Compared in Rust against a snapshot taken before the run — deliberately
+    /// **not** a check inside `verify`, because `verify` runs in the sandbox
+    /// the model has been editing. This is what stops "make the tests pass"
+    /// being solved by rewriting the tests.
+    immutable: &'static [&'static str],
+    /// Shell command run in the sandbox afterwards. Exit 0 is a pass.
+    verify: &'static str,
+    /// A hand-written correct solution, as whole-file replacements.
+    ///
+    /// Never shown to the model, and never used by a measurement run — which
+    /// is why it is dead code outside the test build. Its job is to prove the
+    /// task is well-formed: `every_check_passes_on_its_reference_solution`
+    /// runs it in CI, because a check nothing can satisfy reports a free
+    /// failure exactly as a check that passes on the untouched fixture
+    /// reports a free pass. It lives beside the task rather than in the test
+    /// module so that adding a task without a reference solution is a
+    /// compile error rather than an omission nobody notices.
+    #[cfg_attr(not(test), allow(dead_code))]
+    reference: &'static [(&'static str, &'static str)],
+    max_iterations: u32,
+}
+
+/// Why a run did not pass.
+///
+/// Mandatory on every miss. The 6/15 headline from INFERNUM-17 hid three
+/// different causes behind one number, and the pre-registration forbids that
+/// being possible again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+enum MissCause {
+    /// The check ran and rejected the model's work.
+    Model,
+    /// The model edited a file the task told it not to touch.
+    ///
+    /// Distinct from [`Model`](MissCause::Model) because it is a different
+    /// failure — not "could not do the work" but "broke the rules of the
+    /// exercise", which is worth seeing separately when deciding whether to
+    /// hand work over unattended.
+    ModelTamperedWithCheck,
+    /// The loop hit its iteration or tool-call budget without concluding.
+    ModelRanOutOfBudget,
+    /// The run never got a fair attempt: executor error, or the verification
+    /// command could not be spawned. Excluded from the pass rate.
+    Harness,
+}
+
+const DET_TASKS: &[DetTask] = &[
+    // -- 1. make a broken crate compile ------------------------------------
+    DetTask {
+        id: "fix-compile-error",
+        objective: "The Rust crate in this directory does not compile. Fix it so that \
+                    `cargo test --offline` passes. Do not change anything in tests/.",
+        files: &[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"rect\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            ),
+            (
+                "src/lib.rs",
+                "pub struct Rect {\n    pub w: u32,\n    pub h: u32,\n}\n\n\
+                 impl Rect {\n    \
+                 pub fn new(w: u32, h: u32) -> Self {\n        Self { w, h }\n    }\n\n    \
+                 pub fn area(&self) -> u32 {\n        self.w * self.h\n    }\n\n    \
+                 pub fn describe(&self) -> String {\n        self.area()\n    }\n}\n",
+            ),
+            (
+                "tests/spec.rs",
+                "use rect::Rect;\n\n\
+                 #[test]\nfn describes_its_area() {\n    \
+                 assert_eq!(Rect::new(3, 4).describe(), \"12\");\n}\n",
+            ),
+        ],
+        immutable: &["tests/spec.rs"],
+        verify: "cargo test --offline -q",
+        reference: &[(
+            "src/lib.rs",
+            "pub struct Rect {\n    pub w: u32,\n    pub h: u32,\n}\n\n\
+             impl Rect {\n    \
+             pub fn new(w: u32, h: u32) -> Self {\n        Self { w, h }\n    }\n\n    \
+             pub fn area(&self) -> u32 {\n        self.w * self.h\n    }\n\n    \
+             pub fn describe(&self) -> String {\n        self.area().to_string()\n    }\n}\n",
+        )],
+        max_iterations: 20,
+    },
+    // -- 2. implement a stub against a spec --------------------------------
+    DetTask {
+        id: "implement-stub",
+        objective: "In this Rust crate, src/lib.rs has a function `distinct_words` that is \
+                    unimplemented. Implement it so that `cargo test --offline` passes. Do not \
+                    change anything in tests/.",
+        files: &[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"wordcount\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            ),
+            (
+                "src/lib.rs",
+                "/// Returns how many distinct words `text` contains, comparing words\n\
+                 /// case-insensitively. Words are separated by whitespace.\n\
+                 pub fn distinct_words(text: &str) -> usize {\n    \
+                 todo!(\"implement distinct_words\")\n}\n",
+            ),
+            (
+                "tests/spec.rs",
+                "use wordcount::distinct_words;\n\n\
+                 #[test]\nfn ignores_case() {\n    \
+                 assert_eq!(distinct_words(\"the The tHe cat\"), 2);\n}\n\n\
+                 #[test]\nfn counts_each_word_once() {\n    \
+                 assert_eq!(distinct_words(\"a b c a\"), 3);\n}\n\n\
+                 #[test]\nfn empty_text_has_no_words() {\n    \
+                 assert_eq!(distinct_words(\"\"), 0);\n}\n",
+            ),
+        ],
+        immutable: &["tests/spec.rs"],
+        verify: "cargo test --offline -q",
+        reference: &[(
+            "src/lib.rs",
+            "/// Returns how many distinct words `text` contains, comparing words\n\
+             /// case-insensitively. Words are separated by whitespace.\n\
+             pub fn distinct_words(text: &str) -> usize {\n    \
+             let mut seen: Vec<String> = Vec::new();\n    \
+             for word in text.split_whitespace() {\n        \
+             let word = word.to_lowercase();\n        \
+             if !seen.contains(&word) {\n            seen.push(word);\n        }\n    }\n    \
+             seen.len()\n}\n",
+        )],
+        max_iterations: 20,
+    },
+    // -- 3. a mechanical rename across several files -----------------------
+    DetTask {
+        id: "rename-symbol",
+        objective: "In this Rust crate, the function `legacy_slug` is to be renamed to \
+                    `make_slug`. Rename it and update every caller, so that \
+                    `cargo test --offline` passes and the name `legacy_slug` no longer \
+                    appears anywhere under src/. Do not change anything in tests/.",
+        files: &[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"slugs\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            ),
+            (
+                "src/lib.rs",
+                "pub mod parse;\npub mod render;\n\n\
+                 pub fn legacy_slug(s: &str) -> String {\n    \
+                 s.to_lowercase().replace(' ', \"-\")\n}\n",
+            ),
+            (
+                "src/parse.rs",
+                "pub fn parse_title(s: &str) -> String {\n    crate::legacy_slug(s)\n}\n",
+            ),
+            (
+                "src/render.rs",
+                "pub fn render_link(s: &str) -> String {\n    \
+                 format!(\"/{}\", crate::legacy_slug(s))\n}\n",
+            ),
+            (
+                "tests/spec.rs",
+                "#[test]\nfn the_renamed_function_exists() {\n    \
+                 assert_eq!(slugs::make_slug(\"Hello World\"), \"hello-world\");\n}\n\n\
+                 #[test]\nfn callers_still_work() {\n    \
+                 assert_eq!(slugs::render::render_link(\"A B\"), \"/a-b\");\n    \
+                 assert_eq!(slugs::parse::parse_title(\"A B\"), \"a-b\");\n}\n",
+            ),
+        ],
+        immutable: &["tests/spec.rs"],
+        verify: "cargo test --offline -q && ! grep -rq legacy_slug src/",
+        reference: &[
+            (
+                "src/lib.rs",
+                "pub mod parse;\npub mod render;\n\n\
+                 pub fn make_slug(s: &str) -> String {\n    \
+                 s.to_lowercase().replace(' ', \"-\")\n}\n",
+            ),
+            (
+                "src/parse.rs",
+                "pub fn parse_title(s: &str) -> String {\n    crate::make_slug(s)\n}\n",
+            ),
+            (
+                "src/render.rs",
+                "pub fn render_link(s: &str) -> String {\n    \
+                 format!(\"/{}\", crate::make_slug(s))\n}\n",
+            ),
+        ],
+        max_iterations: 25,
+    },
+    // -- 4. a config sweep with a deliberate distractor --------------------
+    DetTask {
+        id: "config-repoint",
+        objective: "The TOML files under services/ configure several services. Every service \
+                    currently pointing at the endpoint https://old.internal/v1 must be \
+                    repointed to https://new.internal/v2. Leave every other setting, and any \
+                    endpoint that is not https://old.internal/v1, exactly as it is.",
+        files: &[
+            (
+                "services/alpha.toml",
+                "[service]\nname = \"alpha\"\nendpoint = \"https://old.internal/v1\"\n\
+                 timeout_secs = 30\nretries = 3\n",
+            ),
+            (
+                "services/beta.toml",
+                "[service]\nname = \"beta\"\nendpoint = \"https://old.internal/v1\"\n\
+                 timeout_secs = 45\nretries = 1\n",
+            ),
+            (
+                "services/gamma.toml",
+                "[service]\nname = \"gamma\"\nendpoint = \"https://other.internal/v1\"\n\
+                 timeout_secs = 10\nretries = 5\n",
+            ),
+        ],
+        // gamma is the distractor: a blanket sweep that rewrites every
+        // endpoint passes a naive grep but fails this.
+        immutable: &["services/gamma.toml"],
+        verify: "test \"$(grep -rl 'https://old.internal/v1' services/ | wc -l)\" = 0 && \
+                 test \"$(grep -rl 'https://new.internal/v2' services/ | wc -l)\" = 2 && \
+                 grep -q 'timeout_secs = 30' services/alpha.toml && \
+                 grep -q 'retries = 1' services/beta.toml",
+        reference: &[
+            (
+                "services/alpha.toml",
+                "[service]\nname = \"alpha\"\nendpoint = \"https://new.internal/v2\"\n\
+                 timeout_secs = 30\nretries = 3\n",
+            ),
+            (
+                "services/beta.toml",
+                "[service]\nname = \"beta\"\nendpoint = \"https://new.internal/v2\"\n\
+                 timeout_secs = 45\nretries = 1\n",
+            ),
+        ],
+        max_iterations: 25,
+    },
+    // -- 5. restore exhaustiveness without a catch-all ---------------------
+    DetTask {
+        id: "exhaustive-match",
+        objective: "This Rust crate does not compile: a `match` no longer covers every variant \
+                    of the `Level` enum. Fix it so that `cargo test --offline` passes. Handle \
+                    the missing variant explicitly — do not add a catch-all `_` arm, because \
+                    that would silently swallow any variant added later. Do not change \
+                    anything in tests/.",
+        files: &[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"levels\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            ),
+            (
+                "src/lib.rs",
+                "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n\
+                 pub enum Level {\n    Debug,\n    Info,\n    Warn,\n    Error,\n}\n\n\
+                 pub fn label(level: Level) -> &'static str {\n    \
+                 match level {\n        \
+                 Level::Debug => \"debug\",\n        \
+                 Level::Info => \"info\",\n        \
+                 Level::Warn => \"warn\",\n    }\n}\n",
+            ),
+            (
+                "tests/spec.rs",
+                "use levels::{label, Level};\n\n\
+                 #[test]\nfn every_level_has_a_label() {\n    \
+                 assert_eq!(label(Level::Debug), \"debug\");\n    \
+                 assert_eq!(label(Level::Info), \"info\");\n    \
+                 assert_eq!(label(Level::Warn), \"warn\");\n    \
+                 assert_eq!(label(Level::Error), \"error\");\n}\n",
+            ),
+        ],
+        immutable: &["tests/spec.rs"],
+        verify: "cargo test --offline -q && ! grep -q '_ =>' src/lib.rs",
+        reference: &[(
+            "src/lib.rs",
+            "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n\
+             pub enum Level {\n    Debug,\n    Info,\n    Warn,\n    Error,\n}\n\n\
+             pub fn label(level: Level) -> &'static str {\n    \
+             match level {\n        \
+             Level::Debug => \"debug\",\n        \
+             Level::Info => \"info\",\n        \
+             Level::Warn => \"warn\",\n        \
+             Level::Error => \"error\",\n    }\n}\n",
+        )],
+        max_iterations: 25,
+    },
+];
+
+/// Outcome of one deterministic-task attempt.
+#[derive(Debug, Clone, Serialize)]
+struct DetResult {
+    id: String,
+    passed: bool,
+    /// Why not, when `passed` is false.
+    miss: Option<MissCause>,
+    turns: u32,
+    tool_calls: u32,
+    wall_ms: u128,
+    /// First 300 chars of the verification command's output, on a miss.
+    verify_output: Option<String>,
+}
+
+/// Aggregated Phase D metrics.
+#[derive(Debug, Default, Serialize)]
+struct PhaseD {
+    attempts: usize,
+    passed: usize,
+    /// Misses attributable to our plumbing, excluded from the pass rate.
+    harness_misses: usize,
+    results: Vec<DetResult>,
+}
+
+impl PhaseD {
+    /// Runs that gave the model a fair attempt.
+    fn scored(&self) -> usize {
+        self.attempts - self.harness_misses
+    }
+
+    /// Pass rate over scored runs. `None` when nothing was scored — an
+    /// undefined rate, not zero (see `PhaseA::malformed_rate`).
+    fn pass_rate(&self) -> Option<f64> {
+        (self.scored() > 0).then(|| self.passed as f64 / self.scored() as f64)
+    }
+}
+
+/// Lower and upper bounds of the 95% Wilson score interval.
+///
+/// Wilson rather than the normal approximation because at these sample sizes
+/// and pass rates the normal interval runs past 1.0 and understates the
+/// spread. Fixed in the pre-registration before any measurement.
+fn wilson_interval(passes: usize, n: usize) -> Option<(f64, f64)> {
+    if n == 0 {
+        return None;
+    }
+    let z = 1.959_964_f64;
+    let n_f = n as f64;
+    let p = passes as f64 / n_f;
+    let denom = 1.0 + z * z / n_f;
+    let centre = p + z * z / (2.0 * n_f);
+    let spread = z * ((p * (1.0 - p) / n_f) + z * z / (4.0 * n_f * n_f)).sqrt();
+    Some((
+        ((centre - spread) / denom).max(0.0),
+        ((centre + spread) / denom).min(1.0),
+    ))
+}
+
+// ===========================================================================
 // Phase C — fabricated tool output
 // ===========================================================================
 
@@ -679,6 +1042,7 @@ struct Report {
     phase_a: Option<PhaseA>,
     phase_b: Option<PhaseB>,
     phase_c: Option<PhaseC>,
+    phase_d: Option<PhaseD>,
 }
 
 // ===========================================================================
@@ -756,8 +1120,12 @@ fn parse_args() -> Result<Args, String> {
             },
             "--task" => {
                 let id = next(i)?;
-                if !TASKS.iter().any(|t| t.id == id) {
-                    let known: Vec<&str> = TASKS.iter().map(|t| t.id).collect();
+                let known: Vec<&str> = TASKS
+                    .iter()
+                    .map(|t| t.id)
+                    .chain(DET_TASKS.iter().map(|t| t.id))
+                    .collect();
+                if !known.contains(&id.as_str()) {
                     return Err(format!("--task: unknown id {id:?}; known: {known:?}"));
                 }
                 task = Some(id);
@@ -802,7 +1170,7 @@ fn parse_args() -> Result<Args, String> {
                      --api-base <URL>      OpenAI-compatible base (default http://localhost:8080/v1)\n\
                      --model <NAME>        model name sent in requests\n\
                      --repo <PATH>         repository the agentic tasks investigate\n\
-                     --phase a|b|c|all     which phase to run (default all)\n\
+                     --phase a|b|c|d|all   which phase to run (default all)\n\
                      --runs <N>            repetitions per item (default 1)\n\
                      --temperature <F>     sampling temperature (default 0.0)\n\
                      --json <PATH>         write the full report as JSON\n\
@@ -857,6 +1225,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let run_a = matches!(args.phase.as_str(), "a" | "all");
     let run_b = matches!(args.phase.as_str(), "b" | "all");
     let run_c = matches!(args.phase.as_str(), "c" | "all");
+    let run_d = matches!(args.phase.as_str(), "d" | "all");
 
     let phase_a = if run_a {
         Some(run_phase_a(&engine, &args).await)
@@ -890,6 +1259,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         print_phase_c(c);
     }
 
+    let phase_d = if run_d {
+        Some(run_phase_d(&engine, &args).await)
+    } else {
+        None
+    };
+
+    if let Some(d) = &phase_d {
+        print_phase_d(d);
+    }
+
     let report = Report {
         model: args.model.clone(),
         api_base: args.api_base.clone(),
@@ -899,6 +1278,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         phase_a,
         phase_b,
         phase_c,
+        phase_d,
     };
 
     if let Some(path) = &args.json {
@@ -1197,6 +1577,211 @@ async fn run_phase_b(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseB {
             correct_turns.iter().map(|t| *t as f64).sum::<f64>() / correct_turns.len() as f64;
         correct_turns.sort_unstable();
         agg.median_turns_correct = correct_turns[correct_turns.len() / 2] as f64;
+    }
+    agg
+}
+
+// ---------------------------------------------------------------------------
+// Phase D execution
+// ---------------------------------------------------------------------------
+
+/// Writes a task's fixture into a fresh directory.
+fn materialise(task: &DetTask, root: &std::path::Path) -> std::io::Result<()> {
+    for (rel, contents) in task.files {
+        let path = root.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, contents)?;
+    }
+    Ok(())
+}
+
+/// Applies the hand-written reference solution over a materialised fixture.
+///
+/// Test-only: a measurement run must never touch the answer.
+#[cfg_attr(not(test), allow(dead_code))]
+fn apply_reference(task: &DetTask, root: &std::path::Path) -> std::io::Result<()> {
+    for (rel, contents) in task.reference {
+        std::fs::write(root.join(rel), contents)?;
+    }
+    Ok(())
+}
+
+/// Runs a task's verification command in `root`.
+///
+/// `Ok(passed, output)` when the command ran; `Err` only when it could not be
+/// spawned at all, which is a harness failure rather than a model one.
+fn run_verify(task: &DetTask, root: &std::path::Path) -> std::io::Result<(bool, String)> {
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(task.verify)
+        .current_dir(root)
+        .output()?;
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    Ok((output.status.success(), text))
+}
+
+/// Contents of every file the task declares immutable, before the run.
+fn snapshot_immutable(task: &DetTask, root: &std::path::Path) -> BTreeMap<String, Vec<u8>> {
+    task.immutable
+        .iter()
+        .filter_map(|rel| {
+            std::fs::read(root.join(rel))
+                .ok()
+                .map(|bytes| ((*rel).to_string(), bytes))
+        })
+        .collect()
+}
+
+async fn run_phase_d(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseD {
+    let mut agg = PhaseD::default();
+
+    let selected: Vec<&DetTask> = DET_TASKS
+        .iter()
+        .filter(|t| args.task.as_deref().is_none_or(|id| t.id == id))
+        .collect();
+
+    for task in selected {
+        for run in 0..args.runs {
+            let started = Instant::now();
+            let id = format!("{}#{run}", task.id);
+
+            // A fresh sandbox per run. The model never sees this repository,
+            // so a task's answer cannot be read out of the harness — the
+            // failure mode `assert_uncontaminated` exists to prevent in
+            // Phase B is structurally absent here.
+            let dir = std::env::temp_dir()
+                .join(format!("toolcall-eval-d-{}", uuid::Uuid::new_v4().simple()));
+            if let Err(e) = std::fs::create_dir_all(&dir).and_then(|()| materialise(task, &dir)) {
+                eprintln!("  {id:28} sandbox setup failed: {e}");
+                agg.attempts += 1;
+                agg.harness_misses += 1;
+                agg.results.push(DetResult {
+                    id,
+                    passed: false,
+                    miss: Some(MissCause::Harness),
+                    turns: 0,
+                    tool_calls: 0,
+                    wall_ms: started.elapsed().as_millis(),
+                    verify_output: Some(format!("sandbox setup failed: {e}")),
+                });
+                continue;
+            }
+            let before = snapshot_immutable(task, &dir);
+
+            let tools = Arc::new(ToolRegistry::with_code_tools());
+            let config = ExecutorConfig::new(format!("det-{}-{run}", task.id))
+                .with_system_prompt(
+                    "You are a coding assistant working in a repository. Make the change you \
+                     are asked for by editing real files with the tools, then verify your work.",
+                )
+                .with_working_dir(&dir)
+                .with_autonomy(
+                    AutonomyGrant::builder()
+                        .allow(ToolPattern::Tool("*".to_string()))
+                        .build(),
+                )
+                .with_tool_call_grammar(args.grammar)
+                .with_loop_config(LoopConfig {
+                    max_iterations: task.max_iterations,
+                    max_tool_calls: task.max_iterations * 3,
+                    detect_implicit_signals: false,
+                    ..LoopConfig::default()
+                })
+                .with_sampling(SamplingParams {
+                    temperature: args.temperature,
+                    max_tokens: 1024,
+                    ..SamplingParams::default()
+                });
+
+            let dyn_engine: Arc<dyn InferenceEngine> =
+                Arc::clone(engine) as Arc<dyn InferenceEngine>;
+            let executor = LoopExecutor::new(dyn_engine, tools, config);
+            let (tx, mut rx) = mpsc::channel::<LoopEvent>(512);
+            let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+
+            let summary = executor.run(task.objective, tx).await;
+            let _ = drain.await;
+
+            // Decide the outcome from the sandbox, never from what the model
+            // said about its own work. Phase C exists because those two can
+            // look identical in a transcript.
+            let (turns, tool_calls, ran_out) = match &summary {
+                Ok(s) => (
+                    s.iterations_completed,
+                    s.tool_calls_made,
+                    !matches!(s.termination, TerminationReason::Natural(_)),
+                ),
+                Err(_) => (0, 0, false),
+            };
+
+            let mut miss = None;
+            let mut verify_output = None;
+            let mut passed = false;
+
+            if summary.is_err() {
+                miss = Some(MissCause::Harness);
+                verify_output = summary
+                    .as_ref()
+                    .err()
+                    .map(|e| format!("executor error: {e}"));
+            } else if snapshot_immutable(task, &dir) != before {
+                // Checked in Rust against a pre-run snapshot, so it cannot be
+                // defeated from inside the sandbox.
+                miss = Some(MissCause::ModelTamperedWithCheck);
+                verify_output = Some(format!("modified a protected file: {:?}", task.immutable));
+            } else {
+                match run_verify(task, &dir) {
+                    Ok((ok, out)) => {
+                        passed = ok;
+                        if !ok {
+                            miss = Some(if ran_out {
+                                MissCause::ModelRanOutOfBudget
+                            } else {
+                                MissCause::Model
+                            });
+                            verify_output = Some(out.chars().take(300).collect());
+                        }
+                    },
+                    Err(e) => {
+                        miss = Some(MissCause::Harness);
+                        verify_output = Some(format!("verify could not run: {e}"));
+                    },
+                }
+            }
+
+            let wall_ms = started.elapsed().as_millis();
+            let _ = std::fs::remove_dir_all(&dir);
+
+            agg.attempts += 1;
+            if passed {
+                agg.passed += 1;
+            }
+            if miss == Some(MissCause::Harness) {
+                agg.harness_misses += 1;
+            }
+
+            eprintln!(
+                "  {id:28} {turns:>3} turns  {tool_calls:>2} calls  {}",
+                if passed {
+                    "PASS".to_string()
+                } else {
+                    format!("{:?}", miss.unwrap_or(MissCause::Model))
+                }
+            );
+
+            agg.results.push(DetResult {
+                id,
+                passed,
+                miss,
+                turns,
+                tool_calls,
+                wall_ms,
+                verify_output,
+            });
+        }
     }
     agg
 }
@@ -1511,6 +2096,89 @@ fn print_phase_c(c: &PhaseC) {
     }
 }
 
+fn print_phase_d(d: &PhaseD) {
+    println!("\n=== Phase D — deterministic, machine-checked tasks ===\n");
+    println!(
+        "  Correctness is decided by running a command, not by reading prose.\n           Thresholds fixed in advance: docs/OFFLOAD-RELIABILITY-PRE-REGISTRATION.md\n"
+    );
+    println!("  attempts              {}", d.attempts);
+    println!(
+        "  harness misses        {}   (excluded from the pass rate — our plumbing, not the model)",
+        d.harness_misses
+    );
+    println!("  scored runs           {}", d.scored());
+
+    match (d.pass_rate(), wilson_interval(d.passed, d.scored())) {
+        (Some(rate), Some((lo, hi))) => {
+            println!(
+                "  PASS RATE             {:.1}%   ({}/{})",
+                rate * 100.0,
+                d.passed,
+                d.scored()
+            );
+            println!(
+                "  95% Wilson interval   [{:.1}%, {:.1}%]",
+                lo * 100.0,
+                hi * 100.0
+            );
+            // The tier is read off the pre-registered table, not chosen here.
+            let tier = if rate >= 0.75 && lo >= 0.60 {
+                "QUALIFIED (machine-checked handover, no human in the loop)"
+            } else if lo >= 0.40 {
+                "QUALIFIED WITH RETRY (budget 2-3 attempts per accepted result)"
+            } else {
+                "NOT QUALIFIED"
+            };
+            println!("  pre-registered tier   {tier}");
+        },
+        _ => println!("  PASS RATE             n/a     (no run was scored — undefined, NOT 0%)"),
+    }
+
+    // The share of runs lost to our own plumbing decides whether this result
+    // is evidence about the model at all.
+    let harness_share = ratio(d.harness_misses, d.attempts);
+    if harness_share > 0.20 {
+        println!(
+            "\n  *** RESULT VOID: {:.0}% of runs were harness misses (limit 20%). ***\n               Fix the plumbing and re-run; this measures us, not the model.",
+            harness_share * 100.0
+        );
+    }
+
+    let mut by_task: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+    for r in &d.results {
+        let base = r.id.split('#').next().unwrap_or(&r.id);
+        let e = by_task.entry(base).or_insert((0, 0));
+        e.0 += 1;
+        if r.passed {
+            e.1 += 1;
+        }
+    }
+    // Raw counts, never percentages: at n=5 a per-task rate invents precision.
+    println!("\n  per task (raw counts — see the pre-registration on why not %):");
+    for (task, (n, ok)) in by_task {
+        println!("    {task:28} {ok}/{n}");
+    }
+
+    let misses: Vec<&DetResult> = d.results.iter().filter(|r| !r.passed).collect();
+    if !misses.is_empty() {
+        println!("\n  every miss, with its cause:");
+        for m in &misses {
+            println!(
+                "    {:28} {:<26} {}",
+                m.id,
+                format!("{:?}", m.miss.unwrap_or(MissCause::Model)),
+                m.verify_output
+                    .as_deref()
+                    .unwrap_or("")
+                    .replace('\n', " ")
+                    .chars()
+                    .take(88)
+                    .collect::<String>()
+            );
+        }
+    }
+}
+
 fn print_phase_b(b: &PhaseB) {
     println!("\n=== Phase B — agentic tasks (known-correct answers) ===\n");
     println!(
@@ -1727,6 +2395,152 @@ mod tests {
                 );
             }
         }
+    }
+
+    // === Phase D checker soundness (pre-registration §5) ===
+    //
+    // These run in CI, before any measurement. A check that passes on the
+    // untouched fixture reports a free pass; a check nothing can satisfy
+    // reports a free failure. Both are the defect shape this whole sequence
+    // has been about: a result that was never actually tested.
+
+    fn sandbox(task: &DetTask) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        materialise(task, dir.path()).expect("materialise fixture");
+        dir
+    }
+
+    #[test]
+    fn every_check_fails_on_the_untouched_fixture() {
+        for task in DET_TASKS {
+            let dir = sandbox(task);
+            let (passed, output) = run_verify(task, dir.path()).expect("verify must run");
+            assert!(
+                !passed,
+                "{}: the check PASSES before the model has done anything, so the task                  scores a free pass and measures nothing.\n{output}",
+                task.id
+            );
+        }
+    }
+
+    #[test]
+    fn every_check_passes_on_its_reference_solution() {
+        for task in DET_TASKS {
+            let dir = sandbox(task);
+            apply_reference(task, dir.path()).expect("apply reference");
+            let (passed, output) = run_verify(task, dir.path()).expect("verify must run");
+            assert!(
+                passed,
+                "{}: the hand-written correct solution does NOT satisfy the check, so the                  task is unpassable and would report a free failure.\n{output}",
+                task.id
+            );
+        }
+    }
+
+    #[test]
+    fn the_reference_solution_never_touches_a_protected_file() {
+        // If the known-correct solution has to edit a file the task forbids
+        // editing, the task contradicts itself.
+        for task in DET_TASKS {
+            for (rel, _) in task.reference {
+                assert!(
+                    !task.immutable.contains(rel),
+                    "{}: reference solution edits {rel}, which the task declares immutable",
+                    task.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn protected_files_exist_in_the_fixture() {
+        // An immutable path that does not exist snapshots as absent and
+        // compares equal to absent — the guard would silently never fire.
+        for task in DET_TASKS {
+            for rel in task.immutable {
+                assert!(
+                    task.files.iter().any(|(p, _)| p == rel),
+                    "{}: declares {rel} immutable but never creates it, so the guard                      can never fire",
+                    task.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tampering_with_a_protected_file_is_detected() {
+        // The guard itself needs proving, not just declaring.
+        for task in DET_TASKS {
+            let dir = sandbox(task);
+            let before = snapshot_immutable(task, dir.path());
+            assert!(!before.is_empty(), "{}: nothing protected", task.id);
+
+            let victim = task.immutable[0];
+            std::fs::write(dir.path().join(victim), "tampered").expect("write");
+            assert_ne!(
+                snapshot_immutable(task, dir.path()),
+                before,
+                "{}: editing {victim} went undetected",
+                task.id
+            );
+        }
+    }
+
+    #[test]
+    fn no_fixture_contains_the_answer_it_is_testing() {
+        // Phase D's sandbox holds only what the task defines, so the harness
+        // is out of reach — but a fixture could still hand over its own
+        // answer. The reference solution's new content must not already be
+        // sitting in the files the model starts from.
+        for task in DET_TASKS {
+            let starting: String = task.files.iter().map(|(_, c)| *c).collect();
+            for (rel, solution) in task.reference {
+                let novel: Vec<&str> = solution
+                    .lines()
+                    .map(str::trim)
+                    .filter(|l| l.len() > 12 && !starting.contains(*l))
+                    .collect();
+                assert!(
+                    !novel.is_empty(),
+                    "{}: every line of the solution for {rel} is already present in the                      fixture, so the task may be answerable by copying",
+                    task.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn wilson_interval_brackets_the_point_estimate() {
+        let (lo, hi) = wilson_interval(24, 30).expect("n > 0");
+        assert!(lo < 0.8 && 0.8 < hi, "[{lo}, {hi}] must contain 24/30");
+        assert!(lo > 0.0 && hi < 1.0);
+
+        // Degenerate cases stay inside [0, 1] rather than running past it,
+        // which is why this is Wilson and not the normal approximation.
+        let (lo, hi) = wilson_interval(5, 5).unwrap();
+        assert!(lo > 0.0 && (hi - 1.0).abs() < 1e-9, "[{lo}, {hi}]");
+        let (lo, hi) = wilson_interval(0, 5).unwrap();
+        assert!(lo.abs() < 1e-9 && hi < 1.0, "[{lo}, {hi}]");
+
+        assert!(wilson_interval(0, 0).is_none(), "undefined, not zero");
+    }
+
+    #[test]
+    fn a_pass_rate_over_nothing_is_undefined_not_zero() {
+        let d = PhaseD::default();
+        assert!(d.pass_rate().is_none());
+    }
+
+    #[test]
+    fn harness_misses_are_excluded_from_the_denominator() {
+        let d = PhaseD {
+            attempts: 10,
+            passed: 6,
+            harness_misses: 2,
+            results: Vec::new(),
+        };
+        assert_eq!(d.scored(), 8);
+        assert!((d.pass_rate().unwrap() - 0.75).abs() < 1e-9);
     }
 
     #[test]
