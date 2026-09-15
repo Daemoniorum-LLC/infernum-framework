@@ -583,6 +583,12 @@ struct Args {
     /// Apply the tool-call grammar. Default on; `--grammar off` measures the
     /// unconstrained baseline the #70/#71 numbers were taken under.
     grammar: bool,
+    /// Run only the Phase B task with this id. `None` runs all of them.
+    ///
+    /// For re-measuring one task after a fix aimed at it, without paying for
+    /// the other four. The aggregate percentages in a filtered run are over
+    /// the tasks that ran, so read the per-task line, not the headline.
+    task: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -594,6 +600,7 @@ fn parse_args() -> Result<Args, String> {
     let mut temperature = 0.0f32;
     let mut json = None;
     let mut grammar = true;
+    let mut task = None;
 
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -632,6 +639,15 @@ fn parse_args() -> Result<Args, String> {
             },
             "--json" => {
                 json = Some(PathBuf::from(next(i)?));
+                i += 2;
+            },
+            "--task" => {
+                let id = next(i)?;
+                if !TASKS.iter().any(|t| t.id == id) {
+                    let known: Vec<&str> = TASKS.iter().map(|t| t.id).collect();
+                    return Err(format!("--task: unknown id {id:?}; known: {known:?}"));
+                }
+                task = Some(id);
                 i += 2;
             },
             "--grammar" => {
@@ -677,6 +693,7 @@ fn parse_args() -> Result<Args, String> {
                      --runs <N>            repetitions per item (default 1)\n\
                      --temperature <F>     sampling temperature (default 0.0)\n\
                      --json <PATH>         write the full report as JSON\n\
+                     --task <ID>           run only this Phase B task (default: all)\n\
                      --grammar on|off      constrain the tool-call envelope (default on)\n\
                      --dump-grammar        print the generated GBNF and exit\n\
                      --dump-prompt         print the composed system prompt and exit"
@@ -696,6 +713,7 @@ fn parse_args() -> Result<Args, String> {
         temperature,
         json,
         grammar,
+        task,
     })
 }
 
@@ -926,7 +944,12 @@ async fn run_phase_b(engine: &Arc<OpenAiEngine>, args: &Args) -> PhaseB {
     let mut agg = PhaseB::default();
     let mut correct_turns = Vec::new();
 
-    for task in TASKS {
+    let selected: Vec<&Task> = TASKS
+        .iter()
+        .filter(|t| args.task.as_deref().is_none_or(|id| t.id == id))
+        .collect();
+
+    for task in selected {
         for run in 0..args.runs {
             let started = Instant::now();
             let tools = Arc::new(ToolRegistry::with_code_tools());
