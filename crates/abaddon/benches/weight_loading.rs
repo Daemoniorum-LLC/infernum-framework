@@ -106,7 +106,7 @@ impl TestFiles {
             tensor_map.insert(name.to_string(), view);
         }
 
-        let serialized = serialize(&tensor_map, &None).expect("serialize safetensors");
+        let serialized = serialize(&tensor_map, None).expect("serialize safetensors");
         fs::write(&self.safetensors_path, &serialized).expect("write safetensors");
 
         // Create HCT files (LZ4 and Zstd)
@@ -335,7 +335,7 @@ fn loading_strategies_benchmark(c: &mut Criterion) {
     let view = TensorView::new(safetensors::Dtype::F32, shape.clone(), bytes_static).expect("view");
     let mut tensor_map = HashMap::new();
     tensor_map.insert("layer".to_string(), view);
-    let serialized = serialize(&tensor_map, &None).expect("serialize");
+    let serialized = serialize(&tensor_map, None).expect("serialize");
     fs::write(&st_path, &serialized).expect("write");
 
     group.throughput(Throughput::Bytes((size * 4) as u64));

@@ -30,8 +30,17 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # `--all-targets` is what makes this job cover benches and examples.
+      # Without it, `cargo check` builds the lib, bins and tests only, so a
+      # bench can stop compiling and CI stays green: abaddon's three benches
+      # had been broken since 2026-02 (inference.rs since 2025-12) and nothing
+      # reported it until someone ran `--all-targets` by hand (INFERNUM-5).
+      #
+      # This flag was added only AFTER those benches were fixed. Turning it on
+      # over a known-broken tree would have reddened every PR on day one, which
+      # is how a gate gets trained into background noise.
       - name: Run cargo check
-        run: cargo check --workspace ${{ env.SAFE_FEATURES }}
+        run: cargo check --workspace --all-targets ${{ env.SAFE_FEATURES }}
 
   fmt:
     name: Format
